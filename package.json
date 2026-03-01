@@ -1,5 +1,5 @@
 {
-  "name": "claude-orchestrator",
+  "name": "@funlandresearch/claude-orchestrator",
   "version": "0.1.0",
   "description": "TypeScript engine for launching parallel headless Claude sessions against GitHub issues",
   "type": "module",
