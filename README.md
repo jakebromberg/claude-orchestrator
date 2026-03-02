@@ -15,7 +15,89 @@ npm install github:jakebromberg/claude-orchestrator
 
 ## Quick Start
 
-Create an entry point that registers your project-specific configs:
+### 1. Create a YAML config
+
+```yaml
+# orchestrator.yaml
+name: "My Orchestrator"
+configDir: "./my-orchestrator"
+worktreeDir: "./worktrees"
+projectRoot: "."
+stallTimeout: 300
+allowedTools: [Bash, Read, Write, Edit]
+
+branchPrefix: "feature/"
+retryableStatuses: [failed, interrupted]
+promptTemplate: "./prompt.md"       # supports {{ISSUE_NUMBER}}, {{SLUG}}, {{DESCRIPTION}}, {{projectRoot}}
+claudeArgs:
+  - "--add-dir"
+  - "{{projectRoot}}"
+
+postSessionCheck:
+  commands: ["npm test", "npx tsc --noEmit"]
+  cwd: "scripts"                    # relative to worktree root
+
+summary:
+  title: "Status"
+  columns:
+    - { header: "Issue", width: 6, value: "issue.number", prefix: "#" }
+    - { header: "Description", width: 30, value: "issue.description" }
+    - { header: "Wave", width: 6, value: "issue.wave" }
+    - { header: "Status", width: 14, value: "status" }
+
+issues:
+  - { number: 1, slug: setup, dependsOn: [], description: "Initial setup" }
+  - { number: 2, slug: api, dependsOn: [1], description: "Build API layer" }
+  - { number: 3, slug: ui, dependsOn: [1], description: "Build UI components" }
+  - { number: 4, slug: deploy, dependsOn: [2, 3], description: "Deploy to prod" }
+```
+
+Paths are resolved relative to the YAML file's directory. Most hooks are derived automatically from the YAML fields (branch naming, retry logic, summary table, prompt interpolation, etc.).
+
+### 2. Wire it up
+
+`setUpWorktree` and `removeWorktree` have no universal default and must be provided as hook overrides:
+
+```typescript
+// orchestrate.ts
+import { createMain, loadYamlConfig } from "@funlandresearch/claude-orchestrator";
+import type { HooksOverride } from "@funlandresearch/claude-orchestrator";
+
+const hooksOverride: HooksOverride = {
+  async setUpWorktree(issue) { /* create git worktree + install deps */ },
+  async removeWorktree(issue) { /* remove git worktree */ },
+};
+
+createMain({
+  configs: {
+    myconfig: (projectRoot) =>
+      loadYamlConfig(`${projectRoot}/orchestrator.yaml`, { hooksOverride }),
+  },
+}).catch((err) => {
+  console.error(err.message);
+  process.exit(1);
+});
+```
+
+### 3. Run it
+
+```bash
+npx tsx orchestrate.ts myconfig              # Run all waves (up to 4 in parallel)
+npx tsx orchestrate.ts myconfig --parallel 8 # Run up to 8 issues concurrently
+npx tsx orchestrate.ts myconfig --status     # Show status table
+npx tsx orchestrate.ts myconfig --wave 1     # Run wave 1 only
+npx tsx orchestrate.ts myconfig 1 2 3        # Run specific issues
+npx tsx orchestrate.ts myconfig --retry-failed
+npx tsx orchestrate.ts myconfig --merge      # Merge succeeded PRs
+npx tsx orchestrate.ts myconfig --watch      # Live dashboard
+npx tsx orchestrate.ts myconfig --detach     # Run in background
+npx tsx orchestrate.ts myconfig --tail       # Reattach to background run
+npx tsx orchestrate.ts myconfig --cleanup    # Remove worktrees and logs
+```
+
+## Programmatic Configuration
+
+For full control, you can skip the YAML file and build configs in TypeScript:
 
 ```typescript
 // orchestrate.ts
@@ -68,88 +150,7 @@ createMain({
 });
 ```
 
-Run it:
-
-```bash
-npx tsx orchestrate.ts myconfig              # Run all waves
-npx tsx orchestrate.ts myconfig --status     # Show status table
-npx tsx orchestrate.ts myconfig --wave 1     # Run wave 1 only
-npx tsx orchestrate.ts myconfig 1 2 3        # Run specific issues
-npx tsx orchestrate.ts myconfig --retry-failed
-npx tsx orchestrate.ts myconfig --merge      # Merge succeeded PRs
-npx tsx orchestrate.ts myconfig --watch      # Live dashboard
-npx tsx orchestrate.ts myconfig --detach     # Run in background
-npx tsx orchestrate.ts myconfig --tail       # Reattach to background run
-npx tsx orchestrate.ts myconfig --cleanup    # Remove worktrees and logs
-```
-
-## YAML Configuration
-
-For configs that don't need custom hook logic, use a YAML file instead of
-TypeScript. Create `orchestrator.yaml`:
-
-```yaml
-name: "My Orchestrator"
-configDir: "./my-orchestrator"
-worktreeDir: "./worktrees"
-projectRoot: "."
-stallTimeout: 300
-allowedTools: [Bash, Read, Write, Edit]
-
-branchPrefix: "feature/"
-retryableStatuses: [failed, interrupted]
-promptTemplate: "./prompt.md"       # supports {{ISSUE_NUMBER}}, {{SLUG}}, {{DESCRIPTION}}, {{projectRoot}}
-claudeArgs:
-  - "--add-dir"
-  - "{{projectRoot}}"
-
-postSessionCheck:
-  commands: ["npm test", "npx tsc --noEmit"]
-  cwd: "scripts"                    # relative to worktree root
-
-summary:
-  title: "Status"
-  columns:
-    - { header: "Issue", width: 6, value: "issue.number", prefix: "#" }
-    - { header: "Description", width: 30, value: "issue.description" }
-    - { header: "Wave", width: 6, value: "issue.wave" }
-    - { header: "Status", width: 14, value: "status" }
-
-issues:
-  - { number: 1, slug: setup, dependsOn: [], description: "Initial setup" }
-  - { number: 2, slug: build, dependsOn: [1], description: "Build pipeline" }
-```
-
-Paths in the YAML file are resolved relative to the file's directory. Hook
-defaults are derived from the YAML fields (branch naming, retry logic, summary
-table, etc.). `setUpWorktree` and `removeWorktree` have no universal default
-and must be provided as overrides.
-
-Wire it up with an optional `.hooks.ts` override file:
-
-```typescript
-// orchestrate.ts
-import { createMain, loadYamlConfig } from "claude-orchestrator";
-import type { HooksOverride } from "claude-orchestrator";
-
-const hooksOverride: HooksOverride = {
-  async setUpWorktree(issue) { /* create git worktree + install deps */ },
-  async removeWorktree(issue) { /* remove git worktree */ },
-};
-
-createMain({
-  configs: {
-    myconfig: (projectRoot) =>
-      loadYamlConfig(`${projectRoot}/orchestrator.yaml`, { hooksOverride }),
-  },
-}).catch((err) => {
-  console.error(err.message);
-  process.exit(1);
-});
-```
-
-`ConfigFactory` now accepts both sync and async return values, so
-`loadYamlConfig` (which is async) works directly with `createMain`.
+`ConfigFactory` accepts both sync and async return values, so `loadYamlConfig` (async) and `validateConfig` (sync) both work directly with `createMain`.
 
 ## Architecture
 
