@@ -80,6 +80,74 @@ npx tsx orchestrate.ts myconfig --tail       # Reattach to background run
 npx tsx orchestrate.ts myconfig --cleanup    # Remove worktrees and logs
 ```
 
+## YAML Configuration
+
+For configs that don't need custom hook logic, use a YAML file instead of
+TypeScript. Create `orchestrator.yaml`:
+
+```yaml
+name: "My Orchestrator"
+configDir: "./my-orchestrator"
+worktreeDir: "./worktrees"
+projectRoot: "."
+stallTimeout: 300
+allowedTools: [Bash, Read, Write, Edit]
+
+branchPrefix: "feature/"
+retryableStatuses: [failed, interrupted]
+promptTemplate: "./prompt.md"       # supports {{ISSUE_NUMBER}}, {{SLUG}}, {{DESCRIPTION}}, {{projectRoot}}
+claudeArgs:
+  - "--add-dir"
+  - "{{projectRoot}}"
+
+postSessionCheck:
+  commands: ["npm test", "npx tsc --noEmit"]
+  cwd: "scripts"                    # relative to worktree root
+
+summary:
+  title: "Status"
+  columns:
+    - { header: "Issue", width: 6, value: "issue.number", prefix: "#" }
+    - { header: "Description", width: 30, value: "issue.description" }
+    - { header: "Wave", width: 6, value: "issue.wave" }
+    - { header: "Status", width: 14, value: "status" }
+
+issues:
+  - { number: 1, slug: setup, dependsOn: [], description: "Initial setup" }
+  - { number: 2, slug: build, dependsOn: [1], description: "Build pipeline" }
+```
+
+Paths in the YAML file are resolved relative to the file's directory. Hook
+defaults are derived from the YAML fields (branch naming, retry logic, summary
+table, etc.). `setUpWorktree` and `removeWorktree` have no universal default
+and must be provided as overrides.
+
+Wire it up with an optional `.hooks.ts` override file:
+
+```typescript
+// orchestrate.ts
+import { createMain, loadYamlConfig } from "claude-orchestrator";
+import type { HooksOverride } from "claude-orchestrator";
+
+const hooksOverride: HooksOverride = {
+  async setUpWorktree(issue) { /* create git worktree + install deps */ },
+  async removeWorktree(issue) { /* remove git worktree */ },
+};
+
+createMain({
+  configs: {
+    myconfig: (projectRoot) =>
+      loadYamlConfig(`${projectRoot}/orchestrator.yaml`, { hooksOverride }),
+  },
+}).catch((err) => {
+  console.error(err.message);
+  process.exit(1);
+});
+```
+
+`ConfigFactory` now accepts both sync and async return values, so
+`loadYamlConfig` (which is async) works directly with `createMain`.
+
 ## Architecture
 
 The engine uses dependency injection for all external interactions:

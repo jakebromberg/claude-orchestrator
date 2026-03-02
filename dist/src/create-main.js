@@ -56,7 +56,7 @@ export async function createMain(options) {
     }
     // The consumer's entry point (for --detach re-spawn)
     const scriptPath = process.argv[1];
-    const config = configs[configName](projectRoot);
+    const config = await Promise.resolve(configs[configName](projectRoot));
     const args = parseArgs(restArgv);
     const deps = createRealDeps(config);
     const orchestrator = new Orchestrator(config, deps, {

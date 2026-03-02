@@ -24,7 +24,12 @@ src/
 ├── dependency-files.ts   # Dependency file detection
 ├── report.ts             # Post-run report generation
 ├── real-process-runner.ts # Real child_process spawner
-├── create-main.ts        # Generic entry point factory
+├── create-main.ts        # Generic entry point factory (sync or async ConfigFactory)
+├── interpolate.ts        # {{var}} template substitution
+├── yaml-types.ts         # YamlConfig, HooksOverride types
+├── yaml-schema.ts        # Zod schema for YAML config validation
+├── yaml-hooks.ts         # deriveHooks() — YAML fields → OrchestratorHooks
+├── yaml-loader.ts        # loadYamlConfig() — full YAML→config pipeline
 ├── index.ts              # Public API barrel export
 └── testing.ts            # Test utility exports
 ```
@@ -36,6 +41,10 @@ src/
   `InMemoryMetadataStore`, `createSilentLogger`, and mock `ProcessRunner`
 - **Wave scheduling**: `computeWaves()` topological sort from `dependsOn`
 - **Config validation**: Zod schema in `validateConfig()` with cycle detection
+- **YAML configs**: Alternative to pure-TS configs — `loadYamlConfig()` reads
+  a YAML file, validates it, derives convention-based hooks, and merges
+  optional `.hooks.ts` overrides. `setUpWorktree`/`removeWorktree` must be
+  provided via overrides (no universal default).
 
 ### Commands
 
