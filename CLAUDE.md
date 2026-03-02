@@ -1,4 +1,4 @@
-## claude-orchestrator
+## @funlandresearch/claude-orchestrator
 
 TypeScript engine for launching parallel headless Claude sessions against
 GitHub issues. Published as an npm package for reuse across projects.

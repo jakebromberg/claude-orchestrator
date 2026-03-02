@@ -1,4 +1,4 @@
-# claude-orchestrator
+# @funlandresearch/claude-orchestrator
 
 TypeScript engine for launching parallel headless Claude sessions against
 GitHub issues. Each session runs in an isolated git worktree, with wave-based
@@ -7,7 +7,10 @@ scheduling driven by issue dependencies.
 ## Install
 
 ```bash
-npm install claude-orchestrator
+npm install @funlandresearch/claude-orchestrator
+
+# Or install directly from GitHub:
+npm install github:jakebromberg/claude-orchestrator
 ```
 
 ## Quick Start
@@ -16,8 +19,8 @@ Create an entry point that registers your project-specific configs:
 
 ```typescript
 // orchestrate.ts
-import { createMain, validateConfig, createPrintSummary } from "claude-orchestrator";
-import type { IssueSpec, OrchestratorConfig } from "claude-orchestrator";
+import { createMain, validateConfig, createPrintSummary } from "@funlandresearch/claude-orchestrator";
+import type { IssueSpec, OrchestratorConfig } from "@funlandresearch/claude-orchestrator";
 
 const ISSUES: IssueSpec[] = [
   { number: 1, slug: "setup",  dependsOn: [],  description: "Initial setup" },
@@ -191,7 +194,7 @@ Each config provides an `OrchestratorHooks` object:
 Import test helpers from `claude-orchestrator/testing`:
 
 ```typescript
-import { InMemoryStatusStore, InMemoryMetadataStore, createSilentLogger } from "claude-orchestrator/testing";
+import { InMemoryStatusStore, InMemoryMetadataStore, createSilentLogger } from "@funlandresearch/claude-orchestrator/testing";
 ```
 
 ## Development
