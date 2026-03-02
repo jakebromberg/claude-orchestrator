@@ -4,10 +4,18 @@
   "description": "TypeScript engine for launching parallel headless Claude sessions against GitHub issues",
   "type": "module",
   "exports": {
-    ".": { "types": "./dist/src/index.d.ts", "default": "./dist/src/index.js" },
-    "./testing": { "types": "./dist/src/testing.d.ts", "default": "./dist/src/testing.js" }
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./testing": {
+      "types": "./dist/src/testing.d.ts",
+      "default": "./dist/src/testing.js"
+    }
   },
-  "files": ["dist/src"],
+  "files": [
+    "dist/src"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
@@ -15,7 +23,14 @@
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build"
   },
-  "keywords": ["claude", "orchestrator", "parallel", "github", "issues", "automation"],
+  "keywords": [
+    "claude",
+    "orchestrator",
+    "parallel",
+    "github",
+    "issues",
+    "automation"
+  ],
   "author": "Jake Bromberg",
   "license": "MIT",
   "repository": {
@@ -23,6 +38,7 @@
     "url": "git+https://github.com/jakebromberg/claude-orchestrator.git"
   },
   "dependencies": {
+    "yaml": "^2.8.2",
     "zod": "^4.3.6"
   },
   "devDependencies": {
