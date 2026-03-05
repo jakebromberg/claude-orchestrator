@@ -27,6 +27,11 @@ export interface IssueCommentsConfig {
   enabled: boolean;
 }
 
+export interface LabelSyncConfig {
+  prefix: string;
+  repo?: string;
+}
+
 export interface RawOrchestratorConfig {
   name: string;
   configDir: string;
@@ -39,6 +44,8 @@ export interface RawOrchestratorConfig {
   allowedTools?: string[];
   /** Post run summary comments on GitHub issues. */
   issueComments?: IssueCommentsConfig;
+  /** Sync issue labels on status changes. */
+  labelSync?: LabelSyncConfig;
 }
 
 export interface OrchestratorConfig {
@@ -53,6 +60,8 @@ export interface OrchestratorConfig {
   allowedTools?: string[];
   /** Post run summary comments on GitHub issues. */
   issueComments?: IssueCommentsConfig;
+  /** Sync issue labels on status changes. */
+  labelSync?: LabelSyncConfig;
 }
 
 export type MergePolicy = "none" | "after-wave";
@@ -82,6 +91,8 @@ export interface OrchestratorHooks {
   printSummary(issues: Issue[], getStatus: (n: number) => Status): void;
   /** Optional hook called after Claude exits 0, before marking "succeeded". */
   postSessionCheck?(issue: Issue, worktreePath: string): Promise<PostCheckResult>;
+  /** Optional hook called when an issue's status changes. Errors are non-fatal. */
+  onStatusChange?(issue: Issue, oldStatus: Status, newStatus: Status): Promise<void>;
 }
 
 export type ParsedMode =

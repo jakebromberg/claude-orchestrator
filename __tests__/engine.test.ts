@@ -582,7 +582,7 @@ describe("Orchestrator", () => {
   });
 
   describe("signal handling", () => {
-    it("marks running issues as interrupted", () => {
+    it("marks running issues as interrupted", async () => {
       const issues = [
         makeIssue({ number: 1 }),
         makeIssue({ number: 2 }),
@@ -594,26 +594,26 @@ describe("Orchestrator", () => {
       deps.statusStore.set(2, "succeeded");
       deps.statusStore.set(3, "running");
 
-      orchestrator.handleInterrupt();
+      await orchestrator.handleInterrupt();
 
       expect(deps.statusStore.get(1)).toBe("interrupted");
       expect(deps.statusStore.get(2)).toBe("succeeded");
       expect(deps.statusStore.get(3)).toBe("interrupted");
     });
 
-    it("calls printSummary on interrupt", () => {
+    it("calls printSummary on interrupt", async () => {
       const issues = [makeIssue({ number: 1 })];
       const printSummary = vi.fn();
       const { orchestrator } = makeOrchestrator(issues, { printSummary });
 
-      orchestrator.handleInterrupt();
+      await orchestrator.handleInterrupt();
 
       expect(printSummary).toHaveBeenCalled();
     });
   });
 
   describe("stale status reset", () => {
-    it("resets running statuses to pending on startup", () => {
+    it("resets running statuses to pending on startup", async () => {
       const issues = [
         makeIssue({ number: 1 }),
         makeIssue({ number: 2 }),
@@ -625,7 +625,7 @@ describe("Orchestrator", () => {
       deps.statusStore.set(2, "succeeded");
       deps.statusStore.set(3, "failed");
 
-      orchestrator.resetStaleStatuses();
+      await orchestrator.resetStaleStatuses();
 
       expect(deps.statusStore.get(1)).toBe("pending");
       expect(deps.statusStore.get(2)).toBe("succeeded");
@@ -2061,5 +2061,55 @@ describe("upstream context in prepareIssues", () => {
 
     runner.resolvers.get(1000)!(0);
     await promise;
+  });
+});
+
+describe("onStatusChange hook", () => {
+  it("is called with correct old and new statuses on transition", async () => {
+    const onStatusChange = vi.fn(async () => {});
+    const issue = makeIssue({ number: 1, wave: 1 });
+    const { orchestrator, deps } = makeOrchestrator([issue], { onStatusChange });
+
+    const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+    const promise = orchestrator.runWave(1);
+    await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+
+    // Should have been called with pending -> running
+    expect(onStatusChange).toHaveBeenCalledWith(
+      expect.objectContaining({ number: 1 }),
+      "pending",
+      "running",
+    );
+
+    runner.resolvers.get(1000)!(0);
+    await promise;
+
+    // Should have been called with running -> succeeded
+    expect(onStatusChange).toHaveBeenCalledWith(
+      expect.objectContaining({ number: 1 }),
+      "running",
+      "succeeded",
+    );
+  });
+
+  it("does not prevent status change when hook throws", async () => {
+    const onStatusChange = vi.fn(async () => { throw new Error("hook error"); });
+    const issue = makeIssue({ number: 1, wave: 1 });
+    const { orchestrator, deps } = makeOrchestrator([issue], { onStatusChange });
+
+    const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+    const promise = orchestrator.runWave(1);
+    await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+
+    expect(deps.statusStore.get(1)).toBe("running");
+
+    runner.resolvers.get(1000)!(0);
+    await promise;
+
+    // Status should still change despite hook error
+    expect(deps.statusStore.get(1)).toBe("succeeded");
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("onStatusChange hook error"),
+    );
   });
 });

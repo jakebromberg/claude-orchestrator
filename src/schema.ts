@@ -23,6 +23,7 @@ const RawConfigSchema = z
     hooks: z.any(),
     allowedTools: z.array(z.string()).optional(),
     issueComments: z.object({ repo: z.string(), enabled: z.boolean() }).optional(),
+    labelSync: z.object({ prefix: z.string(), repo: z.string().optional() }).optional(),
   })
   .check((ctx) => {
     const issues = ctx.value.issues;
@@ -114,5 +115,6 @@ export function validateConfig(raw: RawOrchestratorConfig): OrchestratorConfig {
     hooks: parsed.hooks,
     ...(parsed.allowedTools && { allowedTools: parsed.allowedTools }),
     ...(parsed.issueComments && { issueComments: parsed.issueComments }),
+    ...(parsed.labelSync && { labelSync: parsed.labelSync }),
   };
 }
