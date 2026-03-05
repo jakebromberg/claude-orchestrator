@@ -69,6 +69,11 @@ export type { IssueCommentConfig, IssueCommentDeps } from "./issue-comments.js";
 export { createLabelSyncHandler } from "./label-sync.js";
 export type { LabelSyncHandlerConfig, LabelSyncDeps } from "./label-sync.js";
 
+// Dashboard
+export { createDashboardServer } from "./dashboard.js";
+export type { DashboardDeps, DashboardOptions, DashboardHandle } from "./dashboard-types.js";
+export { renderDashboardHtml } from "./dashboard-html.js";
+
 // GitHub integration
 export { addIssueLabel, removeIssueLabel, postIssueComment, ensureLabelExists } from "./github.js";
 export type { GitHubDeps, LabelOptions } from "./github.js";
