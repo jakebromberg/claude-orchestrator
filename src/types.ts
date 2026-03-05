@@ -22,6 +22,11 @@ export interface Issue extends IssueSpec {
   deps: number[];
 }
 
+export interface IssueCommentsConfig {
+  repo: string;
+  enabled: boolean;
+}
+
 export interface RawOrchestratorConfig {
   name: string;
   configDir: string;
@@ -32,6 +37,8 @@ export interface RawOrchestratorConfig {
   issues: IssueSpec[];
   hooks: OrchestratorHooks;
   allowedTools?: string[];
+  /** Post run summary comments on GitHub issues. */
+  issueComments?: IssueCommentsConfig;
 }
 
 export interface OrchestratorConfig {
@@ -44,6 +51,8 @@ export interface OrchestratorConfig {
   issues: Issue[];
   hooks: OrchestratorHooks;
   allowedTools?: string[];
+  /** Post run summary comments on GitHub issues. */
+  issueComments?: IssueCommentsConfig;
 }
 
 export type MergePolicy = "none" | "after-wave";

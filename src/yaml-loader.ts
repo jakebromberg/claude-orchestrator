@@ -62,5 +62,6 @@ export async function loadYamlConfig(
     issues: yaml.issues,
     hooks,
     ...(yaml.allowedTools && { allowedTools: yaml.allowedTools }),
+    ...(yaml.issueComments && { issueComments: { repo: yaml.issueComments.repo, enabled: yaml.issueComments.enabled ?? true } }),
   });
 }
