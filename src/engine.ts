@@ -428,7 +428,8 @@ export class Orchestrator {
               return;
             }
 
-            if (!(await this.runPostSessionCheck(issue, worktreePath))) return;
+            const zeroRetryCheck = await this.runPostSessionCheck(issue, worktreePath);
+            if (!await this.handleCheckResultWithRetry(issue, zeroRetryCheck, prompt, worktreePath, logFile, stderrFile)) return;
 
             await this.setStatus(issue, "succeeded");
             this.deps.logger.info(
@@ -444,7 +445,8 @@ export class Orchestrator {
           return;
         }
 
-        if (!(await this.runPostSessionCheck(issue, worktreePath))) return;
+        const checkResult = await this.runPostSessionCheck(issue, worktreePath);
+        if (!await this.handleCheckResultWithRetry(issue, checkResult, prompt, worktreePath, logFile, stderrFile)) return;
 
         await this.setStatus(issue, "succeeded");
         this.deps.logger.info(`Issue #${issue.number} succeeded`);
@@ -465,28 +467,98 @@ export class Orchestrator {
   private async runPostSessionCheck(
     issue: Issue,
     worktreePath: string,
-  ): Promise<boolean> {
-    if (!this.config.hooks.postSessionCheck) return true;
+  ): Promise<import("./types.js").PostCheckResult> {
+    if (!this.config.hooks.postSessionCheck) return { passed: true };
 
     try {
       const result = await this.config.hooks.postSessionCheck(
         issue, worktreePath,
       );
       if (!result.passed) {
-        await this.setStatus(issue, "failed");
         this.deps.logger.error(
           `Issue #${issue.number} post-check failed: ${result.summary ?? "unknown reason"}`,
         );
-        return false;
       }
-      return true;
+      return result;
     } catch (err) {
-      await this.setStatus(issue, "failed");
+      const msg = err instanceof Error ? err.message : String(err);
       this.deps.logger.error(
-        `Issue #${issue.number} post-check threw: ${err instanceof Error ? err.message : String(err)}`,
+        `Issue #${issue.number} post-check threw: ${msg}`,
       );
+      return { passed: false, output: msg, summary: msg };
+    }
+  }
+
+  private async handleCheckResultWithRetry(
+    issue: Issue,
+    checkResult: import("./types.js").PostCheckResult,
+    originalPrompt: string,
+    worktreePath: string,
+    logFile: string,
+    stderrFile: string,
+  ): Promise<boolean> {
+    if (checkResult.passed) return true;
+
+    const retryConfig = this.config.retryOnCheckFailure;
+    if (!retryConfig?.enabled) {
+      await this.setStatus(issue, "failed");
       return false;
     }
+
+    const maxRetries = retryConfig.maxRetries;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      this.deps.logger.warn(
+        `Issue #${issue.number} check failed, retry ${attempt}/${maxRetries}...`,
+      );
+
+      const failureContext = checkResult.output ?? checkResult.summary ?? "unknown failure";
+      const retryPrompt = `${originalPrompt}\n\n## CI Failure Context\n\nThe following checks failed:\n\n${failureContext}\n\nPlease fix these issues.`;
+
+      const tools = this.config.allowedTools ?? DEFAULT_ALLOWED_TOOLS;
+      const retryArgs = [
+        "-p", retryPrompt,
+        "--model", "opus",
+        "--allowedTools", tools.join(","),
+        ...this.config.hooks.getClaudeArgs(issue),
+        "--output-format", "stream-json",
+        "--verbose",
+      ];
+
+      const retryHandle = this.deps.processRunner.spawn(
+        "claude", retryArgs,
+        { cwd: worktreePath, logFile, stderrFile },
+      );
+
+      const retryExitCode = await retryHandle.exitCode;
+      this.deps.metadataStore.update(issue.number, {
+        exitCode: retryExitCode,
+        finishedAt: new Date().toISOString(),
+        retryCount: attempt,
+      });
+
+      if (retryExitCode !== 0) {
+        await this.setStatus(issue, "failed");
+        this.deps.logger.error(
+          `Issue #${issue.number} retry ${attempt} exited with code ${retryExitCode}`,
+        );
+        return false;
+      }
+
+      checkResult = await this.runPostSessionCheck(issue, worktreePath);
+      if (checkResult.passed) {
+        this.deps.logger.info(
+          `Issue #${issue.number} succeeded after retry ${attempt}`,
+        );
+        return true;
+      }
+    }
+
+    // All retries exhausted
+    await this.setStatus(issue, "failed");
+    this.deps.logger.error(
+      `Issue #${issue.number} failed after ${maxRetries} retries`,
+    );
+    return false;
   }
 }
 

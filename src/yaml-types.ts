@@ -58,6 +58,8 @@ export interface YamlConfig {
   issueComments?: { repo: string; enabled?: boolean };
   /** Sync issue labels on status changes. */
   labelSync?: { prefix: string; repo?: string };
+  /** Auto-retry when postSessionCheck fails. */
+  retryOnCheckFailure?: { maxRetries: number; enabled?: boolean };
   issues: YamlIssue[];
 }
 

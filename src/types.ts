@@ -46,6 +46,8 @@ export interface RawOrchestratorConfig {
   issueComments?: IssueCommentsConfig;
   /** Sync issue labels on status changes. */
   labelSync?: LabelSyncConfig;
+  /** Auto-retry when postSessionCheck fails. */
+  retryOnCheckFailure?: RetryOnCheckFailureConfig;
 }
 
 export interface OrchestratorConfig {
@@ -62,6 +64,8 @@ export interface OrchestratorConfig {
   issueComments?: IssueCommentsConfig;
   /** Sync issue labels on status changes. */
   labelSync?: LabelSyncConfig;
+  /** Auto-retry when postSessionCheck fails. */
+  retryOnCheckFailure?: RetryOnCheckFailureConfig;
 }
 
 export type MergePolicy = "none" | "after-wave";
@@ -73,7 +77,15 @@ export interface RunOptions {
 
 export interface PostCheckResult {
   passed: boolean;
+  /** Human-readable summary for logs. */
   summary?: string;
+  /** Raw command output for machine consumption (injected into retry prompts). */
+  output?: string;
+}
+
+export interface RetryOnCheckFailureConfig {
+  maxRetries: number;
+  enabled: boolean;
 }
 
 export interface OrchestratorHooks {
@@ -156,6 +168,7 @@ export interface IssueMetadata {
   startedAt?: string;
   finishedAt?: string;
   filesChanged?: string[];
+  retryCount?: number;
 }
 
 export interface MetadataStore {

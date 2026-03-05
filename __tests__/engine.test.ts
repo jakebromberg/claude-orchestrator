@@ -2113,3 +2113,122 @@ describe("onStatusChange hook", () => {
     );
   });
 });
+
+describe("CI failure retry", () => {
+  it("retries when postSessionCheck fails and retryOnCheckFailure is enabled", async () => {
+    let checkCallCount = 0;
+    const issue = makeIssue({ number: 1, wave: 1 });
+    const config = makeConfig([issue], {
+      postSessionCheck: vi.fn(async () => {
+        checkCallCount++;
+        if (checkCallCount === 1) {
+          return { passed: false, output: "test failed: assertion error", summary: "Tests failed" };
+        }
+        return { passed: true };
+      }),
+    });
+    config.retryOnCheckFailure = { maxRetries: 2, enabled: true };
+    const deps = makeDeps();
+    const orchestrator = new Orchestrator(config, deps);
+
+    const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+    const promise = orchestrator.runWave(1);
+
+    // First spawn (original)
+    await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+    runner.resolvers.get(1000)!(0);
+
+    // Retry spawn
+    await vi.waitFor(() => expect(runner.spawned.length).toBe(2));
+    runner.resolvers.get(1001)!(0);
+
+    await promise;
+
+    expect(deps.statusStore.get(1)).toBe("succeeded");
+    expect(deps.metadataStore.get(1).retryCount).toBe(1);
+
+    // Retry prompt should contain failure context
+    const retryArgs = runner.spawned[1].args;
+    const promptIndex = retryArgs.indexOf("-p");
+    expect(retryArgs[promptIndex + 1]).toContain("CI Failure Context");
+    expect(retryArgs[promptIndex + 1]).toContain("test failed: assertion error");
+  });
+
+  it("marks as failed when all retries exhausted", async () => {
+    const issue = makeIssue({ number: 1, wave: 1 });
+    const config = makeConfig([issue], {
+      postSessionCheck: vi.fn(async () => ({
+        passed: false, output: "lint errors", summary: "Lint failed",
+      })),
+    });
+    config.retryOnCheckFailure = { maxRetries: 1, enabled: true };
+    const deps = makeDeps();
+    const orchestrator = new Orchestrator(config, deps);
+
+    const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+    const promise = orchestrator.runWave(1);
+
+    // Original spawn
+    await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+    runner.resolvers.get(1000)!(0);
+
+    // Retry spawn
+    await vi.waitFor(() => expect(runner.spawned.length).toBe(2));
+    runner.resolvers.get(1001)!(0);
+
+    await promise;
+
+    expect(deps.statusStore.get(1)).toBe("failed");
+    expect(deps.logger.error).toHaveBeenCalledWith(
+      expect.stringContaining("failed after 1 retries"),
+    );
+  });
+
+  it("does not retry when retryOnCheckFailure is not enabled", async () => {
+    const issue = makeIssue({ number: 1, wave: 1 });
+    const { orchestrator, deps } = makeOrchestrator([issue], {
+      postSessionCheck: vi.fn(async () => ({
+        passed: false, summary: "Check failed",
+      })),
+    });
+
+    const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+    const promise = orchestrator.runWave(1);
+    await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+    runner.resolvers.get(1000)!(0);
+    await promise;
+
+    // Only one spawn (no retry)
+    expect(runner.spawned.length).toBe(1);
+    expect(deps.statusStore.get(1)).toBe("failed");
+  });
+
+  it("passes output from postSessionCheck through to retry prompt", async () => {
+    let checkCallCount = 0;
+    const issue = makeIssue({ number: 1, wave: 1 });
+    const config = makeConfig([issue], {
+      postSessionCheck: vi.fn(async () => {
+        checkCallCount++;
+        if (checkCallCount === 1) {
+          return { passed: false, output: "error: unused variable 'x'" };
+        }
+        return { passed: true };
+      }),
+    });
+    config.retryOnCheckFailure = { maxRetries: 1, enabled: true };
+    const deps = makeDeps();
+    const orchestrator = new Orchestrator(config, deps);
+
+    const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+    const promise = orchestrator.runWave(1);
+    await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+    runner.resolvers.get(1000)!(0);
+    await vi.waitFor(() => expect(runner.spawned.length).toBe(2));
+    runner.resolvers.get(1001)!(0);
+    await promise;
+
+    const retryArgs = runner.spawned[1].args;
+    const promptIndex = retryArgs.indexOf("-p");
+    expect(retryArgs[promptIndex + 1]).toContain("unused variable 'x'");
+  });
+});
