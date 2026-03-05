@@ -68,7 +68,7 @@ export interface OrchestratorHooks {
   removeWorktree(issue: Issue): Promise<void>;
   getWorktreePath(issue: Issue): string;
   getBranchName(issue: Issue): string;
-  interpolatePrompt(issue: Issue): Promise<string>;
+  interpolatePrompt(issue: Issue, extraVars?: Record<string, string>): Promise<string>;
   getClaudeArgs(issue: Issue): string[];
   printSummary(issues: Issue[], getStatus: (n: number) => Status): void;
   /** Optional hook called after Claude exits 0, before marking "succeeded". */
