@@ -2,6 +2,7 @@ import { ProcessPool } from "./process-pool.js";
 import { StallMonitor } from "./stall-monitor.js";
 import { extractPrUrl } from "./pr-tracker.js";
 import { mergePrs } from "./merge.js";
+import { gatherUpstreamContext } from "./upstream-context.js";
 import type { MergeResult } from "./merge.js";
 import type {
   Issue,
@@ -189,8 +190,17 @@ export class Orchestrator {
         continue;
       }
 
+      // Gather upstream context from dependency worktrees
+      const upstreamContext = gatherUpstreamContext(issue, this.config.issues, {
+        readFile: (p) => this.deps.readFile(p),
+        getWorktreePath: (i) => this.config.hooks.getWorktreePath(i),
+      });
+      const extraVars = upstreamContext
+        ? { UPSTREAM_CONTEXT: upstreamContext }
+        : undefined;
+
       // Build prompt
-      const prompt = await this.config.hooks.interpolatePrompt(issue);
+      const prompt = await this.config.hooks.interpolatePrompt(issue, extraVars);
       const sessionId = this.deps.generateSessionId();
 
       ready.push({ issue, prompt, sessionId });

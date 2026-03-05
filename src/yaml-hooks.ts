@@ -137,14 +137,14 @@ export function deriveHooks(
       return yaml.claudeArgs.map((arg) => interpolate(arg, vars));
     },
 
-    async interpolatePrompt(issue: Issue): Promise<string> {
+    async interpolatePrompt(issue: Issue, extraVars?: Record<string, string>): Promise<string> {
       if (!yaml.promptTemplate) {
         return `Fix issue #${issue.number}: ${issue.description}`;
       }
       const template = readFile
         ? readFile(yaml.promptTemplate)
         : (await import("node:fs")).readFileSync(yaml.promptTemplate, "utf-8");
-      const vars = buildTemplateVars(yaml, issue);
+      const vars = { ...buildTemplateVars(yaml, issue), ...(extraVars ?? {}) };
       return interpolate(template, vars);
     },
 
