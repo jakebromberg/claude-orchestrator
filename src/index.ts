@@ -53,6 +53,10 @@ export type { DeriveHooksDeps } from "./yaml-hooks.js";
 export { interpolate } from "./interpolate.js";
 export type { YamlConfig, HooksOverride, YamlSummaryColumn, YamlSummary, YamlPostSessionCheck, YamlIssue } from "./yaml-types.js";
 
+// Upstream context
+export { gatherUpstreamContext } from "./upstream-context.js";
+export type { UpstreamContextDeps } from "./upstream-context.js";
+
 // GitHub integration
 export { addIssueLabel, removeIssueLabel, postIssueComment, ensureLabelExists } from "./github.js";
 export type { GitHubDeps, LabelOptions } from "./github.js";
