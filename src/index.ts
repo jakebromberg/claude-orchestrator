@@ -3,7 +3,7 @@ export type {
   Status, IssueSpec, Issue, RawOrchestratorConfig, OrchestratorConfig,
   MergePolicy, RunOptions, PostCheckResult, OrchestratorHooks,
   ParsedMode, ParsedArgs, StatusStore, ProcessHandle, ProcessRunner,
-  Logger, IssueMetadata, MetadataStore, Deps, RunRecord, IssueCommentsConfig, LabelSyncConfig,
+  Logger, IssueMetadata, MetadataStore, Deps, RunRecord, IssueCommentsConfig, LabelSyncConfig, RetryOnCheckFailureConfig,
 } from "./types.js";
 
 // Engine

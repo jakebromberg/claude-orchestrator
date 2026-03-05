@@ -189,6 +189,7 @@ export function deriveHooks(
           return {
             passed: false,
             summary: `Command failed: ${cmd}\n${(err as Error).message}`,
+            output: (err as Error).message,
           };
         }
       }
