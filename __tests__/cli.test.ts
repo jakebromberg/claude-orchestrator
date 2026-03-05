@@ -139,4 +139,59 @@ describe("parseArgs", () => {
     expect(result.detach).toBe(false);
     expect(result.notify).toBe(false);
   });
+
+  describe("decompose flags", () => {
+    it("parses --decompose", () => {
+      const result = parseArgs(["--decompose"]);
+      expect(result.mode).toBe("decompose");
+    });
+
+    it("parses --decompose --file path", () => {
+      const result = parseArgs(["--decompose", "--file", "/path/to/spec.md"]);
+      expect(result.mode).toBe("decompose");
+      expect(result.decomposeFile).toBe("/path/to/spec.md");
+    });
+
+    it("throws when --file has no argument", () => {
+      expect(() => parseArgs(["--decompose", "--file"])).toThrow("--file requires a path");
+    });
+
+    it("parses --create-issues flag", () => {
+      const result = parseArgs(["--decompose", "--create-issues"]);
+      expect(result.createIssues).toBe(true);
+    });
+
+    it("parses --issue number", () => {
+      const result = parseArgs(["--decompose", "--issue", "42"]);
+      expect(result.decomposeIssue).toBe(42);
+    });
+
+    it("throws when --issue has no argument", () => {
+      expect(() => parseArgs(["--decompose", "--issue"])).toThrow("--issue requires a number");
+    });
+
+    it("parses --repo owner/repo", () => {
+      const result = parseArgs(["--decompose", "--repo", "owner/repo"]);
+      expect(result.decomposeRepo).toBe("owner/repo");
+    });
+
+    it("throws when --repo has no argument", () => {
+      expect(() => parseArgs(["--decompose", "--repo"])).toThrow("--repo requires owner/repo");
+    });
+
+    it("combines all decompose flags", () => {
+      const result = parseArgs([
+        "--decompose",
+        "--file", "/spec.md",
+        "--issue", "10",
+        "--repo", "owner/repo",
+        "--create-issues",
+      ]);
+      expect(result.mode).toBe("decompose");
+      expect(result.decomposeFile).toBe("/spec.md");
+      expect(result.decomposeIssue).toBe(10);
+      expect(result.decomposeRepo).toBe("owner/repo");
+      expect(result.createIssues).toBe(true);
+    });
+  });
 });

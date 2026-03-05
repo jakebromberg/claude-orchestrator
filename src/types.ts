@@ -93,7 +93,8 @@ export type ParsedMode =
   | "retry-failed"
   | "tail"
   | "run-all"
-  | "run-specific";
+  | "run-specific"
+  | "decompose";
 
 export interface ParsedArgs {
   mode: ParsedMode;
@@ -103,6 +104,10 @@ export interface ParsedArgs {
   mergeAfterWave: boolean;
   detach: boolean;
   notify: boolean;
+  decomposeFile?: string;
+  createIssues?: boolean;
+  decomposeIssue?: number;
+  decomposeRepo?: string;
 }
 
 export interface StatusStore {
