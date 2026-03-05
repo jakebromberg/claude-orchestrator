@@ -3,7 +3,7 @@ export type {
   Status, IssueSpec, Issue, RawOrchestratorConfig, OrchestratorConfig,
   MergePolicy, RunOptions, PostCheckResult, OrchestratorHooks,
   ParsedMode, ParsedArgs, StatusStore, ProcessHandle, ProcessRunner,
-  Logger, IssueMetadata, MetadataStore, Deps, RunRecord,
+  Logger, IssueMetadata, MetadataStore, Deps, RunRecord, IssueCommentsConfig,
 } from "./types.js";
 
 // Engine
@@ -60,6 +60,10 @@ export type { DecomposeInput, DecomposeResult, DecomposedIssue, DecomposeDeps } 
 // Upstream context
 export { gatherUpstreamContext } from "./upstream-context.js";
 export type { UpstreamContextDeps } from "./upstream-context.js";
+
+// Issue comments
+export { postRunSummaryComments } from "./issue-comments.js";
+export type { IssueCommentConfig, IssueCommentDeps } from "./issue-comments.js";
 
 // GitHub integration
 export { addIssueLabel, removeIssueLabel, postIssueComment, ensureLabelExists } from "./github.js";

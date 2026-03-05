@@ -48,5 +48,6 @@ export const YamlConfigSchema = z.object({
   claudeArgs: z.array(z.string()).optional(),
   postSessionCheck: YamlPostSessionCheckSchema.optional(),
   summary: YamlSummarySchema.optional(),
+  issueComments: z.object({ repo: z.string(), enabled: z.boolean().optional() }).optional(),
   issues: z.array(YamlIssueSchema),
 });

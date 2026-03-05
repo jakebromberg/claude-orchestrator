@@ -54,6 +54,8 @@ export interface YamlConfig {
   claudeArgs?: string[];
   postSessionCheck?: YamlPostSessionCheck;
   summary?: YamlSummary;
+  /** Post run summary comments on GitHub issues. */
+  issueComments?: { repo: string; enabled?: boolean };
   issues: YamlIssue[];
 }
 

@@ -12,6 +12,7 @@ import { createRealProcessRunner } from "./real-process-runner.js";
 import { startWatch } from "./watch.js";
 import { mergePrs } from "./merge.js";
 import { generateReport, formatReport } from "./report.js";
+import { postRunSummaryComments } from "./issue-comments.js";
 
 export type ConfigFactory =
   | ((projectRoot: string) => OrchestratorConfig)
@@ -338,6 +339,25 @@ export async function createMain(options: MainOptions): Promise<void> {
   fs.writeFileSync(jsonPath, JSON.stringify(report, null, 2));
   fs.writeFileSync(mdPath, formatReport(report));
   deps.logger.info(`Report written to ${mdPath}`);
+
+  // Post run summary comments on GitHub issues
+  if (config.issueComments?.enabled) {
+    deps.logger.step("Posting run summary comments on GitHub issues...");
+    postRunSummaryComments(config.issues, {
+      repo: config.issueComments.repo,
+      runId: reportId,
+      configName: config.name,
+    }, {
+      runCommand: (cmd, options) => execSync(cmd, {
+        stdio: ["pipe", "pipe", "pipe"],
+        encoding: "utf-8",
+        ...(options?.input ? { input: options.input } : {}),
+      }),
+      getStatus: (n) => deps.statusStore.get(n),
+      getMetadata: (n) => deps.metadataStore.get(n),
+      logger: deps.logger,
+    });
+  }
 
   // Clean up PID file if it matches our process
   const pidFile = path.join(config.configDir, "orchestrator.pid");
