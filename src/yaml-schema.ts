@@ -49,5 +49,6 @@ export const YamlConfigSchema = z.object({
   postSessionCheck: YamlPostSessionCheckSchema.optional(),
   summary: YamlSummarySchema.optional(),
   issueComments: z.object({ repo: z.string(), enabled: z.boolean().optional() }).optional(),
+  labelSync: z.object({ prefix: z.string(), repo: z.string().optional() }).optional(),
   issues: z.array(YamlIssueSchema),
 });

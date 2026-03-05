@@ -3,6 +3,7 @@ import type { Issue, OrchestratorHooks, PostCheckResult, Status } from "./types.
 import type { YamlConfig } from "./yaml-types.js";
 import { createPrintSummary, type SummaryColumn } from "./summary.js";
 import { interpolate } from "./interpolate.js";
+import { createLabelSyncHandler } from "./label-sync.js";
 
 /** I/O dependencies injectable for testing. */
 export interface DeriveHooksDeps {
@@ -193,6 +194,21 @@ export function deriveHooks(
       }
       return { passed: true };
     };
+  }
+
+  // Attach label sync when configured
+  if (yaml.labelSync) {
+    const { execSync } = require("node:child_process");
+    const labelRepo = yaml.labelSync.repo ?? yaml.issues[0]?.repo ?? "";
+    if (labelRepo) {
+      hooks.onStatusChange = createLabelSyncHandler(
+        { prefix: yaml.labelSync.prefix, repo: labelRepo },
+        {
+          runCommand: (cmd: string) => execSync(cmd, { stdio: "pipe", encoding: "utf-8" }),
+          logger: { info() {}, warn(msg: string) { console.warn(msg); }, error() {}, step() {}, header() {} },
+        },
+      );
+    }
   }
 
   return hooks;

@@ -56,6 +56,8 @@ export interface YamlConfig {
   summary?: YamlSummary;
   /** Post run summary comments on GitHub issues. */
   issueComments?: { repo: string; enabled?: boolean };
+  /** Sync issue labels on status changes. */
+  labelSync?: { prefix: string; repo?: string };
   issues: YamlIssue[];
 }
 

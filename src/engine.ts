@@ -43,23 +43,27 @@ export class Orchestrator {
     }
   }
 
-  resetStaleStatuses(): void {
+  async resetStaleStatuses(): Promise<void> {
+    const promises: Promise<void>[] = [];
     for (const issue of this.config.issues) {
       if (this.deps.statusStore.get(issue.number) === "running") {
         this.deps.logger.warn(
           `Issue #${issue.number} has stale 'running' status, resetting to pending`,
         );
-        this.deps.statusStore.set(issue.number, "pending");
+        promises.push(this.setStatus(issue, "pending"));
       }
     }
+    await Promise.allSettled(promises);
   }
 
-  handleInterrupt(): void {
+  async handleInterrupt(): Promise<void> {
+    const promises: Promise<void>[] = [];
     for (const issue of this.config.issues) {
       if (this.deps.statusStore.get(issue.number) === "running") {
-        this.deps.statusStore.set(issue.number, "interrupted");
+        promises.push(this.setStatus(issue, "interrupted"));
       }
     }
+    await Promise.allSettled(promises);
     this.config.hooks.printSummary(
       this.config.issues,
       (n) => this.deps.statusStore.get(n),
@@ -126,7 +130,7 @@ export class Orchestrator {
     for (const issue of this.config.issues) {
       const status = this.deps.statusStore.get(issue.number);
       if (this.config.hooks.isRetryableStatus(status)) {
-        this.deps.statusStore.set(issue.number, "pending");
+        await this.setStatus(issue, "pending");
         retryable.push(issue);
       }
     }
@@ -152,6 +156,20 @@ export class Orchestrator {
   // Private
   // -----------------------------------------------------------------------
 
+  private async setStatus(issue: Issue, newStatus: Status): Promise<void> {
+    const oldStatus = this.deps.statusStore.get(issue.number);
+    this.deps.statusStore.set(issue.number, newStatus);
+    if (this.config.hooks.onStatusChange) {
+      try {
+        await this.config.hooks.onStatusChange(issue, oldStatus, newStatus);
+      } catch (err) {
+        this.deps.logger.warn(
+          `onStatusChange hook error for #${issue.number}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
   private async prepareIssues(
     issues: Issue[],
   ): Promise<Array<{ issue: Issue; prompt: string; sessionId: string }>> {
@@ -175,7 +193,7 @@ export class Orchestrator {
       }
 
       // Check dependencies
-      if (!this.checkDeps(issue)) {
+      if (!await this.checkDeps(issue)) {
         continue;
       }
 
@@ -186,7 +204,7 @@ export class Orchestrator {
         this.deps.logger.error(
           `Issue #${issue.number}: failed to set up worktree`,
         );
-        this.deps.statusStore.set(issue.number, "failed");
+        await this.setStatus(issue, "failed");
         continue;
       }
 
@@ -209,14 +227,14 @@ export class Orchestrator {
     return ready;
   }
 
-  private checkDeps(issue: Issue): boolean {
+  private async checkDeps(issue: Issue): Promise<boolean> {
     for (const depNum of issue.deps) {
       const depStatus = this.deps.statusStore.get(depNum);
       if (depStatus !== "succeeded") {
         this.deps.logger.warn(
           `Issue #${issue.number} skipped: dependency #${depNum} has status '${depStatus}'`,
         );
-        this.deps.statusStore.set(issue.number, "skipped");
+        await this.setStatus(issue, "skipped");
         return false;
       }
     }
@@ -251,7 +269,7 @@ export class Orchestrator {
     for (const { issue, prompt, sessionId } of ready) {
       await pool.waitForSlot();
 
-      this.deps.statusStore.set(issue.number, "running");
+      await this.setStatus(issue, "running");
       this.deps.logger.step(
         `Launching Claude session for issue #${issue.number}: ${issue.description}`,
       );
@@ -403,7 +421,7 @@ export class Orchestrator {
                   `Issue #${issue.number}: 0-byte failure persisted after retry, falling back to sequential execution`,
                 );
               }
-              this.deps.statusStore.set(issue.number, "failed");
+              await this.setStatus(issue, "failed");
               this.deps.logger.error(
                 `Issue #${issue.number} retry failed (exit code ${retryExitCode}). Log: ${logFile}`,
               );
@@ -412,14 +430,14 @@ export class Orchestrator {
 
             if (!(await this.runPostSessionCheck(issue, worktreePath))) return;
 
-            this.deps.statusStore.set(issue.number, "succeeded");
+            await this.setStatus(issue, "succeeded");
             this.deps.logger.info(
               `Issue #${issue.number} succeeded (after retry)`,
             );
             return;
           }
 
-          this.deps.statusStore.set(issue.number, "failed");
+          await this.setStatus(issue, "failed");
           this.deps.logger.error(
             `Issue #${issue.number} failed (exit code ${exitCode}). Log: ${logFile}`,
           );
@@ -428,7 +446,7 @@ export class Orchestrator {
 
         if (!(await this.runPostSessionCheck(issue, worktreePath))) return;
 
-        this.deps.statusStore.set(issue.number, "succeeded");
+        await this.setStatus(issue, "succeeded");
         this.deps.logger.info(`Issue #${issue.number} succeeded`);
       });
       postCheckPromises.push(postCheck);
@@ -455,7 +473,7 @@ export class Orchestrator {
         issue, worktreePath,
       );
       if (!result.passed) {
-        this.deps.statusStore.set(issue.number, "failed");
+        await this.setStatus(issue, "failed");
         this.deps.logger.error(
           `Issue #${issue.number} post-check failed: ${result.summary ?? "unknown reason"}`,
         );
@@ -463,7 +481,7 @@ export class Orchestrator {
       }
       return true;
     } catch (err) {
-      this.deps.statusStore.set(issue.number, "failed");
+      await this.setStatus(issue, "failed");
       this.deps.logger.error(
         `Issue #${issue.number} post-check threw: ${err instanceof Error ? err.message : String(err)}`,
       );

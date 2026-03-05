@@ -3,7 +3,7 @@ export type {
   Status, IssueSpec, Issue, RawOrchestratorConfig, OrchestratorConfig,
   MergePolicy, RunOptions, PostCheckResult, OrchestratorHooks,
   ParsedMode, ParsedArgs, StatusStore, ProcessHandle, ProcessRunner,
-  Logger, IssueMetadata, MetadataStore, Deps, RunRecord, IssueCommentsConfig,
+  Logger, IssueMetadata, MetadataStore, Deps, RunRecord, IssueCommentsConfig, LabelSyncConfig,
 } from "./types.js";
 
 // Engine
@@ -64,6 +64,10 @@ export type { UpstreamContextDeps } from "./upstream-context.js";
 // Issue comments
 export { postRunSummaryComments } from "./issue-comments.js";
 export type { IssueCommentConfig, IssueCommentDeps } from "./issue-comments.js";
+
+// Label sync
+export { createLabelSyncHandler } from "./label-sync.js";
+export type { LabelSyncHandlerConfig, LabelSyncDeps } from "./label-sync.js";
 
 // GitHub integration
 export { addIssueLabel, removeIssueLabel, postIssueComment, ensureLabelExists } from "./github.js";

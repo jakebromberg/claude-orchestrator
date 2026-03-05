@@ -310,7 +310,7 @@ export async function createMain(options: MainOptions): Promise<void> {
   }
 
   // Reset stale statuses and check prerequisites
-  orchestrator.resetStaleStatuses();
+  await orchestrator.resetStaleStatuses();
   orchestrator.checkPrerequisites();
 
   // Run hooks
@@ -353,8 +353,8 @@ export async function createMain(options: MainOptions): Promise<void> {
   }
 
   // Set up signal handler (writes run record before exiting)
-  const handleSignal = () => {
-    orchestrator.handleInterrupt();
+  const handleSignal = async () => {
+    await orchestrator.handleInterrupt();
     collectAndWriteRunRecord();
     process.exit(130);
   };
