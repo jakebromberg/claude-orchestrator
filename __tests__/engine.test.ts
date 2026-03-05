@@ -1998,3 +1998,68 @@ describe("cleanUpMergedIssues", () => {
     );
   });
 });
+
+describe("upstream context in prepareIssues", () => {
+  it("passes UPSTREAM_CONTEXT extraVars when dependency has HANDOFF.md", async () => {
+    const dep = makeIssue({ number: 1, slug: "dep-task", wave: 1, deps: [] });
+    const issue = makeIssue({ number: 2, slug: "main-task", wave: 2, deps: [1] });
+
+    const interpolatePrompt = vi.fn(async (_issue: Issue, _extraVars?: Record<string, string>) =>
+      `prompt for #${_issue.number}`,
+    );
+
+    const { orchestrator, deps } = makeOrchestrator([dep, issue], {
+      interpolatePrompt,
+    }, {
+      readFile: vi.fn((p: string) => {
+        if (p.includes("HANDOFF.md")) return "Handoff content from dep";
+        return "";
+      }),
+    });
+
+    deps.statusStore.set(1, "succeeded");
+
+    const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+    const promise = orchestrator.runWave(2);
+    await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+
+    // Verify interpolatePrompt was called with extraVars containing UPSTREAM_CONTEXT
+    expect(interpolatePrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ number: 2 }),
+      expect.objectContaining({ UPSTREAM_CONTEXT: expect.stringContaining("Handoff content from dep") }),
+    );
+
+    runner.resolvers.get(1000)!(0);
+    await promise;
+  });
+
+  it("does not pass UPSTREAM_CONTEXT when no HANDOFF.md exists", async () => {
+    const dep = makeIssue({ number: 1, slug: "dep-task", wave: 1, deps: [] });
+    const issue = makeIssue({ number: 2, slug: "main-task", wave: 2, deps: [1] });
+
+    const interpolatePrompt = vi.fn(async (_issue: Issue) =>
+      `prompt for #${_issue.number}`,
+    );
+
+    const { orchestrator, deps } = makeOrchestrator([dep, issue], {
+      interpolatePrompt,
+    }, {
+      readFile: vi.fn(() => { throw new Error("ENOENT"); }),
+    });
+
+    deps.statusStore.set(1, "succeeded");
+
+    const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+    const promise = orchestrator.runWave(2);
+    await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+
+    // Should be called without extraVars (undefined)
+    expect(interpolatePrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ number: 2 }),
+      undefined,
+    );
+
+    runner.resolvers.get(1000)!(0);
+    await promise;
+  });
+});
