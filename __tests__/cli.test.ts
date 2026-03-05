@@ -194,4 +194,25 @@ describe("parseArgs", () => {
       expect(result.createIssues).toBe(true);
     });
   });
+
+  describe("dashboard flags", () => {
+    it("parses --dashboard", () => {
+      const result = parseArgs(["--dashboard"]);
+      expect(result.mode).toBe("dashboard");
+    });
+
+    it("parses --dashboard with --port", () => {
+      const result = parseArgs(["--dashboard", "--port", "8080"]);
+      expect(result.mode).toBe("dashboard");
+      expect(result.port).toBe(8080);
+    });
+
+    it("throws when --port has no value", () => {
+      expect(() => parseArgs(["--port"])).toThrow("--port requires a number");
+    });
+
+    it("throws when --port value starts with -", () => {
+      expect(() => parseArgs(["--port", "--dashboard"])).toThrow("--port requires a number");
+    });
+  });
 });
