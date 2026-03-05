@@ -82,6 +82,81 @@ export async function createMain(options: MainOptions): Promise<void> {
   // Ignore SIGHUP so detached processes survive terminal close
   process.on("SIGHUP", () => {});
 
+  // Handle decompose
+  if (args.mode === "decompose") {
+    const { decompose } = await import("./decompose.js");
+
+    let description = "";
+
+    // Read from file if provided
+    if (args.decomposeFile) {
+      description = fs.readFileSync(args.decomposeFile, "utf-8");
+    }
+
+    // Read from stdin if no file
+    if (!description && !args.decomposeIssue) {
+      description = fs.readFileSync(0, "utf-8");
+    }
+
+    const result = await decompose({
+      featureDescription: description || "See GitHub issue",
+      featureFile: args.decomposeFile,
+      issueNumber: args.decomposeIssue,
+      repo: args.decomposeRepo,
+    }, {
+      runCommand: (cmd, options) => execSync(cmd, {
+        stdio: ["pipe", "pipe", "pipe"],
+        encoding: "utf-8",
+        ...(options?.input ? { input: options.input } : {}),
+      }),
+      readFile: (p) => fs.readFileSync(p, "utf-8"),
+      logger: consoleLogger,
+    });
+
+    if (args.createIssues && args.decomposeRepo) {
+      consoleLogger.step("Creating GitHub issues...");
+      const slugToIssueNumber = new Map<string, number>();
+
+      for (const issue of result.issues) {
+        const depRefs = issue.dependsOn
+          .map((d) => slugToIssueNumber.get(d))
+          .filter((n): n is number => n !== undefined)
+          .map((n) => `#${n}`)
+          .join(", ");
+
+        const body = issue.description + (depRefs ? `\n\nDepends on: ${depRefs}` : "");
+        const output = execSync(
+          `gh issue create --repo ${args.decomposeRepo} --title "${issue.slug}" --body-file -`,
+          { input: body, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        const match = output.match(/\/issues\/(\d+)/);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          slugToIssueNumber.set(issue.slug, num);
+          consoleLogger.info(`Created #${num}: ${issue.slug}`);
+        }
+      }
+
+      // Print YAML with real issue numbers
+      const lines: string[] = ["issues:"];
+      for (const issue of result.issues) {
+        const num = slugToIssueNumber.get(issue.slug) ?? "TBD";
+        const deps = issue.dependsOn
+          .map((d) => slugToIssueNumber.get(d) ?? "TBD")
+          .join(", ");
+        lines.push(`  - number: ${num}`);
+        lines.push(`    slug: ${issue.slug}`);
+        lines.push(`    dependsOn: [${deps}]`);
+        lines.push(`    description: "${issue.description.replace(/"/g, '\\"')}"`);
+      }
+      console.log("\n" + lines.join("\n"));
+    } else {
+      console.log(result.yamlFragment);
+    }
+
+    process.exit(0);
+  }
+
   // Handle help
   if (args.mode === "help") {
     config.hooks.showHelp();

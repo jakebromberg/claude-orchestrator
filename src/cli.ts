@@ -67,6 +67,46 @@ export function parseArgs(argv: string[]): ParsedArgs {
         i++;
         break;
 
+      case "--decompose":
+        result.mode = "decompose";
+        i++;
+        break;
+
+      case "--file": {
+        const next = argv[i + 1];
+        if (next === undefined || next.startsWith("-")) {
+          throw new Error("--file requires a path");
+        }
+        result.decomposeFile = next;
+        i += 2;
+        break;
+      }
+
+      case "--create-issues":
+        result.createIssues = true;
+        i++;
+        break;
+
+      case "--issue": {
+        const next = argv[i + 1];
+        if (next === undefined || next.startsWith("-")) {
+          throw new Error("--issue requires a number");
+        }
+        result.decomposeIssue = parseInt(next, 10);
+        i += 2;
+        break;
+      }
+
+      case "--repo": {
+        const next = argv[i + 1];
+        if (next === undefined || next.startsWith("-")) {
+          throw new Error("--repo requires owner/repo");
+        }
+        result.decomposeRepo = next;
+        i += 2;
+        break;
+      }
+
       case "--wave": {
         const next = argv[i + 1];
         if (next === undefined || next.startsWith("-")) {
