@@ -72,6 +72,21 @@ export function parseArgs(argv: string[]): ParsedArgs {
         i++;
         break;
 
+      case "--dashboard":
+        result.mode = "dashboard";
+        i++;
+        break;
+
+      case "--port": {
+        const next = argv[i + 1];
+        if (next === undefined || next.startsWith("-")) {
+          throw new Error("--port requires a number");
+        }
+        result.port = parseInt(next, 10);
+        i += 2;
+        break;
+      }
+
       case "--file": {
         const next = argv[i + 1];
         if (next === undefined || next.startsWith("-")) {

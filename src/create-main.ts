@@ -183,6 +183,36 @@ export async function createMain(options: MainOptions): Promise<void> {
     return;
   }
 
+  // Handle dashboard
+  if (args.mode === "dashboard") {
+    const { createDashboardServer } = await import("./dashboard.js");
+    const dashboardHandle = await createDashboardServer({
+      statusStore: deps.statusStore,
+      metadataStore: deps.metadataStore,
+      config,
+      logger: deps.logger,
+      readLogTail: (issueNumber: number, maxBytes: number) => {
+        const logFile = path.join(config.configDir, "logs", `issue-${issueNumber}.log`);
+        const fd = fs.openSync(logFile, "r");
+        try {
+          const stat = fs.fstatSync(fd);
+          const start = Math.max(0, stat.size - maxBytes);
+          const buf = Buffer.alloc(Math.min(maxBytes, stat.size));
+          fs.readSync(fd, buf, 0, buf.length, start);
+          return buf.toString("utf-8");
+        } finally {
+          fs.closeSync(fd);
+        }
+      },
+    }, { port: args.port ?? 3000 });
+
+    process.on("SIGINT", async () => {
+      await dashboardHandle.close();
+      process.exit(0);
+    });
+    return;
+  }
+
   // Handle merge
   if (args.mode === "merge") {
     deps.logger.header(`${config.name} — Merge Mode`);

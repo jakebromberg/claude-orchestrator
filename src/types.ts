@@ -117,7 +117,8 @@ export type ParsedMode =
   | "tail"
   | "run-all"
   | "run-specific"
-  | "decompose";
+  | "decompose"
+  | "dashboard";
 
 export interface ParsedArgs {
   mode: ParsedMode;
@@ -131,6 +132,7 @@ export interface ParsedArgs {
   createIssues?: boolean;
   decomposeIssue?: number;
   decomposeRepo?: string;
+  port?: number;
 }
 
 export interface StatusStore {
