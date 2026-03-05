@@ -188,7 +188,43 @@ Each config provides an `OrchestratorHooks` object:
 | `interpolatePrompt(issue)` | Build the Claude prompt |
 | `getClaudeArgs(issue)` | Extra CLI args for claude |
 | `printSummary(issues, getStatus)` | Display status table |
-| `postSessionCheck?(issue, path)` | Optional post-session validation |
+| `postSessionCheck?(issue, path)` | Optional post-session validation (returns `PostCheckResult` with `passed`, `summary`, `output`) |
+| `onStatusChange?(issue, old, new)` | Optional hook called on every status transition (used by label sync) |
+
+### Agent-to-Agent Communication
+
+Upstream agents can write a `HANDOFF.md` file in their worktree root. When downstream issues start, the orchestrator reads `HANDOFF.md` from each dependency's worktree and injects the content into the prompt template via `{{UPSTREAM_CONTEXT}}`.
+
+### GitHub Integration
+
+- **Issue comments**: Set `issueComments: { repo: "owner/repo" }` in YAML to post run summary comments on GitHub issues after each run.
+- **Label sync**: Set `labelSync: { prefix: "orchestrator" }` in YAML to sync status labels (e.g., `orchestrator:running`, `orchestrator:succeeded`) on GitHub issues as statuses change.
+
+### CI Failure Retry
+
+Set `retryOnCheckFailure: { maxRetries: 2 }` in YAML to automatically retry agent sessions when `postSessionCheck` fails. The failure output is injected into the retry prompt so the agent has context to fix the issues.
+
+### Task Decomposition
+
+Use `--decompose` to invoke an LLM to break a feature description into structured issues:
+
+```bash
+echo "Add user authentication with OAuth" | npx tsx orchestrate.ts myconfig --decompose
+npx tsx orchestrate.ts myconfig --decompose --file spec.md
+npx tsx orchestrate.ts myconfig --decompose --issue 42 --repo owner/repo
+npx tsx orchestrate.ts myconfig --decompose --file spec.md --create-issues --repo owner/repo
+```
+
+### Web Dashboard
+
+Use `--dashboard` to start a read-only HTTP dashboard with live status updates:
+
+```bash
+npx tsx orchestrate.ts myconfig --dashboard              # http://127.0.0.1:3000
+npx tsx orchestrate.ts myconfig --dashboard --port 8080   # custom port
+```
+
+The dashboard shows issues grouped by wave with status badges, PR links, and expandable log tails. Updates are streamed via Server-Sent Events.
 
 ## Test Utilities
 

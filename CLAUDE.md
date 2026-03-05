@@ -17,7 +17,7 @@ src/
 ├── stall-monitor.ts      # Log file growth monitor
 ├── log.ts                # Colored console logging
 ├── summary.ts            # Data-driven summary table renderer
-├── watch.ts              # Live dashboard
+├── watch.ts              # Live terminal dashboard
 ├── pr-tracker.ts         # PR URL extraction from logs
 ├── merge.ts              # PR merge with rebase
 ├── run-history.ts        # Run record persistence
@@ -30,6 +30,15 @@ src/
 ├── yaml-schema.ts        # Zod schema for YAML config validation
 ├── yaml-hooks.ts         # deriveHooks() — YAML fields → OrchestratorHooks
 ├── yaml-loader.ts        # loadYamlConfig() — full YAML→config pipeline
+├── github.ts             # GitHub CLI wrapper (labels, comments)
+├── upstream-context.ts   # HANDOFF.md reading for agent-to-agent context
+├── issue-comments.ts     # Post run summary comments on GitHub issues
+├── label-sync.ts         # GitHub label sync on status changes
+├── decompose.ts          # LLM-driven task decomposition
+├── decompose-types.ts    # Decompose input/output types
+├── dashboard.ts          # HTTP dashboard server with SSE
+├── dashboard-types.ts    # Dashboard dependency/option types
+├── dashboard-html.ts     # Self-contained HTML template
 ├── index.ts              # Public API barrel export
 └── testing.ts            # Test utility exports
 ```
@@ -45,6 +54,74 @@ src/
   a YAML file, validates it, derives convention-based hooks, and merges
   optional `.hooks.ts` overrides. `setUpWorktree`/`removeWorktree` must be
   provided via overrides (no universal default).
+- **Status change hooks**: `onStatusChange` hook in `OrchestratorHooks` is called on every status transition via `setStatus()`. Used by label sync. Errors are non-fatal.
+- **CI retry**: When `retryOnCheckFailure` is configured, failed `postSessionCheck` results trigger automatic re-runs with failure context injected into the prompt.
+
+### YAML Config Fields
+
+```yaml
+name: "project-name"
+configDir: ".orchestrator/config"
+worktreeDir: ".worktrees"
+projectRoot: "."
+stallTimeout: 600
+promptTemplate: "prompt.md"
+branchPrefix: "orchestrator/"
+
+# Post-session validation commands
+postSessionCheck:
+  commands: ["npm test", "npm run typecheck"]
+  cwd: "."  # optional, relative to worktree
+
+# Auto-retry on check failure
+retryOnCheckFailure:
+  maxRetries: 2
+  enabled: true  # defaults to true if omitted
+
+# Post run summary comments on GitHub issues
+issueComments:
+  repo: "owner/repo"
+  enabled: true  # defaults to true if omitted
+
+# Sync status labels on GitHub issues
+labelSync:
+  prefix: "orchestrator"
+  repo: "owner/repo"  # optional, falls back to issue-level repo
+
+# Template variables: {{ISSUE_NUMBER}}, {{SLUG}}, {{DESCRIPTION}},
+# {{projectRoot}}, {{configDir}}, {{worktreeDir}}, {{UPSTREAM_CONTEXT}}
+
+issues:
+  - number: 1
+    slug: feature-name
+    dependsOn: []
+    description: "Feature description"
+```
+
+### CLI Modes
+
+```bash
+<script> <config> [options]
+  --help, -h         Show help
+  --status           Show current issue statuses
+  --watch            Live terminal dashboard
+  --dashboard        Web dashboard (HTTP + SSE)
+  --port <n>         Port for web dashboard (default: 3000)
+  --merge            Merge succeeded PRs
+  --cleanup          Remove worktrees and branches
+  --retry-failed     Retry failed issues
+  --tail             Reattach to detached run
+  --decompose        LLM-driven task decomposition
+  --file <path>      Input file for decompose
+  --issue <n>        GitHub issue number for decompose
+  --repo <owner/repo>  Repository for decompose/issue creation
+  --create-issues    Create GitHub issues from decompose output
+  --wave <n>         Run specific wave
+  --parallel <n>     Max parallel sessions (default: 4)
+  --merge-after-wave Merge PRs after each wave
+  --detach           Run in background
+  --notify           macOS notification on completion
+```
 
 ### Commands
 
