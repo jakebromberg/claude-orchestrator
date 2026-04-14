@@ -29,7 +29,7 @@ export function createDashboardServer(
       number: issue.number,
       slug: issue.slug,
       status: statusStore.get(issue.number),
-      metadata: metadataStore.get(issue.number),
+      metadata: metadataStore.get(issue.number) as Record<string, unknown>,
     }));
   }
 
