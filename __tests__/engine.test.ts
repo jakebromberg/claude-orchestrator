@@ -1065,6 +1065,21 @@ describe("Orchestrator", () => {
       expect(deps.statusStore.get(1)).toBe("succeeded");
       expect(deps.statusStore.get(2)).toBe("succeeded");
     });
+
+    it("includes --include-hook-events in claude args", async () => {
+      const issue = makeIssue({ number: 1, wave: 1 });
+      const { orchestrator, deps } = makeOrchestrator([issue]);
+
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+
+      runner.resolvers.get(1000)!(0);
+      await promise;
+
+      const args = runner.spawned[0].args;
+      expect(args).toContain("--include-hook-events");
+    });
   });
 
   describe("PR tracking metadata", () => {
