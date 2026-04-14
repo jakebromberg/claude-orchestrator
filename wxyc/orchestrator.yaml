@@ -1,0 +1,210 @@
+name: "WXYC ETL Pipeline Unification"
+configDir: "./state"
+worktreeDir: "./worktrees"
+projectRoot: "/Users/jake/Developer/WXYC"
+stallTimeout: 900
+allowedTools: [Bash, Read, Write, Edit, Glob, Grep, Agent, Skill]
+
+branchPrefix: "feature/etl-"
+retryableStatuses: [failed, interrupted]
+promptTemplate: "./prompt.md"
+claudeArgs:
+  - "--add-dir"
+  - "{{projectRoot}}"
+
+summary:
+  title: "WXYC ETL Pipeline Unification"
+  columns:
+    - { header: "#", width: 4, value: "issue.number", prefix: "#" }
+    - { header: "Slug", width: 32, value: "issue.slug" }
+    - { header: "Wave", width: 6, value: "issue.wave" }
+    - { header: "Status", width: 14, value: "status" }
+    - { header: "Description", width: 50, value: "issue.description" }
+
+# ──────────────────────────────────────────────────────────────────────
+# Issues 1-25 map to GitHub issues across 9 repos.
+#
+# Numbering scheme (sequential 1-25):
+#
+#   1  = wxyc-etl#1    (1a)     13 = discogs-xml-converter#21 (3a)
+#   2  = wxyc-etl#2    (1b)     14 = wikidata-json-filter#1   (3b)
+#   3  = wxyc-etl#3    (1c)     15 = wxyc-catalog#1           (3c)
+#   4  = wxyc-etl#4    (1d)     16 = wxyc-catalog#2           (3d)
+#   5  = wxyc-etl#5    (1e)     17 = discogs-cache#65         (4a)
+#   6  = wxyc-etl#6    (1f)     18 = library-metadata-lookup#95 (4b)
+#   7  = wxyc-etl#7    (1g)     19 = semantic-index#114       (4c)
+#   8  = discogs-cache#63 (2a)  20 = library-metadata-lookup#96 (5a)
+#   9  = semantic-index#112 (2b) 21 = library-metadata-lookup#97 (5b)
+#  10  = musicbrainz-cache#1 (2c) 22 = library-metadata-lookup#98 (5c)
+#  11  = discogs-cache#64 (2d) 23 = semantic-index#115       (5d)
+#  12  = semantic-index#113 (2e) 24 = musicbrainz-cache#2     (6a)
+#                               25 = wikidata-json-filter#2   (6b)
+# ──────────────────────────────────────────────────────────────────────
+
+issues:
+  # ── Phase 0: Scaffolding ────────────────────────────────────────────
+  # Issue 0 is a synthetic scaffolding step that creates the wxyc-etl
+  # repo skeleton so Phase 1 parallel tasks don't conflict on shared
+  # files (Cargo.toml, src/lib.rs, module directories).
+  - number: 0
+    slug: wxyc-etl-scaffold
+    dependsOn: []
+    description: "Scaffold wxyc-etl repo (Cargo.toml, src/lib.rs, empty module dirs)"
+    repo: wxyc-etl
+    stallTimeout: 300
+
+  # ── Phase 1: wxyc-etl core modules ─────────────────────────────────
+  - number: 1
+    slug: wxyc-etl-text
+    dependsOn: [0]
+    description: "text/ module (normalization, compilation, splitting)"
+    repo: wxyc-etl
+
+  - number: 2
+    slug: wxyc-etl-pg
+    dependsOn: [0]
+    description: "pg/ module (COPY helpers, batching, UNLOGGED)"
+    repo: wxyc-etl
+
+  - number: 3
+    slug: wxyc-etl-pipeline
+    dependsOn: [0]
+    description: "pipeline/ module (scanner, rayon, writer trait)"
+    repo: wxyc-etl
+
+  - number: 4
+    slug: wxyc-etl-csv-sqlite-state
+    dependsOn: [0]
+    description: "csv/, sqlite/, state/, import/, schema/ modules"
+    repo: wxyc-etl
+
+  - number: 5
+    slug: wxyc-etl-fuzzy
+    dependsOn: [1]
+    description: "fuzzy/ module (token_set_ratio, batch classify/resolve)"
+    repo: wxyc-etl
+
+  - number: 6
+    slug: wxyc-etl-parser-mysql
+    dependsOn: [0]
+    description: "parser/mysql (from semantic-index sql_parser_rs)"
+    repo: wxyc-etl
+
+  - number: 7
+    slug: wxyc-etl-pyo3
+    dependsOn: [1, 2, 4, 5, 6]
+    description: "PyO3 bindings (wxyc-etl-python via maturin)"
+    repo: wxyc-etl
+
+  # ── Phase 2: Python consumer migrations ─────────────────────────────
+  - number: 8
+    slug: discogs-cache-batch-classify
+    dependsOn: [7]
+    description: "verify_cache.py -> batch_classify_releases()"
+    repo: discogs-cache
+
+  - number: 9
+    slug: semantic-index-batch-fuzzy
+    dependsOn: [7]
+    description: "artist_resolver.py Tier 4 -> batch_fuzzy_resolve()"
+    repo: semantic-index
+
+  - number: 10
+    slug: musicbrainz-cache-batch-filter
+    dependsOn: [7]
+    description: "filter_artists.py -> batch_filter_artists()"
+    repo: musicbrainz-cache
+
+  - number: 11
+    slug: discogs-cache-dedup-set
+    dependsOn: [7]
+    description: "import_csv.py -> Rust DedupSet"
+    repo: discogs-cache
+
+  - number: 12
+    slug: semantic-index-sql-parser
+    dependsOn: [7]
+    description: "sql_parser_rs -> wxyc-etl parser"
+    repo: semantic-index
+
+  # ── Phase 3: Rust consumer + new catalog ────────────────────────────
+  - number: 13
+    slug: discogs-xml-converter-etl-dep
+    dependsOn: [1, 2, 3]
+    description: "Depend on wxyc-etl"
+    repo: discogs-xml-converter
+
+  - number: 14
+    slug: wikidata-json-filter-etl-dep
+    dependsOn: [1, 3]
+    description: "Depend on wxyc-etl"
+    repo: wikidata-json-filter
+
+  - number: 15
+    slug: wxyc-catalog-create
+    dependsOn: [7]
+    description: "Create wxyc-catalog package"
+    repo: wxyc-catalog
+
+  - number: 16
+    slug: wxyc-catalog-transports
+    dependsOn: [7]
+    description: "Source transports"
+    repo: wxyc-catalog
+
+  # ── Phase 4: Slim down + migrations ─────────────────────────────────
+  - number: 17
+    slug: discogs-cache-slim
+    dependsOn: [15, 7]
+    description: "Slim down discogs-cache"
+    repo: discogs-cache
+
+  - number: 18
+    slug: lml-migration
+    dependsOn: [15, 16]
+    description: "Complete LML migration"
+    repo: library-metadata-lookup
+
+  - number: 19
+    slug: semantic-index-migration
+    dependsOn: [15, 16]
+    description: "Complete semantic-index migration"
+    repo: semantic-index
+
+  # ── Phase 5: Entity store + REST ────────────────────────────────────
+  - number: 20
+    slug: lml-entity-store
+    dependsOn: [16]
+    description: "Entity store schema + reconciliation CLI"
+    repo: library-metadata-lookup
+
+  - number: 21
+    slug: lml-streaming-availability
+    dependsOn: [20]
+    description: "Streaming availability reads from entity store"
+    repo: library-metadata-lookup
+
+  - number: 22
+    slug: lml-identity-endpoints
+    dependsOn: [20]
+    description: "Identity REST endpoints + semantic-index migration"
+    repo: library-metadata-lookup
+
+  - number: 23
+    slug: semantic-index-cleanup
+    dependsOn: [21, 22]
+    description: "Cleanup dead entity resolution code"
+    repo: semantic-index
+
+  # ── Phase 6: Full Rust conversions ──────────────────────────────────
+  - number: 24
+    slug: musicbrainz-cache-to-rust
+    dependsOn: [1, 2, 4, 5]
+    description: "Convert musicbrainz-cache to Rust"
+    repo: musicbrainz-cache
+
+  - number: 25
+    slug: wikidata-cache-csv-to-pg
+    dependsOn: [2, 4]
+    description: "Build wikidata-cache CSV -> PG import"
+    repo: wikidata-json-filter

@@ -289,6 +289,7 @@ export class Orchestrator {
         ...extraArgs,
         "--output-format",
         "stream-json",
+        "--include-hook-events",
         "--session-id",
         sessionId,
         "--verbose",
