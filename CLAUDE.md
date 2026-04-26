@@ -97,7 +97,7 @@ issues:
     slug: feature-name
     dependsOn: []
     description: "Feature description"
-    serial: false  # optional; true = run alone in its own wave (e.g. for migrations)
+    # serial: true  # optional; runs this issue alone in its own wave (e.g. for migrations)
 ```
 
 ### CLI Modes
