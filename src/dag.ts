@@ -71,9 +71,59 @@ export function computeWaves(specs: IssueSpec[]): Issue[] {
     throw new Error(`Dependency cycle detected among issues: ${inCycle}`);
   }
 
-  return specs.map((spec) => ({
+  const issues: Issue[] = specs.map((spec) => ({
     ...spec,
     wave: waves.get(spec.number)!,
     deps: spec.dependsOn,
   }));
+
+  return splitSerialWaves(issues);
+}
+
+/**
+ * Post-process wave assignments so that any issue with `serial: true` runs
+ * alone in its own wave. Within each base wave we keep all non-serial issues
+ * grouped together (preserving max parallelism for them), then run serial
+ * issues one at a time, ordered by issue number for determinism. Issues in
+ * later base waves are pushed back to start after all serials in earlier base
+ * waves have finished.
+ *
+ * This is a brute-force serialization: an issue that only depends on a
+ * non-serial sibling will still wait until any serial siblings in the same
+ * base wave finish. The trade-off is that callers don't have to model
+ * cross-issue resource conflicts (e.g. migration filename collisions) in
+ * `dependsOn`.
+ */
+function splitSerialWaves(issues: Issue[]): Issue[] {
+  if (!issues.some((i) => i.serial)) return issues;
+
+  const byBaseWave = new Map<number, Issue[]>();
+  for (const issue of issues) {
+    const arr = byBaseWave.get(issue.wave) ?? [];
+    arr.push(issue);
+    byBaseWave.set(issue.wave, arr);
+  }
+
+  const baseWaveNumbers = [...byBaseWave.keys()].sort((a, b) => a - b);
+  const newWaves = new Map<number, number>();
+  let nextWave = 1;
+
+  for (const base of baseWaveNumbers) {
+    const inWave = byBaseWave.get(base)!;
+    const nonSerial = inWave.filter((i) => !i.serial);
+    const serial = inWave
+      .filter((i) => i.serial)
+      .sort((a, b) => a.number - b.number);
+
+    if (nonSerial.length > 0) {
+      for (const issue of nonSerial) newWaves.set(issue.number, nextWave);
+      nextWave++;
+    }
+    for (const issue of serial) {
+      newWaves.set(issue.number, nextWave);
+      nextWave++;
+    }
+  }
+
+  return issues.map((issue) => ({ ...issue, wave: newWaves.get(issue.number)! }));
 }
