@@ -36,6 +36,7 @@ src/
 ├── label-sync.ts         # GitHub label sync on status changes
 ├── decompose.ts          # LLM-driven task decomposition
 ├── decompose-types.ts    # Decompose input/output types
+├── collision-check.ts    # Sequentially-numbered-file collision detection
 ├── dashboard.ts          # HTTP dashboard server with SSE
 ├── dashboard-types.ts    # Dashboard dependency/option types
 ├── dashboard-html.ts     # Self-contained HTML template
@@ -57,6 +58,7 @@ src/
 - **Status change hooks**: `onStatusChange` hook in `OrchestratorHooks` is called on every status transition via `setStatus()`. Used by label sync. Errors are non-fatal.
 - **CI retry**: When `retryOnCheckFailure` is configured, failed `postSessionCheck` results trigger automatic re-runs with failure context injected into the prompt.
 - **Hook event auditing**: `--include-hook-events` is passed by default so PreToolUse/PostToolUse hook decisions appear in the stream-json log for post-session analysis.
+- **Sequential-file collision detection**: When `sequentialPaths` is configured, `postSessionCheck` scans peer worktrees and `origin/<baseBranch>` for files added with the same captured key (e.g. Drizzle migration `NNNN_*.sql`) and fails the session on overlap. Failure context names the colliding peer/file and a suggested next-safe number, suitable for `retryOnCheckFailure` injection.
 
 ### YAML Config Fields
 
@@ -88,6 +90,14 @@ issueComments:
 labelSync:
   prefix: "orchestrator"
   repo: "owner/repo"  # optional, falls back to issue-level repo
+
+# Base branch used for collision-detection diffs (default "main")
+baseBranch: "main"
+
+# Detect sequentially-numbered-file collisions across peer worktrees during postSessionCheck
+sequentialPaths:
+  - dir: "shared/database/src/migrations"
+    pattern: "(\\d{4})_.*\\.sql"  # group 1 is the unique key
 
 # Template variables: {{ISSUE_NUMBER}}, {{SLUG}}, {{DESCRIPTION}},
 # {{projectRoot}}, {{configDir}}, {{worktreeDir}}, {{UPSTREAM_CONTEXT}}

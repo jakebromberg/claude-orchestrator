@@ -1,15 +1,22 @@
 import { execSync } from "node:child_process";
+import { existsSync as fsExistsSync } from "node:fs";
 import path from "node:path";
 import type { Issue, OrchestratorHooks, PostCheckResult, Status } from "./types.js";
 import type { YamlConfig } from "./yaml-types.js";
 import { createPrintSummary, type SummaryColumn } from "./summary.js";
 import { interpolate } from "./interpolate.js";
 import { createLabelSyncHandler } from "./label-sync.js";
+import { detectCollisions, gatherCollisionInputs } from "./collision-check.js";
 
 /** I/O dependencies injectable for testing. */
 export interface DeriveHooksDeps {
   readFile?: (path: string) => string;
   runCommand?: (cmd: string, cwd: string) => string;
+  /**
+   * Used by collision detection to check whether a peer's worktree directory
+   * is present on disk. Defaults to `node:fs.existsSync`.
+   */
+  existsSync?: (path: string) => boolean;
 }
 
 const VALID_COLUMN_PATHS = new Set([
@@ -170,28 +177,74 @@ export function deriveHooks(
     },
   };
 
-  // Attach postSessionCheck only when configured
-  if (yaml.postSessionCheck) {
-    const { commands, cwd } = yaml.postSessionCheck;
+  // Compile sequentialPaths regexes once. Bad regex / missing capture group
+  // is rejected by zod at load time, so we just compile here.
+  const sequentialEntries = yaml.sequentialPaths ?? [];
+  const baseBranch = yaml.baseBranch ?? "main";
+
+  // Attach postSessionCheck if either commands or sequentialPaths are set.
+  if (yaml.postSessionCheck || sequentialEntries.length > 0) {
+    const cmdConfig = yaml.postSessionCheck;
     hooks.postSessionCheck = async (
-      _issue: Issue,
+      issue: Issue,
       worktreePath: string,
     ): Promise<PostCheckResult> => {
-      const execDir = cwd ? path.join(worktreePath, cwd) : worktreePath;
       const run = runCommand ?? ((cmd: string, dir: string) =>
         execSync(cmd, { cwd: dir, encoding: "utf-8" }));
 
-      for (const cmd of commands) {
-        try {
-          run(cmd, execDir);
-        } catch (err) {
+      // 1. Run configured commands first; first failure short-circuits.
+      if (cmdConfig) {
+        const execDir = cmdConfig.cwd
+          ? path.join(worktreePath, cmdConfig.cwd)
+          : worktreePath;
+        for (const cmd of cmdConfig.commands) {
+          try {
+            run(cmd, execDir);
+          } catch (err) {
+            return {
+              passed: false,
+              summary: `Command failed: ${cmd}\n${(err as Error).message}`,
+              output: (err as Error).message,
+            };
+          }
+        }
+      }
+
+      // 2. Sequential-file collision scan, when configured.
+      if (sequentialEntries.length > 0) {
+        const peers = yaml.issues
+          .filter((peer) => peer.number !== issue.number)
+          .map((peer) => ({
+            slug: peer.slug,
+            worktreePath: path.join(yaml.worktreeDir, peer.slug),
+          }));
+
+        const exists = deps.existsSync ?? fsExistsSync;
+        const gitRun = (cmd: string): string => run(cmd, worktreePath);
+
+        const collisionInput = gatherCollisionInputs({
+          runCommand: gitRun,
+          existsSync: exists,
+          currentWorktree: worktreePath,
+          peers,
+          entries: sequentialEntries,
+          baseBranch,
+          onPeerError: (slug, err) => {
+            console.warn(
+              `[collision-check] skipping peer ${slug}: ${err.message}`,
+            );
+          },
+        });
+        const result = detectCollisions(collisionInput);
+        if (result.collided) {
           return {
             passed: false,
-            summary: `Command failed: ${cmd}\n${(err as Error).message}`,
-            output: (err as Error).message,
+            summary: result.summary,
+            output: result.output,
           };
         }
       }
+
       return { passed: true };
     };
   }

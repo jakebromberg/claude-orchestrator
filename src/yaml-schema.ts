@@ -28,6 +28,32 @@ const YamlPostSessionCheckSchema = z.object({
   cwd: z.string().optional(),
 });
 
+const SequentialPathConfigSchema = z.object({
+  dir: z.string().min(1),
+  pattern: z
+    .string()
+    .min(1)
+    .refine(
+      (p) => {
+        try {
+          new RegExp(p);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { message: "pattern must be a valid regular expression" },
+    )
+    .refine(
+      (p) => {
+        // Capture groups: count "(" that are not "(?" and not escaped "\(".
+        const stripped = p.replace(/\\\\/g, "").replace(/\\\(/g, "").replace(/\(\?/g, "");
+        return stripped.includes("(");
+      },
+      { message: "pattern must contain at least one capture group" },
+    ),
+});
+
 /**
  * Zod schema for validating a parsed YAML orchestrator config.
  *
@@ -52,5 +78,7 @@ export const YamlConfigSchema = z.object({
   issueComments: z.object({ repo: z.string(), enabled: z.boolean().optional() }).optional(),
   labelSync: z.object({ prefix: z.string(), repo: z.string().optional() }).optional(),
   retryOnCheckFailure: z.object({ maxRetries: z.number().int().positive(), enabled: z.boolean().optional() }).optional(),
+  baseBranch: z.string().min(1).optional(),
+  sequentialPaths: z.array(SequentialPathConfigSchema).optional(),
   issues: z.array(YamlIssueSchema),
 });

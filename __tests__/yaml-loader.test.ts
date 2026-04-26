@@ -189,6 +189,54 @@ issues:
     expect(byNumber.get(3)!.serial).toBe(true);
   });
 
+  it("flows sequentialPaths and baseBranch through to a working postSessionCheck", async () => {
+    readFileSpy.mockReturnValue(`
+name: "Sequential Test"
+configDir: "./cfg"
+worktreeDir: "./wt"
+projectRoot: "."
+stallTimeout: 300
+baseBranch: trunk
+sequentialPaths:
+  - dir: migrations
+    pattern: "(\\\\d{4})_.*\\\\.sql"
+issues:
+  - number: 1
+    slug: foo
+    dependsOn: []
+    description: "Foo"
+  - number: 2
+    slug: bar
+    dependsOn: []
+    description: "Bar"
+`);
+
+    const config = await loadYamlConfig("/projects/test/orch.yaml");
+    expect(config.hooks.postSessionCheck).toBeDefined();
+  });
+
+  it("rejects a sequentialPaths pattern with no capture group at load time", async () => {
+    readFileSpy.mockReturnValue(`
+name: "Bad pattern"
+configDir: "./cfg"
+worktreeDir: "./wt"
+projectRoot: "."
+stallTimeout: 300
+sequentialPaths:
+  - dir: migrations
+    pattern: "\\\\d{4}_.*\\\\.sql"
+issues:
+  - number: 1
+    slug: foo
+    dependsOn: []
+    description: "Foo"
+`);
+
+    await expect(
+      loadYamlConfig("/projects/test/orch.yaml"),
+    ).rejects.toThrow(/capture group/i);
+  });
+
   it("computes wave assignments via validateConfig", async () => {
     readFileSpy.mockReturnValue(MINIMAL_YAML);
 

@@ -164,6 +164,65 @@ describe("YamlConfigSchema", () => {
         ).success,
       ).toBe(false);
     });
+
+    it("rejects sequentialPaths pattern that does not compile as a regex", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          sequentialPaths: [{ dir: "migrations", pattern: "(unbalanced" }],
+        }),
+      );
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects sequentialPaths pattern with no capture group", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          sequentialPaths: [{ dir: "migrations", pattern: "\\d{4}_.*\\.sql" }],
+        }),
+      );
+      expect(result.success).toBe(false);
+    });
+
+    it("does not count non-capturing (?:) as a capture group", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          sequentialPaths: [
+            { dir: "migrations", pattern: "(?:\\d{4})_.*\\.sql" },
+          ],
+        }),
+      );
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe("sequentialPaths and baseBranch", () => {
+    it("accepts sequentialPaths with a capture-group pattern", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          sequentialPaths: [
+            { dir: "migrations", pattern: "(\\d{4})_.*\\.sql" },
+          ],
+        }),
+      );
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts baseBranch override", () => {
+      const result = YamlConfigSchema.safeParse(makeValid({ baseBranch: "trunk" }));
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts multiple sequentialPaths entries", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          sequentialPaths: [
+            { dir: "migrations", pattern: "(\\d{4})_.*\\.sql" },
+            { dir: "changelog", pattern: "(\\d{6})-.*\\.json" },
+          ],
+        }),
+      );
+      expect(result.success).toBe(true);
+    });
   });
 
   describe("defaults", () => {

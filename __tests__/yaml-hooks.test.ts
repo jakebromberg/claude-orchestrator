@@ -220,6 +220,164 @@ describe("deriveHooks", () => {
     });
   });
 
+  describe("postSessionCheck + sequentialPaths", () => {
+    function setUpCollisionMocks(opts: {
+      currentAdded?: string[];
+      barAdded?: string[];
+      shippedAdded?: string[];
+      barExists?: boolean;
+    } = {}): { runCommand: ReturnType<typeof vi.fn>; existsSync: ReturnType<typeof vi.fn> } {
+      const runCommand = vi.fn((cmd: string) => {
+        if (cmd.includes("fetch origin")) return "";
+        if (cmd.includes("merge-base HEAD origin/main")) return "abc123\n";
+        // current worktree: abc123..HEAD
+        if (cmd.includes("/tmp/worktrees/foo") && cmd.includes("abc123..HEAD")) {
+          return (opts.currentAdded ?? []).join("\n") + "\n";
+        }
+        // current worktree: abc123..origin/main (shipped)
+        if (cmd.includes("/tmp/worktrees/foo") && cmd.includes("abc123..origin/main")) {
+          return (opts.shippedAdded ?? []).join("\n") + "\n";
+        }
+        // peer bar: abc123..HEAD
+        if (cmd.includes("/tmp/worktrees/bar") && cmd.includes("abc123..HEAD")) {
+          return (opts.barAdded ?? []).join("\n") + "\n";
+        }
+        return "";
+      });
+      const existsSync = vi.fn((p: string) => {
+        if (p === "/tmp/worktrees/bar") return opts.barExists ?? true;
+        return false;
+      });
+      return { runCommand, existsSync };
+    }
+
+    it("passes when no peer worktrees exist", async () => {
+      const { runCommand, existsSync } = setUpCollisionMocks({
+        currentAdded: ["migrations/0056_a.sql"],
+        barExists: false,
+      });
+      const hooks = deriveHooks(
+        makeYaml({
+          sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+        }),
+        { runCommand, existsSync },
+      );
+      const issue = makeIssue({ slug: "foo" });
+      const result = await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo");
+      expect(result.passed).toBe(true);
+    });
+
+    it("fails when a peer worktree added a colliding key", async () => {
+      const { runCommand, existsSync } = setUpCollisionMocks({
+        currentAdded: ["migrations/0056_a.sql"],
+        barAdded: ["migrations/0056_b.sql"],
+      });
+      const hooks = deriveHooks(
+        makeYaml({
+          sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+        }),
+        { runCommand, existsSync },
+      );
+      const result = await hooks.postSessionCheck!(
+        makeIssue({ slug: "foo" }),
+        "/tmp/worktrees/foo",
+      );
+      expect(result.passed).toBe(false);
+      expect(result.summary).toContain("0056");
+      expect(result.summary).toContain("bar");
+      expect(result.output).toContain("0057");
+    });
+
+    it("fails when origin/main shipped a colliding key since the merge-base", async () => {
+      const { runCommand, existsSync } = setUpCollisionMocks({
+        currentAdded: ["migrations/0056_a.sql"],
+        shippedAdded: ["migrations/0056_shipped.sql"],
+        barExists: false,
+      });
+      const hooks = deriveHooks(
+        makeYaml({
+          sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+        }),
+        { runCommand, existsSync },
+      );
+      const result = await hooks.postSessionCheck!(
+        makeIssue({ slug: "foo" }),
+        "/tmp/worktrees/foo",
+      );
+      expect(result.passed).toBe(false);
+      expect(result.summary).toContain("origin");
+    });
+
+    it("logs a warning and continues when a peer's git invocation throws", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const runCommand = vi.fn((cmd: string) => {
+        if (cmd.includes("fetch origin")) return "";
+        if (cmd.includes("/tmp/worktrees/bar")) {
+          throw new Error("not a git repository");
+        }
+        if (cmd.includes("merge-base HEAD origin/main")) return "abc123\n";
+        if (cmd.includes("abc123..HEAD")) return "migrations/0056_a.sql\n";
+        return "";
+      });
+      const hooks = deriveHooks(
+        makeYaml({
+          sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+        }),
+        { runCommand, existsSync: () => true },
+      );
+      const result = await hooks.postSessionCheck!(
+        makeIssue({ slug: "foo" }),
+        "/tmp/worktrees/foo",
+      );
+      expect(result.passed).toBe(true);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringMatching(/skipping peer bar/),
+      );
+      warn.mockRestore();
+    });
+
+    it("short-circuits before scanning when configured commands fail", async () => {
+      const runCommand = vi.fn((cmd: string) => {
+        if (cmd === "npm test") throw new Error("test fail");
+        return "";
+      });
+      const hooks = deriveHooks(
+        makeYaml({
+          postSessionCheck: { commands: ["npm test"] },
+          sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+        }),
+        { runCommand, existsSync: () => true },
+      );
+      const result = await hooks.postSessionCheck!(
+        makeIssue({ slug: "foo" }),
+        "/tmp/worktrees/foo",
+      );
+      expect(result.passed).toBe(false);
+      expect(result.summary).toContain("npm test");
+      // Collision scan should not have run — no git invocations.
+      expect(runCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it("uses configured baseBranch when provided", async () => {
+      const runCommand = vi.fn().mockReturnValue("");
+      const hooks = deriveHooks(
+        makeYaml({
+          baseBranch: "trunk",
+          sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+        }),
+        { runCommand, existsSync: () => false },
+      );
+      await hooks.postSessionCheck!(
+        makeIssue({ slug: "foo" }),
+        "/tmp/worktrees/foo",
+      );
+      expect(runCommand).toHaveBeenCalledWith(
+        expect.stringContaining("fetch origin trunk"),
+        "/tmp/worktrees/foo",
+      );
+    });
+  });
+
   // The package ships as ESM ("type": "module") so inline `require(...)` calls
   // crash at runtime with "require is not defined". Vitest's esbuild transform
   // hides this in unit tests by polyfilling `require`, so we guard the source
