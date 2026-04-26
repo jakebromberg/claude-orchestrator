@@ -42,6 +42,11 @@ export declare const YamlConfigSchema: z.ZodObject<{
         maxRetries: z.ZodNumber;
         enabled: z.ZodOptional<z.ZodBoolean>;
     }, z.core.$strip>>;
+    baseBranch: z.ZodOptional<z.ZodString>;
+    sequentialPaths: z.ZodOptional<z.ZodArray<z.ZodObject<{
+        dir: z.ZodString;
+        pattern: z.ZodString;
+    }, z.core.$strip>>>;
     issues: z.ZodArray<z.ZodObject<{
         number: z.ZodNumber;
         slug: z.ZodString;
