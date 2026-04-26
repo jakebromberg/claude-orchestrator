@@ -27,4 +27,17 @@ export { createMain } from "./create-main.js";
 export { loadYamlConfig } from "./yaml-loader.js";
 export { deriveHooks } from "./yaml-hooks.js";
 export { interpolate } from "./interpolate.js";
+// Decompose
+export { decompose } from "./decompose.js";
+// Upstream context
+export { gatherUpstreamContext } from "./upstream-context.js";
+// Issue comments
+export { postRunSummaryComments } from "./issue-comments.js";
+// Label sync
+export { createLabelSyncHandler } from "./label-sync.js";
+// Dashboard
+export { createDashboardServer } from "./dashboard.js";
+export { renderDashboardHtml } from "./dashboard-html.js";
+// GitHub integration
+export { addIssueLabel, removeIssueLabel, postIssueComment, ensureLabelExists } from "./github.js";
 //# sourceMappingURL=index.js.map

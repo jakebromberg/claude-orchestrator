@@ -11,6 +11,7 @@ import { createRealProcessRunner } from "./real-process-runner.js";
 import { startWatch } from "./watch.js";
 import { mergePrs } from "./merge.js";
 import { generateReport, formatReport } from "./report.js";
+import { postRunSummaryComments } from "./issue-comments.js";
 function createRealDeps(config) {
     return {
         statusStore: new FileStatusStore(config.configDir),
@@ -65,6 +66,69 @@ export async function createMain(options) {
     });
     // Ignore SIGHUP so detached processes survive terminal close
     process.on("SIGHUP", () => { });
+    // Handle decompose
+    if (args.mode === "decompose") {
+        const { decompose } = await import("./decompose.js");
+        let description = "";
+        // Read from file if provided
+        if (args.decomposeFile) {
+            description = fs.readFileSync(args.decomposeFile, "utf-8");
+        }
+        // Read from stdin if no file
+        if (!description && !args.decomposeIssue) {
+            description = fs.readFileSync(0, "utf-8");
+        }
+        const result = await decompose({
+            featureDescription: description || "See GitHub issue",
+            featureFile: args.decomposeFile,
+            issueNumber: args.decomposeIssue,
+            repo: args.decomposeRepo,
+        }, {
+            runCommand: (cmd, options) => execSync(cmd, {
+                stdio: ["pipe", "pipe", "pipe"],
+                encoding: "utf-8",
+                ...(options?.input ? { input: options.input } : {}),
+            }),
+            readFile: (p) => fs.readFileSync(p, "utf-8"),
+            logger: consoleLogger,
+        });
+        if (args.createIssues && args.decomposeRepo) {
+            consoleLogger.step("Creating GitHub issues...");
+            const slugToIssueNumber = new Map();
+            for (const issue of result.issues) {
+                const depRefs = issue.dependsOn
+                    .map((d) => slugToIssueNumber.get(d))
+                    .filter((n) => n !== undefined)
+                    .map((n) => `#${n}`)
+                    .join(", ");
+                const body = issue.description + (depRefs ? `\n\nDepends on: ${depRefs}` : "");
+                const output = execSync(`gh issue create --repo ${args.decomposeRepo} --title "${issue.slug}" --body-file -`, { input: body, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+                const match = output.match(/\/issues\/(\d+)/);
+                if (match) {
+                    const num = parseInt(match[1], 10);
+                    slugToIssueNumber.set(issue.slug, num);
+                    consoleLogger.info(`Created #${num}: ${issue.slug}`);
+                }
+            }
+            // Print YAML with real issue numbers
+            const lines = ["issues:"];
+            for (const issue of result.issues) {
+                const num = slugToIssueNumber.get(issue.slug) ?? "TBD";
+                const deps = issue.dependsOn
+                    .map((d) => slugToIssueNumber.get(d) ?? "TBD")
+                    .join(", ");
+                lines.push(`  - number: ${num}`);
+                lines.push(`    slug: ${issue.slug}`);
+                lines.push(`    dependsOn: [${deps}]`);
+                lines.push(`    description: "${issue.description.replace(/"/g, '\\"')}"`);
+            }
+            console.log("\n" + lines.join("\n"));
+        }
+        else {
+            console.log(result.yamlFragment);
+        }
+        process.exit(0);
+    }
     // Handle help
     if (args.mode === "help") {
         config.hooks.showHelp();
@@ -84,6 +148,35 @@ export async function createMain(options) {
         });
         process.on("SIGINT", () => {
             handle.stop();
+            process.exit(0);
+        });
+        return;
+    }
+    // Handle dashboard
+    if (args.mode === "dashboard") {
+        const { createDashboardServer } = await import("./dashboard.js");
+        const dashboardHandle = await createDashboardServer({
+            statusStore: deps.statusStore,
+            metadataStore: deps.metadataStore,
+            config,
+            logger: deps.logger,
+            readLogTail: (issueNumber, maxBytes) => {
+                const logFile = path.join(config.configDir, "logs", `issue-${issueNumber}.log`);
+                const fd = fs.openSync(logFile, "r");
+                try {
+                    const stat = fs.fstatSync(fd);
+                    const start = Math.max(0, stat.size - maxBytes);
+                    const buf = Buffer.alloc(Math.min(maxBytes, stat.size));
+                    fs.readSync(fd, buf, 0, buf.length, start);
+                    return buf.toString("utf-8");
+                }
+                finally {
+                    fs.closeSync(fd);
+                }
+            },
+        }, { port: args.port ?? 3000 });
+        process.on("SIGINT", async () => {
+            await dashboardHandle.close();
             process.exit(0);
         });
         return;
@@ -200,7 +293,7 @@ export async function createMain(options) {
         process.exit(0);
     }
     // Reset stale statuses and check prerequisites
-    orchestrator.resetStaleStatuses();
+    await orchestrator.resetStaleStatuses();
     orchestrator.checkPrerequisites();
     // Run hooks
     await config.hooks.preflightCheck();
@@ -235,8 +328,8 @@ export async function createMain(options) {
         });
     }
     // Set up signal handler (writes run record before exiting)
-    const handleSignal = () => {
-        orchestrator.handleInterrupt();
+    const handleSignal = async () => {
+        await orchestrator.handleInterrupt();
         collectAndWriteRunRecord();
         process.exit(130);
     };
@@ -283,6 +376,24 @@ export async function createMain(options) {
     fs.writeFileSync(jsonPath, JSON.stringify(report, null, 2));
     fs.writeFileSync(mdPath, formatReport(report));
     deps.logger.info(`Report written to ${mdPath}`);
+    // Post run summary comments on GitHub issues
+    if (config.issueComments?.enabled) {
+        deps.logger.step("Posting run summary comments on GitHub issues...");
+        postRunSummaryComments(config.issues, {
+            repo: config.issueComments.repo,
+            runId: reportId,
+            configName: config.name,
+        }, {
+            runCommand: (cmd, options) => execSync(cmd, {
+                stdio: ["pipe", "pipe", "pipe"],
+                encoding: "utf-8",
+                ...(options?.input ? { input: options.input } : {}),
+            }),
+            getStatus: (n) => deps.statusStore.get(n),
+            getMetadata: (n) => deps.metadataStore.get(n),
+            logger: deps.logger,
+        });
+    }
     // Clean up PID file if it matches our process
     const pidFile = path.join(config.configDir, "orchestrator.pid");
     try {

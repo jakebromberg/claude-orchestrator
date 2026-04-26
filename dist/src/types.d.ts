@@ -13,6 +13,14 @@ export interface Issue extends IssueSpec {
     wave: number;
     deps: number[];
 }
+export interface IssueCommentsConfig {
+    repo: string;
+    enabled: boolean;
+}
+export interface LabelSyncConfig {
+    prefix: string;
+    repo?: string;
+}
 export interface RawOrchestratorConfig {
     name: string;
     configDir: string;
@@ -23,6 +31,12 @@ export interface RawOrchestratorConfig {
     issues: IssueSpec[];
     hooks: OrchestratorHooks;
     allowedTools?: string[];
+    /** Post run summary comments on GitHub issues. */
+    issueComments?: IssueCommentsConfig;
+    /** Sync issue labels on status changes. */
+    labelSync?: LabelSyncConfig;
+    /** Auto-retry when postSessionCheck fails. */
+    retryOnCheckFailure?: RetryOnCheckFailureConfig;
 }
 export interface OrchestratorConfig {
     name: string;
@@ -34,6 +48,12 @@ export interface OrchestratorConfig {
     issues: Issue[];
     hooks: OrchestratorHooks;
     allowedTools?: string[];
+    /** Post run summary comments on GitHub issues. */
+    issueComments?: IssueCommentsConfig;
+    /** Sync issue labels on status changes. */
+    labelSync?: LabelSyncConfig;
+    /** Auto-retry when postSessionCheck fails. */
+    retryOnCheckFailure?: RetryOnCheckFailureConfig;
 }
 export type MergePolicy = "none" | "after-wave";
 export interface RunOptions {
@@ -42,7 +62,14 @@ export interface RunOptions {
 }
 export interface PostCheckResult {
     passed: boolean;
+    /** Human-readable summary for logs. */
     summary?: string;
+    /** Raw command output for machine consumption (injected into retry prompts). */
+    output?: string;
+}
+export interface RetryOnCheckFailureConfig {
+    maxRetries: number;
+    enabled: boolean;
 }
 export interface OrchestratorHooks {
     showHelp(): void;
@@ -57,13 +84,15 @@ export interface OrchestratorHooks {
     removeWorktree(issue: Issue): Promise<void>;
     getWorktreePath(issue: Issue): string;
     getBranchName(issue: Issue): string;
-    interpolatePrompt(issue: Issue): Promise<string>;
+    interpolatePrompt(issue: Issue, extraVars?: Record<string, string>): Promise<string>;
     getClaudeArgs(issue: Issue): string[];
     printSummary(issues: Issue[], getStatus: (n: number) => Status): void;
     /** Optional hook called after Claude exits 0, before marking "succeeded". */
     postSessionCheck?(issue: Issue, worktreePath: string): Promise<PostCheckResult>;
+    /** Optional hook called when an issue's status changes. Errors are non-fatal. */
+    onStatusChange?(issue: Issue, oldStatus: Status, newStatus: Status): Promise<void>;
 }
-export type ParsedMode = "help" | "status" | "watch" | "cleanup" | "merge" | "retry-failed" | "tail" | "run-all" | "run-specific";
+export type ParsedMode = "help" | "status" | "watch" | "cleanup" | "merge" | "retry-failed" | "tail" | "run-all" | "run-specific" | "decompose" | "dashboard";
 export interface ParsedArgs {
     mode: ParsedMode;
     wave?: number;
@@ -72,6 +101,11 @@ export interface ParsedArgs {
     mergeAfterWave: boolean;
     detach: boolean;
     notify: boolean;
+    decomposeFile?: string;
+    createIssues?: boolean;
+    decomposeIssue?: number;
+    decomposeRepo?: string;
+    port?: number;
 }
 export interface StatusStore {
     get(issueNumber: number): Status;
@@ -104,6 +138,7 @@ export interface IssueMetadata {
     startedAt?: string;
     finishedAt?: string;
     filesChanged?: string[];
+    retryCount?: number;
 }
 export interface MetadataStore {
     get(issueNumber: number): IssueMetadata;

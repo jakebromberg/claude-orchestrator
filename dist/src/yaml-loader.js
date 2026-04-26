@@ -46,6 +46,9 @@ export async function loadYamlConfig(yamlPath, options = {}) {
         issues: yaml.issues,
         hooks,
         ...(yaml.allowedTools && { allowedTools: yaml.allowedTools }),
+        ...(yaml.issueComments && { issueComments: { repo: yaml.issueComments.repo, enabled: yaml.issueComments.enabled ?? true } }),
+        ...(yaml.labelSync && { labelSync: yaml.labelSync }),
+        ...(yaml.retryOnCheckFailure && { retryOnCheckFailure: { maxRetries: yaml.retryOnCheckFailure.maxRetries, enabled: yaml.retryOnCheckFailure.enabled ?? true } }),
     });
 }
 //# sourceMappingURL=yaml-loader.js.map
