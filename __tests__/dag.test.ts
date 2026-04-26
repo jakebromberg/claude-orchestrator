@@ -144,4 +144,88 @@ describe("computeWaves", () => {
       expect(computeWaves([])).toEqual([]);
     });
   });
+
+  describe("serial flag", () => {
+    it("places each serial issue in its own wave (no deps)", () => {
+      const specs = [
+        spec({ number: 1, slug: "a", serial: true }),
+        spec({ number: 2, slug: "b", serial: true }),
+      ];
+
+      const issues = computeWaves(specs);
+      const byNumber = new Map(issues.map((i) => [i.number, i]));
+
+      expect(byNumber.get(1)!.wave).not.toBe(byNumber.get(2)!.wave);
+    });
+
+    it("orders serial issues by issue number", () => {
+      const specs = [
+        spec({ number: 5, slug: "e", serial: true }),
+        spec({ number: 2, slug: "b", serial: true }),
+        spec({ number: 4, slug: "d", serial: true }),
+      ];
+
+      const issues = computeWaves(specs);
+      const byNumber = new Map(issues.map((i) => [i.number, i]));
+
+      expect(byNumber.get(2)!.wave).toBeLessThan(byNumber.get(4)!.wave);
+      expect(byNumber.get(4)!.wave).toBeLessThan(byNumber.get(5)!.wave);
+    });
+
+    it("groups non-serial issues from the same base wave together, " +
+      "then runs serial issues one per wave after them", () => {
+      const specs = [
+        spec({ number: 1, slug: "a" }),                  // non-serial
+        spec({ number: 2, slug: "b" }),                  // non-serial
+        spec({ number: 3, slug: "c", serial: true }),    // serial
+        spec({ number: 4, slug: "d", serial: true }),    // serial
+      ];
+
+      const issues = computeWaves(specs);
+      const byNumber = new Map(issues.map((i) => [i.number, i]));
+
+      // Non-serials share wave 1
+      expect(byNumber.get(1)!.wave).toBe(1);
+      expect(byNumber.get(2)!.wave).toBe(1);
+      // Serials each get their own wave, after the non-serials
+      expect(byNumber.get(3)!.wave).toBe(2);
+      expect(byNumber.get(4)!.wave).toBe(3);
+    });
+
+    it("delays the next base wave's issues until after all serials", () => {
+      const specs = [
+        spec({ number: 1, slug: "a", serial: true }),
+        spec({ number: 2, slug: "b", serial: true }),
+        spec({ number: 3, slug: "c", dependsOn: [1] }),
+      ];
+
+      const issues = computeWaves(specs);
+      const byNumber = new Map(issues.map((i) => [i.number, i]));
+
+      // #3 depends on #1; both serials run before #3
+      expect(byNumber.get(3)!.wave).toBeGreaterThan(byNumber.get(1)!.wave);
+      expect(byNumber.get(3)!.wave).toBeGreaterThan(byNumber.get(2)!.wave);
+    });
+
+    it("a single serial issue alone occupies wave 1", () => {
+      const specs = [spec({ number: 1, slug: "a", serial: true })];
+
+      const issues = computeWaves(specs);
+
+      expect(issues[0].wave).toBe(1);
+    });
+
+    it("preserves the serial flag on the returned issues", () => {
+      const specs = [
+        spec({ number: 1, slug: "a", serial: true }),
+        spec({ number: 2, slug: "b" }),
+      ];
+
+      const issues = computeWaves(specs);
+      const byNumber = new Map(issues.map((i) => [i.number, i]));
+
+      expect(byNumber.get(1)!.serial).toBe(true);
+      expect(byNumber.get(2)!.serial).toBeUndefined();
+    });
+  });
 });

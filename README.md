@@ -170,6 +170,22 @@ Issues declare dependencies via `dependsOn`. The engine computes waves using
 topological sort: wave 1 has no dependencies, wave 2 depends on wave 1, etc.
 Within a wave, issues run in parallel up to `--parallel N`.
 
+#### Caveat: parallel issues that produce sequentially-numbered files
+
+Two issues running in the same wave each see the same `origin/main` checkout. If both create a sequentially-numbered file by reading the highest existing number and adding one (Drizzle migrations `NNNN_*.sql`, Rails-style migrations, knex, append-only changelogs, etc.), they will independently pick the **same** number. The collision only surfaces at merge time, requiring manual renumbering of the second PR.
+
+Workaround: mark issues that produce these artifacts as `serial: true` in YAML (or set `serial: true` on the `IssueSpec` programmatically). A serial issue runs alone in its own wave — no other issue runs in parallel with it. Within each base wave, all non-serial issues run together first, then each serial issue runs by itself in issue-number order. Issues in later base waves wait until all serials in earlier base waves finish.
+
+```yaml
+issues:
+  - { number: 1, slug: schema-column,  dependsOn: [], description: "Add column X", serial: true }
+  - { number: 2, slug: scheduled-job, dependsOn: [], description: "Add cron job", serial: true }
+  - { number: 3, slug: ui-tweak,      dependsOn: [], description: "Tweak button", }            # runs in parallel with #4
+  - { number: 4, slug: docs-update,   dependsOn: [], description: "Update README" }            # runs in parallel with #3
+```
+
+This is a brute-force serialization — an issue that only depends on a non-serial sibling will still wait until any serial siblings in the same base wave finish. Use it sparingly, only on issues that genuinely conflict on shared sequential state.
+
 ### Hook Interface
 
 Each config provides an `OrchestratorHooks` object:

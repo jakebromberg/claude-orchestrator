@@ -151,6 +151,44 @@ describe("loadYamlConfig", () => {
     expect(config.allowedTools).toEqual(["Bash", "Read", "Write"]);
   });
 
+  it("flows the per-issue serial flag through to wave assignment", async () => {
+    readFileSpy.mockReturnValue(`
+name: "Serial Test"
+configDir: "./cfg"
+worktreeDir: "./wt"
+projectRoot: "."
+stallTimeout: 300
+issues:
+  - number: 1
+    slug: parallel-a
+    dependsOn: []
+    description: "Parallel A"
+  - number: 2
+    slug: parallel-b
+    dependsOn: []
+    description: "Parallel B"
+  - number: 3
+    slug: migration-a
+    dependsOn: []
+    description: "Migration A"
+    serial: true
+  - number: 4
+    slug: migration-b
+    dependsOn: []
+    description: "Migration B"
+    serial: true
+`);
+
+    const config = await loadYamlConfig("/projects/test/orch.yaml");
+    const byNumber = new Map(config.issues.map((i) => [i.number, i]));
+
+    expect(byNumber.get(1)!.wave).toBe(1);
+    expect(byNumber.get(2)!.wave).toBe(1);
+    expect(byNumber.get(3)!.wave).toBe(2);
+    expect(byNumber.get(4)!.wave).toBe(3);
+    expect(byNumber.get(3)!.serial).toBe(true);
+  });
+
   it("computes wave assignments via validateConfig", async () => {
     readFileSpy.mockReturnValue(MINIMAL_YAML);
 

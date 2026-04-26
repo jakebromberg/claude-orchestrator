@@ -32,6 +32,8 @@ export interface YamlIssue {
   repo?: string;
   mode?: string;
   stallTimeout?: number;
+  /** Run this issue alone in its own wave. See `IssueSpec.serial`. */
+  serial?: boolean;
 }
 
 /**
