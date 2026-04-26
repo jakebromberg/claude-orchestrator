@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import path from "node:path";
 import type { Issue, OrchestratorHooks, PostCheckResult, Status } from "./types.js";
 import type { YamlConfig } from "./yaml-types.js";
@@ -177,10 +178,8 @@ export function deriveHooks(
       worktreePath: string,
     ): Promise<PostCheckResult> => {
       const execDir = cwd ? path.join(worktreePath, cwd) : worktreePath;
-      const run = runCommand ?? ((cmd: string, dir: string) => {
-        const { execSync } = require("node:child_process");
-        return execSync(cmd, { cwd: dir, encoding: "utf-8" });
-      });
+      const run = runCommand ?? ((cmd: string, dir: string) =>
+        execSync(cmd, { cwd: dir, encoding: "utf-8" }));
 
       for (const cmd of commands) {
         try {
@@ -199,13 +198,13 @@ export function deriveHooks(
 
   // Attach label sync when configured
   if (yaml.labelSync) {
-    const { execSync } = require("node:child_process");
     const labelRepo = yaml.labelSync.repo ?? yaml.issues[0]?.repo ?? "";
     if (labelRepo) {
       hooks.onStatusChange = createLabelSyncHandler(
         { prefix: yaml.labelSync.prefix, repo: labelRepo },
         {
-          runCommand: (cmd: string) => execSync(cmd, { stdio: "pipe", encoding: "utf-8" }),
+          runCommand: (cmd: string) =>
+            execSync(cmd, { stdio: "pipe", encoding: "utf-8" }),
           logger: { info() {}, warn(msg: string) { console.warn(msg); }, error() {}, step() {}, header() {} },
         },
       );

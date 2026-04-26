@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { deriveHooks } from "../src/yaml-hooks.js";
 import type { YamlConfig } from "../src/yaml-types.js";
@@ -203,6 +205,60 @@ describe("deriveHooks", () => {
       const result = await hooks.postSessionCheck!(makeIssue(), "/tmp/worktrees/foo");
       expect(result.passed).toBe(false);
       expect(result.summary).toContain("npx tsc");
+    });
+
+    // Regression: the default runCommand fallback used to call
+    // `require("node:child_process")` inline, which throws "require is not
+    // defined" when the package is loaded as ESM at runtime.
+    it("default runCommand fallback works under ESM (no require)", async () => {
+      const hooks = deriveHooks(
+        makeYaml({ postSessionCheck: { commands: ["echo orchestrator-ok"] } }),
+        // Intentionally no runCommand override — exercise the built-in path.
+      );
+      const result = await hooks.postSessionCheck!(makeIssue(), process.cwd());
+      expect(result.passed).toBe(true);
+    });
+  });
+
+  // The package ships as ESM ("type": "module") so inline `require(...)` calls
+  // crash at runtime with "require is not defined". Vitest's esbuild transform
+  // hides this in unit tests by polyfilling `require`, so we guard the source
+  // text directly.
+  describe("ESM safety", () => {
+    it("source contains no inline require() calls", () => {
+      const src = readFileSync(
+        fileURLToPath(new URL("../src/yaml-hooks.ts", import.meta.url)),
+        "utf-8",
+      );
+      // Strip line comments and block comments so commentary about `require`
+      // doesn't trigger the guard.
+      const stripped = src
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/\/\/.*$/gm, "");
+      expect(stripped).not.toMatch(/\brequire\s*\(/);
+    });
+  });
+
+  describe("labelSync", () => {
+    // Regression: deriveHooks used to call `require("node:child_process")`
+    // synchronously when `yaml.labelSync` was set, crashing on import under ESM.
+    it("attaches onStatusChange without throwing under ESM (no require)", () => {
+      const hooks = deriveHooks(
+        makeYaml({
+          labelSync: { prefix: "orchestrator", repo: "owner/repo" },
+        }),
+      );
+      expect(typeof hooks.onStatusChange).toBe("function");
+    });
+
+    it("does not attach onStatusChange when no repo is resolvable", () => {
+      const hooks = deriveHooks(
+        makeYaml({
+          labelSync: { prefix: "orchestrator" },
+          issues: [{ number: 1, slug: "foo", dependsOn: [], description: "Foo" }],
+        }),
+      );
+      expect(hooks.onStatusChange).toBeUndefined();
     });
   });
 
