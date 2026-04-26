@@ -68,6 +68,17 @@ export const YamlConfigSchema = z.object({
     retryOnCheckFailure: z.object({ maxRetries: z.number().int().positive(), enabled: z.boolean().optional() }).optional(),
     baseBranch: z.string().min(1).optional(),
     sequentialPaths: z.array(SequentialPathConfigSchema).optional(),
+    sequentialDomains: z
+        .record(z
+        .string()
+        .min(1)
+        .refine((s) => /^[A-Za-z0-9_.-]+$/.test(s), {
+        message: "domain name must match /^[A-Za-z0-9_.-]+$/ (no path separators)",
+    }), z.object({
+        paths: z.array(SequentialPathConfigSchema).min(1),
+        width: z.number().int().positive(),
+    }))
+        .optional(),
     issues: z.array(YamlIssueSchema),
 });
 //# sourceMappingURL=yaml-schema.js.map

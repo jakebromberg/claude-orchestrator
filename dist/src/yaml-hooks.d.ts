@@ -9,7 +9,20 @@ export interface DeriveHooksDeps {
      * is present on disk. Defaults to `node:fs.existsSync`.
      */
     existsSync?: (path: string) => boolean;
+    /**
+     * Absolute path to the YAML config. Required for `{{CLAIM_NUMBER}}` prompt
+     * variable expansion (the resolved command embeds `--config <yamlPath>`).
+     * Set automatically by `loadYamlConfig`; tests can pass it explicitly.
+     */
+    yamlPath?: string;
+    /**
+     * Override the resolved path to `cli-claim.js`. Defaults to the file
+     * sibling of `yaml-hooks.js` in the package install. Set in tests to
+     * decouple from the file system.
+     */
+    claimHelperPath?: string;
 }
+export declare function buildClaimCommand(yamlPath: string, issueNumber: number, helperPath?: string): string;
 /**
  * Derive a full `OrchestratorHooks` object from a parsed YAML config.
  *
