@@ -186,6 +186,21 @@ issues:
 
 This is a brute-force serialization — an issue that only depends on a non-serial sibling will still wait until any serial siblings in the same base wave finish. Use it sparingly, only on issues that genuinely conflict on shared sequential state.
 
+#### Detection: `sequentialPaths` collision check
+
+For projects that don't want to give up parallelism but do want a safety net, configure `sequentialPaths` to detect collisions in `postSessionCheck`. After each session completes successfully (and any configured `commands` pass), the orchestrator scans the current branch's added files matching the pattern, then walks peer worktrees and `origin/<baseBranch>` for the same captured key. On a collision, the session is marked failed; if `retryOnCheckFailure` is enabled, the failure context — including the suggested next-safe number — is injected into the retry prompt.
+
+```yaml
+baseBranch: main           # optional, defaults to "main"
+sequentialPaths:
+  - dir: shared/database/src/migrations
+    pattern: "(\\d{4})_.*\\.sql"
+```
+
+The pattern must compile as a JavaScript regex and contain at least one capture group; group 1 is the unique key (typically a zero-padded number). Multiple `sequentialPaths` entries are independent number spaces.
+
+This is **detection, not synchronization**. Two parallel issues finishing near-simultaneously can both fail the check; that's the documented limitation. Detection complements `serial: true` rather than replacing it: keep `serial: true` for high-collision-risk issues, and let detection catch the rest.
+
 ### Hook Interface
 
 Each config provides an `OrchestratorHooks` object:
