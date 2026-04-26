@@ -201,6 +201,42 @@ The pattern must compile as a JavaScript regex and contain at least one capture 
 
 This is **detection, not synchronization**. Two parallel issues finishing near-simultaneously can both fail the check; that's the documented limitation. Detection complements `serial: true` rather than replacing it: keep `serial: true` for high-collision-risk issues, and let detection catch the rest.
 
+#### Coordination: `sequentialDomains` + `claim` CLI
+
+For guaranteed-unique numbering — the synchronization that detection alone can't provide — configure `sequentialDomains` and instruct agents to claim a number from the orchestrator instead of computing one locally. The orchestrator hands out monotonically-increasing numbers per domain, persisted in `<configDir>/counters/<domain>.json`, with a per-domain lockfile so concurrent claims (across parallel sessions or the orchestrator's `--detach` background mode) are safe.
+
+```yaml
+baseBranch: main
+sequentialDomains:
+  migrations:
+    paths:
+      - dir: shared/database/src/migrations
+        pattern: "(\\d{4})_.*\\.sql"
+    width: 4   # zero-padding for the formatted output (e.g. "0057")
+```
+
+When `sequentialDomains` is set, the orchestrator exposes a `{{CLAIM_NUMBER}}` template variable that resolves to a partial command:
+
+```
+node /abs/path/to/dist/src/cli-claim.js --config <yaml> --issue <n> --domain
+```
+
+Your prompt template instructs the agent to invoke the helper with the desired domain appended, e.g.:
+
+```text
+Before writing a migration file, claim a number:
+
+  num=$({{CLAIM_NUMBER}} migrations)
+
+Then write the file as `shared/database/src/migrations/${num}_<slug>.sql`.
+```
+
+The helper prints just the formatted number (`0057`) to stdout. Claims are idempotent per `(domain, issueNumber)` so a retry of the same session reuses the same number rather than burning a new slot.
+
+On the first claim for a domain the counter is seeded by scanning `origin/<baseBranch>` for the highest existing key, so `0001-0056` already on `main` correctly produces `0057` as the first hand-out. The seed runs once per domain; if migrations are merged out-of-band between orchestrator runs, delete the affected `<configDir>/counters/<domain>.json` to force a re-seed.
+
+`sequentialDomains` and `sequentialPaths` are independent and complementary: claim is the primary synchronization, detection is the backstop in case an agent skips the claim step. Both can be configured together.
+
 ### Hook Interface
 
 Each config provides an `OrchestratorHooks` object:

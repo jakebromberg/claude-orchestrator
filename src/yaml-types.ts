@@ -35,6 +35,19 @@ export interface SequentialPathConfig {
   pattern: string;
 }
 
+/**
+ * Configuration for a single coordination domain used by the
+ * `claimSequentialNumber` primitive (issue #25).
+ *
+ * `paths` seeds the counter on first claim (scan `origin/<baseBranch>` for the
+ * highest existing key); `width` controls the zero-padding applied to the
+ * formatted output (e.g. width 4 → `"0057"`).
+ */
+export interface SequentialDomainConfig {
+  paths: SequentialPathConfig[];
+  width: number;
+}
+
 /** Issue definition in a YAML config. */
 export interface YamlIssue {
   number: number;
@@ -82,6 +95,13 @@ export interface YamlConfig {
    * commands pass.
    */
   sequentialPaths?: SequentialPathConfig[];
+  /**
+   * Coordination domains for `claimSequentialNumber`. Each key is a domain
+   * name; agents claim numbers via the per-issue `{{CLAIM_NUMBER}}` prompt
+   * variable, e.g. `<CLAIM_NUMBER> migrations`. Optional — when set, agents
+   * can request guaranteed-unique numbers instead of computing them locally.
+   */
+  sequentialDomains?: Record<string, SequentialDomainConfig>;
   issues: YamlIssue[];
 }
 

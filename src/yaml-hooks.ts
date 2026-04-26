@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
 import { existsSync as fsExistsSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Issue, OrchestratorHooks, PostCheckResult, Status } from "./types.js";
 import type { YamlConfig } from "./yaml-types.js";
 import { createPrintSummary, type SummaryColumn } from "./summary.js";
@@ -17,6 +18,31 @@ export interface DeriveHooksDeps {
    * is present on disk. Defaults to `node:fs.existsSync`.
    */
   existsSync?: (path: string) => boolean;
+  /**
+   * Absolute path to the YAML config. Required for `{{CLAIM_NUMBER}}` prompt
+   * variable expansion (the resolved command embeds `--config <yamlPath>`).
+   * Set automatically by `loadYamlConfig`; tests can pass it explicitly.
+   */
+  yamlPath?: string;
+  /**
+   * Override the resolved path to `cli-claim.js`. Defaults to the file
+   * sibling of `yaml-hooks.js` in the package install. Set in tests to
+   * decouple from the file system.
+   */
+  claimHelperPath?: string;
+}
+
+function defaultClaimHelperPath(): string {
+  const here = fileURLToPath(import.meta.url);
+  return path.join(path.dirname(here), "cli-claim.js");
+}
+
+export function buildClaimCommand(
+  yamlPath: string,
+  issueNumber: number,
+  helperPath: string = defaultClaimHelperPath(),
+): string {
+  return `node ${helperPath} --config ${yamlPath} --issue ${issueNumber} --domain`;
 }
 
 const VALID_COLUMN_PATHS = new Set([
@@ -67,8 +93,12 @@ function columnAccessor(
   };
 }
 
-function buildTemplateVars(yaml: YamlConfig, issue: Issue): Record<string, string> {
-  return {
+function buildTemplateVars(
+  yaml: YamlConfig,
+  issue: Issue,
+  deps: DeriveHooksDeps,
+): Record<string, string> {
+  const vars: Record<string, string> = {
     ISSUE_NUMBER: String(issue.number),
     SLUG: issue.slug,
     DESCRIPTION: issue.description,
@@ -76,6 +106,14 @@ function buildTemplateVars(yaml: YamlConfig, issue: Issue): Record<string, strin
     configDir: yaml.configDir,
     worktreeDir: yaml.worktreeDir,
   };
+  if (yaml.sequentialDomains && deps.yamlPath) {
+    vars.CLAIM_NUMBER = buildClaimCommand(
+      deps.yamlPath,
+      issue.number,
+      deps.claimHelperPath,
+    );
+  }
+  return vars;
 }
 
 /**
@@ -142,7 +180,7 @@ export function deriveHooks(
 
     getClaudeArgs(issue: Issue): string[] {
       if (!yaml.claudeArgs) return [];
-      const vars = buildTemplateVars(yaml, issue);
+      const vars = buildTemplateVars(yaml, issue, deps);
       return yaml.claudeArgs.map((arg) => interpolate(arg, vars));
     },
 
@@ -153,7 +191,7 @@ export function deriveHooks(
       const template = readFile
         ? readFile(yaml.promptTemplate)
         : (await import("node:fs")).readFileSync(yaml.promptTemplate, "utf-8");
-      const vars = { ...buildTemplateVars(yaml, issue), ...(extraVars ?? {}) };
+      const vars = { ...buildTemplateVars(yaml, issue, deps), ...(extraVars ?? {}) };
       return interpolate(template, vars);
     },
 

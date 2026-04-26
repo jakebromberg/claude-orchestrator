@@ -159,6 +159,61 @@ describe("deriveHooks", () => {
       expect(result).toBe("Fix 3: Add feature in /tmp/project");
       expect(readFile).toHaveBeenCalledWith("/tmp/prompt.md");
     });
+
+    it("expands {{CLAIM_NUMBER}} when sequentialDomains is configured", async () => {
+      const readFile = vi.fn().mockReturnValue("Use: {{CLAIM_NUMBER}} migrations");
+      const hooks = deriveHooks(
+        makeYaml({
+          promptTemplate: "/tmp/prompt.md",
+          sequentialDomains: {
+            migrations: {
+              paths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+              width: 4,
+            },
+          },
+        }),
+        {
+          readFile,
+          yamlPath: "/abs/config.yaml",
+          claimHelperPath: "/abs/cli-claim.js",
+        },
+      );
+      const issue = makeIssue({ number: 7 });
+      const result = await hooks.interpolatePrompt(issue);
+      expect(result).toBe(
+        "Use: node /abs/cli-claim.js --config /abs/config.yaml --issue 7 --domain migrations",
+      );
+    });
+
+    it("leaves {{CLAIM_NUMBER}} unset when sequentialDomains is absent", async () => {
+      const readFile = vi.fn().mockReturnValue("Cmd: {{CLAIM_NUMBER}}");
+      const hooks = deriveHooks(makeYaml({ promptTemplate: "/tmp/prompt.md" }), {
+        readFile,
+        yamlPath: "/abs/config.yaml",
+        claimHelperPath: "/abs/cli-claim.js",
+      });
+      const result = await hooks.interpolatePrompt(makeIssue());
+      // {{CLAIM_NUMBER}} stays as the literal placeholder when not configured
+      expect(result).toBe("Cmd: {{CLAIM_NUMBER}}");
+    });
+
+    it("leaves {{CLAIM_NUMBER}} unset when yamlPath is not provided", async () => {
+      const readFile = vi.fn().mockReturnValue("Cmd: {{CLAIM_NUMBER}}");
+      const hooks = deriveHooks(
+        makeYaml({
+          promptTemplate: "/tmp/prompt.md",
+          sequentialDomains: {
+            migrations: {
+              paths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+              width: 4,
+            },
+          },
+        }),
+        { readFile, claimHelperPath: "/abs/cli-claim.js" },
+      );
+      const result = await hooks.interpolatePrompt(makeIssue());
+      expect(result).toBe("Cmd: {{CLAIM_NUMBER}}");
+    });
   });
 
   describe("postSessionCheck", () => {

@@ -225,6 +225,93 @@ describe("YamlConfigSchema", () => {
     });
   });
 
+  describe("sequentialDomains", () => {
+    it("accepts a domain with paths and width", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          sequentialDomains: {
+            migrations: {
+              paths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+              width: 4,
+            },
+          },
+        }),
+      );
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts multiple domains", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          sequentialDomains: {
+            migrations: {
+              paths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+              width: 4,
+            },
+            changelog: {
+              paths: [{ dir: "changelog", pattern: "(\\d{6})-.*\\.json" }],
+              width: 6,
+            },
+          },
+        }),
+      );
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects an empty paths list", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          sequentialDomains: {
+            migrations: { paths: [], width: 4 },
+          },
+        }),
+      );
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects a non-positive width", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          sequentialDomains: {
+            migrations: {
+              paths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+              width: 0,
+            },
+          },
+        }),
+      );
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects a domain name with a path separator", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          sequentialDomains: {
+            "foo/bar": {
+              paths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+              width: 4,
+            },
+          },
+        }),
+      );
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects a domain pattern with no capture group", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          sequentialDomains: {
+            migrations: {
+              paths: [{ dir: "migrations", pattern: "\\d{4}_.*\\.sql" }],
+              width: 4,
+            },
+          },
+        }),
+      );
+      expect(result.success).toBe(false);
+    });
+  });
+
   describe("defaults", () => {
     it("defaults dependsOn to empty array when omitted", () => {
       const input = makeValid({
