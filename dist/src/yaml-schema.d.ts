@@ -30,6 +30,18 @@ export declare const YamlConfigSchema: z.ZodObject<{
             prefix: z.ZodOptional<z.ZodString>;
         }, z.core.$strip>>;
     }, z.core.$strip>>;
+    issueComments: z.ZodOptional<z.ZodObject<{
+        repo: z.ZodString;
+        enabled: z.ZodOptional<z.ZodBoolean>;
+    }, z.core.$strip>>;
+    labelSync: z.ZodOptional<z.ZodObject<{
+        prefix: z.ZodString;
+        repo: z.ZodOptional<z.ZodString>;
+    }, z.core.$strip>>;
+    retryOnCheckFailure: z.ZodOptional<z.ZodObject<{
+        maxRetries: z.ZodNumber;
+        enabled: z.ZodOptional<z.ZodBoolean>;
+    }, z.core.$strip>>;
     issues: z.ZodArray<z.ZodObject<{
         number: z.ZodNumber;
         slug: z.ZodString;

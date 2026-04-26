@@ -2,6 +2,7 @@ import { ProcessPool } from "./process-pool.js";
 import { StallMonitor } from "./stall-monitor.js";
 import { extractPrUrl } from "./pr-tracker.js";
 import { mergePrs } from "./merge.js";
+import { gatherUpstreamContext } from "./upstream-context.js";
 const STALL_CHECK_INTERVAL_MS = 10_000;
 const DEFAULT_ALLOWED_TOOLS = [
     "Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Task",
@@ -25,20 +26,24 @@ export class Orchestrator {
             throw new Error("gh CLI not found. Install: brew install gh");
         }
     }
-    resetStaleStatuses() {
+    async resetStaleStatuses() {
+        const promises = [];
         for (const issue of this.config.issues) {
             if (this.deps.statusStore.get(issue.number) === "running") {
                 this.deps.logger.warn(`Issue #${issue.number} has stale 'running' status, resetting to pending`);
-                this.deps.statusStore.set(issue.number, "pending");
+                promises.push(this.setStatus(issue, "pending"));
             }
         }
+        await Promise.allSettled(promises);
     }
-    handleInterrupt() {
+    async handleInterrupt() {
+        const promises = [];
         for (const issue of this.config.issues) {
             if (this.deps.statusStore.get(issue.number) === "running") {
-                this.deps.statusStore.set(issue.number, "interrupted");
+                promises.push(this.setStatus(issue, "interrupted"));
             }
         }
+        await Promise.allSettled(promises);
         this.config.hooks.printSummary(this.config.issues, (n) => this.deps.statusStore.get(n));
     }
     async runWave(wave) {
@@ -92,7 +97,7 @@ export class Orchestrator {
         for (const issue of this.config.issues) {
             const status = this.deps.statusStore.get(issue.number);
             if (this.config.hooks.isRetryableStatus(status)) {
-                this.deps.statusStore.set(issue.number, "pending");
+                await this.setStatus(issue, "pending");
                 retryable.push(issue);
             }
         }
@@ -113,6 +118,18 @@ export class Orchestrator {
     // -----------------------------------------------------------------------
     // Private
     // -----------------------------------------------------------------------
+    async setStatus(issue, newStatus) {
+        const oldStatus = this.deps.statusStore.get(issue.number);
+        this.deps.statusStore.set(issue.number, newStatus);
+        if (this.config.hooks.onStatusChange) {
+            try {
+                await this.config.hooks.onStatusChange(issue, oldStatus, newStatus);
+            }
+            catch (err) {
+                this.deps.logger.warn(`onStatusChange hook error for #${issue.number}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        }
+    }
     async prepareIssues(issues) {
         const ready = [];
         for (const issue of issues) {
@@ -129,7 +146,7 @@ export class Orchestrator {
                 continue;
             }
             // Check dependencies
-            if (!this.checkDeps(issue)) {
+            if (!await this.checkDeps(issue)) {
                 continue;
             }
             // Set up worktree
@@ -138,22 +155,30 @@ export class Orchestrator {
             }
             catch (err) {
                 this.deps.logger.error(`Issue #${issue.number}: failed to set up worktree`);
-                this.deps.statusStore.set(issue.number, "failed");
+                await this.setStatus(issue, "failed");
                 continue;
             }
+            // Gather upstream context from dependency worktrees
+            const upstreamContext = gatherUpstreamContext(issue, this.config.issues, {
+                readFile: (p) => this.deps.readFile(p),
+                getWorktreePath: (i) => this.config.hooks.getWorktreePath(i),
+            });
+            const extraVars = upstreamContext
+                ? { UPSTREAM_CONTEXT: upstreamContext }
+                : undefined;
             // Build prompt
-            const prompt = await this.config.hooks.interpolatePrompt(issue);
+            const prompt = await this.config.hooks.interpolatePrompt(issue, extraVars);
             const sessionId = this.deps.generateSessionId();
             ready.push({ issue, prompt, sessionId });
         }
         return ready;
     }
-    checkDeps(issue) {
+    async checkDeps(issue) {
         for (const depNum of issue.deps) {
             const depStatus = this.deps.statusStore.get(depNum);
             if (depStatus !== "succeeded") {
                 this.deps.logger.warn(`Issue #${issue.number} skipped: dependency #${depNum} has status '${depStatus}'`);
-                this.deps.statusStore.set(issue.number, "skipped");
+                await this.setStatus(issue, "skipped");
                 return false;
             }
         }
@@ -183,7 +208,7 @@ export class Orchestrator {
         const postCheckPromises = [];
         for (const { issue, prompt, sessionId } of ready) {
             await pool.waitForSlot();
-            this.deps.statusStore.set(issue.number, "running");
+            await this.setStatus(issue, "running");
             this.deps.logger.step(`Launching Claude session for issue #${issue.number}: ${issue.description}`);
             const worktreePath = this.config.hooks.getWorktreePath(issue);
             const extraArgs = this.config.hooks.getClaudeArgs(issue);
@@ -199,6 +224,7 @@ export class Orchestrator {
                 ...extraArgs,
                 "--output-format",
                 "stream-json",
+                "--include-hook-events",
                 "--session-id",
                 sessionId,
                 "--verbose",
@@ -297,23 +323,25 @@ export class Orchestrator {
                                 pool.setMaxParallel(1);
                                 this.deps.logger.warn(`Issue #${issue.number}: 0-byte failure persisted after retry, falling back to sequential execution`);
                             }
-                            this.deps.statusStore.set(issue.number, "failed");
+                            await this.setStatus(issue, "failed");
                             this.deps.logger.error(`Issue #${issue.number} retry failed (exit code ${retryExitCode}). Log: ${logFile}`);
                             return;
                         }
-                        if (!(await this.runPostSessionCheck(issue, worktreePath)))
+                        const zeroRetryCheck = await this.runPostSessionCheck(issue, worktreePath);
+                        if (!await this.handleCheckResultWithRetry(issue, zeroRetryCheck, prompt, worktreePath, logFile, stderrFile))
                             return;
-                        this.deps.statusStore.set(issue.number, "succeeded");
+                        await this.setStatus(issue, "succeeded");
                         this.deps.logger.info(`Issue #${issue.number} succeeded (after retry)`);
                         return;
                     }
-                    this.deps.statusStore.set(issue.number, "failed");
+                    await this.setStatus(issue, "failed");
                     this.deps.logger.error(`Issue #${issue.number} failed (exit code ${exitCode}). Log: ${logFile}`);
                     return;
                 }
-                if (!(await this.runPostSessionCheck(issue, worktreePath)))
+                const checkResult = await this.runPostSessionCheck(issue, worktreePath);
+                if (!await this.handleCheckResultWithRetry(issue, checkResult, prompt, worktreePath, logFile, stderrFile))
                     return;
-                this.deps.statusStore.set(issue.number, "succeeded");
+                await this.setStatus(issue, "succeeded");
                 this.deps.logger.info(`Issue #${issue.number} succeeded`);
             });
             postCheckPromises.push(postCheck);
@@ -327,21 +355,64 @@ export class Orchestrator {
     }
     async runPostSessionCheck(issue, worktreePath) {
         if (!this.config.hooks.postSessionCheck)
-            return true;
+            return { passed: true };
         try {
             const result = await this.config.hooks.postSessionCheck(issue, worktreePath);
             if (!result.passed) {
-                this.deps.statusStore.set(issue.number, "failed");
                 this.deps.logger.error(`Issue #${issue.number} post-check failed: ${result.summary ?? "unknown reason"}`);
-                return false;
             }
-            return true;
+            return result;
         }
         catch (err) {
-            this.deps.statusStore.set(issue.number, "failed");
-            this.deps.logger.error(`Issue #${issue.number} post-check threw: ${err instanceof Error ? err.message : String(err)}`);
+            const msg = err instanceof Error ? err.message : String(err);
+            this.deps.logger.error(`Issue #${issue.number} post-check threw: ${msg}`);
+            return { passed: false, output: msg, summary: msg };
+        }
+    }
+    async handleCheckResultWithRetry(issue, checkResult, originalPrompt, worktreePath, logFile, stderrFile) {
+        if (checkResult.passed)
+            return true;
+        const retryConfig = this.config.retryOnCheckFailure;
+        if (!retryConfig?.enabled) {
+            await this.setStatus(issue, "failed");
             return false;
         }
+        const maxRetries = retryConfig.maxRetries;
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            this.deps.logger.warn(`Issue #${issue.number} check failed, retry ${attempt}/${maxRetries}...`);
+            const failureContext = checkResult.output ?? checkResult.summary ?? "unknown failure";
+            const retryPrompt = `${originalPrompt}\n\n## CI Failure Context\n\nThe following checks failed:\n\n${failureContext}\n\nPlease fix these issues.`;
+            const tools = this.config.allowedTools ?? DEFAULT_ALLOWED_TOOLS;
+            const retryArgs = [
+                "-p", retryPrompt,
+                "--model", "opus",
+                "--allowedTools", tools.join(","),
+                ...this.config.hooks.getClaudeArgs(issue),
+                "--output-format", "stream-json",
+                "--verbose",
+            ];
+            const retryHandle = this.deps.processRunner.spawn("claude", retryArgs, { cwd: worktreePath, logFile, stderrFile });
+            const retryExitCode = await retryHandle.exitCode;
+            this.deps.metadataStore.update(issue.number, {
+                exitCode: retryExitCode,
+                finishedAt: new Date().toISOString(),
+                retryCount: attempt,
+            });
+            if (retryExitCode !== 0) {
+                await this.setStatus(issue, "failed");
+                this.deps.logger.error(`Issue #${issue.number} retry ${attempt} exited with code ${retryExitCode}`);
+                return false;
+            }
+            checkResult = await this.runPostSessionCheck(issue, worktreePath);
+            if (checkResult.passed) {
+                this.deps.logger.info(`Issue #${issue.number} succeeded after retry ${attempt}`);
+                return true;
+            }
+        }
+        // All retries exhausted
+        await this.setStatus(issue, "failed");
+        this.deps.logger.error(`Issue #${issue.number} failed after ${maxRetries} retries`);
+        return false;
     }
 }
 /**

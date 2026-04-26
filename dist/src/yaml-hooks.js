@@ -1,6 +1,8 @@
+import { execSync } from "node:child_process";
 import path from "node:path";
 import { createPrintSummary } from "./summary.js";
 import { interpolate } from "./interpolate.js";
+import { createLabelSyncHandler } from "./label-sync.js";
 const VALID_COLUMN_PATHS = new Set([
     "issue.number",
     "issue.slug",
@@ -107,14 +109,14 @@ export function deriveHooks(yaml, deps = {}) {
             const vars = buildTemplateVars(yaml, issue);
             return yaml.claudeArgs.map((arg) => interpolate(arg, vars));
         },
-        async interpolatePrompt(issue) {
+        async interpolatePrompt(issue, extraVars) {
             if (!yaml.promptTemplate) {
                 return `Fix issue #${issue.number}: ${issue.description}`;
             }
             const template = readFile
                 ? readFile(yaml.promptTemplate)
                 : (await import("node:fs")).readFileSync(yaml.promptTemplate, "utf-8");
-            const vars = buildTemplateVars(yaml, issue);
+            const vars = { ...buildTemplateVars(yaml, issue), ...(extraVars ?? {}) };
             return interpolate(template, vars);
         },
         printSummary,
@@ -134,10 +136,7 @@ export function deriveHooks(yaml, deps = {}) {
         const { commands, cwd } = yaml.postSessionCheck;
         hooks.postSessionCheck = async (_issue, worktreePath) => {
             const execDir = cwd ? path.join(worktreePath, cwd) : worktreePath;
-            const run = runCommand ?? ((cmd, dir) => {
-                const { execSync } = require("node:child_process");
-                return execSync(cmd, { cwd: dir, encoding: "utf-8" });
-            });
+            const run = runCommand ?? ((cmd, dir) => execSync(cmd, { cwd: dir, encoding: "utf-8" }));
             for (const cmd of commands) {
                 try {
                     run(cmd, execDir);
@@ -146,11 +145,22 @@ export function deriveHooks(yaml, deps = {}) {
                     return {
                         passed: false,
                         summary: `Command failed: ${cmd}\n${err.message}`,
+                        output: err.message,
                     };
                 }
             }
             return { passed: true };
         };
+    }
+    // Attach label sync when configured
+    if (yaml.labelSync) {
+        const labelRepo = yaml.labelSync.repo ?? yaml.issues[0]?.repo ?? "";
+        if (labelRepo) {
+            hooks.onStatusChange = createLabelSyncHandler({ prefix: yaml.labelSync.prefix, repo: labelRepo }, {
+                runCommand: (cmd) => execSync(cmd, { stdio: "pipe", encoding: "utf-8" }),
+                logger: { info() { }, warn(msg) { console.warn(msg); }, error() { }, step() { }, header() { } },
+            });
+        }
     }
     return hooks;
 }

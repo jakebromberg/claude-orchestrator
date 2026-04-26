@@ -7,19 +7,21 @@ export declare class Orchestrator {
     private mergePolicy;
     constructor(config: OrchestratorConfig, deps: Deps, options?: RunOptions);
     checkPrerequisites(): void;
-    resetStaleStatuses(): void;
-    handleInterrupt(): void;
+    resetStaleStatuses(): Promise<void>;
+    handleInterrupt(): Promise<void>;
     runWave(wave: number): Promise<void>;
     runAllWaves(): Promise<void>;
     runSpecific(issueNumbers: number[]): Promise<void>;
     retryFailed(): Promise<void>;
     cleanup(): Promise<void>;
+    private setStatus;
     private prepareIssues;
     private checkDeps;
     private refreshMetadata;
     private launchAndWait;
     private isZeroByteLog;
     private runPostSessionCheck;
+    private handleCheckResultWithRetry;
 }
 /**
  * Clean up worktrees and remote branches for issues that were successfully merged.

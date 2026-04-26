@@ -42,6 +42,9 @@ export const YamlConfigSchema = z.object({
     claudeArgs: z.array(z.string()).optional(),
     postSessionCheck: YamlPostSessionCheckSchema.optional(),
     summary: YamlSummarySchema.optional(),
+    issueComments: z.object({ repo: z.string(), enabled: z.boolean().optional() }).optional(),
+    labelSync: z.object({ prefix: z.string(), repo: z.string().optional() }).optional(),
+    retryOnCheckFailure: z.object({ maxRetries: z.number().int().positive(), enabled: z.boolean().optional() }).optional(),
     issues: z.array(YamlIssueSchema),
 });
 //# sourceMappingURL=yaml-schema.js.map

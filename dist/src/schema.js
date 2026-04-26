@@ -19,6 +19,9 @@ const RawConfigSchema = z
     issues: z.array(IssueSpecSchema),
     hooks: z.any(),
     allowedTools: z.array(z.string()).optional(),
+    issueComments: z.object({ repo: z.string(), enabled: z.boolean() }).optional(),
+    labelSync: z.object({ prefix: z.string(), repo: z.string().optional() }).optional(),
+    retryOnCheckFailure: z.object({ maxRetries: z.number().int().positive(), enabled: z.boolean() }).optional(),
 })
     .check((ctx) => {
     const issues = ctx.value.issues;
@@ -104,6 +107,9 @@ export function validateConfig(raw) {
         issues,
         hooks: parsed.hooks,
         ...(parsed.allowedTools && { allowedTools: parsed.allowedTools }),
+        ...(parsed.issueComments && { issueComments: parsed.issueComments }),
+        ...(parsed.labelSync && { labelSync: parsed.labelSync }),
+        ...(parsed.retryOnCheckFailure && { retryOnCheckFailure: parsed.retryOnCheckFailure }),
     };
 }
 //# sourceMappingURL=schema.js.map
