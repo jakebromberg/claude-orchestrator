@@ -47,6 +47,13 @@ export declare const YamlConfigSchema: z.ZodObject<{
         dir: z.ZodString;
         pattern: z.ZodString;
     }, z.core.$strip>>>;
+    sequentialDomains: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodObject<{
+        paths: z.ZodArray<z.ZodObject<{
+            dir: z.ZodString;
+            pattern: z.ZodString;
+        }, z.core.$strip>>;
+        width: z.ZodNumber;
+    }, z.core.$strip>>>;
     issues: z.ZodArray<z.ZodObject<{
         number: z.ZodNumber;
         slug: z.ZodString;

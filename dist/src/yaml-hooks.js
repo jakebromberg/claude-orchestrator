@@ -1,10 +1,18 @@
 import { execSync } from "node:child_process";
 import { existsSync as fsExistsSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createPrintSummary } from "./summary.js";
 import { interpolate } from "./interpolate.js";
 import { createLabelSyncHandler } from "./label-sync.js";
 import { detectCollisions, gatherCollisionInputs } from "./collision-check.js";
+function defaultClaimHelperPath() {
+    const here = fileURLToPath(import.meta.url);
+    return path.join(path.dirname(here), "cli-claim.js");
+}
+export function buildClaimCommand(yamlPath, issueNumber, helperPath = defaultClaimHelperPath()) {
+    return `node ${helperPath} --config ${yamlPath} --issue ${issueNumber} --domain`;
+}
 const VALID_COLUMN_PATHS = new Set([
     "issue.number",
     "issue.slug",
@@ -45,8 +53,8 @@ function columnAccessor(valuePath, prefix) {
         return prefix ? prefix + raw : raw;
     };
 }
-function buildTemplateVars(yaml, issue) {
-    return {
+function buildTemplateVars(yaml, issue, deps) {
+    const vars = {
         ISSUE_NUMBER: String(issue.number),
         SLUG: issue.slug,
         DESCRIPTION: issue.description,
@@ -54,6 +62,10 @@ function buildTemplateVars(yaml, issue) {
         configDir: yaml.configDir,
         worktreeDir: yaml.worktreeDir,
     };
+    if (yaml.sequentialDomains && deps.yamlPath) {
+        vars.CLAIM_NUMBER = buildClaimCommand(deps.yamlPath, issue.number, deps.claimHelperPath);
+    }
+    return vars;
 }
 /**
  * Derive a full `OrchestratorHooks` object from a parsed YAML config.
@@ -108,7 +120,7 @@ export function deriveHooks(yaml, deps = {}) {
         getClaudeArgs(issue) {
             if (!yaml.claudeArgs)
                 return [];
-            const vars = buildTemplateVars(yaml, issue);
+            const vars = buildTemplateVars(yaml, issue, deps);
             return yaml.claudeArgs.map((arg) => interpolate(arg, vars));
         },
         async interpolatePrompt(issue, extraVars) {
@@ -118,7 +130,7 @@ export function deriveHooks(yaml, deps = {}) {
             const template = readFile
                 ? readFile(yaml.promptTemplate)
                 : (await import("node:fs")).readFileSync(yaml.promptTemplate, "utf-8");
-            const vars = { ...buildTemplateVars(yaml, issue), ...(extraVars ?? {}) };
+            const vars = { ...buildTemplateVars(yaml, issue, deps), ...(extraVars ?? {}) };
             return interpolate(template, vars);
         },
         printSummary,

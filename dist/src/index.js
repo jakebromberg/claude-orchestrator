@@ -25,8 +25,12 @@ export { createRealProcessRunner } from "./real-process-runner.js";
 export { createMain } from "./create-main.js";
 // YAML config
 export { loadYamlConfig } from "./yaml-loader.js";
-export { deriveHooks } from "./yaml-hooks.js";
+export { deriveHooks, buildClaimCommand } from "./yaml-hooks.js";
 export { interpolate } from "./interpolate.js";
+// Sequential-number coordination (issue #25)
+export { InMemoryCounterStore, FileCounterStore, } from "./counter-store.js";
+export { seedFromGit } from "./seed-from-git.js";
+export { parseClaimArgs, runClaim } from "./cli-claim.js";
 // Decompose
 export { decompose } from "./decompose.js";
 // Upstream context
