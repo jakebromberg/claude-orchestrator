@@ -19,6 +19,17 @@ export interface YamlPostSessionCheck {
     /** Working directory relative to the worktree root. */
     cwd?: string;
 }
+/**
+ * One sequential-file domain to check for cross-worktree collisions.
+ *
+ * `dir` is a path relative to the worktree root. `pattern` is a regex string
+ * that must contain at least one capture group; the first group is treated as
+ * the unique key (typically a zero-padded number such as `0056`).
+ */
+export interface SequentialPathConfig {
+    dir: string;
+    pattern: string;
+}
 /** Issue definition in a YAML config. */
 export interface YamlIssue {
     number: number;
@@ -65,6 +76,14 @@ export interface YamlConfig {
         maxRetries: number;
         enabled?: boolean;
     };
+    /** Base branch used for collision detection diffs. Default `"main"`. */
+    baseBranch?: string;
+    /**
+     * Domains of sequentially-numbered files to check for collisions across
+     * peer worktrees. Detection runs inside `postSessionCheck` after configured
+     * commands pass.
+     */
+    sequentialPaths?: SequentialPathConfig[];
     issues: YamlIssue[];
 }
 /**
