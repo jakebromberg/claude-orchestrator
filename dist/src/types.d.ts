@@ -8,6 +8,13 @@ export interface IssueSpec {
     mode?: string;
     /** Override global stall timeout for this issue (seconds). 0 disables monitoring. */
     stallTimeout?: number;
+    /**
+     * When true, this issue runs alone in its own wave — no other issue runs in
+     * parallel with it. Use for issues that produce sequentially-numbered files
+     * (e.g. SQL migrations) where parallel execution would cause naming
+     * collisions. Trades parallelism for safety on the affected issues only.
+     */
+    serial?: boolean;
 }
 export interface Issue extends IssueSpec {
     wave: number;

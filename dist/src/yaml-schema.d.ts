@@ -50,5 +50,6 @@ export declare const YamlConfigSchema: z.ZodObject<{
         repo: z.ZodOptional<z.ZodString>;
         mode: z.ZodOptional<z.ZodString>;
         stallTimeout: z.ZodOptional<z.ZodNumber>;
+        serial: z.ZodOptional<z.ZodBoolean>;
     }, z.core.$strip>>;
 }, z.core.$strip>;

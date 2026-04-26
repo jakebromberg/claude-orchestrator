@@ -7,6 +7,7 @@ const YamlIssueSchema = z.object({
     repo: z.string().optional(),
     mode: z.string().optional(),
     stallTimeout: z.number().int().min(0).optional(),
+    serial: z.boolean().optional(),
 });
 const YamlSummaryColumnSchema = z.object({
     header: z.string().min(1),
