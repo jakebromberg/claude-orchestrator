@@ -180,7 +180,7 @@ Workaround: mark issues that produce these artifacts as `serial: true` in YAML (
 issues:
   - { number: 1, slug: schema-column,  dependsOn: [], description: "Add column X", serial: true }
   - { number: 2, slug: scheduled-job, dependsOn: [], description: "Add cron job", serial: true }
-  - { number: 3, slug: ui-tweak,      dependsOn: [], description: "Tweak button", }            # runs in parallel with #4
+  - { number: 3, slug: ui-tweak,      dependsOn: [], description: "Tweak button" }             # runs in parallel with #4
   - { number: 4, slug: docs-update,   dependsOn: [], description: "Update README" }            # runs in parallel with #3
 ```
 
