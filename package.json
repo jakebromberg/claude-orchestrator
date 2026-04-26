@@ -13,6 +13,9 @@
       "default": "./dist/src/testing.js"
     }
   },
+  "bin": {
+    "claude-orchestrator-claim": "dist/src/cli-claim.js"
+  },
   "files": [
     "dist/src"
   ],

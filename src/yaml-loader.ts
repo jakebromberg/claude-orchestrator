@@ -44,8 +44,9 @@ export async function loadYamlConfig(
     yaml.promptTemplate = path.resolve(yamlDir, yaml.promptTemplate);
   }
 
-  // Derive hooks from YAML fields
-  const derivedHooks = deriveHooks(yaml);
+  // Derive hooks from YAML fields. `yamlPath` is threaded through so the
+  // {{CLAIM_NUMBER}} prompt variable can reference this exact config file.
+  const derivedHooks = deriveHooks(yaml, { yamlPath: path.resolve(yamlPath) });
 
   // Merge overrides (overrides take precedence)
   const hooks = options.hooksOverride

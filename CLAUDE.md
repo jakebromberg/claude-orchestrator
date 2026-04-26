@@ -37,6 +37,9 @@ src/
 ├── decompose.ts          # LLM-driven task decomposition
 ├── decompose-types.ts    # Decompose input/output types
 ├── collision-check.ts    # Sequentially-numbered-file collision detection
+├── counter-store.ts      # Per-domain counter store (in-memory + file-backed)
+├── seed-from-git.ts      # Initial counter seed from origin/<baseBranch>
+├── cli-claim.ts          # CLI helper for agents to claim a sequential number
 ├── dashboard.ts          # HTTP dashboard server with SSE
 ├── dashboard-types.ts    # Dashboard dependency/option types
 ├── dashboard-html.ts     # Self-contained HTML template
@@ -59,6 +62,7 @@ src/
 - **CI retry**: When `retryOnCheckFailure` is configured, failed `postSessionCheck` results trigger automatic re-runs with failure context injected into the prompt.
 - **Hook event auditing**: `--include-hook-events` is passed by default so PreToolUse/PostToolUse hook decisions appear in the stream-json log for post-session analysis.
 - **Sequential-file collision detection**: When `sequentialPaths` is configured, `postSessionCheck` scans peer worktrees and `origin/<baseBranch>` for files added with the same captured key (e.g. Drizzle migration `NNNN_*.sql`) and fails the session on overlap. Failure context names the colliding peer/file and a suggested next-safe number, suitable for `retryOnCheckFailure` injection.
+- **Sequential-number coordination (`claimSequentialNumber`)**: When `sequentialDomains` is configured, the orchestrator exposes a `{{CLAIM_NUMBER}}` prompt variable that resolves to a partial CLI command (`node cli-claim.js --config <yaml> --issue <n> --domain`). Agents append a domain name and invoke the helper to receive a guaranteed-unique zero-padded number. State persists to `<configDir>/counters/<domain>.json` with a lockfile for cross-process safety. Claims are idempotent per `(domain, issueNumber)` so retries reuse the same number. First claim per domain seeds from `origin/<baseBranch>`. Composes with `sequentialPaths` (claim is primary synchronization, detection is the backstop).
 
 ### YAML Config Fields
 
@@ -99,8 +103,18 @@ sequentialPaths:
   - dir: "shared/database/src/migrations"
     pattern: "(\\d{4})_.*\\.sql"  # group 1 is the unique key
 
+# Coordination domains for guaranteed-unique numbering (issue #25). When set,
+# {{CLAIM_NUMBER}} is exposed as a prompt template variable.
+sequentialDomains:
+  migrations:
+    paths:
+      - dir: "shared/database/src/migrations"
+        pattern: "(\\d{4})_.*\\.sql"
+    width: 4
+
 # Template variables: {{ISSUE_NUMBER}}, {{SLUG}}, {{DESCRIPTION}},
-# {{projectRoot}}, {{configDir}}, {{worktreeDir}}, {{UPSTREAM_CONTEXT}}
+# {{projectRoot}}, {{configDir}}, {{worktreeDir}}, {{UPSTREAM_CONTEXT}},
+# {{CLAIM_NUMBER}} (only when sequentialDomains is configured)
 
 issues:
   - number: 1
