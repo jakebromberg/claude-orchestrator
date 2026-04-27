@@ -1,7 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { loadYamlConfig } from "../src/yaml-loader.js";
 
 const MINIMAL_YAML = `
@@ -218,17 +216,11 @@ issues:
   });
 
   it("expands {{CLAIM_NUMBER}} through interpolatePrompt with the loader's yamlPath", async () => {
-    // Write real files to a tempdir — yaml-hooks.ts uses a dynamic
-    // `await import("node:fs")` to read the prompt template, which dodges
-    // the readFileSpy. Real I/O is the cleanest workaround.
-    readFileSpy.mockRestore();
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-loader-claim-"));
-    try {
-      const yamlPath = path.join(tmpDir, "orch.yaml");
-      const promptPath = path.join(tmpDir, "prompt.md");
-      fs.writeFileSync(
-        yamlPath,
-        `
+    // Both the YAML and the prompt template are read through fs.readFileSync;
+    // the spy dispatches on path so we don't need real I/O.
+    const yamlPath = "/projects/test/orch.yaml";
+    const promptPath = "/projects/test/prompt.md";
+    const yamlContent = `
 name: "Claim Test"
 configDir: "./cfg"
 worktreeDir: "./wt"
@@ -246,24 +238,24 @@ issues:
     slug: add-orders
     dependsOn: []
     description: "Add orders table"
-`,
-      );
-      fs.writeFileSync(promptPath, "Claim cmd: {{CLAIM_NUMBER}} migrations");
+`;
+    readFileSpy.mockImplementation((p: string) => {
+      if (p === yamlPath) return yamlContent;
+      if (p === promptPath) return "Claim cmd: {{CLAIM_NUMBER}} migrations";
+      throw new Error(`unexpected readFileSync call: ${p}`);
+    });
 
-      const config = await loadYamlConfig(yamlPath);
-      const issue = config.issues[0]!;
-      const prompt = await config.hooks.interpolatePrompt(issue);
+    const config = await loadYamlConfig(yamlPath);
+    const issue = config.issues[0]!;
+    const prompt = await config.hooks.interpolatePrompt(issue);
 
-      // The loader resolves yamlPath to an absolute path and threads it into
-      // deriveHooks; the helper path is pkg-install-relative (cli-claim.js
-      // sibling of yaml-hooks.js), and both are shell-quoted.
-      expect(prompt).toContain(`--config '${yamlPath}'`);
-      expect(prompt).toContain("--issue 7");
-      expect(prompt).toMatch(/--domain migrations$/);
-      expect(prompt).toContain("cli-claim.js");
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
+    // The loader resolves yamlPath to an absolute path and threads it into
+    // deriveHooks; the helper path is pkg-install-relative (cli-claim.js
+    // sibling of yaml-hooks.js), and both are shell-quoted.
+    expect(prompt).toContain(`--config '${yamlPath}'`);
+    expect(prompt).toContain("--issue 7");
+    expect(prompt).toMatch(/--domain migrations$/);
+    expect(prompt).toContain("cli-claim.js");
   });
 
   it("rejects a sequentialPaths pattern with no capture group at load time", async () => {
