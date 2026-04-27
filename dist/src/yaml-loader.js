@@ -40,7 +40,15 @@ export async function loadYamlConfig(yamlPath, options = {}) {
     resolveYamlPaths(yaml, path.dirname(yamlPath));
     // Derive hooks from YAML fields. `yamlPath` is threaded through so the
     // {{CLAIM_NUMBER}} prompt variable can reference this exact config file.
-    const derivedHooks = deriveHooks(yaml, { yamlPath: path.resolve(yamlPath) });
+    // `readFile` is wired to `fs.readFileSync` via the default-import namespace
+    // so tests can intercept prompt-template loading with
+    // `vi.spyOn(fs, "readFileSync")` (the spy modifies the namespace property
+    // but not named-import bindings, so deriveHooks can't reach it through its
+    // own `import { readFileSync } from "node:fs"`).
+    const derivedHooks = deriveHooks(yaml, {
+        yamlPath: path.resolve(yamlPath),
+        readFile: (p) => fs.readFileSync(p, "utf-8"),
+    });
     // Merge overrides (overrides take precedence)
     const hooks = options.hooksOverride
         ? { ...derivedHooks, ...options.hooksOverride }

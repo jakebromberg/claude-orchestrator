@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync as fsExistsSync } from "node:fs";
+import { existsSync as fsExistsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPrintSummary } from "./summary.js";
@@ -130,7 +130,7 @@ export function deriveHooks(yaml, deps = {}) {
             }
             const template = readFile
                 ? readFile(yaml.promptTemplate)
-                : (await import("node:fs")).readFileSync(yaml.promptTemplate, "utf-8");
+                : readFileSync(yaml.promptTemplate, "utf-8");
             const vars = { ...buildTemplateVars(yaml, issue, deps), ...(extraVars ?? {}) };
             return interpolate(template, vars);
         },
