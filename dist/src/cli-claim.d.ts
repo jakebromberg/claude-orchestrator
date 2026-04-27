@@ -17,6 +17,15 @@ export interface ClaimArgs {
     issue: number;
     domain: string;
 }
+/**
+ * The result of a successful claim. `number` is the raw integer; `formatted`
+ * is the same value zero-padded to the domain's configured width — what the
+ * agent reads from stdout and embeds in a filename.
+ */
+export interface ClaimResult {
+    number: number;
+    formatted: string;
+}
 export declare function parseClaimArgs(argv: string[]): ClaimArgs;
 export interface RunClaimOptions {
     yaml: YamlConfig;
@@ -25,4 +34,4 @@ export interface RunClaimOptions {
     store: CounterStore;
     seed: () => number;
 }
-export declare function runClaim(opts: RunClaimOptions): string;
+export declare function runClaim(opts: RunClaimOptions): ClaimResult;

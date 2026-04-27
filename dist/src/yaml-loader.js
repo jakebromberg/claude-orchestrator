@@ -5,6 +5,20 @@ import { YamlConfigSchema } from "./yaml-schema.js";
 import { deriveHooks } from "./yaml-hooks.js";
 import { validateConfig } from "./schema.js";
 /**
+ * Resolve all relative path fields on a parsed `YamlConfig` against the
+ * YAML file's directory. Mutates `yaml` in place. Used by `loadYamlConfig`
+ * and the standalone `cli-claim` entry point so both apply identical
+ * resolution and don't drift.
+ */
+export function resolveYamlPaths(yaml, yamlDir) {
+    yaml.configDir = path.resolve(yamlDir, yaml.configDir);
+    yaml.worktreeDir = path.resolve(yamlDir, yaml.worktreeDir);
+    yaml.projectRoot = path.resolve(yamlDir, yaml.projectRoot);
+    if (yaml.promptTemplate) {
+        yaml.promptTemplate = path.resolve(yamlDir, yaml.promptTemplate);
+    }
+}
+/**
  * Load an orchestrator config from a YAML file.
  *
  * 1. Reads and parses the YAML file
@@ -23,13 +37,7 @@ export async function loadYamlConfig(yamlPath, options = {}) {
     // Validate YAML structure
     const yaml = YamlConfigSchema.parse(parsed);
     // Resolve relative paths against the YAML file's directory
-    const yamlDir = path.dirname(yamlPath);
-    yaml.configDir = path.resolve(yamlDir, yaml.configDir);
-    yaml.worktreeDir = path.resolve(yamlDir, yaml.worktreeDir);
-    yaml.projectRoot = path.resolve(yamlDir, yaml.projectRoot);
-    if (yaml.promptTemplate) {
-        yaml.promptTemplate = path.resolve(yamlDir, yaml.promptTemplate);
-    }
+    resolveYamlPaths(yaml, path.dirname(yamlPath));
     // Derive hooks from YAML fields. `yamlPath` is threaded through so the
     // {{CLAIM_NUMBER}} prompt variable can reference this exact config file.
     const derivedHooks = deriveHooks(yaml, { yamlPath: path.resolve(yamlPath) });

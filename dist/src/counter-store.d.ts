@@ -11,12 +11,6 @@
  * read-modify-write so a `--detach` orchestrator and an out-of-band CLI claim
  * cannot race.
  */
-export interface CounterClaim {
-    /** The captured key as a number (e.g. 57). */
-    number: number;
-    /** Same number formatted with the configured width (e.g. "0057"). */
-    formatted: string;
-}
 export interface CounterStore {
     /**
      * Atomically claim the next number for `domain` on behalf of `issueNumber`.
@@ -24,12 +18,16 @@ export interface CounterStore {
      * Idempotent: a second call with the same `(domain, issueNumber)` returns
      * the previously-claimed number. `seed` is consulted only when the domain
      * has no recorded state — its return value becomes the first issued number.
+     *
+     * Returns the raw integer; formatting (zero-padding for display) is the
+     * caller's concern since width is a presentation choice tied to the
+     * domain's YAML config rather than the store itself.
      */
-    claim(domain: string, issueNumber: number, width: number, seed: () => number): CounterClaim;
+    claim(domain: string, issueNumber: number, seed: () => number): number;
 }
 export declare class InMemoryCounterStore implements CounterStore {
     private domains;
-    claim(domain: string, issueNumber: number, width: number, seed: () => number): CounterClaim;
+    claim(domain: string, issueNumber: number, seed: () => number): number;
 }
 export interface FileCounterStoreOptions {
     /** Lock acquisition timeout in milliseconds. Defaults to 10s. */
@@ -39,5 +37,5 @@ export declare class FileCounterStore implements CounterStore {
     private configDir;
     private lockTimeoutMs;
     constructor(configDir: string, options?: FileCounterStoreOptions);
-    claim(domain: string, issueNumber: number, width: number, seed: () => number): CounterClaim;
+    claim(domain: string, issueNumber: number, seed: () => number): number;
 }

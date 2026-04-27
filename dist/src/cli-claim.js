@@ -18,6 +18,14 @@ import { parse as parseYaml } from "yaml";
 import { YamlConfigSchema } from "./yaml-schema.js";
 import { FileCounterStore } from "./counter-store.js";
 import { seedFromGit } from "./seed-from-git.js";
+import { resolveYamlPaths } from "./yaml-loader.js";
+function takeValue(argv, i, flag) {
+    const v = argv[i + 1];
+    if (v === undefined || v.startsWith("--")) {
+        throw new Error(`${flag} requires an argument`);
+    }
+    return v;
+}
 export function parseClaimArgs(argv) {
     let config;
     let issue;
@@ -27,29 +35,28 @@ export function parseClaimArgs(argv) {
         const arg = argv[i];
         switch (arg) {
             case "--config": {
-                const v = argv[i + 1];
-                if (!v)
-                    throw new Error("--config requires a path");
-                config = v;
+                if (config !== undefined)
+                    throw new Error("--config given more than once");
+                config = takeValue(argv, i, "--config");
                 i += 2;
                 break;
             }
             case "--issue": {
-                const v = argv[i + 1];
-                if (!v)
-                    throw new Error("--issue requires a number");
+                if (issue !== undefined)
+                    throw new Error("--issue given more than once");
+                const v = takeValue(argv, i, "--issue");
                 const n = parseInt(v, 10);
-                if (!Number.isFinite(n))
-                    throw new Error("--issue must be a number");
+                if (!Number.isFinite(n) || String(n) !== v) {
+                    throw new Error("--issue must be an integer");
+                }
                 issue = n;
                 i += 2;
                 break;
             }
             case "--domain": {
-                const v = argv[i + 1];
-                if (!v)
-                    throw new Error("--domain requires a name");
-                domain = v;
+                if (domain !== undefined)
+                    throw new Error("--domain given more than once");
+                domain = takeValue(argv, i, "--domain");
                 i += 2;
                 break;
             }
@@ -74,8 +81,8 @@ export function runClaim(opts) {
         const known = Object.keys(opts.yaml.sequentialDomains).join(", ") || "(none)";
         throw new Error(`Unknown domain "${opts.domain}". Known: ${known}.`);
     }
-    const claim = opts.store.claim(opts.domain, opts.issue, config.width, opts.seed);
-    return claim.formatted;
+    const number = opts.store.claim(opts.domain, opts.issue, opts.seed);
+    return { number, formatted: String(number).padStart(config.width, "0") };
 }
 // ---------------------------------------------------------------------------
 // CLI entry point — only runs when invoked directly.
@@ -84,32 +91,30 @@ function loadYaml(yamlPath) {
     const raw = fs.readFileSync(yamlPath, "utf-8");
     const parsed = parseYaml(raw);
     const yaml = YamlConfigSchema.parse(parsed);
-    const yamlDir = path.dirname(path.resolve(yamlPath));
-    yaml.configDir = path.resolve(yamlDir, yaml.configDir);
-    yaml.projectRoot = path.resolve(yamlDir, yaml.projectRoot);
+    resolveYamlPaths(yaml, path.dirname(path.resolve(yamlPath)));
     return yaml;
 }
 function main() {
     const args = parseClaimArgs(process.argv.slice(2));
     const yaml = loadYaml(args.config);
     const baseBranch = yaml.baseBranch ?? "main";
+    // `runClaim` rejects unknown domains before the seed function fires, so
+    // domainConfig is guaranteed to exist when seed() is invoked.
     const domainConfig = yaml.sequentialDomains?.[args.domain];
     const store = new FileCounterStore(yaml.configDir);
-    const seed = () => domainConfig
-        ? seedFromGit({ runCommand: (cmd) => execSync(cmd, { encoding: "utf-8" }) }, {
-            repoDir: yaml.projectRoot,
-            baseBranch,
-            paths: domainConfig.paths,
-        })
-        : 1;
-    const formatted = runClaim({
+    const seed = () => seedFromGit({ runCommand: (cmd) => execSync(cmd, { encoding: "utf-8" }) }, {
+        repoDir: yaml.projectRoot,
+        baseBranch,
+        paths: domainConfig.paths,
+    });
+    const claim = runClaim({
         yaml,
         issue: args.issue,
         domain: args.domain,
         store,
         seed,
     });
-    process.stdout.write(formatted + "\n");
+    process.stdout.write(claim.formatted + "\n");
 }
 const entryPath = process.argv[1] ? path.resolve(process.argv[1]) : "";
 const thisFile = fileURLToPath(import.meta.url);
