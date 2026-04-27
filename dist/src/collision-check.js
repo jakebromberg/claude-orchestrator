@@ -7,6 +7,7 @@
  * as `0056`). The I/O wrapper `gatherCollisionInputs` runs the git diffs and
  * applies the per-entry regex to produce the structured input.
  */
+import { shellQuote } from "./shell-quote.js";
 export function detectCollisions(input) {
     const details = [];
     const nextSafeNumber = {};
@@ -111,7 +112,7 @@ export function gatherCollisionInputs(deps) {
     const compiled = entries.map((e) => ({ entry: e, regex: new RegExp(e.pattern) }));
     // Best-effort fetch — never fail the scan because origin is unreachable.
     try {
-        runCommand(`git -C ${currentWorktree} fetch origin ${baseBranch}`);
+        runCommand(`git -C ${shellQuote(currentWorktree)} fetch origin ${shellQuote(baseBranch)}`);
     }
     catch {
         // ignore — we proceed with whatever origin/<baseBranch> currently points to
@@ -128,7 +129,7 @@ export function gatherCollisionInputs(deps) {
         if (!existsSync(peer.worktreePath))
             continue;
         try {
-            const peerBase = runCommand(`git -C ${peer.worktreePath} merge-base HEAD origin/${baseBranch}`).trim();
+            const peerBase = runCommand(`git -C ${shellQuote(peer.worktreePath)} merge-base HEAD ${shellQuote(`origin/${baseBranch}`)}`).trim();
             if (!peerBase) {
                 peersOut[peer.slug] = {};
                 continue;
@@ -145,7 +146,7 @@ export function gatherCollisionInputs(deps) {
 }
 function safeMergeBase(runCommand, worktree, baseBranch) {
     try {
-        const out = runCommand(`git -C ${worktree} merge-base HEAD origin/${baseBranch}`);
+        const out = runCommand(`git -C ${shellQuote(worktree)} merge-base HEAD ${shellQuote(`origin/${baseBranch}`)}`);
         const sha = out.trim();
         return sha.length > 0 ? sha : null;
     }
@@ -159,7 +160,7 @@ function collectAddedByEntry(runCommand, worktree, range, compiled, throwOnError
         const { entry, regex } = compiled[i];
         let raw;
         try {
-            raw = runCommand(`git -C ${worktree} diff --diff-filter=A --find-renames --name-only ${range} -- ${entry.dir}`);
+            raw = runCommand(`git -C ${shellQuote(worktree)} diff --diff-filter=A --find-renames --name-only ${shellQuote(range)} -- ${shellQuote(entry.dir)}`);
         }
         catch (err) {
             if (throwOnError)
