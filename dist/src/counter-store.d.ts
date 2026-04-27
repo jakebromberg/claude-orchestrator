@@ -31,8 +31,13 @@ export declare class InMemoryCounterStore implements CounterStore {
     private domains;
     claim(domain: string, issueNumber: number, width: number, seed: () => number): CounterClaim;
 }
+export interface FileCounterStoreOptions {
+    /** Lock acquisition timeout in milliseconds. Defaults to 10s. */
+    lockTimeoutMs?: number;
+}
 export declare class FileCounterStore implements CounterStore {
     private configDir;
-    constructor(configDir: string);
+    private lockTimeoutMs;
+    constructor(configDir: string, options?: FileCounterStoreOptions);
     claim(domain: string, issueNumber: number, width: number, seed: () => number): CounterClaim;
 }
