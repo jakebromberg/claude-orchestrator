@@ -13,9 +13,6 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-function format(n, width) {
-    return String(n).padStart(width, "0");
-}
 function applyClaim(state, issueNumber, seed) {
     if (state === null) {
         const seeded = seed();
@@ -39,11 +36,11 @@ function applyClaim(state, issueNumber, seed) {
 }
 export class InMemoryCounterStore {
     domains = new Map();
-    claim(domain, issueNumber, width, seed) {
+    claim(domain, issueNumber, seed) {
         const before = this.domains.get(domain) ?? null;
         const { state, number } = applyClaim(before, issueNumber, seed);
         this.domains.set(domain, state);
-        return { number, formatted: format(number, width) };
+        return number;
     }
 }
 export class FileCounterStore {
@@ -53,7 +50,7 @@ export class FileCounterStore {
         this.configDir = configDir;
         this.lockTimeoutMs = options.lockTimeoutMs ?? 10_000;
     }
-    claim(domain, issueNumber, width, seed) {
+    claim(domain, issueNumber, seed) {
         if (!/^[A-Za-z0-9_.-]+$/.test(domain)) {
             throw new Error(`Invalid domain name "${domain}": must match /^[A-Za-z0-9_.-]+$/`);
         }
@@ -65,7 +62,7 @@ export class FileCounterStore {
             const before = readState(stateFile);
             const { state, number } = applyClaim(before, issueNumber, seed);
             writeStateAtomic(stateFile, state);
-            return { number, formatted: format(number, width) };
+            return number;
         });
     }
 }

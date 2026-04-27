@@ -1,9 +1,16 @@
 import type { OrchestratorConfig } from "./types.js";
-import type { HooksOverride } from "./yaml-types.js";
+import type { HooksOverride, YamlConfig } from "./yaml-types.js";
 export interface LoadYamlConfigOptions {
     /** Hook overrides to merge on top of derived hooks. */
     hooksOverride?: HooksOverride;
 }
+/**
+ * Resolve all relative path fields on a parsed `YamlConfig` against the
+ * YAML file's directory. Mutates `yaml` in place. Used by `loadYamlConfig`
+ * and the standalone `cli-claim` entry point so both apply identical
+ * resolution and don't drift.
+ */
+export declare function resolveYamlPaths(yaml: YamlConfig, yamlDir: string): void;
 /**
  * Load an orchestrator config from a YAML file.
  *

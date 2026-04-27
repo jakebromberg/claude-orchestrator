@@ -24,7 +24,7 @@ export { generateReport, formatReport } from "./report.js";
 export { createRealProcessRunner } from "./real-process-runner.js";
 export { createMain } from "./create-main.js";
 // YAML config
-export { loadYamlConfig } from "./yaml-loader.js";
+export { loadYamlConfig, resolveYamlPaths } from "./yaml-loader.js";
 export { deriveHooks, buildClaimCommand } from "./yaml-hooks.js";
 export { interpolate } from "./interpolate.js";
 // Sequential-number coordination (issue #25)
