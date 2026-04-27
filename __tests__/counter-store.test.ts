@@ -16,23 +16,18 @@ describe("InMemoryCounterStore", () => {
   });
 
   it("seeds the domain on first claim and returns the seeded number", () => {
-    const c = store.claim("migrations", 1, 4, () => 56);
-    expect(c.number).toBe(56);
-    expect(c.formatted).toBe("0056");
+    expect(store.claim("migrations", 1, () => 56)).toBe(56);
   });
 
   it("increments for the next distinct issue", () => {
-    store.claim("migrations", 1, 4, () => 56);
-    const c = store.claim("migrations", 2, 4, () => 999);
-    expect(c.number).toBe(57);
-    expect(c.formatted).toBe("0057");
+    store.claim("migrations", 1, () => 56);
+    expect(store.claim("migrations", 2, () => 999)).toBe(57);
   });
 
   it("returns the same number on a repeat claim from the same issue", () => {
-    const first = store.claim("migrations", 1, 4, () => 56);
-    const second = store.claim("migrations", 1, 4, () => 999);
-    expect(second.number).toBe(first.number);
-    expect(second.formatted).toBe(first.formatted);
+    const first = store.claim("migrations", 1, () => 56);
+    const second = store.claim("migrations", 1, () => 999);
+    expect(second).toBe(first);
   });
 
   it("does not call the seed function on subsequent claims", () => {
@@ -41,29 +36,15 @@ describe("InMemoryCounterStore", () => {
       seedCalls++;
       return 56;
     };
-    store.claim("migrations", 1, 4, seed);
-    store.claim("migrations", 2, 4, seed);
-    store.claim("migrations", 3, 4, seed);
+    store.claim("migrations", 1, seed);
+    store.claim("migrations", 2, seed);
+    store.claim("migrations", 3, seed);
     expect(seedCalls).toBe(1);
   });
 
   it("tracks domains independently", () => {
-    const a = store.claim("migrations", 1, 4, () => 10);
-    const b = store.claim("changelog", 1, 3, () => 200);
-    expect(a.number).toBe(10);
-    expect(a.formatted).toBe("0010");
-    expect(b.number).toBe(200);
-    expect(b.formatted).toBe("200");
-  });
-
-  it("formats with the requested width", () => {
-    const c = store.claim("migrations", 1, 6, () => 7);
-    expect(c.formatted).toBe("000007");
-  });
-
-  it("does not zero-pad when the number exceeds the width", () => {
-    const c = store.claim("migrations", 1, 2, () => 1234);
-    expect(c.formatted).toBe("1234");
+    expect(store.claim("migrations", 1, () => 10)).toBe(10);
+    expect(store.claim("changelog", 1, () => 200)).toBe(200);
   });
 });
 
@@ -81,8 +62,7 @@ describe("FileCounterStore", () => {
   });
 
   it("seeds on first claim and persists to disk", () => {
-    const c = store.claim("migrations", 1, 4, () => 56);
-    expect(c.number).toBe(56);
+    expect(store.claim("migrations", 1, () => 56)).toBe(56);
     const file = path.join(tmpDir, "counters", "migrations.json");
     expect(fs.existsSync(file)).toBe(true);
     const state = JSON.parse(fs.readFileSync(file, "utf-8"));
@@ -90,33 +70,31 @@ describe("FileCounterStore", () => {
   });
 
   it("increments across distinct issues", () => {
-    store.claim("migrations", 1, 4, () => 56);
-    const c = store.claim("migrations", 2, 4, () => 999);
-    expect(c.number).toBe(57);
+    store.claim("migrations", 1, () => 56);
+    expect(store.claim("migrations", 2, () => 999)).toBe(57);
   });
 
   it("returns the same number on retry of the same issue", () => {
-    const a = store.claim("migrations", 1, 4, () => 56);
-    const b = store.claim("migrations", 1, 4, () => 999);
-    expect(b.number).toBe(a.number);
+    const a = store.claim("migrations", 1, () => 56);
+    const b = store.claim("migrations", 1, () => 999);
+    expect(b).toBe(a);
   });
 
   it("survives a restart (new store instance reads existing file)", () => {
-    store.claim("migrations", 1, 4, () => 56);
+    store.claim("migrations", 1, () => 56);
     const fresh = new FileCounterStore(tmpDir);
-    const c = fresh.claim("migrations", 2, 4, () => 999);
-    expect(c.number).toBe(57);
+    expect(fresh.claim("migrations", 2, () => 999)).toBe(57);
   });
 
   it("creates the counters directory if missing", () => {
     expect(fs.existsSync(path.join(tmpDir, "counters"))).toBe(false);
-    store.claim("migrations", 1, 4, () => 56);
+    store.claim("migrations", 1, () => 56);
     expect(fs.existsSync(path.join(tmpDir, "counters"))).toBe(true);
   });
 
   it("isolates domains in separate files", () => {
-    store.claim("migrations", 1, 4, () => 56);
-    store.claim("changelog", 1, 3, () => 200);
+    store.claim("migrations", 1, () => 56);
+    store.claim("changelog", 1, () => 200);
     expect(
       fs.existsSync(path.join(tmpDir, "counters", "migrations.json")),
     ).toBe(true);
@@ -126,19 +104,19 @@ describe("FileCounterStore", () => {
   });
 
   it("rejects domain names that contain path separators", () => {
-    expect(() => store.claim("foo/bar", 1, 4, () => 1)).toThrow();
-    expect(() => store.claim("../escape", 1, 4, () => 1)).toThrow();
+    expect(() => store.claim("foo/bar", 1, () => 1)).toThrow();
+    expect(() => store.claim("../escape", 1, () => 1)).toThrow();
   });
 
   it("releases the lock file after a successful claim", () => {
-    store.claim("migrations", 1, 4, () => 56);
+    store.claim("migrations", 1, () => 56);
     const lock = path.join(tmpDir, "counters", "migrations.json.lock");
     expect(fs.existsSync(lock)).toBe(false);
   });
 
   it("releases the lock file even when the seed function throws", () => {
     expect(() =>
-      store.claim("migrations", 1, 4, () => {
+      store.claim("migrations", 1, () => {
         throw new Error("seed boom");
       }),
     ).toThrow(/seed boom/);
@@ -152,8 +130,7 @@ describe("FileCounterStore", () => {
     fs.mkdirSync(path.join(tmpDir, "counters"), { recursive: true });
     const lock = path.join(tmpDir, "counters", "migrations.json.lock");
     fs.writeFileSync(lock, "2147483646");
-    const c = store.claim("migrations", 1, 4, () => 56);
-    expect(c.number).toBe(56);
+    expect(store.claim("migrations", 1, () => 56)).toBe(56);
     expect(fs.existsSync(lock)).toBe(false);
   });
 
@@ -164,7 +141,7 @@ describe("FileCounterStore", () => {
     fs.writeFileSync(lock, String(process.pid));
     try {
       expect(() =>
-        fastStore.claim("migrations", 1, 4, () => 56),
+        fastStore.claim("migrations", 1, () => 56),
       ).toThrow(/Timed out waiting for counter lock/);
     } finally {
       fs.unlinkSync(lock);

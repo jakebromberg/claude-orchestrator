@@ -88,10 +88,74 @@ describe("parseClaimArgs", () => {
       ]),
     ).toThrow(/--issue/);
   });
+
+  it("rejects duplicate flags rather than silently using the last value", () => {
+    expect(() =>
+      parseClaimArgs([
+        "--config",
+        "/a.yaml",
+        "--config",
+        "/b.yaml",
+        "--issue",
+        "1",
+        "--domain",
+        "m",
+      ]),
+    ).toThrow(/--config given more than once/);
+    expect(() =>
+      parseClaimArgs([
+        "--config",
+        "/a.yaml",
+        "--issue",
+        "1",
+        "--issue",
+        "2",
+        "--domain",
+        "m",
+      ]),
+    ).toThrow(/--issue given more than once/);
+    expect(() =>
+      parseClaimArgs([
+        "--config",
+        "/a.yaml",
+        "--issue",
+        "1",
+        "--domain",
+        "m",
+        "--domain",
+        "n",
+      ]),
+    ).toThrow(/--domain given more than once/);
+  });
+
+  it("rejects --issue with a trailing non-numeric suffix (parseInt-only would accept '1abc')", () => {
+    expect(() =>
+      parseClaimArgs([
+        "--config",
+        "/x.yaml",
+        "--issue",
+        "1abc",
+        "--domain",
+        "m",
+      ]),
+    ).toThrow(/--issue/);
+  });
+
+  it("rejects a flag whose value looks like another flag", () => {
+    expect(() =>
+      parseClaimArgs([
+        "--config",
+        "--issue",
+        "1",
+        "--domain",
+        "m",
+      ]),
+    ).toThrow(/--config/);
+  });
 });
 
 describe("runClaim", () => {
-  it("returns the seeded number on first claim", () => {
+  it("returns the seeded number formatted to the domain's width on first claim", () => {
     const store = new InMemoryCounterStore();
     const result = runClaim({
       yaml: baseYaml(),
@@ -100,7 +164,7 @@ describe("runClaim", () => {
       store,
       seed: () => 57,
     });
-    expect(result).toBe("0057");
+    expect(result).toEqual({ number: 57, formatted: "0057" });
   });
 
   it("increments across distinct issues in the same domain", () => {
@@ -119,7 +183,7 @@ describe("runClaim", () => {
       store,
       seed: () => 999,
     });
-    expect(result).toBe("0058");
+    expect(result).toEqual({ number: 58, formatted: "0058" });
   });
 
   it("returns the same number on a retry of the same issue", () => {
@@ -138,7 +202,21 @@ describe("runClaim", () => {
       store,
       seed: () => 999,
     });
-    expect(b).toBe(a);
+    expect(b).toEqual(a);
+  });
+
+  it("does not zero-pad when the number exceeds the configured width", () => {
+    const store = new InMemoryCounterStore();
+    const yaml = baseYaml();
+    yaml.sequentialDomains!.migrations.width = 2;
+    const result = runClaim({
+      yaml,
+      issue: 1,
+      domain: "migrations",
+      store,
+      seed: () => 1234,
+    });
+    expect(result).toEqual({ number: 1234, formatted: "1234" });
   });
 
   it("throws when the domain is unknown", () => {

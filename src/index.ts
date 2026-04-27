@@ -46,7 +46,7 @@ export { createMain } from "./create-main.js";
 export type { ConfigFactory, MainOptions } from "./create-main.js";
 
 // YAML config
-export { loadYamlConfig } from "./yaml-loader.js";
+export { loadYamlConfig, resolveYamlPaths } from "./yaml-loader.js";
 export type { LoadYamlConfigOptions } from "./yaml-loader.js";
 export { deriveHooks, buildClaimCommand } from "./yaml-hooks.js";
 export type { DeriveHooksDeps } from "./yaml-hooks.js";
@@ -67,11 +67,11 @@ export {
   InMemoryCounterStore,
   FileCounterStore,
 } from "./counter-store.js";
-export type { CounterStore, CounterClaim } from "./counter-store.js";
+export type { CounterStore, FileCounterStoreOptions } from "./counter-store.js";
 export { seedFromGit } from "./seed-from-git.js";
 export type { SeedFromGitDeps, SeedFromGitOptions } from "./seed-from-git.js";
 export { parseClaimArgs, runClaim } from "./cli-claim.js";
-export type { ClaimArgs, RunClaimOptions } from "./cli-claim.js";
+export type { ClaimArgs, ClaimResult, RunClaimOptions } from "./cli-claim.js";
 
 // Decompose
 export { decompose } from "./decompose.js";

@@ -15,13 +15,6 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export interface CounterClaim {
-  /** The captured key as a number (e.g. 57). */
-  number: number;
-  /** Same number formatted with the configured width (e.g. "0057"). */
-  formatted: string;
-}
-
 export interface CounterStore {
   /**
    * Atomically claim the next number for `domain` on behalf of `issueNumber`.
@@ -29,22 +22,17 @@ export interface CounterStore {
    * Idempotent: a second call with the same `(domain, issueNumber)` returns
    * the previously-claimed number. `seed` is consulted only when the domain
    * has no recorded state — its return value becomes the first issued number.
+   *
+   * Returns the raw integer; formatting (zero-padding for display) is the
+   * caller's concern since width is a presentation choice tied to the
+   * domain's YAML config rather than the store itself.
    */
-  claim(
-    domain: string,
-    issueNumber: number,
-    width: number,
-    seed: () => number,
-  ): CounterClaim;
+  claim(domain: string, issueNumber: number, seed: () => number): number;
 }
 
 interface DomainState {
   next: number;
   claims: Record<string, number>;
-}
-
-function format(n: number, width: number): string {
-  return String(n).padStart(width, "0");
 }
 
 function applyClaim(
@@ -76,16 +64,11 @@ function applyClaim(
 export class InMemoryCounterStore implements CounterStore {
   private domains = new Map<string, DomainState>();
 
-  claim(
-    domain: string,
-    issueNumber: number,
-    width: number,
-    seed: () => number,
-  ): CounterClaim {
+  claim(domain: string, issueNumber: number, seed: () => number): number {
     const before = this.domains.get(domain) ?? null;
     const { state, number } = applyClaim(before, issueNumber, seed);
     this.domains.set(domain, state);
-    return { number, formatted: format(number, width) };
+    return number;
   }
 }
 
@@ -104,12 +87,7 @@ export class FileCounterStore implements CounterStore {
     this.lockTimeoutMs = options.lockTimeoutMs ?? 10_000;
   }
 
-  claim(
-    domain: string,
-    issueNumber: number,
-    width: number,
-    seed: () => number,
-  ): CounterClaim {
+  claim(domain: string, issueNumber: number, seed: () => number): number {
     if (!/^[A-Za-z0-9_.-]+$/.test(domain)) {
       throw new Error(
         `Invalid domain name "${domain}": must match /^[A-Za-z0-9_.-]+$/`,
@@ -125,7 +103,7 @@ export class FileCounterStore implements CounterStore {
       const before = readState(stateFile);
       const { state, number } = applyClaim(before, issueNumber, seed);
       writeStateAtomic(stateFile, state);
-      return { number, formatted: format(number, width) };
+      return number;
     });
   }
 }
