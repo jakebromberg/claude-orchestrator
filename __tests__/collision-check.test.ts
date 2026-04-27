@@ -198,14 +198,19 @@ describe("gatherCollisionInputs", () => {
       entries: [sqlEntry],
       baseBranch: "main",
     });
-    expect(runCommand).toHaveBeenCalledWith(
-      expect.stringContaining("git -C /tmp/wt/foo fetch origin main"),
+    const fetchCall = runCommand.mock.calls.find(
+      ([cmd]) =>
+        cmd.includes("/tmp/wt/foo") &&
+        cmd.includes("fetch origin") &&
+        cmd.includes("main"),
     );
+    expect(fetchCall).toBeDefined();
   });
 
   it("collects current's added files via diff against merge-base..HEAD", () => {
     const runCommand = vi.fn((cmd: string) => {
-      if (cmd.includes("merge-base HEAD origin/main")) return "abc123\n";
+      if (cmd.includes("merge-base HEAD") && cmd.includes("origin/main"))
+        return "abc123\n";
       if (cmd.includes("diff") && cmd.includes("abc123..HEAD")) {
         return "migrations/0056_add_x.sql\nmigrations/README.md\n";
       }
@@ -253,9 +258,29 @@ describe("gatherCollisionInputs", () => {
     expect(result.peers).toEqual({ bar: {} });
   });
 
+  it("shell-quotes worktree paths, refs, and entry dirs so spaces and metas are safe", () => {
+    const runCommand = vi.fn().mockReturnValue("");
+    gatherCollisionInputs({
+      runCommand,
+      existsSync: () => true,
+      currentWorktree: "/tmp/with space",
+      peers: [{ slug: "bar", worktreePath: "/tmp/peer's path" }],
+      entries: [{ dir: "weird dir/$X", pattern: "(\\d+)" }],
+      baseBranch: "feat/branch",
+    });
+    const cmds = runCommand.mock.calls.map((c) => c[0] as string);
+    // Every call must wrap the worktree path, branch ref, and entry dir in
+    // single quotes so the shell passes them as one argument each.
+    expect(cmds.some((c) => c.includes(`'/tmp/with space'`))).toBe(true);
+    expect(cmds.some((c) => c.includes(`'/tmp/peer'\\''s path'`))).toBe(true);
+    expect(cmds.some((c) => c.includes(`'feat/branch'`))).toBe(true);
+    expect(cmds.some((c) => c.includes(`'origin/feat/branch'`))).toBe(true);
+  });
+
   it("collects shipped (origin since merge-base) added files in current worktree", () => {
     const runCommand = vi.fn((cmd: string) => {
-      if (cmd.includes("merge-base HEAD origin/main")) return "abc123\n";
+      if (cmd.includes("merge-base HEAD") && cmd.includes("origin/main"))
+        return "abc123\n";
       if (cmd.includes("abc123..HEAD")) return "";
       if (cmd.includes("abc123..origin/main")) {
         return "migrations/0056_shipped.sql\n";
