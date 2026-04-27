@@ -89,8 +89,20 @@ export class InMemoryCounterStore implements CounterStore {
   }
 }
 
+export interface FileCounterStoreOptions {
+  /** Lock acquisition timeout in milliseconds. Defaults to 10s. */
+  lockTimeoutMs?: number;
+}
+
 export class FileCounterStore implements CounterStore {
-  constructor(private configDir: string) {}
+  private lockTimeoutMs: number;
+
+  constructor(
+    private configDir: string,
+    options: FileCounterStoreOptions = {},
+  ) {
+    this.lockTimeoutMs = options.lockTimeoutMs ?? 10_000;
+  }
 
   claim(
     domain: string,
@@ -109,7 +121,7 @@ export class FileCounterStore implements CounterStore {
     const stateFile = path.join(dir, `${domain}.json`);
     const lockFile = `${stateFile}.lock`;
 
-    return withFileLock(lockFile, () => {
+    return withFileLock(lockFile, this.lockTimeoutMs, () => {
       const before = readState(stateFile);
       const { state, number } = applyClaim(before, issueNumber, seed);
       writeStateAtomic(stateFile, state);
@@ -138,8 +150,8 @@ function writeStateAtomic(stateFile: string, state: DomainState): void {
   fs.renameSync(tmp, stateFile);
 }
 
-function withFileLock<T>(lockFile: string, fn: () => T): T {
-  const acquired = acquireLock(lockFile);
+function withFileLock<T>(lockFile: string, timeoutMs: number, fn: () => T): T {
+  const acquired = acquireLock(lockFile, timeoutMs);
   try {
     return fn();
   } finally {
@@ -153,9 +165,49 @@ function withFileLock<T>(lockFile: string, fn: () => T): T {
   }
 }
 
-function acquireLock(lockFile: string): boolean {
+/**
+ * Sync sleep without burning CPU. `Atomics.wait` blocks the agent thread for
+ * up to `ms` milliseconds; the SharedArrayBuffer is private to this call and
+ * never signaled, so the wait always returns by timeout.
+ */
+function sleepSync(ms: number): void {
+  const buf = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(buf, 0, 0, ms);
+}
+
+/**
+ * If a stale lockfile exists for a process that's no longer running, remove
+ * it so the next acquisition can proceed. `process.kill(pid, 0)` checks
+ * liveness without sending a real signal — it throws ESRCH for dead PIDs.
+ * Conservative: any error other than ESRCH (e.g. EPERM for a foreign PID
+ * owner) leaves the lock alone so we don't steal it from a real process.
+ */
+function tryReapStaleLock(lockFile: string): boolean {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(lockFile, "utf-8").trim();
+  } catch {
+    return false;
+  }
+  const pid = parseInt(raw, 10);
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return false; // PID is alive — lock is real
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ESRCH") return false;
+  }
+  try {
+    fs.unlinkSync(lockFile);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function acquireLock(lockFile: string, timeoutMs: number): boolean {
   const start = Date.now();
-  const timeoutMs = 10_000;
+  let staleChecked = false;
   while (true) {
     try {
       const fd = fs.openSync(lockFile, "wx");
@@ -164,16 +216,19 @@ function acquireLock(lockFile: string): boolean {
       return true;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      // Once per acquisition attempt, check if the lock is held by a dead
+      // process. If so, reap it and immediately retry.
+      if (!staleChecked) {
+        staleChecked = true;
+        if (tryReapStaleLock(lockFile)) continue;
+      }
       if (Date.now() - start > timeoutMs) {
         throw new Error(
           `Timed out waiting for counter lock ${lockFile} after ${timeoutMs}ms`,
         );
       }
       const wait = 25 + Math.floor(Math.random() * 50);
-      const until = Date.now() + wait;
-      while (Date.now() < until) {
-        // busy wait — claim is short, no async to yield to
-      }
+      sleepSync(wait);
     }
   }
 }

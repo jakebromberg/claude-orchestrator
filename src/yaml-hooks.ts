@@ -37,12 +37,21 @@ function defaultClaimHelperPath(): string {
   return path.join(path.dirname(here), "cli-claim.js");
 }
 
+/**
+ * Single-quote a path so it survives shell expansion when interpolated into
+ * the agent's Bash invocation. Embedded single quotes are escaped via the
+ * standard `'\''` close-reopen trick. Safe for any POSIX path.
+ */
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
 export function buildClaimCommand(
   yamlPath: string,
   issueNumber: number,
   helperPath: string = defaultClaimHelperPath(),
 ): string {
-  return `node ${helperPath} --config ${yamlPath} --issue ${issueNumber} --domain`;
+  return `node ${shellQuote(helperPath)} --config ${shellQuote(yamlPath)} --issue ${issueNumber} --domain`;
 }
 
 const VALID_COLUMN_PATHS = new Set([

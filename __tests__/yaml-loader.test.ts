@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { loadYamlConfig } from "../src/yaml-loader.js";
 
 const MINIMAL_YAML = `
@@ -213,6 +215,55 @@ issues:
 
     const config = await loadYamlConfig("/projects/test/orch.yaml");
     expect(config.hooks.postSessionCheck).toBeDefined();
+  });
+
+  it("expands {{CLAIM_NUMBER}} through interpolatePrompt with the loader's yamlPath", async () => {
+    // Write real files to a tempdir — yaml-hooks.ts uses a dynamic
+    // `await import("node:fs")` to read the prompt template, which dodges
+    // the readFileSpy. Real I/O is the cleanest workaround.
+    readFileSpy.mockRestore();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-loader-claim-"));
+    try {
+      const yamlPath = path.join(tmpDir, "orch.yaml");
+      const promptPath = path.join(tmpDir, "prompt.md");
+      fs.writeFileSync(
+        yamlPath,
+        `
+name: "Claim Test"
+configDir: "./cfg"
+worktreeDir: "./wt"
+projectRoot: "."
+stallTimeout: 300
+promptTemplate: "./prompt.md"
+sequentialDomains:
+  migrations:
+    paths:
+      - dir: migrations
+        pattern: "(\\\\d{4})_.*\\\\.sql"
+    width: 4
+issues:
+  - number: 7
+    slug: add-orders
+    dependsOn: []
+    description: "Add orders table"
+`,
+      );
+      fs.writeFileSync(promptPath, "Claim cmd: {{CLAIM_NUMBER}} migrations");
+
+      const config = await loadYamlConfig(yamlPath);
+      const issue = config.issues[0]!;
+      const prompt = await config.hooks.interpolatePrompt(issue);
+
+      // The loader resolves yamlPath to an absolute path and threads it into
+      // deriveHooks; the helper path is pkg-install-relative (cli-claim.js
+      // sibling of yaml-hooks.js), and both are shell-quoted.
+      expect(prompt).toContain(`--config '${yamlPath}'`);
+      expect(prompt).toContain("--issue 7");
+      expect(prompt).toMatch(/--domain migrations$/);
+      expect(prompt).toContain("cli-claim.js");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("rejects a sequentialPaths pattern with no capture group at load time", async () => {
