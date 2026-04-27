@@ -85,7 +85,9 @@ describe("seedFromGit", () => {
         paths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
       },
     );
-    expect(runCommand.mock.calls[0]![0]).toContain("fetch origin main");
+    const cmd = runCommand.mock.calls[0]![0];
+    expect(cmd).toContain("fetch origin");
+    expect(cmd).toContain("main");
   });
 
   it("continues scanning when the fetch fails", () => {
@@ -119,6 +121,23 @@ describe("seedFromGit", () => {
       },
     );
     expect(next).toBe(1);
+  });
+
+  it("shell-quotes repo dir, branch, and per-path dir so spaces and metas are safe", () => {
+    const runCommand = vi.fn().mockReturnValue("");
+    seedFromGit(
+      { runCommand },
+      {
+        repoDir: "/tmp/with space",
+        baseBranch: "feat/branch",
+        paths: [{ dir: "weird dir/$X", pattern: "(\\d{4})" }],
+      },
+    );
+    const cmds = runCommand.mock.calls.map((c) => c[0] as string);
+    expect(cmds.some((c) => c.includes(`'/tmp/with space'`))).toBe(true);
+    expect(cmds.some((c) => c.includes(`'feat/branch'`))).toBe(true);
+    expect(cmds.some((c) => c.includes(`'origin/feat/branch'`))).toBe(true);
+    expect(cmds.some((c) => c.includes(`'weird dir/$X'`))).toBe(true);
   });
 
   it("uses the configured base branch", () => {

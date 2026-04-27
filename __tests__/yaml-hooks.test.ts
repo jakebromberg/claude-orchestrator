@@ -333,7 +333,8 @@ describe("deriveHooks", () => {
     } = {}): { runCommand: ReturnType<typeof vi.fn>; existsSync: ReturnType<typeof vi.fn> } {
       const runCommand = vi.fn((cmd: string) => {
         if (cmd.includes("fetch origin")) return "";
-        if (cmd.includes("merge-base HEAD origin/main")) return "abc123\n";
+        if (cmd.includes("merge-base HEAD") && cmd.includes("origin/main"))
+          return "abc123\n";
         // current worktree: abc123..HEAD
         if (cmd.includes("/tmp/worktrees/foo") && cmd.includes("abc123..HEAD")) {
           return (opts.currentAdded ?? []).join("\n") + "\n";
@@ -419,7 +420,8 @@ describe("deriveHooks", () => {
         if (cmd.includes("/tmp/worktrees/bar")) {
           throw new Error("not a git repository");
         }
-        if (cmd.includes("merge-base HEAD origin/main")) return "abc123\n";
+        if (cmd.includes("merge-base HEAD") && cmd.includes("origin/main"))
+          return "abc123\n";
         if (cmd.includes("abc123..HEAD")) return "migrations/0056_a.sql\n";
         return "";
       });
@@ -475,10 +477,11 @@ describe("deriveHooks", () => {
         makeIssue({ slug: "foo" }),
         "/tmp/worktrees/foo",
       );
-      expect(runCommand).toHaveBeenCalledWith(
-        expect.stringContaining("fetch origin trunk"),
-        "/tmp/worktrees/foo",
+      const fetchCall = runCommand.mock.calls.find(
+        ([cmd]) => cmd.includes("fetch origin") && cmd.includes("trunk"),
       );
+      expect(fetchCall).toBeDefined();
+      expect(fetchCall![1]).toBe("/tmp/worktrees/foo");
     });
   });
 

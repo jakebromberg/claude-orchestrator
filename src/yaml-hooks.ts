@@ -8,6 +8,7 @@ import { createPrintSummary, type SummaryColumn } from "./summary.js";
 import { interpolate } from "./interpolate.js";
 import { createLabelSyncHandler } from "./label-sync.js";
 import { detectCollisions, gatherCollisionInputs } from "./collision-check.js";
+import { shellQuote } from "./shell-quote.js";
 
 /** I/O dependencies injectable for testing. */
 export interface DeriveHooksDeps {
@@ -35,15 +36,6 @@ export interface DeriveHooksDeps {
 function defaultClaimHelperPath(): string {
   const here = fileURLToPath(import.meta.url);
   return path.join(path.dirname(here), "cli-claim.js");
-}
-
-/**
- * Single-quote a path so it survives shell expansion when interpolated into
- * the agent's Bash invocation. Embedded single quotes are escaped via the
- * standard `'\''` close-reopen trick. Safe for any POSIX path.
- */
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
 export function buildClaimCommand(
