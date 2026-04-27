@@ -21,6 +21,16 @@ export function seedFromGit(
   deps: SeedFromGitDeps,
   options: SeedFromGitOptions,
 ): number {
+  // Best-effort fetch so we seed from the freshest origin/<baseBranch>.
+  // Mirrors collision-check.ts; failures are swallowed so an unreachable
+  // origin doesn't block claims (we proceed with whatever ref currently
+  // points to).
+  try {
+    deps.runCommand(`git -C ${options.repoDir} fetch origin ${options.baseBranch}`);
+  } catch {
+    // ignore
+  }
+
   let max = 0;
   for (const { dir, pattern } of options.paths) {
     const re = new RegExp(pattern);

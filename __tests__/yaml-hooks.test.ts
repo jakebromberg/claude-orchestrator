@@ -181,7 +181,56 @@ describe("deriveHooks", () => {
       const issue = makeIssue({ number: 7 });
       const result = await hooks.interpolatePrompt(issue);
       expect(result).toBe(
-        "Use: node /abs/cli-claim.js --config /abs/config.yaml --issue 7 --domain migrations",
+        "Use: node '/abs/cli-claim.js' --config '/abs/config.yaml' --issue 7 --domain migrations",
+      );
+    });
+
+    it("shell-quotes paths so spaces are safe", async () => {
+      const readFile = vi.fn().mockReturnValue("Cmd: {{CLAIM_NUMBER}}");
+      const hooks = deriveHooks(
+        makeYaml({
+          promptTemplate: "/tmp/prompt.md",
+          sequentialDomains: {
+            migrations: {
+              paths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+              width: 4,
+            },
+          },
+        }),
+        {
+          readFile,
+          yamlPath: "/Users/me/My Project/config.yaml",
+          claimHelperPath: "/abs/cli-claim.js",
+        },
+      );
+      const result = await hooks.interpolatePrompt(makeIssue({ number: 1 }));
+      expect(result).toBe(
+        "Cmd: node '/abs/cli-claim.js' --config '/Users/me/My Project/config.yaml' --issue 1 --domain",
+      );
+    });
+
+    it("escapes embedded single quotes in paths", async () => {
+      const readFile = vi.fn().mockReturnValue("Cmd: {{CLAIM_NUMBER}}");
+      const hooks = deriveHooks(
+        makeYaml({
+          promptTemplate: "/tmp/prompt.md",
+          sequentialDomains: {
+            migrations: {
+              paths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+              width: 4,
+            },
+          },
+        }),
+        {
+          readFile,
+          yamlPath: "/jake's/config.yaml",
+          claimHelperPath: "/abs/cli-claim.js",
+        },
+      );
+      const result = await hooks.interpolatePrompt(makeIssue({ number: 1 }));
+      // Standard close-reopen escape: 'jake'\''s'
+      expect(result).toBe(
+        "Cmd: node '/abs/cli-claim.js' --config '/jake'\\''s/config.yaml' --issue 1 --domain",
       );
     });
 

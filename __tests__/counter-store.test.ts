@@ -129,6 +129,47 @@ describe("FileCounterStore", () => {
     expect(() => store.claim("foo/bar", 1, 4, () => 1)).toThrow();
     expect(() => store.claim("../escape", 1, 4, () => 1)).toThrow();
   });
+
+  it("releases the lock file after a successful claim", () => {
+    store.claim("migrations", 1, 4, () => 56);
+    const lock = path.join(tmpDir, "counters", "migrations.json.lock");
+    expect(fs.existsSync(lock)).toBe(false);
+  });
+
+  it("releases the lock file even when the seed function throws", () => {
+    expect(() =>
+      store.claim("migrations", 1, 4, () => {
+        throw new Error("seed boom");
+      }),
+    ).toThrow(/seed boom/);
+    const lock = path.join(tmpDir, "counters", "migrations.json.lock");
+    expect(fs.existsSync(lock)).toBe(false);
+  });
+
+  it("reaps a stale lock from a dead PID and proceeds", () => {
+    // Seed a lockfile with a PID that's overwhelmingly unlikely to exist.
+    // (PID 0x7FFFFFFE is reserved as PID_MAX on Linux/macOS, and not used.)
+    fs.mkdirSync(path.join(tmpDir, "counters"), { recursive: true });
+    const lock = path.join(tmpDir, "counters", "migrations.json.lock");
+    fs.writeFileSync(lock, "2147483646");
+    const c = store.claim("migrations", 1, 4, () => 56);
+    expect(c.number).toBe(56);
+    expect(fs.existsSync(lock)).toBe(false);
+  });
+
+  it("does not reap a lock held by a live PID and times out", () => {
+    const fastStore = new FileCounterStore(tmpDir, { lockTimeoutMs: 200 });
+    fs.mkdirSync(path.join(tmpDir, "counters"), { recursive: true });
+    const lock = path.join(tmpDir, "counters", "migrations.json.lock");
+    fs.writeFileSync(lock, String(process.pid));
+    try {
+      expect(() =>
+        fastStore.claim("migrations", 1, 4, () => 56),
+      ).toThrow(/Timed out waiting for counter lock/);
+    } finally {
+      fs.unlinkSync(lock);
+    }
+  });
 });
 
 describe("ESM safety", () => {
