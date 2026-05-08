@@ -10,7 +10,7 @@
  * Pure helpers (`parseClaimArgs`, `runClaim`) are exported for testing; the
  * file's bottom is the CLI entry-point that wires real I/O.
  */
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -102,7 +102,7 @@ function main() {
     // domainConfig is guaranteed to exist when seed() is invoked.
     const domainConfig = yaml.sequentialDomains?.[args.domain];
     const store = new FileCounterStore(yaml.configDir);
-    const seed = () => seedFromGit({ runCommand: (cmd) => execSync(cmd, { encoding: "utf-8" }) }, {
+    const seed = () => seedFromGit({ runCommand: (file, args) => execFileSync(file, args, { encoding: "utf-8" }) }, {
         repoDir: yaml.projectRoot,
         baseBranch,
         paths: domainConfig.paths,

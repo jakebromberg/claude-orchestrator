@@ -592,6 +592,100 @@ describe("deriveHooks", () => {
     });
   });
 
+  describe("onMergeConflict hook", () => {
+    it("is not attached when mergeConflictRetry is not configured", () => {
+      const hooks = deriveHooks(makeYaml());
+      expect(hooks.onMergeConflict).toBeUndefined();
+    });
+
+    it("is not attached when mergeConflictRetry.enabled is false", () => {
+      const hooks = deriveHooks(
+        makeYaml({ mergeConflictRetry: { enabled: false } }),
+      );
+      expect(hooks.onMergeConflict).toBeUndefined();
+    });
+
+    it("is attached when mergeConflictRetry.enabled is true", () => {
+      const hooks = deriveHooks(
+        makeYaml({ mergeConflictRetry: { enabled: true } }),
+      );
+      expect(typeof hooks.onMergeConflict).toBe("function");
+    });
+
+    it("invokes claude with conflict files and baseBranch in the prompt", async () => {
+      const commands: Array<{ cmd: string; cwd: string }> = [];
+      const runCommand = vi.fn((cmd: string, cwd: string) => {
+        commands.push({ cmd, cwd });
+        return "";
+      });
+      const hooks = deriveHooks(
+        makeYaml({ mergeConflictRetry: { enabled: true } }),
+        { runCommand },
+      );
+
+      const issue = makeIssue({ number: 3, slug: "foo" });
+      await hooks.onMergeConflict!(issue, ["src/foo.ts", "src/bar.ts"], "main");
+
+      expect(commands).toHaveLength(1);
+      expect(commands[0].cmd).toContain("claude");
+      expect(commands[0].cmd).toContain("src/foo.ts");
+      expect(commands[0].cmd).toContain("src/bar.ts");
+      expect(commands[0].cmd).toContain("main");
+    });
+
+    it("runs the session in the issue's worktree", async () => {
+      const commands: Array<{ cmd: string; cwd: string }> = [];
+      const runCommand = vi.fn((cmd: string, cwd: string) => {
+        commands.push({ cmd, cwd });
+        return "";
+      });
+      const hooks = deriveHooks(
+        makeYaml({ mergeConflictRetry: { enabled: true } }),
+        { runCommand },
+      );
+
+      const issue = makeIssue({ number: 1, slug: "my-feat" });
+      await hooks.onMergeConflict!(issue, [], "main");
+
+      expect(commands[0].cwd).toBe("/tmp/worktrees/my-feat");
+    });
+
+    it("returns resolved:true when claude exits 0", async () => {
+      const hooks = deriveHooks(
+        makeYaml({ mergeConflictRetry: { enabled: true } }),
+        { runCommand: vi.fn().mockReturnValue("") },
+      );
+
+      const result = await hooks.onMergeConflict!(makeIssue(), [], "main");
+
+      expect(result.resolved).toBe(true);
+    });
+
+    it("returns resolved:false when claude exits non-zero", async () => {
+      const hooks = deriveHooks(
+        makeYaml({ mergeConflictRetry: { enabled: true } }),
+        { runCommand: vi.fn().mockImplementation(() => { throw new Error("exit 1"); }) },
+      );
+
+      const result = await hooks.onMergeConflict!(makeIssue(), [], "main");
+
+      expect(result.resolved).toBe(false);
+      expect(result.details).toContain("exit 1");
+    });
+
+    it("includes the issue number in the prompt", async () => {
+      const commands: Array<{ cmd: string; cwd: string }> = [];
+      const hooks = deriveHooks(
+        makeYaml({ mergeConflictRetry: { enabled: true } }),
+        { runCommand: vi.fn((cmd, cwd) => { commands.push({ cmd, cwd }); return ""; }) },
+      );
+
+      await hooks.onMergeConflict!(makeIssue({ number: 99 }), [], "main");
+
+      expect(commands[0].cmd).toContain("99");
+    });
+  });
+
   describe("setUpWorktree and removeWorktree", () => {
     it("setUpWorktree throws directing user to .hooks.ts", async () => {
       const hooks = deriveHooks(makeYaml());

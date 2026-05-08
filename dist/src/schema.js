@@ -9,6 +9,7 @@ const IssueSpecSchema = z.object({
     mode: z.string().optional(),
     stallTimeout: z.number().int().min(0).optional(),
     serial: z.boolean().optional(),
+    ownsFiles: z.array(z.string().min(1)).optional(),
 });
 const RawConfigSchema = z
     .object({
@@ -96,9 +97,9 @@ const RawConfigSchema = z
  *
  * Throws a ZodError if structural, referential, or graph validation fails.
  */
-export function validateConfig(raw) {
+export function validateConfig(raw, options) {
     const parsed = RawConfigSchema.parse(raw);
-    const issues = computeWaves(parsed.issues);
+    const issues = computeWaves(parsed.issues, { ignoredOwnsFiles: options?.ignoredOwnsFiles });
     return {
         name: parsed.name,
         configDir: parsed.configDir,

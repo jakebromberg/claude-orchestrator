@@ -4,13 +4,14 @@
  * Provides functions for interacting with GitHub issues via the `gh` CLI.
  * All functions accept a `GitHubDeps` interface for dependency injection.
  */
+import { shellQuote } from "./shell-quote.js";
 /** Add a label to a GitHub issue. */
 export function addIssueLabel(repo, issueNumber, label, deps) {
-    deps.runCommand(`gh issue edit ${issueNumber} --repo ${repo} --add-label "${label}"`);
+    deps.runCommand(`gh issue edit ${issueNumber} --repo ${shellQuote(repo)} --add-label ${shellQuote(label)}`);
 }
 /** Remove a label from a GitHub issue. */
 export function removeIssueLabel(repo, issueNumber, label, deps) {
-    deps.runCommand(`gh issue edit ${issueNumber} --repo ${repo} --remove-label "${label}"`);
+    deps.runCommand(`gh issue edit ${issueNumber} --repo ${shellQuote(repo)} --remove-label ${shellQuote(label)}`);
 }
 /**
  * Post a comment on a GitHub issue.
@@ -19,7 +20,7 @@ export function removeIssueLabel(repo, issueNumber, label, deps) {
  * with markdown bodies containing special characters.
  */
 export function postIssueComment(repo, issueNumber, body, deps) {
-    deps.runCommand(`gh issue comment ${issueNumber} --repo ${repo} --body-file -`, { input: body });
+    deps.runCommand(`gh issue comment ${issueNumber} --repo ${shellQuote(repo)} --body-file -`, { input: body });
 }
 /**
  * Ensure a label exists on a repository (idempotent).
@@ -28,13 +29,12 @@ export function postIssueComment(repo, issueNumber, body, deps) {
  * already exists.
  */
 export function ensureLabelExists(repo, label, deps, options) {
-    let cmd = `gh label create "${label}" --repo ${repo} --force`;
+    let cmd = `gh label create ${shellQuote(label)} --repo ${shellQuote(repo)} --force`;
     if (options?.color) {
-        cmd += ` --color ${options.color}`;
+        cmd += ` --color ${shellQuote(options.color)}`;
     }
     if (options?.description) {
-        const escaped = options.description.replace(/'/g, "\\'");
-        cmd += ` --description "${escaped}"`;
+        cmd += ` --description ${shellQuote(options.description)}`;
     }
     deps.runCommand(cmd);
 }

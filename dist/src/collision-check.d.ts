@@ -63,7 +63,7 @@ export interface CollisionResult {
 }
 export declare function detectCollisions(input: CollisionInput): CollisionResult;
 export interface GatherCollisionInputsDeps {
-    runCommand: (cmd: string) => string;
+    runCommand: (file: string, args: string[]) => string;
     existsSync: (path: string) => boolean;
     currentWorktree: string;
     peers: {

@@ -27,6 +27,9 @@ export { createMain } from "./create-main.js";
 export { loadYamlConfig, resolveYamlPaths } from "./yaml-loader.js";
 export { deriveHooks, buildClaimCommand } from "./yaml-hooks.js";
 export { interpolate } from "./interpolate.js";
+// Journal-aware merge driver (issue #37)
+export { getNestedArray, setNestedArray, extractJsonObjects, parseConflictSections, mergeJsonArrays, mergeJsonDocuments, resolveConflict, } from "./merge-appendable.js";
+export { parseMergeAppendableArgs, runMergeDriver, runResolve } from "./cli-merge-appendable.js";
 // Sequential-number coordination (issue #25)
 export { InMemoryCounterStore, FileCounterStore, } from "./counter-store.js";
 export { seedFromGit } from "./seed-from-git.js";

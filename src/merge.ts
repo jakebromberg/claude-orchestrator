@@ -13,6 +13,18 @@ export interface MergeDeps {
   runCommand: (cmd: string) => string;
   logger: Logger;
   getWorktreePath?: (issue: Issue) => string;
+  /**
+   * Optional hook invoked when `gh pr merge` fails with a conflict error.
+   * Return `{ resolved: true }` to trigger a single merge retry.
+   * Errors thrown by this hook are non-fatal (logged as warnings).
+   */
+  onMergeConflict?: (issue: Issue, conflictFiles: string[], baseBranch: string) => Promise<{ resolved: boolean; details?: string }>;
+  /** Base branch name passed to `onMergeConflict`. Defaults to `"main"`. */
+  baseBranch?: string;
+}
+
+function isConflictError(message: string): boolean {
+  return /conflict/i.test(message);
 }
 
 /**
@@ -40,15 +52,46 @@ function rebaseBranch(
 }
 
 /**
+ * Rebase remaining wave candidates against updated main after a successful merge.
+ * Issues marked rebase-failed in `results` are skipped.
+ */
+function rebaseRemaining(
+  sorted: Issue[],
+  startIndex: number,
+  results: Map<number, MergeResult>,
+  deps: MergeDeps,
+): void {
+  if (!deps.getWorktreePath) return;
+
+  for (let j = startIndex; j < sorted.length; j++) {
+    const remaining = sorted[j];
+
+    if (results.get(remaining.number) === "rebase-failed") continue;
+
+    const remainingStatus = deps.getStatus(remaining.number);
+    const remainingMetadata = deps.getMetadata(remaining.number);
+    if (remainingStatus !== "succeeded" || !remainingMetadata.prUrl) continue;
+
+    const worktreePath = deps.getWorktreePath(remaining);
+    deps.logger.info(`#${remaining.number}: rebasing against main`);
+
+    if (!rebaseBranch(worktreePath, deps.runCommand, deps.logger)) {
+      deps.logger.error(`#${remaining.number}: rebase failed, skipping merge`);
+      results.set(remaining.number, "rebase-failed");
+    }
+  }
+}
+
+/**
  * Merge PRs for succeeded issues in wave order.
  * After each successful merge, rebases remaining candidates against updated main
  * (when getWorktreePath is provided). Returns a map of issue number to merge result.
  */
-export function mergePrs(
+export async function mergePrs(
   issues: Issue[],
   deps: MergeDeps,
   options?: MergeOptions,
-): Map<number, MergeResult> {
+): Promise<Map<number, MergeResult>> {
   const results = new Map<number, MergeResult>();
 
   // Sort issues by wave for ordered merging
@@ -81,42 +124,52 @@ export function mergePrs(
       continue;
     }
 
+    const adminFlag = options?.admin ? " --admin" : "";
+    const mergeCmd = `gh pr merge ${metadata.prUrl} --rebase${adminFlag}`;
+
+    let merged = false;
+    let failureMessage: string | undefined;
+
     try {
       deps.logger.step(`#${issue.number}: merging ${metadata.prUrl}`);
-
-      const adminFlag = options?.admin ? " --admin" : "";
-      deps.runCommand(
-        `gh pr merge ${metadata.prUrl} --rebase${adminFlag}`,
-      );
-
-      deps.logger.info(`#${issue.number}: merged`);
-      results.set(issue.number, "merged");
-
-      // Rebase remaining candidates against updated main
-      if (deps.getWorktreePath) {
-        for (let j = i + 1; j < sorted.length; j++) {
-          const remaining = sorted[j];
-
-          // Skip if already marked rebase-failed
-          if (results.get(remaining.number) === "rebase-failed") continue;
-
-          // Only rebase candidates that could be merged
-          const remainingStatus = deps.getStatus(remaining.number);
-          const remainingMetadata = deps.getMetadata(remaining.number);
-          if (remainingStatus !== "succeeded" || !remainingMetadata.prUrl) continue;
-
-          const worktreePath = deps.getWorktreePath(remaining);
-          deps.logger.info(`#${remaining.number}: rebasing against main`);
-
-          if (!rebaseBranch(worktreePath, deps.runCommand, deps.logger)) {
-            deps.logger.error(`#${remaining.number}: rebase failed, skipping merge`);
-            results.set(remaining.number, "rebase-failed");
-          }
-        }
-      }
+      deps.runCommand(mergeCmd);
+      merged = true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      deps.logger.error(`#${issue.number}: merge failed: ${message}`);
+
+      if (isConflictError(message) && deps.onMergeConflict) {
+        const baseBranch = deps.baseBranch ?? "main";
+        let resolved = false;
+        try {
+          const resolution = await deps.onMergeConflict(issue, [], baseBranch);
+          resolved = resolution.resolved;
+        } catch (hookErr) {
+          deps.logger.warn(
+            `#${issue.number}: onMergeConflict hook error: ${hookErr instanceof Error ? hookErr.message : String(hookErr)}`,
+          );
+        }
+
+        if (resolved) {
+          try {
+            deps.runCommand(mergeCmd);
+            merged = true;
+          } catch (retryErr) {
+            failureMessage = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          }
+        } else {
+          failureMessage = message;
+        }
+      } else {
+        failureMessage = message;
+      }
+    }
+
+    if (merged) {
+      deps.logger.info(`#${issue.number}: merged`);
+      results.set(issue.number, "merged");
+      rebaseRemaining(sorted, i + 1, results, deps);
+    } else {
+      deps.logger.error(`#${issue.number}: merge failed: ${failureMessage}`);
       results.set(issue.number, "failed");
     }
   }

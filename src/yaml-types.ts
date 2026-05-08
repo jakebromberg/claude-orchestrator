@@ -104,6 +104,12 @@ export interface YamlConfig {
   labelSync?: { prefix: string; repo?: string };
   /** Auto-retry when postSessionCheck fails. */
   retryOnCheckFailure?: { maxRetries: number; enabled?: boolean };
+  /**
+   * Spawn a Claude session to resolve merge conflicts when `gh pr merge` fails.
+   * Disabled by default. When enabled, a conflict triggers a single agent session
+   * in the existing worktree; the merge is retried once if the session exits 0.
+   */
+  mergeConflictRetry?: { enabled?: boolean; maxAttempts?: number };
   /** Base branch used for collision detection diffs. Default `"main"`. */
   baseBranch?: string;
   /**

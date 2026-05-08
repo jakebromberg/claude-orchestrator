@@ -53,6 +53,12 @@ export async function loadYamlConfig(yamlPath, options = {}) {
     const hooks = options.hooksOverride
         ? { ...derivedHooks, ...options.hooksOverride }
         : derivedHooks;
+    // Files that are safe to overlap across parallel issues: explicit allowlist
+    // plus any appendableFiles paths (handled mechanically by the merge driver).
+    const ignoredOwnsFiles = [
+        ...(yaml.sharedFiles ?? []),
+        ...(yaml.appendableFiles?.map((f) => f.path) ?? []),
+    ];
     // Build raw config and validate (computes waves, checks graph)
     return validateConfig({
         name: yaml.name,
@@ -66,6 +72,6 @@ export async function loadYamlConfig(yamlPath, options = {}) {
         ...(yaml.issueComments && { issueComments: { repo: yaml.issueComments.repo, enabled: yaml.issueComments.enabled ?? true } }),
         ...(yaml.labelSync && { labelSync: yaml.labelSync }),
         ...(yaml.retryOnCheckFailure && { retryOnCheckFailure: { maxRetries: yaml.retryOnCheckFailure.maxRetries, enabled: yaml.retryOnCheckFailure.enabled ?? true } }),
-    });
+    }, ignoredOwnsFiles.length > 0 ? { ignoredOwnsFiles } : undefined);
 }
 //# sourceMappingURL=yaml-loader.js.map

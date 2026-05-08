@@ -42,6 +42,20 @@ export interface SequentialDomainConfig {
     paths: SequentialPathConfig[];
     width: number;
 }
+/**
+ * One append-style JSON array file wired to the journal-aware merge driver.
+ * Used in the `appendableFiles` YAML config field.
+ */
+export interface AppendableFileSpec {
+    /** Path to the file, relative to the project root. */
+    path: string;
+    /** File format. Currently only `"json-array"` is supported. */
+    format: "json-array";
+    /** Dot-separated path to the array within the document (e.g. `"entries"` or `"meta.entries"`). */
+    arrayPath: string;
+    /** Field whose value uniquely identifies each entry (e.g. `"idx"`). */
+    keyField: string;
+}
 /** Issue definition in a YAML config. */
 export interface YamlIssue {
     number: number;
@@ -53,6 +67,8 @@ export interface YamlIssue {
     stallTimeout?: number;
     /** Run this issue alone in its own wave. See `IssueSpec.serial`. */
     serial?: boolean;
+    /** Paths to files this issue expects to write. See `IssueSpec.ownsFiles`. */
+    ownsFiles?: string[];
 }
 /**
  * Shape of a parsed YAML orchestrator config file.
@@ -88,6 +104,15 @@ export interface YamlConfig {
         maxRetries: number;
         enabled?: boolean;
     };
+    /**
+     * Spawn a Claude session to resolve merge conflicts when `gh pr merge` fails.
+     * Disabled by default. When enabled, a conflict triggers a single agent session
+     * in the existing worktree; the merge is retried once if the session exits 0.
+     */
+    mergeConflictRetry?: {
+        enabled?: boolean;
+        maxAttempts?: number;
+    };
     /** Base branch used for collision detection diffs. Default `"main"`. */
     baseBranch?: string;
     /**
@@ -103,6 +128,20 @@ export interface YamlConfig {
      * can request guaranteed-unique numbers instead of computing them locally.
      */
     sequentialDomains?: Record<string, SequentialDomainConfig>;
+    /**
+     * Append-style JSON array files for which a journal-aware git merge driver
+     * should be used. Each entry configures one file path with its array
+     * location and deduplication key. See `claude-orchestrator-merge-appendable`
+     * for setup instructions.
+     */
+    appendableFiles?: AppendableFileSpec[];
+    /**
+     * Files that are safe to overlap across parallel issues and should not
+     * trigger wave serialization by the ownsFiles conflict detector. Typical
+     * entries: `package-lock.json`, test mocks, append-style JSON files already
+     * covered by the journal merge driver.
+     */
+    sharedFiles?: string[];
     issues: YamlIssue[];
 }
 /**
