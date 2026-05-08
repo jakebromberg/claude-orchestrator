@@ -133,6 +133,8 @@ export interface ParsedArgs {
 export interface StatusStore {
     get(issueNumber: number): Status;
     set(issueNumber: number, status: Status): void;
+    /** Discard recorded state for `issueNumber`. Idempotent on absent state. */
+    remove(issueNumber: number): void;
 }
 export interface ProcessHandle {
     pid: number;
@@ -167,6 +169,8 @@ export interface MetadataStore {
     get(issueNumber: number): IssueMetadata;
     set(issueNumber: number, metadata: IssueMetadata): void;
     update(issueNumber: number, partial: Partial<IssueMetadata>): void;
+    /** Discard recorded metadata for `issueNumber`. Idempotent on absent state. */
+    remove(issueNumber: number): void;
 }
 export interface Deps {
     statusStore: StatusStore;

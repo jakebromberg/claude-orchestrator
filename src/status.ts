@@ -12,6 +12,10 @@ export class InMemoryStatusStore implements StatusStore {
   set(issueNumber: number, status: Status): void {
     this.statuses.set(issueNumber, status);
   }
+
+  remove(issueNumber: number): void {
+    this.statuses.delete(issueNumber);
+  }
 }
 
 export class FileStatusStore implements StatusStore {
@@ -36,6 +40,14 @@ export class FileStatusStore implements StatusStore {
     fs.writeFileSync(this.statusFilePath(issueNumber), status);
   }
 
+  remove(issueNumber: number): void {
+    try {
+      fs.unlinkSync(this.statusFilePath(issueNumber));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+  }
+
   private statusFilePath(issueNumber: number): string {
     return path.join(this.configDir, "status", `issue-${issueNumber}.status`);
   }
@@ -55,6 +67,10 @@ export class InMemoryMetadataStore implements MetadataStore {
   update(issueNumber: number, partial: Partial<IssueMetadata>): void {
     const current = this.get(issueNumber);
     this.metadata.set(issueNumber, { ...current, ...partial });
+  }
+
+  remove(issueNumber: number): void {
+    this.metadata.delete(issueNumber);
   }
 }
 
@@ -83,6 +99,14 @@ export class FileMetadataStore implements MetadataStore {
   update(issueNumber: number, partial: Partial<IssueMetadata>): void {
     const current = this.get(issueNumber);
     this.set(issueNumber, { ...current, ...partial });
+  }
+
+  remove(issueNumber: number): void {
+    try {
+      fs.unlinkSync(this.metadataFilePath(issueNumber));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
   }
 
   private metadataFilePath(issueNumber: number): string {

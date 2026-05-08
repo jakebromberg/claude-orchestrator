@@ -3,12 +3,14 @@ export declare class InMemoryStatusStore implements StatusStore {
     private statuses;
     get(issueNumber: number): Status;
     set(issueNumber: number, status: Status): void;
+    remove(issueNumber: number): void;
 }
 export declare class FileStatusStore implements StatusStore {
     private configDir;
     constructor(configDir: string);
     get(issueNumber: number): Status;
     set(issueNumber: number, status: Status): void;
+    remove(issueNumber: number): void;
     private statusFilePath;
 }
 export declare class InMemoryMetadataStore implements MetadataStore {
@@ -16,6 +18,7 @@ export declare class InMemoryMetadataStore implements MetadataStore {
     get(issueNumber: number): IssueMetadata;
     set(issueNumber: number, metadata: IssueMetadata): void;
     update(issueNumber: number, partial: Partial<IssueMetadata>): void;
+    remove(issueNumber: number): void;
 }
 export declare class FileMetadataStore implements MetadataStore {
     private configDir;
@@ -23,5 +26,6 @@ export declare class FileMetadataStore implements MetadataStore {
     get(issueNumber: number): IssueMetadata;
     set(issueNumber: number, metadata: IssueMetadata): void;
     update(issueNumber: number, partial: Partial<IssueMetadata>): void;
+    remove(issueNumber: number): void;
     private metadataFilePath;
 }

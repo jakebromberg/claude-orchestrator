@@ -149,6 +149,10 @@ export class Orchestrator {
     this.deps.logger.header("Cleaning Up");
     for (const issue of this.config.issues) {
       await this.config.hooks.removeWorktree(issue);
+      // Discard transient run state so the next wave starts from a clean slate.
+      // Logs, run history, and per-domain counters are intentionally preserved.
+      this.deps.statusStore.remove(issue.number);
+      this.deps.metadataStore.remove(issue.number);
     }
     this.deps.logger.info("Cleanup complete");
   }

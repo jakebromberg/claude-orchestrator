@@ -8,6 +8,9 @@ export class InMemoryStatusStore {
     set(issueNumber, status) {
         this.statuses.set(issueNumber, status);
     }
+    remove(issueNumber) {
+        this.statuses.delete(issueNumber);
+    }
 }
 export class FileStatusStore {
     configDir;
@@ -28,6 +31,15 @@ export class FileStatusStore {
         fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(this.statusFilePath(issueNumber), status);
     }
+    remove(issueNumber) {
+        try {
+            fs.unlinkSync(this.statusFilePath(issueNumber));
+        }
+        catch (err) {
+            if (err.code !== "ENOENT")
+                throw err;
+        }
+    }
     statusFilePath(issueNumber) {
         return path.join(this.configDir, "status", `issue-${issueNumber}.status`);
     }
@@ -43,6 +55,9 @@ export class InMemoryMetadataStore {
     update(issueNumber, partial) {
         const current = this.get(issueNumber);
         this.metadata.set(issueNumber, { ...current, ...partial });
+    }
+    remove(issueNumber) {
+        this.metadata.delete(issueNumber);
     }
 }
 export class FileMetadataStore {
@@ -67,6 +82,15 @@ export class FileMetadataStore {
     update(issueNumber, partial) {
         const current = this.get(issueNumber);
         this.set(issueNumber, { ...current, ...partial });
+    }
+    remove(issueNumber) {
+        try {
+            fs.unlinkSync(this.metadataFilePath(issueNumber));
+        }
+        catch (err) {
+            if (err.code !== "ENOENT")
+                throw err;
+        }
     }
     metadataFilePath(issueNumber) {
         return path.join(this.configDir, "metadata", `issue-${issueNumber}.json`);

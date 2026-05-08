@@ -145,3 +145,8 @@ worklog/
 # Self-hosted orchestrator runtime state
 worktrees/
 .orchestrator/state/
+
+# HANDOFF.md is the per-worktree agent-to-agent handoff payload (read by
+# upstream-context.ts). It belongs in the worktree only — never on main,
+# otherwise the next agent inherits it as a permanent file.
+HANDOFF.md

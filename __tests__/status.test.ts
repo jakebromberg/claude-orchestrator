@@ -38,6 +38,16 @@ describe("InMemoryStatusStore", () => {
     expect(store.get(2)).toBe("failed");
     expect(store.get(3)).toBe("pending");
   });
+
+  it("remove discards recorded state", () => {
+    store.set(1, "succeeded");
+    store.remove(1);
+    expect(store.get(1)).toBe("pending");
+  });
+
+  it("remove is idempotent on absent state", () => {
+    expect(() => store.remove(99)).not.toThrow();
+  });
 });
 
 describe("FileStatusStore", () => {
@@ -81,6 +91,19 @@ describe("FileStatusStore", () => {
     store.set(1, "running");
     expect(fs.existsSync(statusDir)).toBe(true);
   });
+
+  it("remove deletes the status file", () => {
+    store.set(5, "succeeded");
+    const filePath = path.join(tmpDir, "status", "issue-5.status");
+    expect(fs.existsSync(filePath)).toBe(true);
+    store.remove(5);
+    expect(fs.existsSync(filePath)).toBe(false);
+    expect(store.get(5)).toBe("pending");
+  });
+
+  it("remove is idempotent when the file is missing", () => {
+    expect(() => store.remove(99)).not.toThrow();
+  });
 });
 
 describe("InMemoryMetadataStore", () => {
@@ -113,6 +136,16 @@ describe("InMemoryMetadataStore", () => {
     store.set(1, { exitCode: 1 });
     store.update(1, { exitCode: 0 });
     expect(store.get(1).exitCode).toBe(0);
+  });
+
+  it("remove discards recorded metadata", () => {
+    store.set(1, { prUrl: "https://github.com/org/repo/pull/1" });
+    store.remove(1);
+    expect(store.get(1)).toEqual({});
+  });
+
+  it("remove is idempotent on absent metadata", () => {
+    expect(() => store.remove(99)).not.toThrow();
   });
 });
 
@@ -159,5 +192,18 @@ describe("FileMetadataStore", () => {
     expect(fs.existsSync(metaDir)).toBe(false);
     store.set(1, { exitCode: 0 });
     expect(fs.existsSync(metaDir)).toBe(true);
+  });
+
+  it("remove deletes the metadata file", () => {
+    store.set(5, { exitCode: 0 });
+    const filePath = path.join(tmpDir, "metadata", "issue-5.json");
+    expect(fs.existsSync(filePath)).toBe(true);
+    store.remove(5);
+    expect(fs.existsSync(filePath)).toBe(false);
+    expect(store.get(5)).toEqual({});
+  });
+
+  it("remove is idempotent when the file is missing", () => {
+    expect(() => store.remove(99)).not.toThrow();
   });
 });

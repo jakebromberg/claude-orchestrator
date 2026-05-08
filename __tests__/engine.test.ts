@@ -609,6 +609,42 @@ describe("Orchestrator", () => {
       expect(removeWorktree).toHaveBeenCalledWith(issues[0]);
       expect(removeWorktree).toHaveBeenCalledWith(issues[1]);
     });
+
+    it("clears recorded status and metadata for each issue", async () => {
+      const issues = [
+        makeIssue({ number: 1 }),
+        makeIssue({ number: 2 }),
+      ];
+      const { orchestrator, deps } = makeOrchestrator(issues);
+
+      deps.statusStore.set(1, "succeeded");
+      deps.statusStore.set(2, "failed");
+      deps.metadataStore.set(1, { prUrl: "https://example/pull/1", exitCode: 0 });
+      deps.metadataStore.set(2, { prUrl: "https://example/pull/2", exitCode: 1 });
+
+      await orchestrator.cleanup();
+
+      expect(deps.statusStore.get(1)).toBe("pending");
+      expect(deps.statusStore.get(2)).toBe("pending");
+      expect(deps.metadataStore.get(1)).toEqual({});
+      expect(deps.metadataStore.get(2)).toEqual({});
+    });
+
+    it("does not touch state for issues outside the configured set", async () => {
+      const issues = [makeIssue({ number: 1 })];
+      const { orchestrator, deps } = makeOrchestrator(issues);
+
+      // 1 is configured; 99 is not — represents stale state from a prior wave.
+      deps.statusStore.set(1, "succeeded");
+      deps.statusStore.set(99, "succeeded");
+      deps.metadataStore.set(99, { prUrl: "https://example/pull/99" });
+
+      await orchestrator.cleanup();
+
+      expect(deps.statusStore.get(1)).toBe("pending");
+      expect(deps.statusStore.get(99)).toBe("succeeded");
+      expect(deps.metadataStore.get(99)).toEqual({ prUrl: "https://example/pull/99" });
+    });
   });
 
   describe("signal handling", () => {
