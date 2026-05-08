@@ -9,7 +9,9 @@ export type {
 // Engine
 export { Orchestrator, cleanUpMergedIssues } from "./engine.js";
 export { validateConfig } from "./schema.js";
+export type { ValidateConfigOptions } from "./schema.js";
 export { computeWaves } from "./dag.js";
+export type { ComputeWavesOptions } from "./dag.js";
 export { parseArgs } from "./cli.js";
 
 // Stores

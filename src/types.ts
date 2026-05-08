@@ -22,6 +22,13 @@ export interface IssueSpec {
    * collisions. Trades parallelism for safety on the affected issues only.
    */
   serial?: boolean;
+  /**
+   * Paths to files this issue expects to write. The wave planner uses these to
+   * detect same-file ownership conflicts across parallel issues and slides
+   * conflicting issues into later waves. Files listed in the config-level
+   * `sharedFiles` allowlist (or registered under `appendableFiles`) are exempt.
+   */
+  ownsFiles?: string[];
 }
 
 export interface Issue extends IssueSpec {

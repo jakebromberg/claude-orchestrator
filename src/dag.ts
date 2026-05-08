@@ -1,12 +1,27 @@
 import type { Issue, IssueSpec } from "./types.js";
 
+/** Options for `computeWaves`. */
+export interface ComputeWavesOptions {
+  /**
+   * File paths that should not trigger wave serialization when multiple issues
+   * declare ownership via `ownsFiles`. Pass the union of the config-level
+   * `sharedFiles` allowlist and `appendableFiles` paths here — those files have
+   * mechanical merge strategies and do not cause semantic conflicts.
+   */
+  ignoredOwnsFiles?: string[];
+}
+
 /**
  * Compute wave assignments from dependency declarations using topological sort.
  *
  * Issues with no dependencies get wave 1. Others get `max(wave of deps) + 1`.
+ * If `ownsFiles` is set on any issue, issues within the same candidate wave
+ * that claim an overlapping file (not covered by `ignoredOwnsFiles`) are slid
+ * to the next wave in ascending issue-number order so that the lower-numbered
+ * issue always runs first.
  * Throws if the dependency graph contains a cycle.
  */
-export function computeWaves(specs: IssueSpec[]): Issue[] {
+export function computeWaves(specs: IssueSpec[], options?: ComputeWavesOptions): Issue[] {
   if (specs.length === 0) return [];
 
   const byNumber = new Map<number, IssueSpec>();
@@ -71,13 +86,53 @@ export function computeWaves(specs: IssueSpec[]): Issue[] {
     throw new Error(`Dependency cycle detected among issues: ${inCycle}`);
   }
 
-  const issues: Issue[] = specs.map((spec) => ({
+  let issues: Issue[] = specs.map((spec) => ({
     ...spec,
     wave: waves.get(spec.number)!,
     deps: spec.dependsOn,
   }));
 
+  const ignoredFiles = new Set(options?.ignoredOwnsFiles ?? []);
+  issues = splitFileConflictWaves(issues, ignoredFiles);
   return splitSerialWaves(issues);
+}
+
+/**
+ * Post-process wave assignments so that no two issues in the same wave own an
+ * overlapping non-ignored file. Issues are processed in ascending issue-number
+ * order within each wave; the lower-numbered issue keeps its wave and the
+ * conflicting higher-numbered issue slides to the next wave. Cascades until
+ * the assignment is stable.
+ *
+ * This runs before `splitSerialWaves` so that the serial-isolation step sees
+ * the already-resolved file ownership.
+ */
+function splitFileConflictWaves(issues: Issue[], ignoredFiles: Set<string>): Issue[] {
+  if (!issues.some((i) => i.ownsFiles?.length)) return issues;
+
+  const waveOf = new Map<number, number>(issues.map((i) => [i.number, i.wave]));
+  // Upper bound: in the worst case every issue cascades to its own wave.
+  const upperBound = Math.max(...issues.map((i) => i.wave)) + issues.length;
+
+  for (let w = 1; w <= upperBound; w++) {
+    const inWave = issues
+      .filter((i) => waveOf.get(i.number) === w)
+      .sort((a, b) => a.number - b.number);
+
+    if (inWave.length === 0) continue;
+
+    const claimed = new Set<string>();
+    for (const issue of inWave) {
+      const nonIgnored = (issue.ownsFiles ?? []).filter((f) => !ignoredFiles.has(f));
+      if (nonIgnored.some((f) => claimed.has(f))) {
+        waveOf.set(issue.number, w + 1);
+      } else {
+        for (const f of nonIgnored) claimed.add(f);
+      }
+    }
+  }
+
+  return issues.map((i) => ({ ...i, wave: waveOf.get(i.number)! }));
 }
 
 /**

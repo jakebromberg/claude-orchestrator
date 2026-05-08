@@ -70,18 +70,28 @@ export async function loadYamlConfig(
     ? { ...derivedHooks, ...options.hooksOverride }
     : derivedHooks;
 
+  // Files that are safe to overlap across parallel issues: explicit allowlist
+  // plus any appendableFiles paths (handled mechanically by the merge driver).
+  const ignoredOwnsFiles = [
+    ...(yaml.sharedFiles ?? []),
+    ...(yaml.appendableFiles?.map((f) => f.path) ?? []),
+  ];
+
   // Build raw config and validate (computes waves, checks graph)
-  return validateConfig({
-    name: yaml.name,
-    configDir: yaml.configDir,
-    worktreeDir: yaml.worktreeDir,
-    projectRoot: yaml.projectRoot,
-    stallTimeout: yaml.stallTimeout,
-    issues: yaml.issues,
-    hooks,
-    ...(yaml.allowedTools && { allowedTools: yaml.allowedTools }),
-    ...(yaml.issueComments && { issueComments: { repo: yaml.issueComments.repo, enabled: yaml.issueComments.enabled ?? true } }),
-    ...(yaml.labelSync && { labelSync: yaml.labelSync }),
-    ...(yaml.retryOnCheckFailure && { retryOnCheckFailure: { maxRetries: yaml.retryOnCheckFailure.maxRetries, enabled: yaml.retryOnCheckFailure.enabled ?? true } }),
-  });
+  return validateConfig(
+    {
+      name: yaml.name,
+      configDir: yaml.configDir,
+      worktreeDir: yaml.worktreeDir,
+      projectRoot: yaml.projectRoot,
+      stallTimeout: yaml.stallTimeout,
+      issues: yaml.issues,
+      hooks,
+      ...(yaml.allowedTools && { allowedTools: yaml.allowedTools }),
+      ...(yaml.issueComments && { issueComments: { repo: yaml.issueComments.repo, enabled: yaml.issueComments.enabled ?? true } }),
+      ...(yaml.labelSync && { labelSync: yaml.labelSync }),
+      ...(yaml.retryOnCheckFailure && { retryOnCheckFailure: { maxRetries: yaml.retryOnCheckFailure.maxRetries, enabled: yaml.retryOnCheckFailure.enabled ?? true } }),
+    },
+    ignoredOwnsFiles.length > 0 ? { ignoredOwnsFiles } : undefined,
+  );
 }
