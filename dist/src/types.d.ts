@@ -15,6 +15,13 @@ export interface IssueSpec {
      * collisions. Trades parallelism for safety on the affected issues only.
      */
     serial?: boolean;
+    /**
+     * Paths to files this issue expects to write. The wave planner uses these to
+     * detect same-file ownership conflicts across parallel issues and slides
+     * conflicting issues into later waves. Files listed in the config-level
+     * `sharedFiles` allowlist (or registered under `appendableFiles`) are exempt.
+     */
+    ownsFiles?: string[];
 }
 export interface Issue extends IssueSpec {
     wave: number;
@@ -98,6 +105,15 @@ export interface OrchestratorHooks {
     postSessionCheck?(issue: Issue, worktreePath: string): Promise<PostCheckResult>;
     /** Optional hook called when an issue's status changes. Errors are non-fatal. */
     onStatusChange?(issue: Issue, oldStatus: Status, newStatus: Status): Promise<void>;
+    /**
+     * Optional hook called when `gh pr merge` fails with a merge conflict.
+     * Return `{ resolved: true }` to trigger a single merge retry.
+     * Errors from this hook are non-fatal.
+     */
+    onMergeConflict?(issue: Issue, conflictFiles: string[], baseBranch: string): Promise<{
+        resolved: boolean;
+        details?: string;
+    }>;
 }
 export type ParsedMode = "help" | "status" | "watch" | "cleanup" | "merge" | "retry-failed" | "tail" | "run-all" | "run-specific" | "decompose" | "dashboard";
 export interface ParsedArgs {

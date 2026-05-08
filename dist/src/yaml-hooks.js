@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { existsSync as fsExistsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -182,7 +182,7 @@ export function deriveHooks(yaml, deps = {}) {
                     worktreePath: path.join(yaml.worktreeDir, peer.slug),
                 }));
                 const exists = deps.existsSync ?? fsExistsSync;
-                const gitRun = (cmd) => run(cmd, worktreePath);
+                const gitRun = deps.runGitCommand ?? ((file, args) => execFileSync(file, args, { encoding: "utf-8" }));
                 const collisionInput = gatherCollisionInputs({
                     runCommand: gitRun,
                     existsSync: exists,
@@ -204,6 +204,51 @@ export function deriveHooks(yaml, deps = {}) {
                 }
             }
             return { passed: true };
+        };
+    }
+    // Attach onMergeConflict when mergeConflictRetry is enabled
+    if (yaml.mergeConflictRetry?.enabled) {
+        const resolveRunCommand = runCommand
+            ?? ((cmd, cwd) => execSync(cmd, { cwd, encoding: "utf-8" }));
+        hooks.onMergeConflict = async (issue, conflictFiles, hookBaseBranch) => {
+            const worktreePath = path.join(yaml.worktreeDir, issue.slug);
+            const fileList = conflictFiles.length > 0
+                ? conflictFiles.join("\n")
+                : "(run `git status` to see any conflicting files)";
+            const prompt = [
+                `The PR for issue #${issue.number} has merge conflicts after rebasing`,
+                `against the latest ${hookBaseBranch}. The conflicts are:`,
+                ``,
+                fileList,
+                ``,
+                `Resolve each conflict, ensuring the combined change makes semantic sense`,
+                `in light of what landed on ${hookBaseBranch} between this branch's start and`,
+                `now. Run the project's test suite and fix any test failures the rebase`,
+                `introduces. Then \`git push --force-with-lease\`.`,
+            ].join("\n");
+            const tools = yaml.allowedTools ?? [
+                "Bash", "Read", "Write", "Edit", "Glob", "Grep",
+            ];
+            const cmd = [
+                "claude",
+                "-p",
+                shellQuote(prompt),
+                "--model",
+                "opus",
+                "--allowedTools",
+                shellQuote(tools.join(",")),
+                "--output-format",
+                "stream-json",
+                "--verbose",
+            ].join(" ");
+            try {
+                resolveRunCommand(cmd, worktreePath);
+                return { resolved: true };
+            }
+            catch (err) {
+                const details = err instanceof Error ? err.message : String(err);
+                return { resolved: false, details };
+            }
         };
     }
     // Attach label sync when configured

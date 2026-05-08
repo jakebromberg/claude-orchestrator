@@ -5,6 +5,11 @@ export interface DeriveHooksDeps {
     readFile?: (path: string) => string;
     runCommand?: (cmd: string, cwd: string) => string;
     /**
+     * Used by collision detection to run git commands with an argument array
+     * (avoids shell quoting entirely). Defaults to `execFileSync`.
+     */
+    runGitCommand?: (file: string, args: string[]) => string;
+    /**
      * Used by collision detection to check whether a peer's worktree directory
      * is present on disk. Defaults to `node:fs.existsSync`.
      */

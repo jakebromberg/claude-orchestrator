@@ -89,12 +89,13 @@ export class Orchestrator {
       if (this.mergePolicy === "after-wave") {
         const waveIssues = this.config.issues.filter((i) => i.wave === wave);
         this.deps.logger.info(`Merging wave ${wave} PRs...`);
-        const mergeResults = mergePrs(waveIssues, {
+        const mergeResults = await mergePrs(waveIssues, {
           getStatus: (n) => this.deps.statusStore.get(n),
           getMetadata: (n) => this.deps.metadataStore.get(n),
           runCommand: (cmd) => this.deps.runCommand(cmd),
           logger: this.deps.logger,
           getWorktreePath: (issue) => this.config.hooks.getWorktreePath(issue),
+          onMergeConflict: this.config.hooks.onMergeConflict?.bind(this.config.hooks),
         }, { admin: true });
         await cleanUpMergedIssues(waveIssues, mergeResults, {
           removeWorktree: (issue) => this.config.hooks.removeWorktree(issue),

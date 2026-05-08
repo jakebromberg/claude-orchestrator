@@ -42,11 +42,22 @@ export declare const YamlConfigSchema: z.ZodObject<{
         maxRetries: z.ZodNumber;
         enabled: z.ZodOptional<z.ZodBoolean>;
     }, z.core.$strip>>;
+    mergeConflictRetry: z.ZodOptional<z.ZodObject<{
+        enabled: z.ZodOptional<z.ZodBoolean>;
+        maxAttempts: z.ZodOptional<z.ZodNumber>;
+    }, z.core.$strip>>;
     baseBranch: z.ZodOptional<z.ZodString>;
     sequentialPaths: z.ZodOptional<z.ZodArray<z.ZodObject<{
         dir: z.ZodString;
         pattern: z.ZodString;
     }, z.core.$strip>>>;
+    appendableFiles: z.ZodOptional<z.ZodArray<z.ZodObject<{
+        path: z.ZodString;
+        format: z.ZodLiteral<"json-array">;
+        arrayPath: z.ZodString;
+        keyField: z.ZodString;
+    }, z.core.$strip>>>;
+    sharedFiles: z.ZodOptional<z.ZodArray<z.ZodString>>;
     sequentialDomains: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodObject<{
         paths: z.ZodArray<z.ZodObject<{
             dir: z.ZodString;
@@ -63,5 +74,6 @@ export declare const YamlConfigSchema: z.ZodObject<{
         mode: z.ZodOptional<z.ZodString>;
         stallTimeout: z.ZodOptional<z.ZodNumber>;
         serial: z.ZodOptional<z.ZodBoolean>;
+        ownsFiles: z.ZodOptional<z.ZodArray<z.ZodString>>;
     }, z.core.$strip>>;
 }, z.core.$strip>;

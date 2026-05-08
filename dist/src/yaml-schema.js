@@ -8,6 +8,7 @@ const YamlIssueSchema = z.object({
     mode: z.string().optional(),
     stallTimeout: z.number().int().min(0).optional(),
     serial: z.boolean().optional(),
+    ownsFiles: z.array(z.string().min(1)).optional(),
 });
 const YamlSummaryColumnSchema = z.object({
     header: z.string().min(1),
@@ -22,6 +23,12 @@ const YamlSummarySchema = z.object({
 const YamlPostSessionCheckSchema = z.object({
     commands: z.array(z.string().min(1)).min(1),
     cwd: z.string().optional(),
+});
+const AppendableFileSpecSchema = z.object({
+    path: z.string().min(1),
+    format: z.literal("json-array"),
+    arrayPath: z.string().min(1),
+    keyField: z.string().min(1),
 });
 const SequentialPathConfigSchema = z.object({
     dir: z.string().min(1),
@@ -66,8 +73,11 @@ export const YamlConfigSchema = z.object({
     issueComments: z.object({ repo: z.string(), enabled: z.boolean().optional() }).optional(),
     labelSync: z.object({ prefix: z.string(), repo: z.string().optional() }).optional(),
     retryOnCheckFailure: z.object({ maxRetries: z.number().int().positive(), enabled: z.boolean().optional() }).optional(),
+    mergeConflictRetry: z.object({ enabled: z.boolean().optional(), maxAttempts: z.number().int().positive().optional() }).optional(),
     baseBranch: z.string().min(1).optional(),
     sequentialPaths: z.array(SequentialPathConfigSchema).optional(),
+    appendableFiles: z.array(AppendableFileSpecSchema).optional(),
+    sharedFiles: z.array(z.string().min(1)).optional(),
     sequentialDomains: z
         .record(z
         .string()

@@ -119,6 +119,12 @@ export interface OrchestratorHooks {
   postSessionCheck?(issue: Issue, worktreePath: string): Promise<PostCheckResult>;
   /** Optional hook called when an issue's status changes. Errors are non-fatal. */
   onStatusChange?(issue: Issue, oldStatus: Status, newStatus: Status): Promise<void>;
+  /**
+   * Optional hook called when `gh pr merge` fails with a merge conflict.
+   * Return `{ resolved: true }` to trigger a single merge retry.
+   * Errors from this hook are non-fatal.
+   */
+  onMergeConflict?(issue: Issue, conflictFiles: string[], baseBranch: string): Promise<{ resolved: boolean; details?: string }>;
 }
 
 export type ParsedMode =

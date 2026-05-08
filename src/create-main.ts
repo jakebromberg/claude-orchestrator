@@ -234,12 +234,13 @@ export async function createMain(options: MainOptions): Promise<void> {
   // Handle merge
   if (args.mode === "merge") {
     deps.logger.header(`${config.name} — Merge Mode`);
-    const results = mergePrs(config.issues, {
+    const results = await mergePrs(config.issues, {
       getStatus: (n) => deps.statusStore.get(n),
       getMetadata: (n) => deps.metadataStore.get(n),
       runCommand: (cmd) => deps.runCommand(cmd),
       logger: deps.logger,
       getWorktreePath: (issue) => config.hooks.getWorktreePath(issue),
+      onMergeConflict: config.hooks.onMergeConflict?.bind(config.hooks),
     }, { admin: true });
 
     await cleanUpMergedIssues(config.issues, results, {

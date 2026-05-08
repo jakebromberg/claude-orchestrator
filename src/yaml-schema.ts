@@ -86,6 +86,7 @@ export const YamlConfigSchema = z.object({
   issueComments: z.object({ repo: z.string(), enabled: z.boolean().optional() }).optional(),
   labelSync: z.object({ prefix: z.string(), repo: z.string().optional() }).optional(),
   retryOnCheckFailure: z.object({ maxRetries: z.number().int().positive(), enabled: z.boolean().optional() }).optional(),
+  mergeConflictRetry: z.object({ enabled: z.boolean().optional(), maxAttempts: z.number().int().positive().optional() }).optional(),
   baseBranch: z.string().min(1).optional(),
   sequentialPaths: z.array(SequentialPathConfigSchema).optional(),
   appendableFiles: z.array(AppendableFileSpecSchema).optional(),

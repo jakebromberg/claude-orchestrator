@@ -7,7 +7,7 @@
  * the assumption is that a fresh project legitimately has no migrations yet.
  */
 export interface SeedFromGitDeps {
-    runCommand: (cmd: string) => string;
+    runCommand: (file: string, args: string[]) => string;
 }
 export interface SeedFromGitOptions {
     repoDir: string;

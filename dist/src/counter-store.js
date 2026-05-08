@@ -14,22 +14,21 @@
 import fs from "node:fs";
 import path from "node:path";
 function applyClaim(state, issueNumber, seed) {
-    if (state === null) {
-        const seeded = seed();
-        return {
-            state: { next: seeded + 1, claims: { [String(issueNumber)]: seeded } },
-            number: seeded,
-        };
-    }
-    const existing = state.claims[String(issueNumber)];
+    // Idempotent retry: return the previously recorded claim unchanged.
+    const existing = state?.claims[String(issueNumber)];
     if (existing !== undefined) {
-        return { state, number: existing };
+        return { state: state, number: existing };
     }
-    const issued = state.next;
+    // New allocation: scan origin/<baseBranch> on every claim so the counter
+    // stays ahead of externally-landed sequential files (issue #38). seed()
+    // returns externalMax + 1; Math.max ensures the persisted counter is never
+    // rolled back if origin hasn't advanced.
+    const externalFloor = seed();
+    const issued = state === null ? externalFloor : Math.max(state.next, externalFloor);
     return {
         state: {
             next: issued + 1,
-            claims: { ...state.claims, [String(issueNumber)]: issued },
+            claims: { ...(state?.claims ?? {}), [String(issueNumber)]: issued },
         },
         number: issued,
     };

@@ -16,8 +16,12 @@ export interface CounterStore {
      * Atomically claim the next number for `domain` on behalf of `issueNumber`.
      *
      * Idempotent: a second call with the same `(domain, issueNumber)` returns
-     * the previously-claimed number. `seed` is consulted only when the domain
-     * has no recorded state — its return value becomes the first issued number.
+     * the previously-claimed number without invoking `seed`.
+     *
+     * For every *new* allocation, `seed` is called and its return value is used
+     * as a floor: `Math.max(persisted.next, seed())`. This reconciles the
+     * counter against external state (e.g. `origin/<baseBranch>`) so claims
+     * remain collision-free even when files land outside the orchestrator run.
      *
      * Returns the raw integer; formatting (zero-padding for display) is the
      * caller's concern since width is a presentation choice tied to the
