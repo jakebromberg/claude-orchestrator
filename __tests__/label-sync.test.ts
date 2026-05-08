@@ -45,7 +45,7 @@ describe("createLabelSyncHandler", () => {
 
     // Should add running label (pending is not synced, so no remove)
     expect(deps.runCommand).toHaveBeenCalledWith(
-      'gh issue edit 42 --repo owner/repo --add-label "orchestrator:running"',
+      "gh issue edit 42 --repo 'owner/repo' --add-label 'orchestrator:running'",
     );
   });
 
@@ -60,10 +60,10 @@ describe("createLabelSyncHandler", () => {
     await handler(issue, "running", "succeeded");
 
     expect(deps.runCommand).toHaveBeenCalledWith(
-      'gh issue edit 1 --repo owner/repo --remove-label "status:running"',
+      "gh issue edit 1 --repo 'owner/repo' --remove-label 'status:running'",
     );
     expect(deps.runCommand).toHaveBeenCalledWith(
-      'gh issue edit 1 --repo owner/repo --add-label "status:succeeded"',
+      "gh issue edit 1 --repo 'owner/repo' --add-label 'status:succeeded'",
     );
   });
 
@@ -78,10 +78,10 @@ describe("createLabelSyncHandler", () => {
     await handler(issue, "running", "failed");
 
     expect(deps.runCommand).toHaveBeenCalledWith(
-      'gh issue edit 5 --repo owner/repo --remove-label "ci:running"',
+      "gh issue edit 5 --repo 'owner/repo' --remove-label 'ci:running'",
     );
     expect(deps.runCommand).toHaveBeenCalledWith(
-      'gh issue edit 5 --repo owner/repo --add-label "ci:failed"',
+      "gh issue edit 5 --repo 'owner/repo' --add-label 'ci:failed'",
     );
   });
 
@@ -134,7 +134,7 @@ describe("createLabelSyncHandler", () => {
     await handler(issue, "pending", "running");
 
     expect(deps.runCommand).toHaveBeenCalledWith(
-      'gh issue edit 1 --repo other/repo --add-label "orchestrator:running"',
+      "gh issue edit 1 --repo 'other/repo' --add-label 'orchestrator:running'",
     );
   });
 
@@ -147,13 +147,13 @@ describe("createLabelSyncHandler", () => {
 
     // Should have called ensureLabelExists for running, succeeded, failed
     expect(deps.runCommand).toHaveBeenCalledWith(
-      expect.stringContaining('gh label create "orchestrator:running"'),
+      expect.stringContaining("gh label create 'orchestrator:running'"),
     );
     expect(deps.runCommand).toHaveBeenCalledWith(
-      expect.stringContaining('gh label create "orchestrator:succeeded"'),
+      expect.stringContaining("gh label create 'orchestrator:succeeded'"),
     );
     expect(deps.runCommand).toHaveBeenCalledWith(
-      expect.stringContaining('gh label create "orchestrator:failed"'),
+      expect.stringContaining("gh label create 'orchestrator:failed'"),
     );
   });
 });

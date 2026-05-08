@@ -5,6 +5,8 @@
  * All functions accept a `GitHubDeps` interface for dependency injection.
  */
 
+import { shellQuote } from "./shell-quote.js";
+
 /** Dependencies for GitHub operations, injectable for testing. */
 export interface GitHubDeps {
   runCommand: (cmd: string, options?: { input?: string }) => string;
@@ -24,7 +26,7 @@ export function addIssueLabel(
   deps: GitHubDeps,
 ): void {
   deps.runCommand(
-    `gh issue edit ${issueNumber} --repo ${repo} --add-label "${label}"`,
+    `gh issue edit ${issueNumber} --repo ${shellQuote(repo)} --add-label ${shellQuote(label)}`,
   );
 }
 
@@ -36,7 +38,7 @@ export function removeIssueLabel(
   deps: GitHubDeps,
 ): void {
   deps.runCommand(
-    `gh issue edit ${issueNumber} --repo ${repo} --remove-label "${label}"`,
+    `gh issue edit ${issueNumber} --repo ${shellQuote(repo)} --remove-label ${shellQuote(label)}`,
   );
 }
 
@@ -53,7 +55,7 @@ export function postIssueComment(
   deps: GitHubDeps,
 ): void {
   deps.runCommand(
-    `gh issue comment ${issueNumber} --repo ${repo} --body-file -`,
+    `gh issue comment ${issueNumber} --repo ${shellQuote(repo)} --body-file -`,
     { input: body },
   );
 }
@@ -70,13 +72,12 @@ export function ensureLabelExists(
   deps: GitHubDeps,
   options?: LabelOptions,
 ): void {
-  let cmd = `gh label create "${label}" --repo ${repo} --force`;
+  let cmd = `gh label create ${shellQuote(label)} --repo ${shellQuote(repo)} --force`;
   if (options?.color) {
     cmd += ` --color ${options.color}`;
   }
   if (options?.description) {
-    const escaped = options.description.replace(/'/g, "\\'");
-    cmd += ` --description "${escaped}"`;
+    cmd += ` --description ${shellQuote(options.description)}`;
   }
   deps.runCommand(cmd);
 }

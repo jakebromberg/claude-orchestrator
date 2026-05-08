@@ -1,4 +1,4 @@
-import { execSync, spawn } from "node:child_process";
+import { execSync, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs } from "./cli.js";
@@ -13,10 +13,28 @@ import { startWatch } from "./watch.js";
 import { mergePrs } from "./merge.js";
 import { generateReport, formatReport } from "./report.js";
 import { postRunSummaryComments } from "./issue-comments.js";
+import { shellQuote } from "./shell-quote.js";
 
 export type ConfigFactory =
   | ((projectRoot: string) => OrchestratorConfig)
   | ((projectRoot: string) => Promise<OrchestratorConfig>);
+
+/** Exported for testing. Builds the `gh issue create` command string with shell-safe quoting. */
+export function buildGhIssueCreateCommand(repo: string, title: string): string {
+  return `gh issue create --repo ${shellQuote(repo)} --title ${shellQuote(title)} --body-file -`;
+}
+
+/**
+ * Exported for testing. Builds the AppleScript string for a macOS notification.
+ *
+ * Uses AppleScript string concatenation with `quote` to handle embedded double
+ * quotes in `name`. All other shell metacharacters are safe because the caller
+ * passes this string directly to `execFileSync` (no shell expansion).
+ */
+export function buildNotificationScript(name: string, message: string): string {
+  const safeTitle = name.replace(/"/g, '" & quote & "');
+  return `display notification "${message}" with title "${safeTitle}"`;
+}
 
 export interface MainOptions {
   configs: Record<string, ConfigFactory>;
@@ -33,7 +51,7 @@ function createRealDeps(config: OrchestratorConfig): Deps {
     generateSessionId: () => randomUUID(),
     commandExists: (cmd: string) => {
       try {
-        execSync(`command -v ${cmd}`, { stdio: "pipe" });
+        execSync(`command -v ${shellQuote(cmd)}`, { stdio: "pipe" });
         return true;
       } catch {
         return false;
@@ -126,7 +144,7 @@ export async function createMain(options: MainOptions): Promise<void> {
 
         const body = issue.description + (depRefs ? `\n\nDepends on: ${depRefs}` : "");
         const output = execSync(
-          `gh issue create --repo ${args.decomposeRepo} --title "${issue.slug}" --body-file -`,
+          buildGhIssueCreateCommand(args.decomposeRepo, issue.slug),
           { input: body, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
         );
         const match = output.match(/\/issues\/(\d+)/);
@@ -414,11 +432,8 @@ export async function createMain(options: MainOptions): Promise<void> {
         (i) => deps.statusStore.get(i.number) === "failed",
       ).length;
       const message = `${succeeded} succeeded, ${failed} failed`;
-      const title = config.name.replace(/"/g, '\\"');
       try {
-        execSync(
-          `osascript -e 'display notification "${message}" with title "${title}"'`,
-        );
+        execFileSync("osascript", ["-e", buildNotificationScript(config.name, message)]);
       } catch {
         // Non-fatal: osascript can fail in SSH sessions
       }
