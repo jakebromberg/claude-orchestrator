@@ -167,7 +167,7 @@ describe("runClaim", () => {
     expect(result).toEqual({ number: 57, formatted: "0057" });
   });
 
-  it("increments across distinct issues in the same domain", () => {
+  it("increments across distinct issues when origin is unchanged", () => {
     const store = new InMemoryCounterStore();
     runClaim({
       yaml: baseYaml(),
@@ -181,9 +181,29 @@ describe("runClaim", () => {
       issue: 2,
       domain: "migrations",
       store,
-      seed: () => 999,
+      seed: () => 57,
     });
     expect(result).toEqual({ number: 58, formatted: "0058" });
+  });
+
+  it("reconciles with origin when origin has advanced past the persisted counter", () => {
+    const store = new InMemoryCounterStore();
+    runClaim({
+      yaml: baseYaml(),
+      issue: 1,
+      domain: "migrations",
+      store,
+      seed: () => 57,
+    });
+    // External file 0070_*.sql landed on origin; seed now returns 71
+    const result = runClaim({
+      yaml: baseYaml(),
+      issue: 2,
+      domain: "migrations",
+      store,
+      seed: () => 71,
+    });
+    expect(result).toEqual({ number: 71, formatted: "0071" });
   });
 
   it("returns the same number on a retry of the same issue", () => {
