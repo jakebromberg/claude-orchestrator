@@ -19,9 +19,10 @@ describe("InMemoryCounterStore", () => {
     expect(store.claim("migrations", 1, () => 56)).toBe(56);
   });
 
-  it("increments for the next distinct issue", () => {
+  it("increments for the next distinct issue when origin is unchanged", () => {
     store.claim("migrations", 1, () => 56);
-    expect(store.claim("migrations", 2, () => 999)).toBe(57);
+    // seed returns 56 — origin still shows 55 as max, so externalFloor=56 ≤ persisted 57
+    expect(store.claim("migrations", 2, () => 56)).toBe(57);
   });
 
   it("returns the same number on a repeat claim from the same issue", () => {
@@ -30,16 +31,25 @@ describe("InMemoryCounterStore", () => {
     expect(second).toBe(first);
   });
 
-  it("does not call the seed function on subsequent claims", () => {
+  it("calls seed on each new-issue allocation but not on retries", () => {
     let seedCalls = 0;
     const seed = () => {
       seedCalls++;
       return 56;
     };
-    store.claim("migrations", 1, seed);
-    store.claim("migrations", 2, seed);
-    store.claim("migrations", 3, seed);
-    expect(seedCalls).toBe(1);
+    store.claim("migrations", 1, seed); // new (null state) — calls seed
+    store.claim("migrations", 2, seed); // new issue — calls seed
+    store.claim("migrations", 3, seed); // new issue — calls seed
+    store.claim("migrations", 1, seed); // retry — does NOT call seed
+    expect(seedCalls).toBe(3);
+  });
+
+  it("bumps the counter when origin has advanced past persisted state", () => {
+    store.claim("migrations", 1, () => 56); // next becomes 57
+    // External files landed; seed now returns 71 (origin max is 70)
+    expect(store.claim("migrations", 2, () => 71)).toBe(71);
+    // Counter advances past the external floor
+    expect(store.claim("migrations", 3, () => 71)).toBe(72);
   });
 
   it("tracks domains independently", () => {
@@ -69,9 +79,9 @@ describe("FileCounterStore", () => {
     expect(state.claims["1"]).toBe(56);
   });
 
-  it("increments across distinct issues", () => {
+  it("increments across distinct issues when origin is unchanged", () => {
     store.claim("migrations", 1, () => 56);
-    expect(store.claim("migrations", 2, () => 999)).toBe(57);
+    expect(store.claim("migrations", 2, () => 56)).toBe(57);
   });
 
   it("returns the same number on retry of the same issue", () => {
@@ -83,7 +93,7 @@ describe("FileCounterStore", () => {
   it("survives a restart (new store instance reads existing file)", () => {
     store.claim("migrations", 1, () => 56);
     const fresh = new FileCounterStore(tmpDir);
-    expect(fresh.claim("migrations", 2, () => 999)).toBe(57);
+    expect(fresh.claim("migrations", 2, () => 56)).toBe(57);
   });
 
   it("creates the counters directory if missing", () => {

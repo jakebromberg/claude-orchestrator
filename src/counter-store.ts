@@ -20,8 +20,12 @@ export interface CounterStore {
    * Atomically claim the next number for `domain` on behalf of `issueNumber`.
    *
    * Idempotent: a second call with the same `(domain, issueNumber)` returns
-   * the previously-claimed number. `seed` is consulted only when the domain
-   * has no recorded state — its return value becomes the first issued number.
+   * the previously-claimed number without invoking `seed`.
+   *
+   * For every *new* allocation, `seed` is called and its return value is used
+   * as a floor: `Math.max(persisted.next, seed())`. This reconciles the
+   * counter against external state (e.g. `origin/<baseBranch>`) so claims
+   * remain collision-free even when files land outside the orchestrator run.
    *
    * Returns the raw integer; formatting (zero-padding for display) is the
    * caller's concern since width is a presentation choice tied to the
@@ -40,22 +44,22 @@ function applyClaim(
   issueNumber: number,
   seed: () => number,
 ): { state: DomainState; number: number } {
-  if (state === null) {
-    const seeded = seed();
-    return {
-      state: { next: seeded + 1, claims: { [String(issueNumber)]: seeded } },
-      number: seeded,
-    };
-  }
-  const existing = state.claims[String(issueNumber)];
+  // Idempotent retry: return the previously recorded claim unchanged.
+  const existing = state?.claims[String(issueNumber)];
   if (existing !== undefined) {
-    return { state, number: existing };
+    return { state: state!, number: existing };
   }
-  const issued = state.next;
+
+  // New allocation: scan origin/<baseBranch> on every claim so the counter
+  // stays ahead of externally-landed sequential files (issue #38). seed()
+  // returns externalMax + 1; Math.max ensures the persisted counter is never
+  // rolled back if origin hasn't advanced.
+  const externalFloor = seed();
+  const issued = state === null ? externalFloor : Math.max(state.next, externalFloor);
   return {
     state: {
       next: issued + 1,
-      claims: { ...state.claims, [String(issueNumber)]: issued },
+      claims: { ...(state?.claims ?? {}), [String(issueNumber)]: issued },
     },
     number: issued,
   };
