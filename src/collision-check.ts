@@ -8,8 +8,6 @@
  * applies the per-entry regex to produce the structured input.
  */
 
-import { shellQuote } from "./shell-quote.js";
-
 export interface SequentialPathEntry {
   /** Directory relative to the worktree root. */
   dir: string;
@@ -185,7 +183,7 @@ function renderOutput(
 // ---------------------------------------------------------------------------
 
 export interface GatherCollisionInputsDeps {
-  runCommand: (cmd: string) => string;
+  runCommand: (file: string, args: string[]) => string;
   existsSync: (path: string) => boolean;
   currentWorktree: string;
   peers: { slug: string; worktreePath: string }[];
@@ -203,9 +201,7 @@ export function gatherCollisionInputs(
 
   // Best-effort fetch — never fail the scan because origin is unreachable.
   try {
-    runCommand(
-      `git -C ${shellQuote(currentWorktree)} fetch origin ${shellQuote(baseBranch)}`,
-    );
+    runCommand("git", ["-C", currentWorktree, "fetch", "origin", baseBranch]);
   } catch {
     // ignore — we proceed with whatever origin/<baseBranch> currently points to
   }
@@ -234,7 +230,7 @@ export function gatherCollisionInputs(
     if (!existsSync(peer.worktreePath)) continue;
     try {
       const peerBase = runCommand(
-        `git -C ${shellQuote(peer.worktreePath)} merge-base HEAD ${shellQuote(`origin/${baseBranch}`)}`,
+        "git", ["-C", peer.worktreePath, "merge-base", "HEAD", `origin/${baseBranch}`],
       ).trim();
       if (!peerBase) {
         peersOut[peer.slug] = {};
@@ -257,13 +253,13 @@ export function gatherCollisionInputs(
 }
 
 function safeMergeBase(
-  runCommand: (cmd: string) => string,
+  runCommand: (file: string, args: string[]) => string,
   worktree: string,
   baseBranch: string,
 ): string | null {
   try {
     const out = runCommand(
-      `git -C ${shellQuote(worktree)} merge-base HEAD ${shellQuote(`origin/${baseBranch}`)}`,
+      "git", ["-C", worktree, "merge-base", "HEAD", `origin/${baseBranch}`],
     );
     const sha = out.trim();
     return sha.length > 0 ? sha : null;
@@ -273,7 +269,7 @@ function safeMergeBase(
 }
 
 function collectAddedByEntry(
-  runCommand: (cmd: string) => string,
+  runCommand: (file: string, args: string[]) => string,
   worktree: string,
   range: string,
   compiled: { entry: SequentialPathEntry; regex: RegExp }[],
@@ -285,7 +281,7 @@ function collectAddedByEntry(
     let raw: string;
     try {
       raw = runCommand(
-        `git -C ${shellQuote(worktree)} diff --diff-filter=A --find-renames --name-only ${shellQuote(range)} -- ${shellQuote(entry.dir)}`,
+        "git", ["-C", worktree, "diff", "--diff-filter=A", "--find-renames", "--name-only", range, "--", entry.dir],
       );
     } catch (err) {
       if (throwOnError) throw err;

@@ -330,21 +330,20 @@ describe("deriveHooks", () => {
       barAdded?: string[];
       shippedAdded?: string[];
       barExists?: boolean;
-    } = {}): { runCommand: ReturnType<typeof vi.fn>; existsSync: ReturnType<typeof vi.fn> } {
-      const runCommand = vi.fn((cmd: string) => {
-        if (cmd.includes("fetch origin")) return "";
-        if (cmd.includes("merge-base HEAD") && cmd.includes("origin/main"))
-          return "abc123\n";
+    } = {}): { runGitCommand: ReturnType<typeof vi.fn>; existsSync: ReturnType<typeof vi.fn> } {
+      const runGitCommand = vi.fn((file: string, args: string[]) => {
+        if (args.includes("fetch")) return "";
+        if (args.includes("merge-base") && args.includes("HEAD")) return "abc123\n";
         // current worktree: abc123..HEAD
-        if (cmd.includes("/tmp/worktrees/foo") && cmd.includes("abc123..HEAD")) {
+        if (args.includes("/tmp/worktrees/foo") && args.some((a) => a === "abc123..HEAD")) {
           return (opts.currentAdded ?? []).join("\n") + "\n";
         }
         // current worktree: abc123..origin/main (shipped)
-        if (cmd.includes("/tmp/worktrees/foo") && cmd.includes("abc123..origin/main")) {
+        if (args.includes("/tmp/worktrees/foo") && args.some((a) => a === "abc123..origin/main")) {
           return (opts.shippedAdded ?? []).join("\n") + "\n";
         }
         // peer bar: abc123..HEAD
-        if (cmd.includes("/tmp/worktrees/bar") && cmd.includes("abc123..HEAD")) {
+        if (args.includes("/tmp/worktrees/bar") && args.some((a) => a === "abc123..HEAD")) {
           return (opts.barAdded ?? []).join("\n") + "\n";
         }
         return "";
@@ -353,11 +352,11 @@ describe("deriveHooks", () => {
         if (p === "/tmp/worktrees/bar") return opts.barExists ?? true;
         return false;
       });
-      return { runCommand, existsSync };
+      return { runGitCommand, existsSync };
     }
 
     it("passes when no peer worktrees exist", async () => {
-      const { runCommand, existsSync } = setUpCollisionMocks({
+      const { runGitCommand, existsSync } = setUpCollisionMocks({
         currentAdded: ["migrations/0056_a.sql"],
         barExists: false,
       });
@@ -365,7 +364,7 @@ describe("deriveHooks", () => {
         makeYaml({
           sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
         }),
-        { runCommand, existsSync },
+        { runGitCommand, existsSync },
       );
       const issue = makeIssue({ slug: "foo" });
       const result = await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo");
@@ -373,7 +372,7 @@ describe("deriveHooks", () => {
     });
 
     it("fails when a peer worktree added a colliding key", async () => {
-      const { runCommand, existsSync } = setUpCollisionMocks({
+      const { runGitCommand, existsSync } = setUpCollisionMocks({
         currentAdded: ["migrations/0056_a.sql"],
         barAdded: ["migrations/0056_b.sql"],
       });
@@ -381,7 +380,7 @@ describe("deriveHooks", () => {
         makeYaml({
           sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
         }),
-        { runCommand, existsSync },
+        { runGitCommand, existsSync },
       );
       const result = await hooks.postSessionCheck!(
         makeIssue({ slug: "foo" }),
@@ -394,7 +393,7 @@ describe("deriveHooks", () => {
     });
 
     it("fails when origin/main shipped a colliding key since the merge-base", async () => {
-      const { runCommand, existsSync } = setUpCollisionMocks({
+      const { runGitCommand, existsSync } = setUpCollisionMocks({
         currentAdded: ["migrations/0056_a.sql"],
         shippedAdded: ["migrations/0056_shipped.sql"],
         barExists: false,
@@ -403,7 +402,7 @@ describe("deriveHooks", () => {
         makeYaml({
           sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
         }),
-        { runCommand, existsSync },
+        { runGitCommand, existsSync },
       );
       const result = await hooks.postSessionCheck!(
         makeIssue({ slug: "foo" }),
@@ -415,21 +414,20 @@ describe("deriveHooks", () => {
 
     it("logs a warning and continues when a peer's git invocation throws", async () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      const runCommand = vi.fn((cmd: string) => {
-        if (cmd.includes("fetch origin")) return "";
-        if (cmd.includes("/tmp/worktrees/bar")) {
+      const runGitCommand = vi.fn((file: string, args: string[]) => {
+        if (args.includes("fetch")) return "";
+        if (args.includes("/tmp/worktrees/bar")) {
           throw new Error("not a git repository");
         }
-        if (cmd.includes("merge-base HEAD") && cmd.includes("origin/main"))
-          return "abc123\n";
-        if (cmd.includes("abc123..HEAD")) return "migrations/0056_a.sql\n";
+        if (args.includes("merge-base") && args.includes("HEAD")) return "abc123\n";
+        if (args.some((a) => a === "abc123..HEAD")) return "migrations/0056_a.sql\n";
         return "";
       });
       const hooks = deriveHooks(
         makeYaml({
           sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
         }),
-        { runCommand, existsSync: () => true },
+        { runGitCommand, existsSync: () => true },
       );
       const result = await hooks.postSessionCheck!(
         makeIssue({ slug: "foo" }),
@@ -465,23 +463,23 @@ describe("deriveHooks", () => {
     });
 
     it("uses configured baseBranch when provided", async () => {
-      const runCommand = vi.fn().mockReturnValue("");
+      const runGitCommand = vi.fn().mockReturnValue("");
       const hooks = deriveHooks(
         makeYaml({
           baseBranch: "trunk",
           sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
         }),
-        { runCommand, existsSync: () => false },
+        { runGitCommand, existsSync: () => false },
       );
       await hooks.postSessionCheck!(
         makeIssue({ slug: "foo" }),
         "/tmp/worktrees/foo",
       );
-      const fetchCall = runCommand.mock.calls.find(
-        ([cmd]) => cmd.includes("fetch origin") && cmd.includes("trunk"),
+      const fetchCall = (runGitCommand.mock.calls as [string, string[]][]).find(
+        ([file, args]) => file === "git" && args.includes("fetch") && args.includes("trunk"),
       );
       expect(fetchCall).toBeDefined();
-      expect(fetchCall![1]).toBe("/tmp/worktrees/foo");
+      expect(fetchCall![1]).toContain("/tmp/worktrees/foo");
     });
   });
 

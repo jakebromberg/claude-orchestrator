@@ -11,7 +11,7 @@
  * file's bottom is the CLI entry-point that wires real I/O.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -137,7 +137,7 @@ function main(): void {
   const store = new FileCounterStore(yaml.configDir);
   const seed = (): number =>
     seedFromGit(
-      { runCommand: (cmd: string) => execSync(cmd, { encoding: "utf-8" }) },
+      { runCommand: (file: string, args: string[]) => execFileSync(file, args, { encoding: "utf-8" }) },
       {
         repoDir: yaml.projectRoot,
         baseBranch,
