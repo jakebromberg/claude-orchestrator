@@ -141,3 +141,7 @@ out
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 worklog/
+
+# Self-hosted orchestrator runtime state
+worktrees/
+.orchestrator/state/

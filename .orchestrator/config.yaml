@@ -1,0 +1,30 @@
+name: "claude-orchestrator"
+configDir: "./state"
+worktreeDir: "../worktrees"
+projectRoot: ".."
+stallTimeout: 900
+promptTemplate: "./prompt.md"
+branchPrefix: "orchestrator/"
+baseBranch: "main"
+
+claudeArgs: ["--model", "sonnet"]
+
+postSessionCheck:
+  commands:
+    - "npm run typecheck"
+    - "npm test"
+
+retryOnCheckFailure:
+  maxRetries: 2
+
+issueComments:
+  repo: "jakebromberg/claude-orchestrator"
+  enabled: true
+
+labelSync:
+  prefix: "orchestrator"
+  repo: "jakebromberg/claude-orchestrator"
+
+# Issues are filled in per wave. Update this list before each orchestrator run.
+# See README at .orchestrator/README.md for the per-wave issue blocks.
+issues: []
