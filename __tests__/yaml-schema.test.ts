@@ -312,6 +312,70 @@ describe("YamlConfigSchema", () => {
     });
   });
 
+  describe("appendableFiles", () => {
+    it("accepts a valid appendableFiles entry", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          appendableFiles: [
+            {
+              path: "shared/db/meta/_journal.json",
+              format: "json-array",
+              arrayPath: "entries",
+              keyField: "idx",
+            },
+          ],
+        }),
+      );
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts multiple appendableFiles entries", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          appendableFiles: [
+            { path: "db/_journal.json", format: "json-array", arrayPath: "entries", keyField: "idx" },
+            { path: "logs/changelog.json", format: "json-array", arrayPath: "log.items", keyField: "id" },
+          ],
+        }),
+      );
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects an unknown format", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          appendableFiles: [
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            { path: "db/_journal.json", format: "csv" as any, arrayPath: "entries", keyField: "idx" },
+          ],
+        }),
+      );
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects an entry with an empty path", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          appendableFiles: [
+            { path: "", format: "json-array", arrayPath: "entries", keyField: "idx" },
+          ],
+        }),
+      );
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects an entry with an empty keyField", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          appendableFiles: [
+            { path: "db/_journal.json", format: "json-array", arrayPath: "entries", keyField: "" },
+          ],
+        }),
+      );
+      expect(result.success).toBe(false);
+    });
+  });
+
   describe("defaults", () => {
     it("defaults dependsOn to empty array when omitted", () => {
       const input = makeValid({

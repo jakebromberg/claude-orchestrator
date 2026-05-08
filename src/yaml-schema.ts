@@ -28,6 +28,13 @@ const YamlPostSessionCheckSchema = z.object({
   cwd: z.string().optional(),
 });
 
+const AppendableFileSpecSchema = z.object({
+  path: z.string().min(1),
+  format: z.literal("json-array"),
+  arrayPath: z.string().min(1),
+  keyField: z.string().min(1),
+});
+
 const SequentialPathConfigSchema = z.object({
   dir: z.string().min(1),
   pattern: z
@@ -80,6 +87,7 @@ export const YamlConfigSchema = z.object({
   retryOnCheckFailure: z.object({ maxRetries: z.number().int().positive(), enabled: z.boolean().optional() }).optional(),
   baseBranch: z.string().min(1).optional(),
   sequentialPaths: z.array(SequentialPathConfigSchema).optional(),
+  appendableFiles: z.array(AppendableFileSpecSchema).optional(),
   sequentialDomains: z
     .record(
       z
