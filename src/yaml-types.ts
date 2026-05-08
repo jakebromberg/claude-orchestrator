@@ -48,6 +48,21 @@ export interface SequentialDomainConfig {
   width: number;
 }
 
+/**
+ * One append-style JSON array file wired to the journal-aware merge driver.
+ * Used in the `appendableFiles` YAML config field.
+ */
+export interface AppendableFileSpec {
+  /** Path to the file, relative to the project root. */
+  path: string;
+  /** File format. Currently only `"json-array"` is supported. */
+  format: "json-array";
+  /** Dot-separated path to the array within the document (e.g. `"entries"` or `"meta.entries"`). */
+  arrayPath: string;
+  /** Field whose value uniquely identifies each entry (e.g. `"idx"`). */
+  keyField: string;
+}
+
 /** Issue definition in a YAML config. */
 export interface YamlIssue {
   number: number;
@@ -102,6 +117,13 @@ export interface YamlConfig {
    * can request guaranteed-unique numbers instead of computing them locally.
    */
   sequentialDomains?: Record<string, SequentialDomainConfig>;
+  /**
+   * Append-style JSON array files for which a journal-aware git merge driver
+   * should be used. Each entry configures one file path with its array
+   * location and deduplication key. See `claude-orchestrator-merge-appendable`
+   * for setup instructions.
+   */
+  appendableFiles?: AppendableFileSpec[];
   issues: YamlIssue[];
 }
 

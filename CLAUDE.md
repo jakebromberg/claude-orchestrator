@@ -43,6 +43,8 @@ src/
 ├── dashboard.ts          # HTTP dashboard server with SSE
 ├── dashboard-types.ts    # Dashboard dependency/option types
 ├── dashboard-html.ts     # Self-contained HTML template
+├── merge-appendable.ts   # Pure merge logic for append-only JSON array files
+├── cli-merge-appendable.ts # claude-orchestrator-merge-appendable CLI (git driver + manual resolve)
 ├── index.ts              # Public API barrel export
 └── testing.ts            # Test utility exports
 ```
@@ -62,6 +64,7 @@ src/
 - **CI retry**: When `retryOnCheckFailure` is configured, failed `postSessionCheck` results trigger automatic re-runs with failure context injected into the prompt.
 - **Hook event auditing**: `--include-hook-events` is passed by default so PreToolUse/PostToolUse hook decisions appear in the stream-json log for post-session analysis.
 - **Sequential-file collision detection**: When `sequentialPaths` is configured, `postSessionCheck` scans peer worktrees and `origin/<baseBranch>` for files added with the same captured key (e.g. Drizzle migration `NNNN_*.sql`) and fails the session on overlap. Failure context names the colliding peer/file and a suggested next-safe number, suitable for `retryOnCheckFailure` injection.
+- **Journal-aware merge driver**: When `appendableFiles` is configured, the `claude-orchestrator-merge-appendable` CLI can be wired as a git merge driver via `.gitattributes`. It merges append-only JSON arrays by a `keyField` (e.g. Drizzle `_journal.json` by `idx`), eliminating manual conflict resolution after parallel migrations. Supports git driver mode (`--base %O --current %A --incoming %B`) and manual post-conflict mode (`--resolve <file>`).
 - **Sequential-number coordination (`claimSequentialNumber`)**: When `sequentialDomains` is configured, the orchestrator exposes a `{{CLAIM_NUMBER}}` prompt variable that resolves to a partial CLI command (`node cli-claim.js --config <yaml> --issue <n> --domain`). Agents append a domain name and invoke the helper to receive a guaranteed-unique zero-padded number. State persists to `<configDir>/counters/<domain>.json` with a lockfile for cross-process safety. Claims are idempotent per `(domain, issueNumber)` so retries reuse the same number. First claim per domain seeds from `origin/<baseBranch>`. Composes with `sequentialPaths` (claim is primary synchronization, detection is the backstop).
 
 ### YAML Config Fields
@@ -111,6 +114,14 @@ sequentialDomains:
       - dir: "shared/database/src/migrations"
         pattern: "(\\d{4})_.*\\.sql"
     width: 4
+
+# Append-style JSON array files wired to the journal-aware merge driver (issue #37).
+# Prevents merge conflicts on files like Drizzle's _journal.json.
+appendableFiles:
+  - path: "shared/database/src/migrations/meta/_journal.json"
+    format: "json-array"
+    arrayPath: "entries"
+    keyField: "idx"
 
 # Template variables: {{ISSUE_NUMBER}}, {{SLUG}}, {{DESCRIPTION}},
 # {{projectRoot}}, {{configDir}}, {{worktreeDir}}, {{UPSTREAM_CONTEXT}},

@@ -60,7 +60,28 @@ export type {
   YamlIssue,
   SequentialPathConfig,
   SequentialDomainConfig,
+  AppendableFileSpec,
 } from "./yaml-types.js";
+
+// Journal-aware merge driver (issue #37)
+export {
+  getNestedArray,
+  setNestedArray,
+  extractJsonObjects,
+  parseConflictSections,
+  mergeJsonArrays,
+  mergeJsonDocuments,
+  resolveConflict,
+} from "./merge-appendable.js";
+export type { AppendableFileConfig } from "./merge-appendable.js";
+export { parseMergeAppendableArgs, runMergeDriver, runResolve } from "./cli-merge-appendable.js";
+export type {
+  MergeDriverArgs,
+  ResolveArgs,
+  MergeAppendableArgs,
+  RunMergeDriverDeps,
+  RunResolveDeps,
+} from "./cli-merge-appendable.js";
 
 // Sequential-number coordination (issue #25)
 export {
