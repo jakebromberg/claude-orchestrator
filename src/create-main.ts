@@ -262,6 +262,22 @@ export async function createMain(options: MainOptions): Promise<void> {
   // Handle cleanup
   if (args.mode === "cleanup") {
     await orchestrator.cleanup();
+    // Reap a stale orchestrator.pid file from a prior detached run that
+    // exited without removing it. Live PIDs are left alone.
+    const pidFile = path.join(config.configDir, "orchestrator.pid");
+    if (fs.existsSync(pidFile)) {
+      const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
+      let alive = false;
+      try {
+        process.kill(pid, 0);
+        alive = true;
+      } catch {
+        // ESRCH: dead. EPERM (foreign owner): leave it alone.
+      }
+      if (!alive) {
+        try { fs.unlinkSync(pidFile); } catch {}
+      }
+    }
     process.exit(0);
   }
 

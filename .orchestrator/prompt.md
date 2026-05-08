@@ -73,6 +73,10 @@ When the implementation is complete and the local CI gate passes:
    ```
    Fix any failures before considering your work done.
 
+## Issue tracking
+
+Issue #{{ISSUE_NUMBER}} is the only tracking issue for this PR — implement the work against it, do not open a separate "scoped" or "phase A" tracking issue. Opening a follow-up issue is appropriate only when you discover genuinely-different scope that the next contributor should pick up (e.g. a missing test gap, an out-of-scope refactor someone should do later). Do not open a follow-up issue just to restate what this PR already does.
+
 ## Handoff for downstream issues
 
 If another issue depends on yours, write a `HANDOFF.md` at the worktree root summarizing:
@@ -80,7 +84,7 @@ If another issue depends on yours, write a `HANDOFF.md` at the worktree root sum
 2. Any decisions or contracts the next issue should know about (new YAML fields, type signatures, behavior guarantees).
 3. Caveats — known sharp edges, follow-up TODOs, things you intentionally left for later.
 
-The orchestrator reads `HANDOFF.md` from upstream worktrees and injects the content into downstream prompts via `{{UPSTREAM_CONTEXT}}`.
+The orchestrator reads `HANDOFF.md` from upstream worktrees and injects the content into downstream prompts via `{{UPSTREAM_CONTEXT}}`. **Do not commit `HANDOFF.md`** — it is gitignored at the repo root and is intended as ephemeral per-worktree state. If your branch shows `HANDOFF.md` in `git status`, leave it untracked.
 
 ## Definition of done
 
