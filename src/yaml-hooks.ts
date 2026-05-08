@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { existsSync as fsExistsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,11 @@ import { shellQuote } from "./shell-quote.js";
 export interface DeriveHooksDeps {
   readFile?: (path: string) => string;
   runCommand?: (cmd: string, cwd: string) => string;
+  /**
+   * Used by collision detection to run git commands with an argument array
+   * (avoids shell quoting entirely). Defaults to `execFileSync`.
+   */
+  runGitCommand?: (file: string, args: string[]) => string;
   /**
    * Used by collision detection to check whether a peer's worktree directory
    * is present on disk. Defaults to `node:fs.existsSync`.
@@ -259,7 +264,8 @@ export function deriveHooks(
           }));
 
         const exists = deps.existsSync ?? fsExistsSync;
-        const gitRun = (cmd: string): string => run(cmd, worktreePath);
+        const gitRun: (file: string, args: string[]) => string =
+          deps.runGitCommand ?? ((file, args) => execFileSync(file, args, { encoding: "utf-8" }));
 
         const collisionInput = gatherCollisionInputs({
           runCommand: gitRun,

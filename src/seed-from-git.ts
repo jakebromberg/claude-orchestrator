@@ -7,10 +7,8 @@
  * the assumption is that a fresh project legitimately has no migrations yet.
  */
 
-import { shellQuote } from "./shell-quote.js";
-
 export interface SeedFromGitDeps {
-  runCommand: (cmd: string) => string;
+  runCommand: (file: string, args: string[]) => string;
 }
 
 export interface SeedFromGitOptions {
@@ -28,9 +26,7 @@ export function seedFromGit(
   // origin doesn't block claims (we proceed with whatever ref currently
   // points to).
   try {
-    deps.runCommand(
-      `git -C ${shellQuote(options.repoDir)} fetch origin ${shellQuote(options.baseBranch)}`,
-    );
+    deps.runCommand("git", ["-C", options.repoDir, "fetch", "origin", options.baseBranch]);
   } catch {
     // ignore
   }
@@ -40,9 +36,12 @@ export function seedFromGit(
     const re = new RegExp(pattern);
     let raw: string;
     try {
-      raw = deps.runCommand(
-        `git -C ${shellQuote(options.repoDir)} ls-tree -r --name-only ${shellQuote(`origin/${options.baseBranch}`)} -- ${shellQuote(dir)}`,
-      );
+      raw = deps.runCommand("git", [
+        "-C", options.repoDir,
+        "ls-tree", "-r", "--name-only",
+        `origin/${options.baseBranch}`,
+        "--", dir,
+      ]);
     } catch {
       continue;
     }

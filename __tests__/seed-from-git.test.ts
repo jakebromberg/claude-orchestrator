@@ -85,9 +85,11 @@ describe("seedFromGit", () => {
         paths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
       },
     );
-    const cmd = runCommand.mock.calls[0]![0];
-    expect(cmd).toContain("fetch origin");
-    expect(cmd).toContain("main");
+    const [file, args] = runCommand.mock.calls[0]!;
+    expect(file).toBe("git");
+    expect(args).toContain("fetch");
+    expect(args).toContain("origin");
+    expect(args).toContain("main");
   });
 
   it("continues scanning when the fetch fails", () => {
@@ -123,7 +125,7 @@ describe("seedFromGit", () => {
     expect(next).toBe(1);
   });
 
-  it("shell-quotes repo dir, branch, and per-path dir so spaces and metas are safe", () => {
+  it("passes repo dir, branch, and per-path dir as raw unquoted arguments", () => {
     const runCommand = vi.fn().mockReturnValue("");
     seedFromGit(
       { runCommand },
@@ -133,11 +135,11 @@ describe("seedFromGit", () => {
         paths: [{ dir: "weird dir/$X", pattern: "(\\d{4})" }],
       },
     );
-    const cmds = runCommand.mock.calls.map((c) => c[0] as string);
-    expect(cmds.some((c) => c.includes(`'/tmp/with space'`))).toBe(true);
-    expect(cmds.some((c) => c.includes(`'feat/branch'`))).toBe(true);
-    expect(cmds.some((c) => c.includes(`'origin/feat/branch'`))).toBe(true);
-    expect(cmds.some((c) => c.includes(`'weird dir/$X'`))).toBe(true);
+    const calls = runCommand.mock.calls as [string, string[]][];
+    expect(calls.some(([, args]) => args.includes("/tmp/with space"))).toBe(true);
+    expect(calls.some(([, args]) => args.includes("feat/branch"))).toBe(true);
+    expect(calls.some(([, args]) => args.includes("origin/feat/branch"))).toBe(true);
+    expect(calls.some(([, args]) => args.includes("weird dir/$X"))).toBe(true);
   });
 
   it("uses the configured base branch", () => {
@@ -150,8 +152,8 @@ describe("seedFromGit", () => {
         paths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
       },
     );
-    const lsTreeCmd = runCommand.mock.calls[1]![0];
-    expect(lsTreeCmd).toContain("origin/develop");
+    const [, lsTreeArgs] = runCommand.mock.calls[1]!;
+    expect(lsTreeArgs).toContain("origin/develop");
   });
 });
 

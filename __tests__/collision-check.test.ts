@@ -199,19 +199,21 @@ describe("gatherCollisionInputs", () => {
       baseBranch: "main",
     });
     const fetchCall = runCommand.mock.calls.find(
-      ([cmd]) =>
-        cmd.includes("/tmp/wt/foo") &&
-        cmd.includes("fetch origin") &&
-        cmd.includes("main"),
+      ([file, args]) =>
+        file === "git" &&
+        args.includes("-C") &&
+        args.includes("/tmp/wt/foo") &&
+        args.includes("fetch") &&
+        args.includes("origin") &&
+        args.includes("main"),
     );
     expect(fetchCall).toBeDefined();
   });
 
   it("collects current's added files via diff against merge-base..HEAD", () => {
-    const runCommand = vi.fn((cmd: string) => {
-      if (cmd.includes("merge-base HEAD") && cmd.includes("origin/main"))
-        return "abc123\n";
-      if (cmd.includes("diff") && cmd.includes("abc123..HEAD")) {
+    const runCommand = vi.fn((file: string, args: string[]) => {
+      if (args.includes("merge-base") && args.includes("HEAD")) return "abc123\n";
+      if (args.includes("diff") && args.some((a) => a === "abc123..HEAD")) {
         return "migrations/0056_add_x.sql\nmigrations/README.md\n";
       }
       return "";
@@ -243,8 +245,8 @@ describe("gatherCollisionInputs", () => {
   });
 
   it("treats a peer with a broken git invocation as no-info, not fatal", () => {
-    const runCommand = vi.fn((cmd: string) => {
-      if (cmd.includes("/tmp/wt/bar")) throw new Error("not a git repository");
+    const runCommand = vi.fn((file: string, args: string[]) => {
+      if (args.includes("/tmp/wt/bar")) throw new Error("not a git repository");
       return "";
     });
     const result = gatherCollisionInputs({
@@ -258,8 +260,12 @@ describe("gatherCollisionInputs", () => {
     expect(result.peers).toEqual({ bar: {} });
   });
 
-  it("shell-quotes worktree paths, refs, and entry dirs so spaces and metas are safe", () => {
-    const runCommand = vi.fn().mockReturnValue("");
+  it("passes worktree paths, refs, and entry dirs as raw unquoted arguments", () => {
+    const runCommand = vi.fn((_file: string, args: string[]) => {
+      // Return a commit hash for merge-base so collectAddedByEntry runs
+      if (args.includes("merge-base")) return "abc123\n";
+      return "";
+    });
     gatherCollisionInputs({
       runCommand,
       existsSync: () => true,
@@ -268,21 +274,19 @@ describe("gatherCollisionInputs", () => {
       entries: [{ dir: "weird dir/$X", pattern: "(\\d+)" }],
       baseBranch: "feat/branch",
     });
-    const cmds = runCommand.mock.calls.map((c) => c[0] as string);
-    // Every call must wrap the worktree path, branch ref, and entry dir in
-    // single quotes so the shell passes them as one argument each.
-    expect(cmds.some((c) => c.includes(`'/tmp/with space'`))).toBe(true);
-    expect(cmds.some((c) => c.includes(`'/tmp/peer'\\''s path'`))).toBe(true);
-    expect(cmds.some((c) => c.includes(`'feat/branch'`))).toBe(true);
-    expect(cmds.some((c) => c.includes(`'origin/feat/branch'`))).toBe(true);
+    const calls = runCommand.mock.calls as [string, string[]][];
+    expect(calls.some(([, args]) => args.includes("/tmp/with space"))).toBe(true);
+    expect(calls.some(([, args]) => args.includes("/tmp/peer's path"))).toBe(true);
+    expect(calls.some(([, args]) => args.includes("feat/branch"))).toBe(true);
+    expect(calls.some(([, args]) => args.includes("origin/feat/branch"))).toBe(true);
+    expect(calls.some(([, args]) => args.includes("weird dir/$X"))).toBe(true);
   });
 
   it("collects shipped (origin since merge-base) added files in current worktree", () => {
-    const runCommand = vi.fn((cmd: string) => {
-      if (cmd.includes("merge-base HEAD") && cmd.includes("origin/main"))
-        return "abc123\n";
-      if (cmd.includes("abc123..HEAD")) return "";
-      if (cmd.includes("abc123..origin/main")) {
+    const runCommand = vi.fn((file: string, args: string[]) => {
+      if (args.includes("merge-base") && args.includes("HEAD")) return "abc123\n";
+      if (args.some((a) => a === "abc123..HEAD")) return "";
+      if (args.some((a) => a === "abc123..origin/main")) {
         return "migrations/0056_shipped.sql\n";
       }
       return "";
