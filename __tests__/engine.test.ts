@@ -437,6 +437,36 @@ describe("Orchestrator", () => {
       expect(runner.spawned.length).toBe(0);
     });
 
+    it("writes succeeded status when skip is true so dependents can unblock", async () => {
+      const issue = makeIssue({ number: 1, wave: 1 });
+      const { orchestrator, deps } = makeOrchestrator([issue], {
+        shouldSkipIssue: () => ({ skip: true, reason: "manual" }),
+      });
+
+      await orchestrator.runWave(1);
+
+      expect(deps.statusStore.get(1)).toBe("succeeded");
+    });
+
+    it("unblocks dependent issues when their dep is skipped", async () => {
+      const dep = makeIssue({ number: 1, deps: [], wave: 1 });
+      const downstream = makeIssue({ number: 2, deps: [1], wave: 1 });
+      const { orchestrator, deps } = makeOrchestrator([dep, downstream], {
+        shouldSkipIssue: (issue: Issue) =>
+          issue.number === 1 ? { skip: true, reason: "manual" } : { skip: false },
+      });
+
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+
+      runner.resolvers.get(1000)!(0);
+      await promise;
+
+      expect(deps.statusStore.get(1)).toBe("succeeded");
+      expect(deps.statusStore.get(2)).toBe("succeeded");
+    });
+
     it("proceeds when hook returns skip: false", async () => {
       const issue = makeIssue({ number: 1, wave: 1 });
       const { orchestrator, deps } = makeOrchestrator([issue], {

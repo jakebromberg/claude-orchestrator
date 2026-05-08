@@ -140,9 +140,11 @@ export class Orchestrator {
                 this.refreshMetadata(issue);
                 continue;
             }
-            // Let the wrapper skip issues
+            // Let the wrapper skip issues. Write succeeded so dependents see this
+            // dep as fulfilled — a skip-return means the work is done by other means.
             const skipResult = this.config.hooks.shouldSkipIssue(issue);
             if (skipResult.skip) {
+                await this.setStatus(issue, "succeeded");
                 continue;
             }
             // Check dependencies
