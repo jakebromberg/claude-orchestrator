@@ -156,3 +156,16 @@ npm test           # Run tests
 npm run typecheck  # Type-check
 npm run build      # Build to dist/
 ```
+
+### Self-hosted orchestration
+
+This repo orchestrates work on its own open issues via `.orchestrator/`. See `.orchestrator/README.md` for the per-wave workflow.
+
+```bash
+npm run orchestrate           # Run a wave (configure issues in .orchestrator/config.yaml first)
+npm run orchestrate:status    # Show current issue statuses
+npm run orchestrate:dashboard # HTTP dashboard at :3000
+npm run orchestrate:cleanup   # Remove worktrees and branches
+```
+
+`.orchestrator/run.ts` imports the orchestrator core from `dist/`, so `npm run build` must be up-to-date before running.
