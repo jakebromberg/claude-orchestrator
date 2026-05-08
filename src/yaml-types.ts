@@ -74,6 +74,8 @@ export interface YamlIssue {
   stallTimeout?: number;
   /** Run this issue alone in its own wave. See `IssueSpec.serial`. */
   serial?: boolean;
+  /** Paths to files this issue expects to write. See `IssueSpec.ownsFiles`. */
+  ownsFiles?: string[];
 }
 
 /**
@@ -124,6 +126,13 @@ export interface YamlConfig {
    * for setup instructions.
    */
   appendableFiles?: AppendableFileSpec[];
+  /**
+   * Files that are safe to overlap across parallel issues and should not
+   * trigger wave serialization by the ownsFiles conflict detector. Typical
+   * entries: `package-lock.json`, test mocks, append-style JSON files already
+   * covered by the journal merge driver.
+   */
+  sharedFiles?: string[];
   issues: YamlIssue[];
 }
 

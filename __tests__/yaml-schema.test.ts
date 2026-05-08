@@ -388,4 +388,62 @@ describe("YamlConfigSchema", () => {
       }
     });
   });
+
+  describe("ownsFiles", () => {
+    it("accepts an issue with ownsFiles", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          issues: [
+            {
+              number: 1,
+              slug: "a",
+              dependsOn: [],
+              description: "X",
+              ownsFiles: ["src/foo.ts", "src/bar.ts"],
+            },
+          ],
+        }),
+      );
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts an issue with an empty ownsFiles array", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          issues: [
+            { number: 1, slug: "a", dependsOn: [], description: "X", ownsFiles: [] },
+          ],
+        }),
+      );
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects ownsFiles with an empty string entry", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          issues: [
+            { number: 1, slug: "a", dependsOn: [], description: "X", ownsFiles: [""] },
+          ],
+        }),
+      );
+      expect(result.success).toBe(false);
+    });
+
+    it("accepts a config-level sharedFiles allowlist", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({ sharedFiles: ["package-lock.json", "tests/mocks/db.mock.ts"] }),
+      );
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts an empty config-level sharedFiles list", () => {
+      const result = YamlConfigSchema.safeParse(makeValid({ sharedFiles: [] }));
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects sharedFiles with an empty string entry", () => {
+      const result = YamlConfigSchema.safeParse(makeValid({ sharedFiles: [""] }));
+      expect(result.success).toBe(false);
+    });
+  });
 });

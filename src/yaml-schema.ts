@@ -9,6 +9,7 @@ const YamlIssueSchema = z.object({
   mode: z.string().optional(),
   stallTimeout: z.number().int().min(0).optional(),
   serial: z.boolean().optional(),
+  ownsFiles: z.array(z.string().min(1)).optional(),
 });
 
 const YamlSummaryColumnSchema = z.object({
@@ -88,6 +89,7 @@ export const YamlConfigSchema = z.object({
   baseBranch: z.string().min(1).optional(),
   sequentialPaths: z.array(SequentialPathConfigSchema).optional(),
   appendableFiles: z.array(AppendableFileSpecSchema).optional(),
+  sharedFiles: z.array(z.string().min(1)).optional(),
   sequentialDomains: z
     .record(
       z

@@ -54,7 +54,7 @@ src/
 - **Dependency injection**: `Deps` interface for all external interactions
 - **In-memory testing**: All behavioral tests use `InMemoryStatusStore`,
   `InMemoryMetadataStore`, `createSilentLogger`, and mock `ProcessRunner`
-- **Wave scheduling**: `computeWaves()` topological sort from `dependsOn`
+- **Wave scheduling**: `computeWaves()` topological sort from `dependsOn`, with same-file ownership detection via `ownsFiles` (issues in the same candidate wave that claim overlapping non-shared files are slid to later waves by ascending issue number)
 - **Config validation**: Zod schema in `validateConfig()` with cycle detection
 - **YAML configs**: Alternative to pure-TS configs — `loadYamlConfig()` reads
   a YAML file, validates it, derives convention-based hooks, and merges
@@ -123,6 +123,12 @@ appendableFiles:
     arrayPath: "entries"
     keyField: "idx"
 
+# Files safe to overlap across parallel issues (ownsFiles allowlist).
+# appendableFiles paths are automatically exempt; list others here.
+sharedFiles:
+  - "package-lock.json"
+  - "tests/mocks/database.mock.ts"
+
 # Template variables: {{ISSUE_NUMBER}}, {{SLUG}}, {{DESCRIPTION}},
 # {{projectRoot}}, {{configDir}}, {{worktreeDir}}, {{UPSTREAM_CONTEXT}},
 # {{CLAIM_NUMBER}} (only when sequentialDomains is configured)
@@ -133,6 +139,7 @@ issues:
     dependsOn: []
     description: "Feature description"
     # serial: true  # optional; runs this issue alone in its own wave (e.g. for migrations)
+    # ownsFiles:    # optional; files this issue expects to write (triggers wave serialization on overlap)
 ```
 
 ### CLI Modes
