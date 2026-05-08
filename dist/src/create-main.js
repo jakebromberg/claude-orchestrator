@@ -235,8 +235,14 @@ export async function createMain(options) {
                 process.kill(pid, 0);
                 alive = true;
             }
-            catch {
-                // ESRCH: dead. EPERM (foreign owner): leave it alone.
+            catch (err) {
+                // ESRCH ("no such process") = dead, safe to reap.
+                // EPERM ("permission denied") = alive but owned by another user; do
+                //   not touch the lock — it's a real process we don't have rights to.
+                // Anything else: be conservative and leave it.
+                const code = err.code;
+                if (code !== "ESRCH")
+                    alive = true;
             }
             if (!alive) {
                 try {
