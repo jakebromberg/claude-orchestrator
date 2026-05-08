@@ -151,8 +151,11 @@ export class Orchestrator {
       await this.config.hooks.removeWorktree(issue);
       // Discard transient run state so the next wave starts from a clean slate.
       // Logs, run history, and per-domain counters are intentionally preserved.
-      this.deps.statusStore.remove(issue.number);
-      this.deps.metadataStore.remove(issue.number);
+      // `remove` is optional on both store interfaces (backwards-compat); a
+      // downstream impl that predates the field is treated as "leaves state in
+      // place," which is no worse than the previous behaviour.
+      this.deps.statusStore.remove?.(issue.number);
+      this.deps.metadataStore.remove?.(issue.number);
     }
     this.deps.logger.info("Cleanup complete");
   }

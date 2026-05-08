@@ -158,8 +158,14 @@ export interface ParsedArgs {
 export interface StatusStore {
   get(issueNumber: number): Status;
   set(issueNumber: number, status: Status): void;
-  /** Discard recorded state for `issueNumber`. Idempotent on absent state. */
-  remove(issueNumber: number): void;
+  /**
+   * Discard recorded state for `issueNumber`. Idempotent on absent state.
+   *
+   * Optional for backwards compatibility with downstream implementations that
+   * predate this interface field; consumers should use optional-chaining when
+   * invoking it. Both `InMemoryStatusStore` and `FileStatusStore` provide it.
+   */
+  remove?(issueNumber: number): void;
 }
 
 export interface ProcessHandle {
@@ -199,8 +205,14 @@ export interface MetadataStore {
   get(issueNumber: number): IssueMetadata;
   set(issueNumber: number, metadata: IssueMetadata): void;
   update(issueNumber: number, partial: Partial<IssueMetadata>): void;
-  /** Discard recorded metadata for `issueNumber`. Idempotent on absent state. */
-  remove(issueNumber: number): void;
+  /**
+   * Discard recorded metadata for `issueNumber`. Idempotent on absent state.
+   *
+   * Optional for backwards compatibility with downstream implementations that
+   * predate this interface field; consumers should use optional-chaining when
+   * invoking it. Both `InMemoryMetadataStore` and `FileMetadataStore` provide it.
+   */
+  remove?(issueNumber: number): void;
 }
 
 export interface Deps {
