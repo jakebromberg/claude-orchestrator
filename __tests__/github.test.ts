@@ -137,7 +137,7 @@ describe("ensureLabelExists", () => {
     const deps = makeDeps();
     ensureLabelExists("owner/repo", "bug", deps, { color: "d73a4a" });
     expect(deps.runCommand).toHaveBeenCalledWith(
-      "gh label create 'bug' --repo 'owner/repo' --force --color d73a4a",
+      "gh label create 'bug' --repo 'owner/repo' --force --color 'd73a4a'",
     );
   });
 

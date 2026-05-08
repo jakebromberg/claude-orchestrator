@@ -74,7 +74,7 @@ export function ensureLabelExists(
 ): void {
   let cmd = `gh label create ${shellQuote(label)} --repo ${shellQuote(repo)} --force`;
   if (options?.color) {
-    cmd += ` --color ${options.color}`;
+    cmd += ` --color ${shellQuote(options.color)}`;
   }
   if (options?.description) {
     cmd += ` --description ${shellQuote(options.description)}`;
