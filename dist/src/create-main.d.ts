@@ -10,6 +10,29 @@ export declare function buildGhIssueCreateCommand(repo: string, title: string): 
  * passes this string directly to `execFileSync` (no shell expansion).
  */
 export declare function buildNotificationScript(name: string, message: string): string;
+/**
+ * Exported for testing. Walks up from the script's directory toward the
+ * filesystem root and returns the first ancestor containing a `package.json`.
+ * Returns `null` if none is found.
+ */
+export declare function findScriptPackageRoot(scriptPath: string): string | null;
+/**
+ * Exported for testing. Builds the spawn command + args for the --detach
+ * respawn. A TypeScript entry point is routed through `npx tsx` because plain
+ * `node` cannot load `.js` import specifiers that resolve to `.ts` files.
+ * The `--prefix` points at the script's nearest package root so npx resolves
+ * `tsx` from the consumer's `node_modules` rather than from the cwd's.
+ */
+export declare function buildDetachSpawnCommand(opts: {
+    scriptPath: string;
+    configName: string;
+    childArgv: string[];
+    nodeExecPath: string;
+    findPackageRoot: (scriptPath: string) => string | null;
+}): {
+    command: string;
+    args: string[];
+};
 export interface MainOptions {
     configs: Record<string, ConfigFactory>;
     argv?: string[];
