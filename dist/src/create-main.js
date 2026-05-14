@@ -28,6 +28,42 @@ export function buildNotificationScript(name, message) {
     const safeTitle = name.replace(/"/g, '" & quote & "');
     return `display notification "${message}" with title "${safeTitle}"`;
 }
+/**
+ * Exported for testing. Walks up from the script's directory toward the
+ * filesystem root and returns the first ancestor containing a `package.json`.
+ * Returns `null` if none is found.
+ */
+export function findScriptPackageRoot(scriptPath) {
+    let dir = path.dirname(path.resolve(scriptPath));
+    const { root } = path.parse(dir);
+    while (true) {
+        if (fs.existsSync(path.join(dir, "package.json"))) {
+            return dir;
+        }
+        if (dir === root)
+            return null;
+        dir = path.dirname(dir);
+    }
+}
+/**
+ * Exported for testing. Builds the spawn command + args for the --detach
+ * respawn. A TypeScript entry point is routed through `npx tsx` because plain
+ * `node` cannot load `.js` import specifiers that resolve to `.ts` files.
+ * The `--prefix` points at the script's nearest package root so npx resolves
+ * `tsx` from the consumer's `node_modules` rather than from the cwd's.
+ */
+export function buildDetachSpawnCommand(opts) {
+    const { scriptPath, configName, childArgv, nodeExecPath, findPackageRoot } = opts;
+    const isTypescript = /\.[mc]?tsx?$/i.test(scriptPath);
+    if (!isTypescript) {
+        return { command: nodeExecPath, args: [scriptPath, configName, ...childArgv] };
+    }
+    const pkgRoot = findPackageRoot(scriptPath);
+    const args = pkgRoot
+        ? ["--prefix", pkgRoot, "tsx", scriptPath, configName, ...childArgv]
+        : ["tsx", scriptPath, configName, ...childArgv];
+    return { command: "npx", args };
+}
 function createRealDeps(config) {
     return {
         statusStore: new FileStatusStore(config.configDir),
@@ -314,7 +350,14 @@ export async function createMain(options) {
             delete env.CLAUDECODE;
             delete env.CLAUDE_CODE_ENTRYPOINT;
             const childArgv = restArgv.filter((a) => a !== "--detach");
-            const child = spawn(process.execPath, [scriptPath, configName, ...childArgv], {
+            const { command, args: spawnArgs } = buildDetachSpawnCommand({
+                scriptPath,
+                configName,
+                childArgv,
+                nodeExecPath: process.execPath,
+                findPackageRoot: findScriptPackageRoot,
+            });
+            const child = spawn(command, spawnArgs, {
                 detached: true,
                 stdio: ["ignore", logFd, logFd],
                 cwd: projectRoot,
