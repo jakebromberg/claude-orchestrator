@@ -8,23 +8,15 @@ export interface ComputeWavesOptions {
      * mechanical merge strategies and do not cause semantic conflicts.
      */
     ignoredOwnsFiles?: string[];
-    /**
-     * Repo assigned to issues that don't declare their own `repo`, used to build
-     * their composite ref. When unset, repo-less issues key on their bare number
-     * (single-repo back-compat).
-     */
-    defaultRepo?: string;
 }
 /**
  * Compute wave assignments from dependency declarations using topological sort.
  *
- * Issues are identified by composite ref (`owner/repo#N`, or bare `N` when no
- * repo is known), so the same number in two repos is two distinct nodes and a
- * cross-repo `dependsOn` edge is honored. Issues with no dependencies get wave
- * 1; others get `max(wave of deps) + 1`. If `ownsFiles` is set, issues within
- * the same candidate wave that claim an overlapping file (not covered by
- * `ignoredOwnsFiles`) are slid to the next wave in deterministic (repo, number)
- * order so the earlier issue always runs first.
+ * Issues with no dependencies get wave 1. Others get `max(wave of deps) + 1`.
+ * If `ownsFiles` is set on any issue, issues within the same candidate wave
+ * that claim an overlapping file (not covered by `ignoredOwnsFiles`) are slid
+ * to the next wave in ascending issue-number order so that the lower-numbered
+ * issue always runs first.
  * Throws if the dependency graph contains a cycle.
  */
 export declare function computeWaves(specs: IssueSpec[], options?: ComputeWavesOptions): Issue[];

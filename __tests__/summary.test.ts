@@ -1,22 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { refOf, normalizeDep } from "../src/ref.js";
 import type { Issue, Status } from "../src/types.js";
 import { createPrintSummary, type SummaryColumn, type SummaryOptions } from "../src/summary.js";
 
-function makeIssue(overrides: Omit<Partial<Issue>, "deps"> & { deps?: (number | string)[] } = {}): Issue {
-  const { deps: depOverride, ref: refOverride, ...rest } = overrides;
-  const base = {
+function makeIssue(overrides: Partial<Issue> = {}): Issue {
+  return {
     number: 1,
     slug: "test-issue",
-    wave: 1,
     dependsOn: [],
     description: "Test issue",
-    ...rest,
-  };
-  return {
-    ...base,
-    ref: refOverride ?? refOf(base),
-    deps: (depOverride ?? []).map((d) => normalizeDep(d, base)),
+    wave: 1,
+    deps: [],
+    ...overrides,
   };
 }
 
@@ -140,7 +134,7 @@ describe("createPrintSummary", () => {
         6: "skipped",
       };
       const print = createPrintSummary(basicOptions);
-      print(issues, (n) => statusMap[Number(n)]);
+      print(issues, (n) => statusMap[n]);
 
       const output = getOutput();
       expect(output).toContain("Succeeded: 2");

@@ -448,9 +448,9 @@ export async function createMain(options: MainOptions): Promise<void> {
     const durationSeconds =
       Math.round((finishedAt.getTime() - startedAt.getTime()) / 10) / 100;
 
-    const statuses: Record<string, Status> = {};
+    const statuses: Record<number, Status> = {};
     for (const issue of config.issues) {
-      statuses[issue.ref] = deps.statusStore.get(issue.ref);
+      statuses[issue.number] = deps.statusStore.get(issue.number);
     }
 
     const id = startedAt.toISOString().replace(/:/g, "-");
@@ -494,10 +494,10 @@ export async function createMain(options: MainOptions): Promise<void> {
     // Send macOS notification (in finally so it fires even on crash)
     if (args.notify && process.platform === "darwin") {
       const succeeded = config.issues.filter(
-        (i) => deps.statusStore.get(i.ref) === "succeeded",
+        (i) => deps.statusStore.get(i.number) === "succeeded",
       ).length;
       const failed = config.issues.filter(
-        (i) => deps.statusStore.get(i.ref) === "failed",
+        (i) => deps.statusStore.get(i.number) === "failed",
       ).length;
       const message = `${succeeded} succeeded, ${failed} failed`;
       try {

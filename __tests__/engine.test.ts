@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { refOf, normalizeDep } from "../src/ref.js";
 import { Orchestrator, cleanUpMergedIssues } from "../src/engine.js";
 import { InMemoryStatusStore, InMemoryMetadataStore } from "../src/status.js";
 import type {
@@ -19,20 +18,15 @@ import type { MergeResult } from "../src/merge.js";
 // Test helpers
 // ---------------------------------------------------------------------------
 
-function makeIssue(overrides: Omit<Partial<Issue>, "deps"> & { deps?: (number | string)[] } = {}): Issue {
-  const { deps: depOverride, ref: refOverride, ...rest } = overrides;
-  const base = {
+function makeIssue(overrides: Partial<Issue> = {}): Issue {
+  return {
     number: 1,
     slug: "test-issue",
     wave: 1,
+    deps: [],
     dependsOn: [],
     description: "Test issue",
-    ...rest,
-  };
-  return {
-    ...base,
-    ref: refOverride ?? refOf(base),
-    deps: (depOverride ?? []).map((d) => normalizeDep(d, base)),
+    ...overrides,
   };
 }
 
@@ -154,7 +148,7 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(0);
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("succeeded");
+      expect(deps.statusStore.get(1)).toBe("succeeded");
     });
 
     it("proceeds when all deps succeeded", async () => {
@@ -162,7 +156,7 @@ describe("Orchestrator", () => {
       const issue = makeIssue({ number: 2, deps: [1], wave: 1 });
       const { orchestrator, deps } = makeOrchestrator([dep, issue]);
 
-      deps.statusStore.set("1", "succeeded");
+      deps.statusStore.set(1, "succeeded");
 
       const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
       const promise = orchestrator.runWave(1);
@@ -170,7 +164,7 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(0);
       await promise;
 
-      expect(deps.statusStore.get("2")).toBe("succeeded");
+      expect(deps.statusStore.get(2)).toBe("succeeded");
     });
 
     it("skips issue when dep failed", async () => {
@@ -179,11 +173,11 @@ describe("Orchestrator", () => {
       const issue = makeIssue({ number: 2, deps: [1], wave: 1 });
       const { orchestrator, deps } = makeOrchestrator([dep, issue]);
 
-      deps.statusStore.set("1", "failed");
+      deps.statusStore.set(1, "failed");
 
       await orchestrator.runWave(1);
 
-      expect(deps.statusStore.get("2")).toBe("skipped");
+      expect(deps.statusStore.get(2)).toBe("skipped");
     });
 
     it("skips issue when dep is pending", async () => {
@@ -194,7 +188,7 @@ describe("Orchestrator", () => {
       // dep stays pending (default)
       await orchestrator.runWave(1);
 
-      expect(deps.statusStore.get("2")).toBe("skipped");
+      expect(deps.statusStore.get(2)).toBe("skipped");
     });
 
     it("skips issue when dep does not exist in config", async () => {
@@ -203,7 +197,7 @@ describe("Orchestrator", () => {
 
       await orchestrator.runWave(1);
 
-      expect(deps.statusStore.get("2")).toBe("skipped");
+      expect(deps.statusStore.get(2)).toBe("skipped");
     });
   });
 
@@ -219,15 +213,15 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(0);
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("succeeded");
-      expect(deps.statusStore.get("2")).toBe("pending");
+      expect(deps.statusStore.get(1)).toBe("succeeded");
+      expect(deps.statusStore.get(2)).toBe("pending");
     });
 
     it("skips already-succeeded issues", async () => {
       const issue = makeIssue({ number: 1, wave: 1 });
       const { orchestrator, deps } = makeOrchestrator([issue]);
 
-      deps.statusStore.set("1", "succeeded");
+      deps.statusStore.set(1, "succeeded");
       await orchestrator.runWave(1);
 
       const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
@@ -317,9 +311,9 @@ describe("Orchestrator", () => {
       await promise;
 
       // Verify order: wave 1 issue (issue #2), wave 2 (issue #1), wave 3 (issue #3)
-      expect(deps.statusStore.get("2")).toBe("succeeded"); // wave 1
-      expect(deps.statusStore.get("1")).toBe("succeeded"); // wave 2
-      expect(deps.statusStore.get("3")).toBe("succeeded"); // wave 3
+      expect(deps.statusStore.get(2)).toBe("succeeded"); // wave 1
+      expect(deps.statusStore.get(1)).toBe("succeeded"); // wave 2
+      expect(deps.statusStore.get(3)).toBe("succeeded"); // wave 3
     });
   });
 
@@ -339,9 +333,9 @@ describe("Orchestrator", () => {
       for (const [, resolve] of runner.resolvers) resolve(0);
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("succeeded");
-      expect(deps.statusStore.get("2")).toBe("pending");
-      expect(deps.statusStore.get("3")).toBe("succeeded");
+      expect(deps.statusStore.get(1)).toBe("succeeded");
+      expect(deps.statusStore.get(2)).toBe("pending");
+      expect(deps.statusStore.get(3)).toBe("succeeded");
     });
 
     it("logs error for unknown issue", async () => {
@@ -361,7 +355,7 @@ describe("Orchestrator", () => {
         makeIssue({ number: 1, wave: 1 }),
       ]);
 
-      deps.statusStore.set("1", "succeeded");
+      deps.statusStore.set(1, "succeeded");
       await orchestrator.runSpecific([1]);
 
       const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
@@ -379,10 +373,10 @@ describe("Orchestrator", () => {
       ];
       const { orchestrator, deps } = makeOrchestrator(issues);
 
-      deps.statusStore.set("1", "failed");
-      deps.statusStore.set("2", "interrupted");
-      deps.statusStore.set("3", "succeeded");
-      deps.statusStore.set("4", "running");
+      deps.statusStore.set(1, "failed");
+      deps.statusStore.set(2, "interrupted");
+      deps.statusStore.set(3, "succeeded");
+      deps.statusStore.set(4, "running");
 
       const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
       const promise = orchestrator.retryFailed();
@@ -392,17 +386,17 @@ describe("Orchestrator", () => {
       for (const [, resolve] of runner.resolvers) resolve(0);
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("succeeded");
-      expect(deps.statusStore.get("2")).toBe("succeeded");
-      expect(deps.statusStore.get("3")).toBe("succeeded"); // unchanged
-      expect(deps.statusStore.get("4")).toBe("succeeded");
+      expect(deps.statusStore.get(1)).toBe("succeeded");
+      expect(deps.statusStore.get(2)).toBe("succeeded");
+      expect(deps.statusStore.get(3)).toBe("succeeded"); // unchanged
+      expect(deps.statusStore.get(4)).toBe("succeeded");
     });
 
     it("resets retryable issues to pending before preparing", async () => {
       const issues = [makeIssue({ number: 1, wave: 1 })];
       const { orchestrator, deps } = makeOrchestrator(issues);
 
-      deps.statusStore.set("1", "failed");
+      deps.statusStore.set(1, "failed");
 
       const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
       const promise = orchestrator.retryFailed();
@@ -410,7 +404,7 @@ describe("Orchestrator", () => {
       await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
 
       // Before the process completes, status should have been reset to pending then running
-      expect(deps.statusStore.get("1")).toBe("running");
+      expect(deps.statusStore.get(1)).toBe("running");
 
       for (const [, resolve] of runner.resolvers) resolve(0);
       await promise;
@@ -420,7 +414,7 @@ describe("Orchestrator", () => {
       const { orchestrator, deps } = makeOrchestrator([
         makeIssue({ number: 1, wave: 1 }),
       ]);
-      deps.statusStore.set("1", "succeeded");
+      deps.statusStore.set(1, "succeeded");
 
       await orchestrator.retryFailed();
 
@@ -451,7 +445,7 @@ describe("Orchestrator", () => {
 
       await orchestrator.runWave(1);
 
-      expect(deps.statusStore.get("1")).toBe("succeeded");
+      expect(deps.statusStore.get(1)).toBe("succeeded");
     });
 
     it("unblocks dependent issues when their dep is skipped", async () => {
@@ -469,8 +463,8 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(0);
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("succeeded");
-      expect(deps.statusStore.get("2")).toBe("succeeded");
+      expect(deps.statusStore.get(1)).toBe("succeeded");
+      expect(deps.statusStore.get(2)).toBe("succeeded");
     });
 
     it("proceeds when hook returns skip: false", async () => {
@@ -486,7 +480,7 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(0);
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("succeeded");
+      expect(deps.statusStore.get(1)).toBe("succeeded");
     });
   });
 
@@ -501,7 +495,7 @@ describe("Orchestrator", () => {
 
       await orchestrator.runWave(1);
 
-      expect(deps.statusStore.get("1")).toBe("failed");
+      expect(deps.statusStore.get(1)).toBe("failed");
       const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
       expect(runner.spawned.length).toBe(0);
     });
@@ -516,7 +510,7 @@ describe("Orchestrator", () => {
       const promise = orchestrator.runWave(1);
       await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
 
-      expect(deps.statusStore.get("1")).toBe("running");
+      expect(deps.statusStore.get(1)).toBe("running");
 
       runner.resolvers.get(1000)!(0);
       await promise;
@@ -533,7 +527,7 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(0);
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("succeeded");
+      expect(deps.statusStore.get(1)).toBe("succeeded");
     });
 
     it("sets status to failed on non-zero exit", async () => {
@@ -547,7 +541,7 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(1);
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("failed");
+      expect(deps.statusStore.get(1)).toBe("failed");
     });
 
     it("calls getClaudeArgs hook for extra args", async () => {
@@ -623,17 +617,17 @@ describe("Orchestrator", () => {
       ];
       const { orchestrator, deps } = makeOrchestrator(issues);
 
-      deps.statusStore.set("1", "succeeded");
-      deps.statusStore.set("2", "failed");
-      deps.metadataStore.set("1", { prUrl: "https://example/pull/1", exitCode: 0 });
-      deps.metadataStore.set("2", { prUrl: "https://example/pull/2", exitCode: 1 });
+      deps.statusStore.set(1, "succeeded");
+      deps.statusStore.set(2, "failed");
+      deps.metadataStore.set(1, { prUrl: "https://example/pull/1", exitCode: 0 });
+      deps.metadataStore.set(2, { prUrl: "https://example/pull/2", exitCode: 1 });
 
       await orchestrator.cleanup();
 
-      expect(deps.statusStore.get("1")).toBe("pending");
-      expect(deps.statusStore.get("2")).toBe("pending");
-      expect(deps.metadataStore.get("1")).toEqual({});
-      expect(deps.metadataStore.get("2")).toEqual({});
+      expect(deps.statusStore.get(1)).toBe("pending");
+      expect(deps.statusStore.get(2)).toBe("pending");
+      expect(deps.metadataStore.get(1)).toEqual({});
+      expect(deps.metadataStore.get(2)).toEqual({});
     });
 
     it("does not touch state for issues outside the configured set", async () => {
@@ -641,15 +635,15 @@ describe("Orchestrator", () => {
       const { orchestrator, deps } = makeOrchestrator(issues);
 
       // 1 is configured; 99 is not — represents stale state from a prior wave.
-      deps.statusStore.set("1", "succeeded");
-      deps.statusStore.set("99", "succeeded");
-      deps.metadataStore.set("99", { prUrl: "https://example/pull/99" });
+      deps.statusStore.set(1, "succeeded");
+      deps.statusStore.set(99, "succeeded");
+      deps.metadataStore.set(99, { prUrl: "https://example/pull/99" });
 
       await orchestrator.cleanup();
 
-      expect(deps.statusStore.get("1")).toBe("pending");
-      expect(deps.statusStore.get("99")).toBe("succeeded");
-      expect(deps.metadataStore.get("99")).toEqual({ prUrl: "https://example/pull/99" });
+      expect(deps.statusStore.get(1)).toBe("pending");
+      expect(deps.statusStore.get(99)).toBe("succeeded");
+      expect(deps.metadataStore.get(99)).toEqual({ prUrl: "https://example/pull/99" });
     });
   });
 
@@ -662,15 +656,15 @@ describe("Orchestrator", () => {
       ];
       const { orchestrator, deps } = makeOrchestrator(issues);
 
-      deps.statusStore.set("1", "running");
-      deps.statusStore.set("2", "succeeded");
-      deps.statusStore.set("3", "running");
+      deps.statusStore.set(1, "running");
+      deps.statusStore.set(2, "succeeded");
+      deps.statusStore.set(3, "running");
 
       await orchestrator.handleInterrupt();
 
-      expect(deps.statusStore.get("1")).toBe("interrupted");
-      expect(deps.statusStore.get("2")).toBe("succeeded");
-      expect(deps.statusStore.get("3")).toBe("interrupted");
+      expect(deps.statusStore.get(1)).toBe("interrupted");
+      expect(deps.statusStore.get(2)).toBe("succeeded");
+      expect(deps.statusStore.get(3)).toBe("interrupted");
     });
 
     it("calls printSummary on interrupt", async () => {
@@ -693,15 +687,15 @@ describe("Orchestrator", () => {
       ];
       const { orchestrator, deps } = makeOrchestrator(issues);
 
-      deps.statusStore.set("1", "running");
-      deps.statusStore.set("2", "succeeded");
-      deps.statusStore.set("3", "failed");
+      deps.statusStore.set(1, "running");
+      deps.statusStore.set(2, "succeeded");
+      deps.statusStore.set(3, "failed");
 
       await orchestrator.resetStaleStatuses();
 
-      expect(deps.statusStore.get("1")).toBe("pending");
-      expect(deps.statusStore.get("2")).toBe("succeeded");
-      expect(deps.statusStore.get("3")).toBe("failed");
+      expect(deps.statusStore.get(1)).toBe("pending");
+      expect(deps.statusStore.get(2)).toBe("succeeded");
+      expect(deps.statusStore.get(3)).toBe("failed");
     });
   });
 
@@ -775,9 +769,9 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1002)!(0);
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("succeeded");
-      expect(deps.statusStore.get("2")).toBe("succeeded");
-      expect(deps.statusStore.get("3")).toBe("succeeded");
+      expect(deps.statusStore.get(1)).toBe("succeeded");
+      expect(deps.statusStore.get(2)).toBe("succeeded");
+      expect(deps.statusStore.get(3)).toBe("succeeded");
     });
 
     it("defaults to 4 when maxParallel not specified", async () => {
@@ -964,7 +958,7 @@ describe("Orchestrator", () => {
       await vi.advanceTimersByTimeAsync(0);
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("failed");
+      expect(deps.statusStore.get(1)).toBe("failed");
     });
 
     it("uses issue stallTimeout when provided, overriding config", async () => {
@@ -1035,7 +1029,7 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(0);
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("succeeded");
+      expect(deps.statusStore.get(1)).toBe("succeeded");
     });
 
     it("marks succeeded when hook passes", async () => {
@@ -1051,7 +1045,7 @@ describe("Orchestrator", () => {
       await promise;
 
       expect(postSessionCheck).toHaveBeenCalledWith(issue, `/worktrees/${issue.slug}`);
-      expect(deps.statusStore.get("1")).toBe("succeeded");
+      expect(deps.statusStore.get(1)).toBe("succeeded");
     });
 
     it("marks failed when hook fails", async () => {
@@ -1069,7 +1063,7 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(0);
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("failed");
+      expect(deps.statusStore.get(1)).toBe("failed");
       expect(deps.logger.error as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         expect.stringContaining("tests failed"),
       );
@@ -1089,7 +1083,7 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(0);
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("failed");
+      expect(deps.statusStore.get(1)).toBe("failed");
       expect(deps.logger.error as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         expect.stringContaining("check crashed"),
       );
@@ -1108,7 +1102,7 @@ describe("Orchestrator", () => {
       await promise;
 
       expect(postSessionCheck).not.toHaveBeenCalled();
-      expect(deps.statusStore.get("1")).toBe("failed");
+      expect(deps.statusStore.get(1)).toBe("failed");
     });
 
     it("completes all post-checks before launchAndWait returns", async () => {
@@ -1134,8 +1128,8 @@ describe("Orchestrator", () => {
       await promise;
 
       expect(checkCount).toBe(2);
-      expect(deps.statusStore.get("1")).toBe("succeeded");
-      expect(deps.statusStore.get("2")).toBe("succeeded");
+      expect(deps.statusStore.get(1)).toBe("succeeded");
+      expect(deps.statusStore.get(2)).toBe("succeeded");
     });
 
     it("includes --include-hook-events in claude args", async () => {
@@ -1169,7 +1163,7 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(0);
       await promise;
 
-      const meta = deps.metadataStore.get("1");
+      const meta = deps.metadataStore.get(1);
       expect(meta.prUrl).toBe("https://github.com/org/repo/pull/42");
       expect(meta.prNumber).toBe(42);
     });
@@ -1186,7 +1180,7 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(0);
       await promise;
 
-      const meta = deps.metadataStore.get("1");
+      const meta = deps.metadataStore.get(1);
       expect(meta.prUrl).toBeUndefined();
       expect(meta.exitCode).toBe(0);
       expect(meta.finishedAt).toBeDefined();
@@ -1203,7 +1197,7 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(1);
       await promise;
 
-      const meta = deps.metadataStore.get("1");
+      const meta = deps.metadataStore.get(1);
       expect(meta.exitCode).toBe(1);
       expect(meta.startedAt).toBeDefined();
       expect(meta.finishedAt).toBeDefined();
@@ -1223,9 +1217,9 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(1);
       await promise;
 
-      const meta = deps.metadataStore.get("1");
+      const meta = deps.metadataStore.get(1);
       expect(meta.prUrl).toBe("https://github.com/org/repo/pull/99");
-      expect(deps.statusStore.get("1")).toBe("failed");
+      expect(deps.statusStore.get(1)).toBe("failed");
     });
 
     it("handles readFile throwing gracefully", async () => {
@@ -1242,8 +1236,8 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(0);
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("succeeded");
-      const meta = deps.metadataStore.get("1");
+      expect(deps.statusStore.get(1)).toBe("succeeded");
+      const meta = deps.metadataStore.get(1);
       expect(meta.prUrl).toBeUndefined();
     });
   });
@@ -1272,7 +1266,7 @@ describe("Orchestrator", () => {
 
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("succeeded");
+      expect(deps.statusStore.get(1)).toBe("succeeded");
       expect(truncateFile).toHaveBeenCalled();
       expect((deps.logger.info as ReturnType<typeof vi.fn>).mock.calls.flat().join(" "))
         .toContain("after retry");
@@ -1292,7 +1286,7 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(1);
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("failed");
+      expect(deps.statusStore.get(1)).toBe("failed");
       expect(runner.spawned.length).toBe(1);
     });
 
@@ -1307,7 +1301,7 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(0);
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("succeeded");
+      expect(deps.statusStore.get(1)).toBe("succeeded");
       expect(runner.spawned.length).toBe(1);
     });
 
@@ -1331,7 +1325,7 @@ describe("Orchestrator", () => {
 
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("failed");
+      expect(deps.statusStore.get(1)).toBe("failed");
       // Only 2 spawns total (one retry, not infinite)
       expect(runner.spawned.length).toBe(2);
     });
@@ -1361,7 +1355,7 @@ describe("Orchestrator", () => {
       await promise;
 
       expect(postSessionCheck).toHaveBeenCalledTimes(1);
-      expect(deps.statusStore.get("1")).toBe("succeeded");
+      expect(deps.statusStore.get(1)).toBe("succeeded");
     });
 
     it("logs stderr contents before retry", async () => {
@@ -1444,7 +1438,7 @@ describe("Orchestrator", () => {
         await promise;
 
         // Retry was killed by stall monitor (exit code 137 from kill)
-        expect(deps.statusStore.get("1")).toBe("failed");
+        expect(deps.statusStore.get(1)).toBe("failed");
       } finally {
         vi.useRealTimers();
       }
@@ -1510,11 +1504,11 @@ describe("Orchestrator", () => {
 
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("failed");
-      expect(deps.statusStore.get("2")).toBe("succeeded");
-      expect(deps.statusStore.get("3")).toBe("succeeded");
-      expect(deps.statusStore.get("4")).toBe("succeeded");
-      expect(deps.statusStore.get("5")).toBe("succeeded");
+      expect(deps.statusStore.get(1)).toBe("failed");
+      expect(deps.statusStore.get(2)).toBe("succeeded");
+      expect(deps.statusStore.get(3)).toBe("succeeded");
+      expect(deps.statusStore.get(4)).toBe("succeeded");
+      expect(deps.statusStore.get(5)).toBe("succeeded");
     });
 
     it("does not reduce parallelism for non-0-byte retry failure", async () => {
@@ -1558,8 +1552,8 @@ describe("Orchestrator", () => {
 
       await promise;
 
-      expect(deps.statusStore.get("1")).toBe("failed");
-      expect(deps.statusStore.get("2")).toBe("succeeded");
+      expect(deps.statusStore.get(1)).toBe("failed");
+      expect(deps.statusStore.get(2)).toBe("succeeded");
 
       // No fallback warning logged
       const warnCalls = (deps.logger.warn as ReturnType<typeof vi.fn>).mock.calls.flat();
@@ -1615,8 +1609,8 @@ describe("Orchestrator", () => {
       const { orchestrator, deps } = makeOrchestrator([issue], undefined, { readFile });
 
       // Mark as succeeded with stale metadata
-      deps.statusStore.set("1", "succeeded");
-      deps.metadataStore.set("1", {
+      deps.statusStore.set(1, "succeeded");
+      deps.metadataStore.set(1, {
         prUrl: "https://github.com/org/repo/pull/10",
         prNumber: 10,
       });
@@ -1624,7 +1618,7 @@ describe("Orchestrator", () => {
       await orchestrator.runWave(1);
 
       // Metadata should be refreshed from the log
-      const meta = deps.metadataStore.get("1");
+      const meta = deps.metadataStore.get(1);
       expect(meta.prUrl).toBe("https://github.com/org/repo/pull/55");
       expect(meta.prNumber).toBe(55);
     });
@@ -1636,8 +1630,8 @@ describe("Orchestrator", () => {
       });
       const { orchestrator, deps } = makeOrchestrator([issue], undefined, { readFile });
 
-      deps.statusStore.set("1", "succeeded");
-      deps.metadataStore.set("1", {
+      deps.statusStore.set(1, "succeeded");
+      deps.metadataStore.set(1, {
         prUrl: "https://github.com/org/repo/pull/10",
         prNumber: 10,
       });
@@ -1646,7 +1640,7 @@ describe("Orchestrator", () => {
       await orchestrator.runWave(1);
 
       // Metadata should be unchanged
-      const meta = deps.metadataStore.get("1");
+      const meta = deps.metadataStore.get(1);
       expect(meta.prUrl).toBe("https://github.com/org/repo/pull/10");
       expect(meta.prNumber).toBe(10);
     });
@@ -1656,8 +1650,8 @@ describe("Orchestrator", () => {
       const readFile = vi.fn(() => "Session completed with no PR URL.");
       const { orchestrator, deps } = makeOrchestrator([issue], undefined, { readFile });
 
-      deps.statusStore.set("1", "succeeded");
-      deps.metadataStore.set("1", {
+      deps.statusStore.set(1, "succeeded");
+      deps.metadataStore.set(1, {
         prUrl: "https://github.com/org/repo/pull/10",
         prNumber: 10,
       });
@@ -1665,7 +1659,7 @@ describe("Orchestrator", () => {
       await orchestrator.runWave(1);
 
       // Existing metadata should be preserved
-      const meta = deps.metadataStore.get("1");
+      const meta = deps.metadataStore.get(1);
       expect(meta.prUrl).toBe("https://github.com/org/repo/pull/10");
       expect(meta.prNumber).toBe(10);
     });
@@ -1733,11 +1727,11 @@ describe("Orchestrator", () => {
       const runCommand = vi.fn(() => "");
       const config = makeConfig(issues);
       const deps = makeDeps({ readFile, runCommand });
-      deps.metadataStore.set("1", {
+      deps.metadataStore.set(1, {
         prUrl: "https://github.com/org/repo/pull/10",
         prNumber: 10,
       });
-      deps.metadataStore.set("2", {
+      deps.metadataStore.set(2, {
         prUrl: "https://github.com/org/repo/pull/11",
         prNumber: 11,
       });
@@ -1809,11 +1803,11 @@ describe("Orchestrator", () => {
       });
       const config = makeConfig(issues);
       const deps = makeDeps({ readFile, runCommand });
-      deps.metadataStore.set("1", {
+      deps.metadataStore.set(1, {
         prUrl: "https://github.com/org/repo/pull/10",
         prNumber: 10,
       });
-      deps.metadataStore.set("2", {
+      deps.metadataStore.set(2, {
         prUrl: "https://github.com/org/repo/pull/11",
         prNumber: 11,
       });
@@ -1853,7 +1847,7 @@ describe("Orchestrator", () => {
       const hooks = makeHooks();
       const config = makeConfig(issues, hooks);
       const deps = makeDeps({ readFile, runCommand });
-      deps.metadataStore.set("1", {
+      deps.metadataStore.set(1, {
         prUrl: "https://github.com/org/repo/pull/10",
         prNumber: 10,
       });
@@ -1913,7 +1907,7 @@ describe("Orchestrator", () => {
 describe("cleanUpMergedIssues", () => {
   it("removes worktree for merged issues", async () => {
     const issue = makeIssue({ number: 1, slug: "my-feature" });
-    const mergeResults = new Map<string, MergeResult>([["1", "merged"]]);
+    const mergeResults = new Map<number, MergeResult>([[1, "merged"]]);
     const removeWorktree = vi.fn(async () => {});
     const runCommand = vi.fn(() => "");
     const logger = makeSilentLogger();
@@ -1931,7 +1925,7 @@ describe("cleanUpMergedIssues", () => {
 
   it("deletes remote branch for merged issues", async () => {
     const issue = makeIssue({ number: 1, slug: "my-feature" });
-    const mergeResults = new Map<string, MergeResult>([["1", "merged"]]);
+    const mergeResults = new Map<number, MergeResult>([[1, "merged"]]);
     const removeWorktree = vi.fn(async () => {});
     const runCommand = vi.fn(() => "");
     const logger = makeSilentLogger();
@@ -1951,7 +1945,7 @@ describe("cleanUpMergedIssues", () => {
 
   it("uses getBranchName to determine the branch", async () => {
     const issue = makeIssue({ number: 1, slug: "my-feature" });
-    const mergeResults = new Map<string, MergeResult>([["1", "merged"]]);
+    const mergeResults = new Map<number, MergeResult>([[1, "merged"]]);
     const removeWorktree = vi.fn(async () => {});
     const runCommand = vi.fn(() => "");
     const logger = makeSilentLogger();
@@ -1975,10 +1969,10 @@ describe("cleanUpMergedIssues", () => {
       makeIssue({ number: 2, slug: "skipped-one" }),
       makeIssue({ number: 3, slug: "rebase-failed" }),
     ];
-    const mergeResults = new Map<string, MergeResult>([
-      ["1", "failed"],
-      ["2", "skipped"],
-      ["3", "rebase-failed"],
+    const mergeResults = new Map<number, MergeResult>([
+      [1, "failed"],
+      [2, "skipped"],
+      [3, "rebase-failed"],
     ]);
     const removeWorktree = vi.fn(async () => {});
     const runCommand = vi.fn(() => "");
@@ -1998,7 +1992,7 @@ describe("cleanUpMergedIssues", () => {
 
   it("handles worktree removal failure gracefully", async () => {
     const issue = makeIssue({ number: 1, slug: "my-feature" });
-    const mergeResults = new Map<string, MergeResult>([["1", "merged"]]);
+    const mergeResults = new Map<number, MergeResult>([[1, "merged"]]);
     const removeWorktree = vi.fn(async () => {
       throw new Error("worktree locked");
     });
@@ -2028,9 +2022,9 @@ describe("cleanUpMergedIssues", () => {
       makeIssue({ number: 1, slug: "first" }),
       makeIssue({ number: 2, slug: "second" }),
     ];
-    const mergeResults = new Map<string, MergeResult>([
-      ["1", "merged"],
-      ["2", "merged"],
+    const mergeResults = new Map<number, MergeResult>([
+      [1, "merged"],
+      [2, "merged"],
     ]);
     const removeWorktree = vi.fn(async () => {});
     const runCommand = vi.fn((cmd: string) => {
@@ -2058,9 +2052,9 @@ describe("cleanUpMergedIssues", () => {
       makeIssue({ number: 1, slug: "first" }),
       makeIssue({ number: 2, slug: "second" }),
     ];
-    const mergeResults = new Map<string, MergeResult>([
-      ["1", "merged"],
-      ["2", "merged"],
+    const mergeResults = new Map<number, MergeResult>([
+      [1, "merged"],
+      [2, "merged"],
     ]);
     const removeWorktree = vi.fn(async (issue: Issue) => {
       if (issue.number === 1) throw new Error("locked");
@@ -2104,7 +2098,7 @@ describe("upstream context in prepareIssues", () => {
       }),
     });
 
-    deps.statusStore.set("1", "succeeded");
+    deps.statusStore.set(1, "succeeded");
 
     const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
     const promise = orchestrator.runWave(2);
@@ -2134,7 +2128,7 @@ describe("upstream context in prepareIssues", () => {
       readFile: vi.fn(() => { throw new Error("ENOENT"); }),
     });
 
-    deps.statusStore.set("1", "succeeded");
+    deps.statusStore.set(1, "succeeded");
 
     const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
     const promise = orchestrator.runWave(2);
@@ -2188,13 +2182,13 @@ describe("onStatusChange hook", () => {
     const promise = orchestrator.runWave(1);
     await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
 
-    expect(deps.statusStore.get("1")).toBe("running");
+    expect(deps.statusStore.get(1)).toBe("running");
 
     runner.resolvers.get(1000)!(0);
     await promise;
 
     // Status should still change despite hook error
-    expect(deps.statusStore.get("1")).toBe("succeeded");
+    expect(deps.statusStore.get(1)).toBe("succeeded");
     expect(deps.logger.warn).toHaveBeenCalledWith(
       expect.stringContaining("onStatusChange hook error"),
     );
@@ -2231,8 +2225,8 @@ describe("CI failure retry", () => {
 
     await promise;
 
-    expect(deps.statusStore.get("1")).toBe("succeeded");
-    expect(deps.metadataStore.get("1").retryCount).toBe(1);
+    expect(deps.statusStore.get(1)).toBe("succeeded");
+    expect(deps.metadataStore.get(1).retryCount).toBe(1);
 
     // Retry prompt should contain failure context
     const retryArgs = runner.spawned[1].args;
@@ -2265,7 +2259,7 @@ describe("CI failure retry", () => {
 
     await promise;
 
-    expect(deps.statusStore.get("1")).toBe("failed");
+    expect(deps.statusStore.get(1)).toBe("failed");
     expect(deps.logger.error).toHaveBeenCalledWith(
       expect.stringContaining("failed after 1 retries"),
     );
@@ -2287,7 +2281,7 @@ describe("CI failure retry", () => {
 
     // Only one spawn (no retry)
     expect(runner.spawned.length).toBe(1);
-    expect(deps.statusStore.get("1")).toBe("failed");
+    expect(deps.statusStore.get(1)).toBe("failed");
   });
 
   it("passes output from postSessionCheck through to retry prompt", async () => {

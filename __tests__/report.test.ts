@@ -1,22 +1,16 @@
 import { describe, it, expect } from "vitest";
-import { refOf, normalizeDep } from "../src/ref.js";
 import { generateReport, formatReport } from "../src/report.js";
 import type { Issue, IssueMetadata, Status } from "../src/types.js";
 
-function makeIssue(overrides: Omit<Partial<Issue>, "deps"> & { deps?: (number | string)[] } = {}): Issue {
-  const { deps: depOverride, ref: refOverride, ...rest } = overrides;
-  const base = {
+function makeIssue(overrides: Partial<Issue> = {}): Issue {
+  return {
     number: 1,
     slug: "test-issue",
     wave: 1,
+    deps: [],
     dependsOn: [],
     description: "Test issue",
-    ...rest,
-  };
-  return {
-    ...base,
-    ref: refOverride ?? refOf(base),
-    deps: (depOverride ?? []).map((d) => normalizeDep(d, base)),
+    ...overrides,
   };
 }
 
@@ -53,8 +47,8 @@ describe("generateReport", () => {
     const report = generateReport(
       "Test",
       issues,
-      (n) => statuses[Number(n)] ?? "pending",
-      (n) => metadata[Number(n)] ?? {},
+      (n) => statuses[n] ?? "pending",
+      (n) => metadata[n] ?? {},
       new Date("2026-01-01T00:00:00Z"),
       new Date("2026-01-01T00:01:00Z"),
     );
@@ -82,9 +76,9 @@ describe("formatReport", () => {
         makeIssue({ number: 1, wave: 1, description: "Task A" }),
         makeIssue({ number: 2, wave: 2, description: "Task B" }),
       ],
-      (n) => (n === "1" ? "succeeded" : "failed") as Status,
+      (n) => (n === 1 ? "succeeded" : "failed") as Status,
       (n) =>
-        n === "1"
+        n === 1
           ? { prUrl: "https://github.com/org/repo/pull/5", prNumber: 5 }
           : {},
       new Date("2026-01-01T00:00:00Z"),

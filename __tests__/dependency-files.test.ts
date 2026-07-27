@@ -1,22 +1,16 @@
 import { describe, it, expect } from "vitest";
-import { refOf, normalizeDep } from "../src/ref.js";
 import { getDependencyFiles } from "../src/dependency-files.js";
 import type { Issue, IssueMetadata } from "../src/types.js";
 
-function makeIssue(overrides: Omit<Partial<Issue>, "deps"> & { deps?: (number | string)[] } = {}): Issue {
-  const { deps: depOverride, ref: refOverride, ...rest } = overrides;
-  const base = {
+function makeIssue(overrides: Partial<Issue> = {}): Issue {
+  return {
     number: 1,
     slug: "test-issue",
     wave: 1,
+    deps: [],
     dependsOn: [],
     description: "Test issue",
-    ...rest,
-  };
-  return {
-    ...base,
-    ref: refOverride ?? refOf(base),
-    deps: (depOverride ?? []).map((d) => normalizeDep(d, base)),
+    ...overrides,
   };
 }
 
@@ -37,7 +31,7 @@ describe("getDependencyFiles", () => {
     const result = getDependencyFiles(
       issue,
       [dep, issue],
-      (n) => metadata[Number(n)] ?? {},
+      (n) => metadata[n] ?? {},
     );
     expect(result).toEqual(["src/engine.ts", "src/types.ts"]);
   });
@@ -54,7 +48,7 @@ describe("getDependencyFiles", () => {
     const result = getDependencyFiles(
       issue,
       [dep1, dep2, issue],
-      (n) => metadata[Number(n)] ?? {},
+      (n) => metadata[n] ?? {},
     );
     expect(result).toEqual(["src/cli.ts", "src/engine.ts", "src/types.ts"]);
   });
@@ -69,7 +63,7 @@ describe("getDependencyFiles", () => {
     const result = getDependencyFiles(
       issue,
       [dep, issue],
-      (n) => metadata[Number(n)] ?? {},
+      (n) => metadata[n] ?? {},
     );
     expect(result).toEqual(["a.ts", "m.ts", "z.ts"]);
   });
@@ -96,7 +90,7 @@ describe("getDependencyFiles", () => {
     const result = getDependencyFiles(
       issue,
       [dep, issue],
-      (n) => metadata[Number(n)] ?? {},
+      (n) => metadata[n] ?? {},
     );
     expect(result).toEqual([]);
   });

@@ -13,7 +13,6 @@ export declare const YamlConfigSchema: z.ZodObject<{
     projectRoot: z.ZodString;
     stallTimeout: z.ZodNumber;
     allowedTools: z.ZodOptional<z.ZodArray<z.ZodString>>;
-    defaultRepo: z.ZodOptional<z.ZodString>;
     branchPrefix: z.ZodOptional<z.ZodString>;
     retryableStatuses: z.ZodOptional<z.ZodArray<z.ZodString>>;
     promptTemplate: z.ZodOptional<z.ZodString>;
@@ -69,7 +68,7 @@ export declare const YamlConfigSchema: z.ZodObject<{
     issues: z.ZodArray<z.ZodObject<{
         number: z.ZodNumber;
         slug: z.ZodString;
-        dependsOn: z.ZodDefault<z.ZodArray<z.ZodUnion<readonly [z.ZodNumber, z.ZodString]>>>;
+        dependsOn: z.ZodDefault<z.ZodArray<z.ZodNumber>>;
         description: z.ZodString;
         repo: z.ZodOptional<z.ZodString>;
         mode: z.ZodOptional<z.ZodString>;

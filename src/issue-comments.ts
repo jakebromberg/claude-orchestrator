@@ -16,8 +16,8 @@ export interface IssueCommentConfig {
 /** Dependencies for posting run summary comments, injectable for testing. */
 export interface IssueCommentDeps {
   runCommand: (cmd: string, options?: { input?: string }) => string;
-  getStatus: (ref: string) => Status;
-  getMetadata: (ref: string) => IssueMetadata;
+  getStatus: (issueNumber: number) => Status;
+  getMetadata: (issueNumber: number) => IssueMetadata;
   logger: Logger;
 }
 
@@ -34,10 +34,10 @@ export function postRunSummaryComments(
   deps: IssueCommentDeps,
 ): void {
   for (const issue of issues) {
-    const status = deps.getStatus(issue.ref);
+    const status = deps.getStatus(issue.number);
     if (status === "pending") continue;
 
-    const metadata = deps.getMetadata(issue.ref);
+    const metadata = deps.getMetadata(issue.number);
     const body = buildCommentBody(issue, status, metadata, config);
     const repo = issue.repo ?? config.repo;
 

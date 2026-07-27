@@ -9,12 +9,7 @@ export type Status =
 export interface IssueSpec {
   number: number;
   slug: string;
-  /**
-   * Issues this one depends on. Each entry is either a bare number/numeric
-   * string (same repo as this issue) or a fully-qualified cross-repo ref
-   * `"owner/repo#N"`. Normalized to dep refs by the DAG layer.
-   */
-  dependsOn: (number | string)[];
+  dependsOn: number[];
   description: string;
   repo?: string;
   mode?: string;
@@ -38,10 +33,7 @@ export interface IssueSpec {
 
 export interface Issue extends IssueSpec {
   wave: number;
-  /** Composite identity: `"owner/repo#N"`, or bare `"N"` when no repo is known. */
-  ref: string;
-  /** Dependencies normalized to refs (see {@link IssueSpec.dependsOn}). */
-  deps: string[];
+  deps: number[];
 }
 
 export interface IssueCommentsConfig {
@@ -61,8 +53,6 @@ export interface RawOrchestratorConfig {
   projectRoot: string;
   /** Stall timeout in seconds. 0 disables stall monitoring. */
   stallTimeout: number;
-  /** Repo assigned to issues without their own `repo`, for composite refs. */
-  defaultRepo?: string;
   issues: IssueSpec[];
   hooks: OrchestratorHooks;
   allowedTools?: string[];
@@ -81,8 +71,6 @@ export interface OrchestratorConfig {
   projectRoot: string;
   /** Stall timeout in seconds. 0 disables stall monitoring. */
   stallTimeout: number;
-  /** Repo assigned to issues without their own `repo`, for composite refs. */
-  defaultRepo?: string;
   issues: Issue[];
   hooks: OrchestratorHooks;
   allowedTools?: string[];
@@ -126,7 +114,7 @@ export interface OrchestratorHooks {
   getBranchName(issue: Issue): string;
   interpolatePrompt(issue: Issue, extraVars?: Record<string, string>): Promise<string>;
   getClaudeArgs(issue: Issue): string[];
-  printSummary(issues: Issue[], getStatus: (ref: string) => Status): void;
+  printSummary(issues: Issue[], getStatus: (n: number) => Status): void;
   /** Optional hook called after Claude exits 0, before marking "succeeded". */
   postSessionCheck?(issue: Issue, worktreePath: string): Promise<PostCheckResult>;
   /** Optional hook called when an issue's status changes. Errors are non-fatal. */
@@ -168,16 +156,16 @@ export interface ParsedArgs {
 }
 
 export interface StatusStore {
-  get(ref: string): Status;
-  set(ref: string, status: Status): void;
+  get(issueNumber: number): Status;
+  set(issueNumber: number, status: Status): void;
   /**
-   * Discard recorded state for `ref`. Idempotent on absent state.
+   * Discard recorded state for `issueNumber`. Idempotent on absent state.
    *
    * Optional for backwards compatibility with downstream implementations that
    * predate this interface field; consumers should use optional-chaining when
    * invoking it. Both `InMemoryStatusStore` and `FileStatusStore` provide it.
    */
-  remove?(ref: string): void;
+  remove?(issueNumber: number): void;
 }
 
 export interface ProcessHandle {
@@ -214,17 +202,17 @@ export interface IssueMetadata {
 }
 
 export interface MetadataStore {
-  get(ref: string): IssueMetadata;
-  set(ref: string, metadata: IssueMetadata): void;
-  update(ref: string, partial: Partial<IssueMetadata>): void;
+  get(issueNumber: number): IssueMetadata;
+  set(issueNumber: number, metadata: IssueMetadata): void;
+  update(issueNumber: number, partial: Partial<IssueMetadata>): void;
   /**
-   * Discard recorded metadata for `ref`. Idempotent on absent state.
+   * Discard recorded metadata for `issueNumber`. Idempotent on absent state.
    *
    * Optional for backwards compatibility with downstream implementations that
    * predate this interface field; consumers should use optional-chaining when
    * invoking it. Both `InMemoryMetadataStore` and `FileMetadataStore` provide it.
    */
-  remove?(ref: string): void;
+  remove?(issueNumber: number): void;
 }
 
 export interface Deps {
@@ -250,5 +238,5 @@ export interface RunRecord {
   maxParallel: number;
   wave?: number;
   targetIssues?: number[];
-  statuses: Record<string, Status>;
+  statuses: Record<number, Status>;
 }
