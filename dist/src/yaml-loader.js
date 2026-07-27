@@ -68,6 +68,7 @@ export async function loadYamlConfig(yamlPath, options = {}) {
         stallTimeout: yaml.stallTimeout,
         issues: yaml.issues,
         hooks,
+        ...(yaml.defaultRepo && { defaultRepo: yaml.defaultRepo }),
         ...(yaml.allowedTools && { allowedTools: yaml.allowedTools }),
         ...(yaml.issueComments && { issueComments: { repo: yaml.issueComments.repo, enabled: yaml.issueComments.enabled ?? true } }),
         ...(yaml.labelSync && { labelSync: yaml.labelSync }),

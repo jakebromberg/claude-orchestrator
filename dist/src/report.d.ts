@@ -13,5 +13,5 @@ export interface ReportData {
         prNumber?: number;
     }>;
 }
-export declare function generateReport(configName: string, issues: Issue[], getStatus: (n: number) => Status, getMetadata: (n: number) => IssueMetadata, startedAt: Date, finishedAt: Date): ReportData;
+export declare function generateReport(configName: string, issues: Issue[], getStatus: (ref: string) => Status, getMetadata: (ref: string) => IssueMetadata, startedAt: Date, finishedAt: Date): ReportData;
 export declare function formatReport(report: ReportData): string;

@@ -13,7 +13,7 @@ export interface WatchHandle {
 }
 export interface RenderOptions {
     config: OrchestratorConfig;
-    getStatus: (n: number) => Status;
+    getStatus: (ref: string) => Status;
     getLastLogLine: (issue: Issue) => string;
 }
 export declare function renderDashboard(options: RenderOptions): string;

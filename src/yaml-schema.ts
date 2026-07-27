@@ -3,7 +3,7 @@ import { z } from "zod/v4";
 const YamlIssueSchema = z.object({
   number: z.number().int().positive(),
   slug: z.string().min(1),
-  dependsOn: z.array(z.number().int().positive()).default([]),
+  dependsOn: z.array(z.union([z.number().int().positive(), z.string().min(1)])).default([]),
   description: z.string().min(1),
   repo: z.string().optional(),
   mode: z.string().optional(),
@@ -76,6 +76,7 @@ export const YamlConfigSchema = z.object({
   projectRoot: z.string().min(1),
   stallTimeout: z.number().int().min(0),
   allowedTools: z.array(z.string()).optional(),
+  defaultRepo: z.string().optional(),
 
   branchPrefix: z.string().optional(),
   retryableStatuses: z.array(z.string()).optional(),

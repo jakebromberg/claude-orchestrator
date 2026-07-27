@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
+import { refOf, normalizeDep } from "../src/ref.js";
 import { createDashboardServer } from "../src/dashboard.js";
 import { InMemoryStatusStore, InMemoryMetadataStore } from "../src/status.js";
 import { createSilentLogger } from "../src/log.js";
@@ -6,14 +7,19 @@ import type { OrchestratorConfig, Issue } from "../src/types.js";
 import type { DashboardDeps } from "../src/dashboard-types.js";
 import type { DashboardHandle } from "../src/dashboard-types.js";
 
-function makeIssue(overrides: Partial<Issue> & { number: number }): Issue {
-  return {
+function makeIssue(overrides: Omit<Partial<Issue>, "deps"> & { number: number; deps?: (number | string)[] }): Issue {
+  const { deps: depOverride, ref: refOverride, ...rest } = overrides;
+  const base = {
     slug: `issue-${overrides.number}`,
     description: `Issue ${overrides.number}`,
     dependsOn: [],
     wave: 1,
-    deps: [],
-    ...overrides,
+    ...rest,
+  };
+  return {
+    ...base,
+    ref: refOverride ?? refOf(base),
+    deps: (depOverride ?? []).map((d) => normalizeDep(d, base)),
   };
 }
 
@@ -72,8 +78,8 @@ describe("dashboard server", () => {
 
   it("returns issue statuses on GET /api/status", async () => {
     const deps = makeDeps();
-    deps.statusStore.set(1, "running");
-    deps.statusStore.set(2, "pending");
+    deps.statusStore.set("1", "running");
+    deps.statusStore.set("2", "pending");
     const port = getPort();
     handle = await createDashboardServer(deps, { port });
 
@@ -122,7 +128,7 @@ describe("dashboard server", () => {
 
   it("returns metadata on GET /api/metadata/:issue", async () => {
     const deps = makeDeps();
-    deps.metadataStore.set(1, { prUrl: "https://github.com/test/pr/1", exitCode: 0 });
+    deps.metadataStore.set("1", { prUrl: "https://github.com/test/pr/1", exitCode: 0 });
     const port = getPort();
     handle = await createDashboardServer(deps, { port });
 
@@ -159,7 +165,7 @@ describe("dashboard server", () => {
 
   it("emits SSE events when status changes", async () => {
     const deps = makeDeps();
-    deps.statusStore.set(1, "pending");
+    deps.statusStore.set("1", "pending");
     const port = getPort();
     handle = await createDashboardServer(deps, { port });
 
@@ -168,7 +174,7 @@ describe("dashboard server", () => {
     const res = await fetch(`http://127.0.0.1:${port}/api/events`, { signal: controller.signal });
 
     // Change status — the polling interval is 2s, so we wait a bit
-    deps.statusStore.set(1, "succeeded");
+    deps.statusStore.set("1", "succeeded");
 
     // Read from the SSE stream
     const reader = res.body!.getReader();
