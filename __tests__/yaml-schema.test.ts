@@ -488,4 +488,57 @@ describe("YamlConfigSchema", () => {
       expect(result.success).toBe(false);
     });
   });
+
+  describe("model & effort fields", () => {
+    it("accepts config defaults and per-issue model/effort/complexity/extraDirs", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          defaultModel: "sonnet",
+          defaultEffort: "medium",
+          issues: [
+            {
+              number: 1,
+              slug: "foo",
+              dependsOn: [],
+              description: "Foo",
+              model: "opus",
+              effort: "max",
+              complexity: "complex",
+              extraDirs: ["../wxyc-shared"],
+            },
+          ],
+        } as unknown as Partial<YamlConfig>),
+      );
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects an invalid per-issue effort tier", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          issues: [
+            { number: 1, slug: "foo", dependsOn: [], description: "Foo", effort: "turbo" },
+          ],
+        } as unknown as Partial<YamlConfig>),
+      );
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects an invalid per-issue complexity tag", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          issues: [
+            { number: 1, slug: "foo", dependsOn: [], description: "Foo", complexity: "trivial" },
+          ],
+        } as unknown as Partial<YamlConfig>),
+      );
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects an invalid config-level defaultEffort", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({ defaultEffort: "turbo" } as unknown as Partial<YamlConfig>),
+      );
+      expect(result.success).toBe(false);
+    });
+  });
 });

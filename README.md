@@ -141,6 +141,29 @@ issues:
 
 Resolution is **replace, not deep-merge**: an entry that sets `postSessionCheck` uses only its own commands, and one that omits a field inherits the top-level value for it. The resolved `baseBranch` flows into that repo's collision diffs and counter seeding, so an iOS migration scan targets `origin/master` while a Backend-Service one targets `origin/main`; collision detection also considers only same-repo peers, since files in different repos can't collide. A `repos:` key that no issue references (nor `defaultRepo`) is a hard load error — an unused key is almost always a typo that would otherwise silently leave the real repo on the wrong base branch.
 
+#### Per-issue model & effort
+
+Each issue runs its own implement session, so each picks its own model and effort tier rather than sharing one model for the whole run. The default is **Sonnet**, with effort set by an optional `complexity` tag (`mechanical`→`low`, `normal`→`medium`, `complex`→`high`). Set `defaultModel`/`defaultEffort` at the top level to move the baseline, and override per issue with `model`, `effort`, or `complexity`:
+
+```yaml
+defaultModel: sonnet     # baseline model for every issue (default: sonnet)
+defaultEffort: medium    # baseline effort when an issue sets neither effort nor complexity
+
+issues:
+  - { number: 1, slug: bump-dep, dependsOn: [], description: "Bump lodash", complexity: mechanical }   # sonnet / low
+  - { number: 2, slug: api, dependsOn: [1], description: "New endpoint", complexity: normal }           # sonnet / medium
+  - { number: 3, slug: migration, dependsOn: [1], description: "Schema change", complexity: complex }   # sonnet / high
+  - { number: 4, slug: hairy, dependsOn: [1], description: "Concurrency rework", model: opus, effort: max }
+  - number: 5
+    slug: ios-feature
+    dependsOn: [1]
+    description: "iOS On Tour tab"
+    repo: WXYC/wxyc-ios-64
+    extraDirs: ["../wxyc-shared"]   # extra read-only dirs (`--add-dir`); relative paths resolve against the config file
+```
+
+Precedence for effort is explicit `effort` → `complexity` tier → `defaultEffort` → `medium`. A [CI-failure retry](#ci-failure-retry) bumps effort one tier per attempt (capped at `max`) while keeping the model. One guardrail applies: a Haiku-class model resolved to `high` effort or above is promoted to Sonnet instead — a weak model straining costs more per token than a stronger model deliberating less. `model` accepts an alias (`haiku`/`sonnet`/`opus`) or a full model id. A config's `claudeArgs`/`getClaudeArgs` output is appended after these, so it can still override the model via last-wins.
+
 ### 3. Run it
 
 ```bash
@@ -333,7 +356,7 @@ Upstream agents can write a `HANDOFF.md` file in their worktree root. When downs
 
 ### CI Failure Retry
 
-Set `retryOnCheckFailure: { maxRetries: 2 }` in YAML to automatically retry agent sessions when `postSessionCheck` fails. The failure output is injected into the retry prompt so the agent has context to fix the issues.
+Set `retryOnCheckFailure: { maxRetries: 2 }` in YAML to automatically retry agent sessions when `postSessionCheck` fails. The failure output is injected into the retry prompt so the agent has context to fix the issues. Each retry also escalates the session's [effort](#per-issue-model--effort) one tier (capped at `max`), keeping the model fixed.
 
 ### Task Decomposition
 

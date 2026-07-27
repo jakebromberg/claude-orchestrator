@@ -56,6 +56,17 @@ export { deriveWorktreeHooks } from "./worktree-hooks.js";
 export type { DeriveWorktreeHooksOptions, WorktreeHooks } from "./worktree-hooks.js";
 export { resolveRepoSettings, allAppendableFiles, unknownRepoKeys } from "./repo-settings.js";
 export type { ResolvedRepoSettings } from "./repo-settings.js";
+export {
+  resolveModelEffort,
+  modelEffortArgs,
+  extraDirsArgs,
+  modelEffortInputs,
+  perIssueSpawnArgs,
+  EFFORT_LADDER,
+  DEFAULT_MODEL,
+  DEFAULT_EFFORT,
+} from "./model-effort.js";
+export type { Effort, Complexity, ModelEffortInputs, ResolvedModelEffort } from "./model-effort.js";
 export { interpolate } from "./interpolate.js";
 export type {
   YamlConfig,

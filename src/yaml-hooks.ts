@@ -9,6 +9,7 @@ import { interpolate } from "./interpolate.js";
 import { createLabelSyncHandler } from "./label-sync.js";
 import { detectCollisions, gatherCollisionInputs } from "./collision-check.js";
 import { resolveRepoSettings } from "./repo-settings.js";
+import { perIssueSpawnArgs } from "./model-effort.js";
 import { shellQuote } from "./shell-quote.js";
 
 /** I/O dependencies injectable for testing. */
@@ -345,12 +346,16 @@ export function deriveHooks(
         "Bash", "Read", "Write", "Edit", "Glob", "Grep",
       ];
 
+      // Same per-issue model/effort (+ --add-dir) the implement session used, so
+      // conflict resolution runs at the issue's chosen tier rather than a fixed
+      // model. Each token is shell-quoted since this is a joined command string.
+      const perIssueArgs = perIssueSpawnArgs(issue, yaml).map(shellQuote);
+
       const cmd = [
         "claude",
         "-p",
         shellQuote(prompt),
-        "--model",
-        "opus",
+        ...perIssueArgs,
         "--allowedTools",
         shellQuote(tools.join(",")),
         "--output-format",
