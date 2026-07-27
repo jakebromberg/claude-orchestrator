@@ -7,6 +7,7 @@
  */
 
 import type { Issue } from "./types.js";
+import { isModeNode } from "./mode-node.js";
 
 /** Dependencies for upstream context gathering, injectable for testing. */
 export interface UpstreamContextDeps {
@@ -38,6 +39,9 @@ export function gatherUpstreamContext(
   for (const depRef of issue.deps) {
     const depIssue = allIssues.find((i) => i.ref === depRef);
     if (!depIssue) continue;
+    // Mode-nodes (deploy/publish/gate) have no worktree — and `getWorktreePath`
+    // would throw for a repo-less gate — so there's no HANDOFF.md to gather.
+    if (isModeNode(depIssue)) continue;
 
     const worktreePath = deps.getWorktreePath(depIssue);
     try {

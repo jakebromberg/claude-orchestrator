@@ -97,7 +97,12 @@ export declare const YamlConfigSchema: z.ZodObject<{
         dependsOn: z.ZodDefault<z.ZodArray<z.ZodUnion<readonly [z.ZodNumber, z.ZodString]>>>;
         description: z.ZodString;
         repo: z.ZodOptional<z.ZodString>;
-        mode: z.ZodOptional<z.ZodString>;
+        mode: z.ZodOptional<z.ZodEnum<{
+            deploy: "deploy";
+            publish: "publish";
+            gate: "gate";
+        }>>;
+        command: z.ZodOptional<z.ZodString>;
         model: z.ZodOptional<z.ZodString>;
         effort: z.ZodOptional<z.ZodEnum<{
             low: "low";

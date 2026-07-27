@@ -2499,3 +2499,89 @@ describe("CI failure retry", () => {
     expect(retryArgs[promptIndex + 1]).toContain("unused variable 'x'");
   });
 });
+
+describe("mode-nodes", () => {
+  it("runs a deploy command node's command instead of spawning Claude", async () => {
+    const issue = makeIssue({
+      number: 1, slug: "deploy-lml", wave: 1,
+      mode: "deploy", command: "gh workflow run deploy.yml",
+    });
+    const { orchestrator, deps } = makeOrchestrator([issue]);
+    const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+
+    await orchestrator.runWave(1);
+
+    expect(deps.runCommand).toHaveBeenCalledWith("gh workflow run deploy.yml");
+    expect(runner.spawned.length).toBe(0); // no Claude session spawned
+    expect(deps.statusStore.get("1")).toBe("succeeded");
+  });
+
+  it("marks a mode-node failed when its command throws", async () => {
+    const issue = makeIssue({
+      number: 1, slug: "deploy-lml", wave: 1,
+      mode: "deploy", command: "gh workflow run deploy.yml",
+    });
+    const runCommand = vi.fn(() => { throw new Error("deploy failed"); });
+    const { orchestrator, deps } = makeOrchestrator([issue], undefined, { runCommand });
+
+    await orchestrator.runWave(1);
+
+    expect(deps.statusStore.get("1")).toBe("failed");
+  });
+
+  it("does not set up or tear down a worktree for a mode-node", async () => {
+    const issue = makeIssue({
+      number: 1, slug: "publish-shared", wave: 1,
+      mode: "publish", command: "npm publish",
+    });
+    const setUpWorktree = vi.fn(async () => {});
+    const removeWorktree = vi.fn(async () => {});
+    const { orchestrator } = makeOrchestrator([issue], { setUpWorktree, removeWorktree });
+
+    await orchestrator.runWave(1);
+    await orchestrator.cleanup();
+
+    expect(setUpWorktree).not.toHaveBeenCalled();
+    expect(removeWorktree).not.toHaveBeenCalled();
+  });
+
+  it("does not include a mode-node in the after-wave merge (no PR)", async () => {
+    const issue = makeIssue({
+      number: 1, slug: "deploy-lml", wave: 1,
+      mode: "deploy", command: "gh workflow run deploy.yml",
+    });
+    const { orchestrator, deps } = makeOrchestrator([issue], undefined, undefined, {
+      mergePolicy: "after-wave",
+    });
+
+    await orchestrator.runAllWaves();
+
+    // The only runCommand call is the deploy command — no `gh pr merge`.
+    const calls = (deps.runCommand as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(calls).toContain("gh workflow run deploy.yml");
+    expect(calls.some((c: string) => c.includes("gh pr merge"))).toBe(false);
+    expect(deps.statusStore.get("1")).toBe("succeeded");
+  });
+
+  it("releases a Claude dependent once its mode-node dependency succeeds", async () => {
+    // deploy (mode-node, wave 1) → consume (Claude, wave 2).
+    const deploy = makeIssue({
+      number: 1, slug: "deploy-lml", wave: 1,
+      mode: "deploy", command: "gh workflow run deploy.yml",
+    });
+    const consume = makeIssue({ number: 2, slug: "consume", wave: 2, deps: [1] });
+    const readFile = vi.fn(() => ""); // no HANDOFF.md — upstream context stays empty
+    const { orchestrator, deps } = makeOrchestrator([deploy, consume], undefined, { readFile });
+    const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+
+    const promise = orchestrator.runAllWaves();
+    // Wave 1's mode-node runs synchronously; wave 2 then spawns the consumer.
+    await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+    runner.resolvers.get(1000)!(0);
+    await promise;
+
+    expect(deps.runCommand).toHaveBeenCalledWith("gh workflow run deploy.yml");
+    expect(deps.statusStore.get("1")).toBe("succeeded");
+    expect(deps.statusStore.get("2")).toBe("succeeded");
+  });
+});

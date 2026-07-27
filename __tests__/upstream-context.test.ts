@@ -99,6 +99,22 @@ describe("gatherUpstreamContext", () => {
     expect(deps.readFile).not.toHaveBeenCalled();
   });
 
+  it("skips a mode-node dependency (no worktree) without calling getWorktreePath", () => {
+    const gate = makeIssue({ number: 1, slug: "publish-shared", mode: "publish", command: "npm publish" });
+    const issue = makeIssue({ number: 2, deps: [1] });
+
+    const deps: UpstreamContextDeps = {
+      readFile: vi.fn(),
+      // Would throw if the mode-node dep weren't skipped (mirrors deriveWorktreeHooks).
+      getWorktreePath: vi.fn(() => { throw new Error("mode-node has no worktree"); }),
+    };
+
+    const result = gatherUpstreamContext(issue, [gate, issue], deps);
+    expect(result).toBe("");
+    expect(deps.getWorktreePath).not.toHaveBeenCalled();
+    expect(deps.readFile).not.toHaveBeenCalled();
+  });
+
   it("includes context from some deps and skips missing ones", () => {
     const dep1 = makeIssue({ number: 1, slug: "present" });
     const dep2 = makeIssue({ number: 3, slug: "missing" });

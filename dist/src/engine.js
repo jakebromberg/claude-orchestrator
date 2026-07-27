@@ -5,6 +5,7 @@ import { mergePrs } from "./merge.js";
 import { gatherUpstreamContext } from "./upstream-context.js";
 import { encodeRefForFilename } from "./ref.js";
 import { perIssueSpawnArgs } from "./model-effort.js";
+import { isModeNode, isCommandNode } from "./mode-node.js";
 const STALL_CHECK_INTERVAL_MS = 10_000;
 const DEFAULT_ALLOWED_TOOLS = [
     "Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Task",
@@ -51,8 +52,7 @@ export class Orchestrator {
     async runWave(wave) {
         this.deps.logger.header(`Running Wave ${wave}`);
         const waveIssues = this.config.issues.filter((i) => i.wave === wave);
-        const ready = await this.prepareIssues(waveIssues);
-        await this.launchAndWait(ready);
+        await this.dispatchIssues(waveIssues);
     }
     async runAllWaves() {
         const waves = [
@@ -92,8 +92,7 @@ export class Orchestrator {
             }
             issues.push(issue);
         }
-        const ready = await this.prepareIssues(issues);
-        await this.launchAndWait(ready);
+        await this.dispatchIssues(issues);
     }
     async retryFailed() {
         this.deps.logger.header("Retrying Failed Issues");
@@ -109,13 +108,14 @@ export class Orchestrator {
             this.deps.logger.info("No retryable issues found");
             return;
         }
-        const ready = await this.prepareIssues(retryable);
-        await this.launchAndWait(ready);
+        await this.dispatchIssues(retryable);
     }
     async cleanup() {
         this.deps.logger.header("Cleaning Up");
         for (const issue of this.config.issues) {
-            await this.config.hooks.removeWorktree(issue);
+            // Mode-nodes (deploy/publish/gate) have no worktree — nothing to remove.
+            if (!isModeNode(issue))
+                await this.config.hooks.removeWorktree(issue);
             // Discard transient run state so the next wave starts from a clean slate.
             // Logs, run history, and per-domain counters are intentionally preserved.
             // `remove` is optional on both store interfaces (backwards-compat); a
@@ -143,6 +143,7 @@ export class Orchestrator {
     }
     async prepareIssues(issues) {
         const ready = [];
+        const modeNodes = [];
         for (const issue of issues) {
             // Skip already succeeded
             const currentStatus = this.deps.statusStore.get(issue.ref);
@@ -160,6 +161,13 @@ export class Orchestrator {
             }
             // Check dependencies
             if (!await this.checkDeps(issue)) {
+                continue;
+            }
+            // A mode-node (deploy/publish/gate) runs a configured command instead of
+            // a Claude session — no worktree, no prompt, no model/effort. Route it to
+            // the separate mode-node executor; everything below is claude-node prep.
+            if (isModeNode(issue)) {
+                modeNodes.push(issue);
                 continue;
             }
             // Set up worktree
@@ -184,7 +192,57 @@ export class Orchestrator {
             const sessionId = this.deps.generateSessionId();
             ready.push({ issue, prompt, sessionId });
         }
-        return ready;
+        return { ready, modeNodes };
+    }
+    /**
+     * Prepare a set of issues and run them: Claude sessions in parallel via the
+     * process pool, then the wave's mode-nodes (deploy/publish/gate). Mode-nodes
+     * run after the Claude work because within a wave they never depend on it —
+     * dependents always land in a later wave — so ordering is free, and running
+     * flow-control/deploy nodes last reads naturally.
+     */
+    async dispatchIssues(issues) {
+        const { ready, modeNodes } = await this.prepareIssues(issues);
+        await this.launchAndWait(ready);
+        await this.runModeNodes(modeNodes);
+    }
+    /**
+     * Execute mode-nodes: run each command node's `command` (exit 0 → succeeded,
+     * non-zero → failed). Sequential — deploy/publish steps shouldn't race, and a
+     * wave rarely holds more than one. A mode-node reaching here without a command
+     * is a manual gate (handled in A5b-2); until then it's a config error the
+     * schema rejects, so mark it failed defensively rather than silently no-op.
+     */
+    async runModeNodes(modeNodes) {
+        for (const issue of modeNodes) {
+            if (!isCommandNode(issue)) {
+                this.deps.logger.error(`Issue #${issue.number}: mode "${issue.mode}" node has no command to run`);
+                await this.setStatus(issue, "failed");
+                continue;
+            }
+            await this.setStatus(issue, "running");
+            this.deps.logger.step(`Running ${issue.mode} node #${issue.number}: ${issue.command}`);
+            this.deps.metadataStore.update(issue.ref, {
+                startedAt: new Date().toISOString(),
+            });
+            try {
+                this.deps.runCommand(issue.command);
+                this.deps.metadataStore.update(issue.ref, {
+                    exitCode: 0,
+                    finishedAt: new Date().toISOString(),
+                });
+                await this.setStatus(issue, "succeeded");
+                this.deps.logger.info(`Issue #${issue.number} (${issue.mode}) succeeded`);
+            }
+            catch (err) {
+                this.deps.metadataStore.update(issue.ref, {
+                    exitCode: 1,
+                    finishedAt: new Date().toISOString(),
+                });
+                await this.setStatus(issue, "failed");
+                this.deps.logger.error(`Issue #${issue.number} (${issue.mode}) failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        }
     }
     async checkDeps(issue) {
         for (const depNum of issue.deps) {

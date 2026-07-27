@@ -11,7 +11,8 @@ const IssueSpecSchema = z.object({
   dependsOn: z.array(z.union([z.number().int().positive(), z.string().min(1)])),
   description: z.string().min(1),
   repo: z.string().optional(),
-  mode: z.string().optional(),
+  mode: z.enum(["deploy", "publish", "gate"]).optional(),
+  command: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
   effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
   complexity: z.enum(["mechanical", "normal", "complex"]).optional(),
@@ -70,6 +71,21 @@ const RawConfigSchema = z
         return;
       }
       slugs.add(issue.slug);
+    }
+
+    // A mode-node (deploy/publish/gate) currently runs a configured command in
+    // place of a Claude session, so it must carry one. (Command-less manual
+    // gates arrive with the cutover gate in A5b-2, which relaxes this.)
+    for (const issue of issues) {
+      if (issue.mode && !issue.command) {
+        ctx.issues.push({
+          code: "custom",
+          input,
+          message: `Issue ${refOf(issue, defaultRepo)} has mode "${issue.mode}" but no command; a mode-node requires a command to run.`,
+          path: ["issues"],
+        });
+        return;
+      }
     }
 
     // Check dependency references by ref.

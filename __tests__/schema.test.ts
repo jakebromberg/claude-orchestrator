@@ -297,4 +297,40 @@ describe("validateConfig", () => {
       ).toThrow();
     });
   });
+
+  describe("mode-nodes", () => {
+    it("accepts a mode-node with a command", () => {
+      const config = validateConfig(makeRawConfig([
+        makeSpec({ number: 1, slug: "deploy-lml", mode: "deploy", command: "gh workflow run deploy.yml" }),
+      ]));
+      const node = config.issues[0];
+      expect(node.mode).toBe("deploy");
+      expect(node.command).toBe("gh workflow run deploy.yml");
+    });
+
+    it("rejects a mode-node without a command", () => {
+      expect(() =>
+        validateConfig(makeRawConfig([
+          makeSpec({ number: 1, slug: "gate", mode: "gate" }),
+        ])),
+      ).toThrow(/but no command; a mode-node requires a command/);
+    });
+
+    it("rejects an unrecognized mode", () => {
+      expect(() =>
+        validateConfig(makeRawConfig([
+          makeSpec({ number: 1, slug: "a", mode: "rollback" as never, command: "x" }),
+        ])),
+      ).toThrow();
+    });
+
+    it("lets a mode-node depend on implement nodes and wave after them", () => {
+      const config = validateConfig(makeRawConfig([
+        makeSpec({ number: 1, slug: "impl", repo: "WXYC/lml" }),
+        makeSpec({ number: 2, slug: "deploy", repo: "WXYC/lml", mode: "deploy", command: "gh workflow run deploy.yml", dependsOn: [1] }),
+      ]));
+      const byRef = new Map(config.issues.map((i) => [i.ref, i]));
+      expect(byRef.get("WXYC/lml#2")!.wave).toBe(2);
+    });
+  });
 });

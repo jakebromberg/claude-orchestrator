@@ -10,7 +10,19 @@ export interface IssueSpec {
     dependsOn: (number | string)[];
     description: string;
     repo?: string;
+    /**
+     * Marks a non-Claude DAG node: `deploy` | `publish` | `gate`. A mode-node
+     * runs its {@link command} (or acts as a manual gate) instead of spawning a
+     * `claude -p` session — no worktree, no model/effort. See `mode-node.ts`.
+     */
     mode?: string;
+    /**
+     * Shell command a mode-node runs in place of a Claude session (e.g.
+     * `gh workflow run deploy.yml -R WXYC/library-metadata-lookup`). Exit 0 marks
+     * the node succeeded; any non-zero exit marks it failed. Ignored for normal
+     * (non-mode) issues.
+     */
+    command?: string;
     /**
      * Model for this issue's implement session — an alias (`haiku`/`sonnet`/`opus`)
      * or a full model id. Overrides the config-level `defaultModel`; falls back to

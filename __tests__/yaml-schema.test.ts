@@ -72,7 +72,8 @@ describe("YamlConfigSchema", () => {
               dependsOn: [],
               description: "Foo",
               repo: "org/repo",
-              mode: "fast",
+              mode: "deploy",
+              command: "gh workflow run deploy.yml",
               stallTimeout: 600,
             },
           ],
@@ -131,6 +132,16 @@ describe("YamlConfigSchema", () => {
         YamlConfigSchema.safeParse(
           makeValid({
             issues: [{ number: -1, slug: "a", dependsOn: [], description: "X" }],
+          }),
+        ).success,
+      ).toBe(false);
+    });
+
+    it("rejects an unrecognized mode", () => {
+      expect(
+        YamlConfigSchema.safeParse(
+          makeValid({
+            issues: [{ number: 1, slug: "a", dependsOn: [], description: "X", mode: "rollback", command: "x" }],
           }),
         ).success,
       ).toBe(false);
