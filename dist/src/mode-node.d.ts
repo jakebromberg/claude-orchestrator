@@ -8,7 +8,7 @@
  * nodes with proper dependency ordering. A mode-node has no worktree, no
  * model/effort, and never spawns Claude.
  */
-import type { IssueSpec } from "./types.js";
+import type { Issue, IssueSpec } from "./types.js";
 /** The recognized non-Claude node modes (`issue.mode`). */
 export declare const MODE_NODE_KINDS: readonly ["deploy", "publish", "gate"];
 export type ModeNodeKind = (typeof MODE_NODE_KINDS)[number];
@@ -20,3 +20,25 @@ export declare function isModeNode(issue: Pick<IssueSpec, "mode">): boolean;
  * `command` field.
  */
 export declare function isCommandNode(issue: Pick<IssueSpec, "mode" | "command">): boolean;
+/**
+ * A command-less mode-node: a pure manual gate the engine can't run itself, so
+ * it stops for human confirmation (the cutover) before releasing dependents.
+ */
+export declare function isManualGate(issue: Pick<IssueSpec, "mode" | "command">): boolean;
+/**
+ * Whether running `issue` requires a manual cutover confirmation, and why —
+ * `undefined` when it can release automatically.
+ *
+ * "Satisfied" is not "consumable" across a repo boundary: a merged upstream PR
+ * isn't live downstream until it's published/deployed. So a manual gate is
+ * needed when either:
+ *   - `issue` is itself a command-less manual gate, or
+ *   - `issue` has a **bare cross-repo dependency** — a dep in another repo that
+ *     is a plain Claude node. If that cross-repo dep is instead a mode-node, the
+ *     cutover is already handled: a command node's command success is the gate,
+ *     and a manual gate's own confirmation already served as one.
+ *
+ * @param lookup resolves a dep ref to its issue (deps that don't resolve are
+ *   ignored — the schema already rejects dangling refs).
+ */
+export declare function cutoverReason(issue: Issue, lookup: (ref: string) => Issue | undefined): string | undefined;

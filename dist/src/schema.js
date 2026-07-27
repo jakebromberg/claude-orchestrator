@@ -67,20 +67,9 @@ const RawConfigSchema = z
         }
         slugs.add(issue.slug);
     }
-    // A mode-node (deploy/publish/gate) currently runs a configured command in
-    // place of a Claude session, so it must carry one. (Command-less manual
-    // gates arrive with the cutover gate in A5b-2, which relaxes this.)
-    for (const issue of issues) {
-        if (issue.mode && !issue.command) {
-            ctx.issues.push({
-                code: "custom",
-                input,
-                message: `Issue ${refOf(issue, defaultRepo)} has mode "${issue.mode}" but no command; a mode-node requires a command to run.`,
-                path: ["issues"],
-            });
-            return;
-        }
-    }
+    // A mode-node with a command is a command node the engine runs; one without
+    // is a pure manual gate that stops for human confirmation. Both are valid —
+    // no cross-field requirement here.
     // Check dependency references by ref.
     for (const issue of issues) {
         const ref = refOf(issue, defaultRepo);

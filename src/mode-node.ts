@@ -9,7 +9,8 @@
  * model/effort, and never spawns Claude.
  */
 
-import type { IssueSpec } from "./types.js";
+import type { Issue, IssueSpec } from "./types.js";
+import { repoOfRef } from "./ref.js";
 
 /** The recognized non-Claude node modes (`issue.mode`). */
 export const MODE_NODE_KINDS = ["deploy", "publish", "gate"] as const;
@@ -31,4 +32,44 @@ export function isModeNode(issue: Pick<IssueSpec, "mode">): boolean {
  */
 export function isCommandNode(issue: Pick<IssueSpec, "mode" | "command">): boolean {
   return isModeNode(issue) && typeof issue.command === "string" && issue.command.length > 0;
+}
+
+/**
+ * A command-less mode-node: a pure manual gate the engine can't run itself, so
+ * it stops for human confirmation (the cutover) before releasing dependents.
+ */
+export function isManualGate(issue: Pick<IssueSpec, "mode" | "command">): boolean {
+  return isModeNode(issue) && !isCommandNode(issue);
+}
+
+/**
+ * Whether running `issue` requires a manual cutover confirmation, and why —
+ * `undefined` when it can release automatically.
+ *
+ * "Satisfied" is not "consumable" across a repo boundary: a merged upstream PR
+ * isn't live downstream until it's published/deployed. So a manual gate is
+ * needed when either:
+ *   - `issue` is itself a command-less manual gate, or
+ *   - `issue` has a **bare cross-repo dependency** — a dep in another repo that
+ *     is a plain Claude node. If that cross-repo dep is instead a mode-node, the
+ *     cutover is already handled: a command node's command success is the gate,
+ *     and a manual gate's own confirmation already served as one.
+ *
+ * @param lookup resolves a dep ref to its issue (deps that don't resolve are
+ *   ignored — the schema already rejects dangling refs).
+ */
+export function cutoverReason(
+  issue: Issue,
+  lookup: (ref: string) => Issue | undefined,
+): string | undefined {
+  if (isManualGate(issue)) return `manual ${issue.mode} gate`;
+
+  const ownRepo = repoOfRef(issue.ref);
+  for (const depRef of issue.deps) {
+    if (repoOfRef(depRef) === ownRepo) continue; // same repo — no cutover
+    const dep = lookup(depRef);
+    if (dep && isModeNode(dep)) continue; // dep's own command/gate is the cutover
+    return `cross-repo dependency ${depRef}`;
+  }
+  return undefined;
 }

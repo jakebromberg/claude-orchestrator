@@ -187,7 +187,16 @@ issues:
     dependsOn: [1]                         # validates the live deploy
 ```
 
-`mode` accepts `deploy`, `publish`, or `gate` (an unrecognized value is a load error). In this release every mode-node **requires** a `command`; command-less manual gates and the automatic cross-repo cutover gate arrive next. A mode-node never has a PR, so the merge step skips it, and cleanup leaves it alone.
+`mode` accepts `deploy`, `publish`, or `gate` (an unrecognized value is a load error). A mode-node never has a PR, so the merge step skips it, and cleanup leaves it alone.
+
+##### The cutover gate (cross-repo HITL)
+
+"Satisfied" isn't "consumable" across a repo boundary: a merged upstream PR isn't live downstream until it's published or deployed. So before releasing an issue, the engine stops for a **cutover confirmation** when either:
+
+- the issue is a **command-less mode-node** — a pure manual gate (`mode: gate` with no `command`) the engine can't run itself, e.g. "deploy by hand, then confirm"; or
+- the issue has a **bare cross-repo dependency** — a dep in another repo that's a plain Claude node. (If that cross-repo dep is instead a mode-node, no extra confirmation is needed: a command node's exit-0 *is* the cutover, and a manual gate's own confirmation already served as one.)
+
+Confirmation comes from an optional `confirmCutover(issue, reason)` hook (return `true` to release, `false` to hold). **When the hook is absent, gated issues hold** — they're left `pending`, their dependents skip, and a later re-run (once the upstream is live, or with the hook wired) picks them up. This is the conservative default: a cross-repo run must wire `confirmCutover`, or model explicit command mode-nodes, to progress unattended. So `publish → BS consumes → deploy → canary` flows automatically when the publish/deploy/canary steps are command mode-nodes, and only a raw cross-repo hand-off pauses for a human.
 
 ### 3. Run it
 

@@ -34,7 +34,7 @@ export { resolveRepoSettings, allAppendableFiles, unknownRepoKeys } from "./repo
 export type { ResolvedRepoSettings } from "./repo-settings.js";
 export { resolveModelEffort, modelEffortArgs, extraDirsArgs, modelEffortInputs, perIssueSpawnArgs, EFFORT_LADDER, DEFAULT_MODEL, DEFAULT_EFFORT, } from "./model-effort.js";
 export type { Effort, Complexity, ModelEffortInputs, ResolvedModelEffort } from "./model-effort.js";
-export { isModeNode, isCommandNode, MODE_NODE_KINDS } from "./mode-node.js";
+export { isModeNode, isCommandNode, isManualGate, cutoverReason, MODE_NODE_KINDS } from "./mode-node.js";
 export type { ModeNodeKind } from "./mode-node.js";
 export { interpolate } from "./interpolate.js";
 export type { YamlConfig, HooksOverride, YamlSummaryColumn, YamlSummary, YamlPostSessionCheck, YamlIssue, SequentialPathConfig, SequentialDomainConfig, AppendableFileSpec, RepoConfig, } from "./yaml-types.js";

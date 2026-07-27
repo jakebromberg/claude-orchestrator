@@ -27,11 +27,17 @@ export declare class Orchestrator {
     /**
      * Execute mode-nodes: run each command node's `command` (exit 0 → succeeded,
      * non-zero → failed). Sequential — deploy/publish steps shouldn't race, and a
-     * wave rarely holds more than one. A mode-node reaching here without a command
-     * is a manual gate (handled in A5b-2); until then it's a config error the
-     * schema rejects, so mark it failed defensively rather than silently no-op.
+     * wave rarely holds more than one. A command-less mode-node is a manual gate;
+     * reaching here means its cutover was already confirmed in `prepareIssues`
+     * (an unconfirmed gate is held and never dispatched), so mark it succeeded.
      */
     private runModeNodes;
+    /**
+     * Ask the `confirmCutover` hook whether a gated issue may be released. Absent
+     * hook → not confirmed (hold), the conservative default for a cross-repo run.
+     * A throwing hook is also treated as "not confirmed".
+     */
+    private confirmCutover;
     private checkDeps;
     private refreshMetadata;
     private launchAndWait;

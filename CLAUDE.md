@@ -34,7 +34,7 @@ src/
 ├── worktree-hooks.ts     # deriveWorktreeHooks() — reusable per-repo checkout/worktree hooks
 ├── repo-settings.ts      # resolveRepoSettings() — per-repo baseBranch/CI/collision overrides (repos: map)
 ├── model-effort.ts       # resolveModelEffort() / perIssueSpawnArgs() — per-issue model/effort policy
-├── mode-node.ts          # isModeNode()/isCommandNode() — non-Claude DAG nodes (deploy/publish/gate)
+├── mode-node.ts          # isModeNode/isCommandNode/isManualGate/cutoverReason — non-Claude nodes + cross-repo cutover gate
 ├── github.ts             # GitHub CLI wrapper (labels, comments)
 ├── upstream-context.ts   # HANDOFF.md reading for agent-to-agent context
 ├── issue-comments.ts     # Post run summary comments on GitHub issues
@@ -181,14 +181,17 @@ issues:
   # or a fully-qualified cross-repo ref "owner/repo#N":
   #   dependsOn: [1, "WXYC/other-repo#2"]
   # A mode-node (mode-node.ts) runs a command instead of a Claude session — no
-  # worktree/model/effort. mode is deploy|publish|gate and requires a command;
-  # exit 0 → succeeded, non-zero → failed. Skipped by the merge step (no PR).
+  # worktree/model/effort. mode is deploy|publish|gate. With a command it runs it
+  # (exit 0 → succeeded, non-zero → failed); WITHOUT a command it's a manual gate
+  # that holds for a confirmCutover hook. Skipped by the merge step (no PR).
   # - number: 2
   #   slug: deploy-lml
   #   mode: deploy
   #   command: "gh workflow run deploy.yml -R WXYC/library-metadata-lookup"
   #   dependsOn: [1]
 ```
+
+A **cutover gate** stops the engine before releasing an issue behind a command-less manual gate or a bare cross-repo dependency (a dep in another repo that isn't itself a mode-node — a command node's exit-0 or a manual gate's own confirmation already counts as the cutover). Confirmation comes from an optional `confirmCutover(issue, reason)` hook; when it's absent, gated issues **hold** (left `pending`, dependents skip) — a cross-repo run wires `confirmCutover` or uses command mode-nodes to progress unattended. See `cutoverReason` in `mode-node.ts`.
 
 ### CLI Modes
 
