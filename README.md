@@ -82,14 +82,27 @@ import type { HooksOverride } from "@funlandresearch/claude-orchestrator";
 const hooksOverride: HooksOverride = { ...deriveWorktreeHooks() };
 ```
 
-Each issue's `repo` (`owner/repo`, e.g. `WXYC/library-metadata-lookup`) resolves to the checkout `<reposDir>/library-metadata-lookup` — the owner is the parent directory. The base branch is **derived, never assumed**: a repo whose `origin/HEAD` points at `master` (such as `wxyc-ios-64`) forks from `master`, while repos on `main` fork from `main`. Override any of `reposDir`, `repoOf`, `worktreeRoot`, `baseBranchOf`, or `getBranchName` to fit a different layout:
+Each issue's `repo` (`owner/repo`, e.g. `WXYC/library-metadata-lookup`) resolves to the checkout `<reposDir>/library-metadata-lookup` — the owner is the parent directory. The base branch is **derived, never assumed**: a repo whose `origin/HEAD` points at `master` (such as `wxyc-ios-64`) forks from `origin/master`, while repos on `main` fork from `origin/main`. Forking from the `origin/` remote-tracking ref (rather than the local branch of the same name) starts each worktree from the freshest fetched state. Override any of `reposDir`, `repoOf`, `worktreeRoot`, `baseBranchOf`, or `getBranchName` to fit a different layout:
 
 ```typescript
 const hooksOverride: HooksOverride = {
   ...deriveWorktreeHooks({
     reposDir: "/srv/checkouts",
-    baseBranchOf: (repoDir) => (repoDir.endsWith("wxyc-ios-64") ? "master" : "main"),
+    baseBranchOf: (repoDir) => (repoDir.endsWith("wxyc-ios-64") ? "origin/master" : "origin/main"),
   }),
+};
+```
+
+`deriveWorktreeHooks` only lays out the worktree; it installs no dependencies. When a repo's `postSessionCheck` needs them (e.g. `npm test`), wrap `setUpWorktree` to install after the worktree exists:
+
+```typescript
+const wt = deriveWorktreeHooks();
+const hooksOverride: HooksOverride = {
+  ...wt,
+  async setUpWorktree(issue) {
+    await wt.setUpWorktree(issue);
+    execFileSync("npm", ["ci"], { cwd: wt.getWorktreePath(issue), stdio: "pipe" });
+  },
 };
 ```
 
