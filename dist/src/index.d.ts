@@ -28,6 +28,8 @@ export { loadYamlConfig, resolveYamlPaths } from "./yaml-loader.js";
 export type { LoadYamlConfigOptions } from "./yaml-loader.js";
 export { deriveHooks, buildClaimCommand } from "./yaml-hooks.js";
 export type { DeriveHooksDeps } from "./yaml-hooks.js";
+export { deriveWorktreeHooks } from "./worktree-hooks.js";
+export type { DeriveWorktreeHooksOptions, WorktreeHooks } from "./worktree-hooks.js";
 export { interpolate } from "./interpolate.js";
 export type { YamlConfig, HooksOverride, YamlSummaryColumn, YamlSummary, YamlPostSessionCheck, YamlIssue, SequentialPathConfig, SequentialDomainConfig, AppendableFileSpec, } from "./yaml-types.js";
 export { getNestedArray, setNestedArray, extractJsonObjects, parseConflictSections, mergeJsonArrays, mergeJsonDocuments, resolveConflict, } from "./merge-appendable.js";
