@@ -6,8 +6,8 @@ export interface DashboardDeps {
   metadataStore: MetadataStore;
   config: OrchestratorConfig;
   logger: Logger;
-  /** Read the last N bytes of a log file for an issue. */
-  readLogTail: (issueNumber: number, maxBytes: number) => string;
+  /** Read the last N bytes of an issue's log file, keyed by its composite ref. */
+  readLogTail: (ref: string, maxBytes: number) => string;
 }
 
 /** Options for creating the dashboard server. */
