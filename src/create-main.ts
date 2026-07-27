@@ -109,7 +109,8 @@ function createRealDeps(config: OrchestratorConfig): Deps {
       }
     },
     readFile: (filePath: string) => fs.readFileSync(filePath, "utf-8"),
-    runCommand: (cmd: string) => execSync(cmd, { stdio: "pipe", encoding: "utf-8" }),
+    runCommand: (cmd: string, options?: { timeout?: number }) =>
+      execSync(cmd, { stdio: "pipe", encoding: "utf-8", timeout: options?.timeout }),
     truncateFile: (filePath: string) => {
       try { fs.truncateSync(filePath, 0); } catch {}
     },

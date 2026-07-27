@@ -240,8 +240,13 @@ export class Orchestrator {
             this.deps.metadataStore.update(issue.ref, {
                 startedAt: new Date().toISOString(),
             });
+            // Bound the run so a hung deploy/gate command can't block the engine
+            // indefinitely (mode-nodes have no stall monitor). Reuse the per-issue /
+            // config stall timeout; 0 means unbounded.
+            const effectiveTimeout = issue.stallTimeout ?? this.config.stallTimeout;
+            const timeout = effectiveTimeout > 0 ? effectiveTimeout * 1000 : undefined;
             try {
-                this.deps.runCommand(issue.command);
+                this.deps.runCommand(issue.command, { timeout });
                 this.deps.metadataStore.update(issue.ref, {
                     exitCode: 0,
                     finishedAt: new Date().toISOString(),
@@ -250,12 +255,15 @@ export class Orchestrator {
                 this.deps.logger.info(`Issue #${issue.number} (${issue.mode}) succeeded`);
             }
             catch (err) {
+                // Preserve the command's real exit code and stderr/stdout — for a
+                // deploy/publish node the failure output is the whole diagnostic.
+                const { exitCode, detail } = describeCommandFailure(err);
                 this.deps.metadataStore.update(issue.ref, {
-                    exitCode: 1,
+                    exitCode,
                     finishedAt: new Date().toISOString(),
                 });
                 await this.setStatus(issue, "failed");
-                this.deps.logger.error(`Issue #${issue.number} (${issue.mode}) failed: ${err instanceof Error ? err.message : String(err)}`);
+                this.deps.logger.error(`Issue #${issue.number} (${issue.mode}) failed (exit ${exitCode}): ${detail}`);
             }
         }
     }
@@ -520,6 +528,33 @@ export class Orchestrator {
         this.deps.logger.error(`Issue #${issue.number} failed after ${maxRetries} retries`);
         return false;
     }
+}
+/**
+ * Extract a mode-node command's real exit code and a human diagnostic from a
+ * thrown error. `execSync` failures carry `status` (exit code) and
+ * `stderr`/`stdout` (strings under utf-8, or Buffers); a timeout has no status.
+ * Falls back to exit code 1 and the error message.
+ */
+function describeCommandFailure(err) {
+    const e = err;
+    const exitCode = typeof e?.status === "number" ? e.status : 1;
+    const parts = [];
+    if (err instanceof Error && err.message)
+        parts.push(err.message);
+    const stderr = streamToString(e?.stderr);
+    const stdout = streamToString(e?.stdout);
+    if (stderr)
+        parts.push(`stderr:\n${stderr}`);
+    if (stdout)
+        parts.push(`stdout:\n${stdout}`);
+    return { exitCode, detail: parts.length > 0 ? parts.join("\n") : String(err) };
+}
+/** Coerce an execSync stream field (string or Buffer, possibly absent) to a trimmed string. */
+function streamToString(v) {
+    if (v == null)
+        return "";
+    const s = typeof v === "string" ? v : String(v);
+    return s.trim();
 }
 /**
  * Clean up worktrees and remote branches for issues that were successfully merged.

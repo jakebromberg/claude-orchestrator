@@ -168,7 +168,7 @@ On the implement and retry spawns, a config's `claudeArgs`/`getClaudeArgs` outpu
 
 #### Mode-nodes: `deploy` / `publish` / `gate`
 
-Not every DAG node is a code change. A **mode-node** runs a configured shell `command` instead of spawning a Claude session — no worktree, no model/effort — so a cross-repo run can model deploy/publish steps as first-class nodes with real dependency ordering. Its `command`'s exit code is the outcome: `0` marks the node succeeded (releasing its dependents), any non-zero marks it failed. Because the command is the whole node, prefer a self-contained trigger (`gh workflow run …`) over anything that assumes a checkout.
+Not every DAG node is a code change. A **mode-node** runs a configured shell `command` instead of spawning a Claude session — no worktree, no model/effort — so a cross-repo run can model deploy/publish steps as first-class nodes with real dependency ordering. Its `command`'s exit code is the outcome: `0` marks the node succeeded (releasing its dependents), any non-zero marks it failed (the node records the real exit code and logs the command's `stderr`/`stdout`, so a failed deploy is diagnosable). Because the command is the whole node, prefer a self-contained trigger (`gh workflow run …`) over anything that assumes a checkout. The command is bounded by the node's `stallTimeout` (per-issue, else the config default; `0` disables the bound) so a hung command can't block the engine — set it higher for a command that legitimately blocks, e.g. one that waits on a deploy.
 
 ```yaml
 issues:

@@ -90,7 +90,7 @@ function createRealDeps(config) {
             }
         },
         readFile: (filePath) => fs.readFileSync(filePath, "utf-8"),
-        runCommand: (cmd) => execSync(cmd, { stdio: "pipe", encoding: "utf-8" }),
+        runCommand: (cmd, options) => execSync(cmd, { stdio: "pipe", encoding: "utf-8", timeout: options?.timeout }),
         truncateFile: (filePath) => {
             try {
                 fs.truncateSync(filePath, 0);

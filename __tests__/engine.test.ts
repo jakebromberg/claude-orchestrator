@@ -2511,7 +2511,7 @@ describe("mode-nodes", () => {
 
     await orchestrator.runWave(1);
 
-    expect(deps.runCommand).toHaveBeenCalledWith("gh workflow run deploy.yml");
+    expect(deps.runCommand).toHaveBeenCalledWith("gh workflow run deploy.yml", expect.anything());
     expect(runner.spawned.length).toBe(0); // no Claude session spawned
     expect(deps.statusStore.get("1")).toBe("succeeded");
   });
@@ -2580,7 +2580,7 @@ describe("mode-nodes", () => {
     runner.resolvers.get(1000)!(0);
     await promise;
 
-    expect(deps.runCommand).toHaveBeenCalledWith("gh workflow run deploy.yml");
+    expect(deps.runCommand).toHaveBeenCalledWith("gh workflow run deploy.yml", expect.anything());
     expect(deps.statusStore.get("1")).toBe("succeeded");
     expect(deps.statusStore.get("2")).toBe("succeeded");
   });
@@ -2680,9 +2680,84 @@ describe("cutover gate", () => {
       runner.resolvers.get(1000)!(0);
       await promise;
 
-      expect(deps.runCommand).toHaveBeenCalledWith("npm publish");
+      expect(deps.runCommand).toHaveBeenCalledWith("npm publish", expect.anything());
       expect(deps.statusStore.get("WXYC/wxyc-shared#1")).toBe("succeeded");
       expect(deps.statusStore.get("WXYC/backend#2")).toBe("succeeded");
     });
+  });
+});
+
+describe("mode-node command robustness", () => {
+  it("records the real exit code and surfaces stderr on command failure", async () => {
+    const issue = makeIssue({
+      number: 7, slug: "deploy-lml", wave: 1,
+      mode: "deploy", command: "gh workflow run deploy.yml",
+    });
+    // Model an execSync failure: it attaches `status` (exit code) and `stderr`.
+    const runCommand = vi.fn(() => {
+      throw Object.assign(new Error("Command failed: gh workflow run deploy.yml"), {
+        status: 127,
+        stderr: "gh: command not found\n",
+      });
+    });
+    const { orchestrator, deps } = makeOrchestrator([issue], undefined, { runCommand });
+
+    await orchestrator.runWave(1);
+
+    expect(deps.statusStore.get("7")).toBe("failed");
+    expect(deps.metadataStore.get("7").exitCode).toBe(127); // not hardcoded 1
+    const errorLog = (deps.logger.error as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]).join("\n");
+    expect(errorLog).toContain("127");
+    expect(errorLog).toContain("gh: command not found"); // stderr surfaced
+  });
+
+  it("falls back to exit code 1 when the error carries no status", async () => {
+    const issue = makeIssue({
+      number: 1, slug: "deploy", wave: 1,
+      mode: "deploy", command: "false",
+    });
+    const runCommand = vi.fn(() => { throw new Error("boom"); });
+    const { orchestrator, deps } = makeOrchestrator([issue], undefined, { runCommand });
+
+    await orchestrator.runWave(1);
+
+    expect(deps.statusStore.get("1")).toBe("failed");
+    expect(deps.metadataStore.get("1").exitCode).toBe(1);
+  });
+
+  it("passes a timeout (from stallTimeout) to the mode-node command", async () => {
+    const issue = makeIssue({
+      number: 1, slug: "deploy", wave: 1,
+      mode: "deploy", command: "gh workflow run deploy.yml", stallTimeout: 120,
+    });
+    const seen: Array<{ cmd: string; opts?: { timeout?: number } }> = [];
+    const runCommand = vi.fn((cmd: string, opts?: { timeout?: number }) => {
+      seen.push({ cmd, opts });
+      return "";
+    });
+    const { orchestrator } = makeOrchestrator([issue], undefined, { runCommand });
+
+    await orchestrator.runWave(1);
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].cmd).toBe("gh workflow run deploy.yml");
+    expect(seen[0].opts?.timeout).toBe(120_000); // seconds → ms
+  });
+
+  it("omits the timeout when the effective stall timeout is 0 (unbounded)", async () => {
+    const issue = makeIssue({
+      number: 1, slug: "deploy", wave: 1,
+      mode: "deploy", command: "gh workflow run deploy.yml", stallTimeout: 0,
+    });
+    const seen: Array<{ opts?: { timeout?: number } }> = [];
+    const runCommand = vi.fn((_cmd: string, opts?: { timeout?: number }) => {
+      seen.push({ opts });
+      return "";
+    });
+    const { orchestrator } = makeOrchestrator([issue], undefined, { runCommand });
+
+    await orchestrator.runWave(1);
+
+    expect(seen[0].opts?.timeout).toBeUndefined();
   });
 });
