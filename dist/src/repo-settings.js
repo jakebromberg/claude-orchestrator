@@ -30,25 +30,36 @@ export function resolveRepoSettings(yaml, repoKey) {
 }
 /**
  * The union of every appendable-file spec configured anywhere in the config —
- * top-level plus every repo entry — deduplicated by `path` (first occurrence
- * wins). Used by the repo-agnostic consumers (the `ownsFiles` exemption
- * allowlist and the merge-driver path lookup), which operate over the whole
- * config regardless of which repo owns a file.
+ * top-level plus every repo entry — deduplicated by `path`. Used by the
+ * repo-agnostic consumers (the `ownsFiles` exemption allowlist and the
+ * merge-driver path lookup), which key on `path` alone regardless of which repo
+ * owns a file. Identical specs at the same path collapse to one; specs that
+ * share a path but disagree on `format`/`arrayPath`/`keyField` throw, since the
+ * path-keyed merge driver could otherwise apply one repo's merge rules to
+ * another repo's file.
  */
 export function allAppendableFiles(yaml) {
-    const seen = new Set();
-    const out = [];
+    const byPath = new Map();
     const candidates = [
         ...(yaml.appendableFiles ?? []),
         ...Object.values(yaml.repos ?? {}).flatMap((r) => r.appendableFiles ?? []),
     ];
     for (const spec of candidates) {
-        if (seen.has(spec.path))
+        const existing = byPath.get(spec.path);
+        if (existing) {
+            if (existing.format !== spec.format ||
+                existing.arrayPath !== spec.arrayPath ||
+                existing.keyField !== spec.keyField) {
+                throw new Error(`Conflicting appendableFiles specs for path "${spec.path}": ` +
+                    `{format:${existing.format}, arrayPath:${existing.arrayPath}, keyField:${existing.keyField}} ` +
+                    `vs {format:${spec.format}, arrayPath:${spec.arrayPath}, keyField:${spec.keyField}}. ` +
+                    `The merge driver keys on path alone — reconcile them.`);
+            }
             continue;
-        seen.add(spec.path);
-        out.push(spec);
+        }
+        byPath.set(spec.path, spec);
     }
-    return out;
+    return [...byPath.values()];
 }
 /**
  * Keys in the `repos:` map that no issue references — neither via an issue's
