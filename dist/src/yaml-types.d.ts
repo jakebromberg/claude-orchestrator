@@ -80,7 +80,10 @@ export interface YamlIssue {
     dependsOn: (number | string)[];
     description: string;
     repo?: string;
+    /** Non-Claude node kind: `deploy` | `publish` | `gate`. See `IssueSpec.mode`. */
     mode?: string;
+    /** Shell command a mode-node runs instead of a Claude session. See `IssueSpec.command`. */
+    command?: string;
     /** Model for this issue's session. See `IssueSpec.model`. */
     model?: string;
     /** Explicit effort tier for this issue. See `IssueSpec.effort`. */

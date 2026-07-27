@@ -5,6 +5,7 @@
  * assembles them into a single context string for injection into
  * downstream agent prompts via `{{UPSTREAM_CONTEXT}}`.
  */
+import { isModeNode } from "./mode-node.js";
 /**
  * Gather upstream context from dependency worktrees.
  *
@@ -24,6 +25,10 @@ export function gatherUpstreamContext(issue, allIssues, deps) {
     for (const depRef of issue.deps) {
         const depIssue = allIssues.find((i) => i.ref === depRef);
         if (!depIssue)
+            continue;
+        // Mode-nodes (deploy/publish/gate) have no worktree — and `getWorktreePath`
+        // would throw for a repo-less gate — so there's no HANDOFF.md to gather.
+        if (isModeNode(depIssue))
             continue;
         const worktreePath = deps.getWorktreePath(depIssue);
         try {

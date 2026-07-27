@@ -166,6 +166,29 @@ Precedence for effort is explicit `effort` → `complexity` tier → `defaultEff
 
 On the implement and retry spawns, a config's `claudeArgs`/`getClaudeArgs` output is appended after these, so it can still override the model via the CLI's last-`--model` rule; the merge-conflict resolver always runs at the issue's own tier. This Sonnet-tiered baseline replaces the previous hardcoded Opus for **every** config, including a programmatic `OrchestratorConfig` with no `model`/`defaultModel` — a bare config that ran Opus before now runs Sonnet. Set `model: opus` (per issue) or `defaultModel: opus` (run-wide) to opt back in.
 
+#### Mode-nodes: `deploy` / `publish` / `gate`
+
+Not every DAG node is a code change. A **mode-node** runs a configured shell `command` instead of spawning a Claude session — no worktree, no model/effort — so a cross-repo run can model deploy/publish steps as first-class nodes with real dependency ordering. Its `command`'s exit code is the outcome: `0` marks the node succeeded (releasing its dependents), any non-zero marks it failed. Because the command is the whole node, prefer a self-contained trigger (`gh workflow run …`) over anything that assumes a checkout.
+
+```yaml
+issues:
+  - { number: 924, slug: lml-perf, repo: WXYC/library-metadata-lookup, dependsOn: [], description: "LML lane isolation", complexity: complex }
+  - number: 1
+    slug: deploy-lml
+    repo: WXYC/library-metadata-lookup
+    mode: deploy
+    command: "gh workflow run deploy.yml -R WXYC/library-metadata-lookup"
+    dependsOn: [924]                       # deploys only after the implement node lands
+  - number: 82
+    slug: canary-validate
+    repo: WXYC/wxyc-canary
+    mode: gate
+    command: "gh workflow run canary-smoke.yml -R WXYC/wxyc-canary"
+    dependsOn: [1]                         # validates the live deploy
+```
+
+`mode` accepts `deploy`, `publish`, or `gate` (an unrecognized value is a load error). In this release every mode-node **requires** a `command`; command-less manual gates and the automatic cross-repo cutover gate arrive next. A mode-node never has a PR, so the merge step skips it, and cleanup leaves it alone.
+
 ### 3. Run it
 
 ```bash

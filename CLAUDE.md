@@ -34,6 +34,7 @@ src/
 ├── worktree-hooks.ts     # deriveWorktreeHooks() — reusable per-repo checkout/worktree hooks
 ├── repo-settings.ts      # resolveRepoSettings() — per-repo baseBranch/CI/collision overrides (repos: map)
 ├── model-effort.ts       # resolveModelEffort() / perIssueSpawnArgs() — per-issue model/effort policy
+├── mode-node.ts          # isModeNode()/isCommandNode() — non-Claude DAG nodes (deploy/publish/gate)
 ├── github.ts             # GitHub CLI wrapper (labels, comments)
 ├── upstream-context.ts   # HANDOFF.md reading for agent-to-agent context
 ├── issue-comments.ts     # Post run summary comments on GitHub issues
@@ -179,6 +180,14 @@ issues:
   # dependsOn entries are a bare number/numeric-string (same repo as this issue)
   # or a fully-qualified cross-repo ref "owner/repo#N":
   #   dependsOn: [1, "WXYC/other-repo#2"]
+  # A mode-node (mode-node.ts) runs a command instead of a Claude session — no
+  # worktree/model/effort. mode is deploy|publish|gate and requires a command;
+  # exit 0 → succeeded, non-zero → failed. Skipped by the merge step (no PR).
+  # - number: 2
+  #   slug: deploy-lml
+  #   mode: deploy
+  #   command: "gh workflow run deploy.yml -R WXYC/library-metadata-lookup"
+  #   dependsOn: [1]
 ```
 
 ### CLI Modes
