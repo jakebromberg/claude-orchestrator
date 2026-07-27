@@ -152,7 +152,7 @@ describe("deriveWorktreeHooks — setUpWorktree", () => {
     expect(io.created).toContain(wtRoot);
     const add = git.calls.find((c) => c.args[0] === "worktree" && c.args[1] === "add");
     expect(add).toEqual({
-      args: ["worktree", "add", wtPath, "-b", "orchestrator/add-cache", "main"],
+      args: ["worktree", "add", wtPath, "-b", "orchestrator/add-cache", "origin/main"],
       cwd: repoDir,
     });
   });
@@ -177,7 +177,7 @@ describe("deriveWorktreeHooks — setUpWorktree", () => {
       `${repoDir}-worktrees/on-tour-tab`,
       "-b",
       "orchestrator/on-tour-tab",
-      "master",
+      "origin/master",
     ]);
     // The rev-parse ran against the iOS checkout, not a hardcoded assumption.
     const revParse = git.calls.find((c) => c.args.includes("rev-parse"))!;
@@ -228,7 +228,7 @@ describe("deriveWorktreeHooks — setUpWorktree", () => {
     ]);
   });
 
-  it("tolerates an already-present worktree (both adds fail, dir exists)", async () => {
+  it("reuses an already-present worktree without touching git", async () => {
     const git = makeGit({ base: "main", addBehavior: ["throw", "throw"] });
     const repoDir = `${REPOS}/lml`;
     const wtPath = `${repoDir}-worktrees/s`;
@@ -241,6 +241,8 @@ describe("deriveWorktreeHooks — setUpWorktree", () => {
     });
 
     await expect(hooks.setUpWorktree(makeIssue("WXYC/lml", "s"))).resolves.toBeUndefined();
+    // Existing worktree short-circuits before any add/prune.
+    expect(git.calls.some((c) => c.args[1] === "add")).toBe(false);
   });
 
   it("throws when both adds fail and no worktree exists", async () => {
@@ -328,7 +330,7 @@ describe("deriveWorktreeHooks — removeWorktree", () => {
 });
 
 describe("deriveWorktreeHooks — default baseBranchOf", () => {
-  it("strips the origin/ prefix from origin/HEAD", async () => {
+  it("forks from the origin/ remote-tracking ref, not the local branch", async () => {
     const git = makeGit({ base: "trunk" });
     const repoDir = `${REPOS}/lml`;
     const io = makeIo([repoDir]);
@@ -342,7 +344,25 @@ describe("deriveWorktreeHooks — default baseBranchOf", () => {
     await hooks.setUpWorktree(makeIssue("WXYC/lml", "s"));
 
     const add = git.calls.find((c) => c.args[1] === "add")!;
-    expect(add.args[add.args.length - 1]).toBe("trunk");
+    expect(add.args[add.args.length - 1]).toBe("origin/trunk");
+  });
+
+  it("resolves origin/HEAD once and caches it across issues in the same repo", async () => {
+    const git = makeGit({ base: "main" });
+    const repoDir = `${REPOS}/lml`;
+    const io = makeIo([repoDir]);
+    const hooks = deriveWorktreeHooks({
+      reposDir: REPOS,
+      runGit: git.runGit,
+      existsSync: io.existsSync,
+      mkdirSync: io.mkdirSync,
+    });
+
+    await hooks.setUpWorktree(makeIssue("WXYC/lml", "one", 1));
+    await hooks.setUpWorktree(makeIssue("WXYC/lml", "two", 2));
+
+    const revParses = git.calls.filter((c) => c.args.includes("rev-parse"));
+    expect(revParses).toHaveLength(1);
   });
 
   it("throws an actionable error when origin/HEAD can't be resolved", async () => {

@@ -20,12 +20,14 @@ export interface DeriveWorktreeHooksOptions {
      */
     worktreeRoot?: (repoDir: string) => string;
     /**
-     * Base branch new worktrees fork from, per repo checkout directory.
-     * Default: derived from `git rev-parse --abbrev-ref origin/HEAD` (with the
-     * `origin/` prefix stripped). Never assumes `main` — deriving is the point,
-     * so wxyc-ios-64 (`master`) works alongside repos on `main`. Throws an
-     * actionable error when `origin/HEAD` can't be resolved; pass an explicit
-     * function to override (e.g. a `repo -> branch` lookup table).
+     * Start-point ref new worktrees fork from, per repo checkout directory.
+     * Default: `git rev-parse --abbrev-ref origin/HEAD`, kept as the
+     * `origin/<default>` remote-tracking ref — so worktrees fork from the freshest
+     * fetched state, not a possibly-stale local branch of the same name. Never
+     * assumes `main`; wxyc-ios-64 (`origin/master`) works alongside repos on
+     * `origin/main`. Throws an actionable error when `origin/HEAD` can't be
+     * resolved. Override to fork from anywhere (a branch, tag, SHA, or a
+     * `repo -> ref` lookup table); the returned value is used verbatim.
      */
     baseBranchOf?: (repoDir: string) => string;
     /** Branch name for an issue's worktree. Default: `orchestrator/<slug>`. */

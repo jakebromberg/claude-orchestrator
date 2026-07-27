@@ -10,9 +10,11 @@
 //   export default { ...wt };                    // HooksOverride
 //
 // For each issue it locates the repo's checkout under `reposDir`, forks a branch
-// off that repo's *own* base branch (derived from `origin/HEAD`, so wxyc-ios-64's
-// `master` is honored rather than assumed to be `main`), and creates a worktree
-// in the sibling `<repo>-worktrees/` directory.
+// off that repo's *own* base branch (derived from `origin/HEAD` and kept as the
+// `origin/<default>` remote-tracking ref, so wxyc-ios-64's `master` is honored
+// rather than assumed to be `main`, and the fork starts from the freshest fetched
+// state rather than a possibly-stale local branch), and creates a worktree in the
+// sibling `<repo>-worktrees/` directory.
 
 import { execFileSync } from "node:child_process";
 import { existsSync as fsExistsSync, mkdirSync as fsMkdirSync } from "node:fs";
@@ -45,12 +47,14 @@ export interface DeriveWorktreeHooksOptions {
    */
   worktreeRoot?: (repoDir: string) => string;
   /**
-   * Base branch new worktrees fork from, per repo checkout directory.
-   * Default: derived from `git rev-parse --abbrev-ref origin/HEAD` (with the
-   * `origin/` prefix stripped). Never assumes `main` — deriving is the point,
-   * so wxyc-ios-64 (`master`) works alongside repos on `main`. Throws an
-   * actionable error when `origin/HEAD` can't be resolved; pass an explicit
-   * function to override (e.g. a `repo -> branch` lookup table).
+   * Start-point ref new worktrees fork from, per repo checkout directory.
+   * Default: `git rev-parse --abbrev-ref origin/HEAD`, kept as the
+   * `origin/<default>` remote-tracking ref — so worktrees fork from the freshest
+   * fetched state, not a possibly-stale local branch of the same name. Never
+   * assumes `main`; wxyc-ios-64 (`origin/master`) works alongside repos on
+   * `origin/main`. Throws an actionable error when `origin/HEAD` can't be
+   * resolved. Override to fork from anywhere (a branch, tag, SHA, or a
+   * `repo -> ref` lookup table); the returned value is used verbatim.
    */
   baseBranchOf?: (repoDir: string) => string;
   /** Branch name for an issue's worktree. Default: `orchestrator/<slug>`. */
@@ -101,9 +105,13 @@ export function deriveWorktreeHooks(
   const existsSync = options.existsSync ?? fsExistsSync;
   const mkdirSync = options.mkdirSync ?? ((p: string) => fsMkdirSync(p, { recursive: true }));
 
+  // origin/HEAD is identical across all issues in a repo; resolve it once.
+  const baseRefCache = new Map<string, string>();
   const baseBranchOf =
     options.baseBranchOf ??
     ((repoDir: string): string => {
+      const cached = baseRefCache.get(repoDir);
+      if (cached !== undefined) return cached;
       let out: string;
       try {
         out = runGit(["rev-parse", "--abbrev-ref", "origin/HEAD"], repoDir);
@@ -115,7 +123,11 @@ export function deriveWorktreeHooks(
         );
       }
       const ref = out.trim(); // e.g. "origin/master"
-      return ref.startsWith("origin/") ? ref.slice("origin/".length) : ref;
+      // Fork from the remote-tracking ref (freshest fetched state), not the
+      // possibly-stale local branch of the same name.
+      const startPoint = ref.startsWith("origin/") ? ref : `origin/${ref}`;
+      baseRefCache.set(repoDir, startPoint);
+      return startPoint;
     });
 
   function repoDirOf(issue: Issue): string {
@@ -149,6 +161,19 @@ export function deriveWorktreeHooks(
 
       mkdirSync(wtRoot);
 
+      // A prior run may have left the worktree in place — reuse it. (Callers
+      // that need per-run setup, e.g. installing dependencies, should wrap this
+      // hook; see the README for the composition pattern.)
+      if (existsSync(wtPath)) return;
+
+      // Clear stale registrations whose working dir was removed out-of-band;
+      // otherwise `worktree add` fails with "already registered". Best effort.
+      try {
+        runGit(["worktree", "prune"], repoDir);
+      } catch {
+        // A prune failure shouldn't block the add attempt below.
+      }
+
       try {
         // Fresh branch off the repo's own base.
         runGit(["worktree", "add", wtPath, "-b", branch, base], repoDir);
@@ -156,13 +181,13 @@ export function deriveWorktreeHooks(
         try {
           // Branch already exists — attach a worktree to it.
           runGit(["worktree", "add", wtPath, branch], repoDir);
-        } catch {
-          // Worktree may already be present from a prior run — tolerate that,
-          // but surface anything else.
+        } catch (err) {
+          // A concurrent run may have just created it — tolerate that, but
+          // surface anything else with git's own error as the cause.
           if (!existsSync(wtPath)) {
             throw new Error(
               `deriveWorktreeHooks: failed to create worktree at ${wtPath} ` +
-                `(branch ${branch} off ${base} in ${repoDir}).`,
+                `(branch ${branch} off ${base} in ${repoDir}): ${(err as Error).message}`,
             );
           }
         }
