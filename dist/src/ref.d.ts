@@ -16,6 +16,12 @@ export declare function refOf(spec: RefLike, defaultRepo?: string): string;
  *   - a fully-qualified cross-repo ref (`"owner/repo#1"`) → used as-is
  */
 export declare function normalizeDep(entry: number | string, citing: RefLike, defaultRepo?: string): string;
+/**
+ * The `owner/repo` portion of a ref, or `undefined` for a bare-number ref.
+ * Two refs are cross-repo when their `repoOfRef` values differ — used to detect
+ * dependency edges that cross a repository boundary.
+ */
+export declare function repoOfRef(ref: string): string | undefined;
 export declare function encodeRefForFilename(ref: string): string;
 export declare function decodeRefFromFilename(encoded: string): string;
 /**

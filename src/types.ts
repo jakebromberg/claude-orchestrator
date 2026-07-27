@@ -186,6 +186,16 @@ export interface OrchestratorHooks {
    * Errors from this hook are non-fatal.
    */
   onMergeConflict?(issue: Issue, conflictFiles: string[], baseBranch: string): Promise<{ resolved: boolean; details?: string }>;
+  /**
+   * Optional human-in-the-loop cutover confirmation. Called before running an
+   * issue that sits behind a cutover gate — a command-less manual gate, or a
+   * bare cross-repo dependency (see `cutoverReason` in `mode-node.ts`). Return
+   * `true` to release the issue, `false` to hold it (left pending; dependents
+   * skip). When this hook is absent, gated issues hold by default — a cross-repo
+   * run must wire it (or model explicit command mode-nodes) to progress. Errors
+   * are treated as "not confirmed".
+   */
+  confirmCutover?(issue: Issue, reason: string): Promise<boolean>;
 }
 
 export type ParsedMode =

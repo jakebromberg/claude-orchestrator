@@ -5,7 +5,7 @@ import { mergePrs } from "./merge.js";
 import { gatherUpstreamContext } from "./upstream-context.js";
 import { encodeRefForFilename } from "./ref.js";
 import { perIssueSpawnArgs } from "./model-effort.js";
-import { isModeNode, isCommandNode } from "./mode-node.js";
+import { isModeNode, isCommandNode, cutoverReason } from "./mode-node.js";
 const STALL_CHECK_INTERVAL_MS = 10_000;
 const DEFAULT_ALLOWED_TOOLS = [
     "Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Task",
@@ -144,6 +144,8 @@ export class Orchestrator {
     async prepareIssues(issues) {
         const ready = [];
         const modeNodes = [];
+        // Lookup for cutover-gate detection (resolve a dep ref to its issue).
+        const byRef = new Map(this.config.issues.map((i) => [i.ref, i]));
         for (const issue of issues) {
             // Skip already succeeded
             const currentStatus = this.deps.statusStore.get(issue.ref);
@@ -161,6 +163,18 @@ export class Orchestrator {
             }
             // Check dependencies
             if (!await this.checkDeps(issue)) {
+                continue;
+            }
+            // Cutover gate: a manual gate node or a bare cross-repo dependency stops
+            // for human confirmation before this issue is released. Deps are already
+            // satisfied here — this is the "satisfied ≠ consumable across a repo
+            // boundary" checkpoint. Unconfirmed → hold (left pending; a re-run picks
+            // it up once the upstream is deployed/published or the hook approves).
+            const gateReason = cutoverReason(issue, (ref) => byRef.get(ref));
+            if (gateReason && !(await this.confirmCutover(issue, gateReason))) {
+                this.deps.logger.warn(`Issue #${issue.number} held at cutover gate (${gateReason}); ` +
+                    `awaiting confirmation. Wire a confirmCutover hook to approve, or ` +
+                    `re-run after the upstream is live.`);
                 continue;
             }
             // A mode-node (deploy/publish/gate) runs a configured command instead of
@@ -209,15 +223,16 @@ export class Orchestrator {
     /**
      * Execute mode-nodes: run each command node's `command` (exit 0 → succeeded,
      * non-zero → failed). Sequential — deploy/publish steps shouldn't race, and a
-     * wave rarely holds more than one. A mode-node reaching here without a command
-     * is a manual gate (handled in A5b-2); until then it's a config error the
-     * schema rejects, so mark it failed defensively rather than silently no-op.
+     * wave rarely holds more than one. A command-less mode-node is a manual gate;
+     * reaching here means its cutover was already confirmed in `prepareIssues`
+     * (an unconfirmed gate is held and never dispatched), so mark it succeeded.
      */
     async runModeNodes(modeNodes) {
         for (const issue of modeNodes) {
             if (!isCommandNode(issue)) {
-                this.deps.logger.error(`Issue #${issue.number}: mode "${issue.mode}" node has no command to run`);
-                await this.setStatus(issue, "failed");
+                // Confirmed manual gate — a no-op checkpoint that releases dependents.
+                await this.setStatus(issue, "succeeded");
+                this.deps.logger.info(`Issue #${issue.number} (manual ${issue.mode} gate) confirmed`);
                 continue;
             }
             await this.setStatus(issue, "running");
@@ -242,6 +257,23 @@ export class Orchestrator {
                 await this.setStatus(issue, "failed");
                 this.deps.logger.error(`Issue #${issue.number} (${issue.mode}) failed: ${err instanceof Error ? err.message : String(err)}`);
             }
+        }
+    }
+    /**
+     * Ask the `confirmCutover` hook whether a gated issue may be released. Absent
+     * hook → not confirmed (hold), the conservative default for a cross-repo run.
+     * A throwing hook is also treated as "not confirmed".
+     */
+    async confirmCutover(issue, reason) {
+        const hook = this.config.hooks.confirmCutover;
+        if (!hook)
+            return false;
+        try {
+            return await hook(issue, reason);
+        }
+        catch (err) {
+            this.deps.logger.warn(`Issue #${issue.number}: confirmCutover hook error: ${err instanceof Error ? err.message : String(err)}`);
+            return false;
         }
     }
     async checkDeps(issue) {

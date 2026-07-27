@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   refOf,
   normalizeDep,
+  repoOfRef,
   encodeRefForFilename,
   decodeRefFromFilename,
   compareRef,
@@ -50,6 +51,20 @@ describe("normalizeDep", () => {
 
   it("emits a bare number when neither citing repo nor defaultRepo is known", () => {
     expect(normalizeDep(1, { number: 5 })).toBe("1");
+  });
+});
+
+describe("repoOfRef", () => {
+  it("returns the owner/repo of a qualified ref", () => {
+    expect(repoOfRef("WXYC/lml#924")).toBe("WXYC/lml");
+  });
+
+  it("returns undefined for a bare-number ref", () => {
+    expect(repoOfRef("924")).toBeUndefined();
+  });
+
+  it("distinguishes the same number across repos", () => {
+    expect(repoOfRef("WXYC/lml#924")).not.toBe(repoOfRef("WXYC/backend#924"));
   });
 });
 

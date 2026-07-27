@@ -308,12 +308,12 @@ describe("validateConfig", () => {
       expect(node.command).toBe("gh workflow run deploy.yml");
     });
 
-    it("rejects a mode-node without a command", () => {
-      expect(() =>
-        validateConfig(makeRawConfig([
-          makeSpec({ number: 1, slug: "gate", mode: "gate" }),
-        ])),
-      ).toThrow(/but no command; a mode-node requires a command/);
+    it("accepts a command-less mode-node (a manual gate)", () => {
+      const config = validateConfig(makeRawConfig([
+        makeSpec({ number: 1, slug: "gate", mode: "gate" }),
+      ]));
+      expect(config.issues[0].mode).toBe("gate");
+      expect(config.issues[0].command).toBeUndefined();
     });
 
     it("rejects an unrecognized mode", () => {

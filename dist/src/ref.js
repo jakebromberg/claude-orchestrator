@@ -39,6 +39,18 @@ export function normalizeDep(entry, citing, defaultRepo) {
     // Bare numeric string: same as a number entry.
     return citingRepo ? `${citingRepo}#${s}` : s;
 }
+/**
+ * The `owner/repo` portion of a ref, or `undefined` for a bare-number ref.
+ * Two refs are cross-repo when their `repoOfRef` values differ — used to detect
+ * dependency edges that cross a repository boundary.
+ */
+export function repoOfRef(ref) {
+    const hashIdx = ref.indexOf("#");
+    if (hashIdx < 0)
+        return undefined;
+    const repo = ref.slice(0, hashIdx);
+    return repo || undefined;
+}
 // A ref contains `/` and `#`, which are unsafe in a filename. Percent-encode
 // them reversibly. `%` is encoded first (and decoded last) so the mapping is
 // a true round-trip even for refs that already contain a percent sign.

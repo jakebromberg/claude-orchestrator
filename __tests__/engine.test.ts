@@ -2585,3 +2585,104 @@ describe("mode-nodes", () => {
     expect(deps.statusStore.get("2")).toBe("succeeded");
   });
 });
+
+describe("cutover gate", () => {
+  describe("manual gate", () => {
+    it("succeeds a confirmed manual gate and releases its dependent", async () => {
+      const gate = makeIssue({ number: 1, slug: "gate", wave: 1, mode: "gate" });
+      const consumer = makeIssue({ number: 2, slug: "consume", wave: 2, deps: [1] });
+      const confirmCutover = vi.fn(async () => true);
+      const { orchestrator, deps } = makeOrchestrator([gate, consumer], { confirmCutover });
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+
+      const promise = orchestrator.runAllWaves();
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1)); // consumer only
+      runner.resolvers.get(1000)!(0);
+      await promise;
+
+      expect(confirmCutover).toHaveBeenCalledWith(gate, expect.stringMatching(/manual/i));
+      expect(deps.statusStore.get("1")).toBe("succeeded");
+      expect(deps.statusStore.get("2")).toBe("succeeded");
+    });
+
+    it("holds a manual gate when no confirmCutover hook is wired", async () => {
+      const gate = makeIssue({ number: 1, slug: "gate", wave: 1, mode: "gate" });
+      const consumer = makeIssue({ number: 2, slug: "consume", wave: 2, deps: [1] });
+      const { orchestrator, deps } = makeOrchestrator([gate, consumer]);
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+
+      await orchestrator.runAllWaves();
+
+      expect(runner.spawned.length).toBe(0); // nothing ran
+      expect(deps.statusStore.get("1")).toBe("pending"); // held, not failed
+      expect(deps.statusStore.get("2")).toBe("skipped"); // dep unsatisfied
+    });
+
+    it("holds a manual gate when the hook declines", async () => {
+      const gate = makeIssue({ number: 1, slug: "gate", wave: 1, mode: "gate" });
+      const confirmCutover = vi.fn(async () => false);
+      const { orchestrator, deps } = makeOrchestrator([gate], { confirmCutover });
+
+      await orchestrator.runAllWaves();
+
+      expect(confirmCutover).toHaveBeenCalledOnce();
+      expect(deps.statusStore.get("1")).toBe("pending");
+    });
+  });
+
+  describe("cross-repo edge", () => {
+    it("holds a bare cross-repo dependent until confirmed", async () => {
+      const upstream = makeIssue({ number: 1, slug: "shared", wave: 1, repo: "WXYC/wxyc-shared" });
+      const consumer = makeIssue({ number: 2, slug: "bs", wave: 2, repo: "WXYC/backend", deps: ["WXYC/wxyc-shared#1"] });
+      const { orchestrator, deps } = makeOrchestrator([upstream, consumer]); // no hook
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+
+      const promise = orchestrator.runAllWaves();
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1)); // upstream runs
+      runner.resolvers.get(1000)!(0);
+      await promise;
+
+      expect(deps.statusStore.get("WXYC/wxyc-shared#1")).toBe("succeeded");
+      expect(deps.statusStore.get("WXYC/backend#2")).toBe("pending"); // held at cutover
+      expect(runner.spawned.length).toBe(1); // consumer never spawned
+    });
+
+    it("releases a bare cross-repo dependent when confirmed", async () => {
+      const upstream = makeIssue({ number: 1, slug: "shared", wave: 1, repo: "WXYC/wxyc-shared" });
+      const consumer = makeIssue({ number: 2, slug: "bs", wave: 2, repo: "WXYC/backend", deps: ["WXYC/wxyc-shared#1"] });
+      const confirmCutover = vi.fn(async () => true);
+      const { orchestrator, deps } = makeOrchestrator([upstream, consumer], { confirmCutover });
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+
+      const promise = orchestrator.runAllWaves();
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+      runner.resolvers.get(1000)!(0);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(2));
+      runner.resolvers.get(1001)!(0);
+      await promise;
+
+      expect(confirmCutover).toHaveBeenCalledWith(consumer, expect.stringMatching(/cross-repo/i));
+      expect(deps.statusStore.get("WXYC/backend#2")).toBe("succeeded");
+    });
+
+    it("does not gate a cross-repo dep that is a command mode-node (its command is the cutover)", async () => {
+      const publish = makeIssue({
+        number: 1, slug: "publish-shared", wave: 1,
+        repo: "WXYC/wxyc-shared", mode: "publish", command: "npm publish",
+      });
+      const consumer = makeIssue({ number: 2, slug: "bs", wave: 2, repo: "WXYC/backend", deps: ["WXYC/wxyc-shared#1"] });
+      // No confirmCutover hook — the publish node's success must release the consumer.
+      const { orchestrator, deps } = makeOrchestrator([publish, consumer]);
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+
+      const promise = orchestrator.runAllWaves();
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1)); // consumer
+      runner.resolvers.get(1000)!(0);
+      await promise;
+
+      expect(deps.runCommand).toHaveBeenCalledWith("npm publish");
+      expect(deps.statusStore.get("WXYC/wxyc-shared#1")).toBe("succeeded");
+      expect(deps.statusStore.get("WXYC/backend#2")).toBe("succeeded");
+    });
+  });
+});
