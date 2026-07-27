@@ -28,8 +28,8 @@ export function createDashboardServer(
     return config.issues.map((issue) => ({
       number: issue.number,
       slug: issue.slug,
-      status: statusStore.get(issue.number),
-      metadata: metadataStore.get(issue.number) as Record<string, unknown>,
+      status: statusStore.get(issue.ref),
+      metadata: metadataStore.get(issue.ref) as Record<string, unknown>,
     }));
   }
 
@@ -87,7 +87,7 @@ export function createDashboardServer(
     if (metaMatch && req.method === "GET") {
       const issueNumber = parseInt(metaMatch[1], 10);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(metadataStore.get(issueNumber)));
+      res.end(JSON.stringify(metadataStore.get(String(issueNumber))));
       return;
     }
 

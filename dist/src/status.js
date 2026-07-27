@@ -1,15 +1,20 @@
 import fs from "node:fs";
 import path from "node:path";
+import { encodeRefForFilename } from "./ref.js";
+// Stores are keyed by issue ref ("owner/repo#N", or bare "N" when no repo is
+// known). Filenames encode the ref reversibly; a bare-number ref encodes to
+// itself, so existing single-repo state (`issue-<n>.status`) is read and
+// written unchanged — no migration needed on upgrade.
 export class InMemoryStatusStore {
     statuses = new Map();
-    get(issueNumber) {
-        return this.statuses.get(issueNumber) ?? "pending";
+    get(ref) {
+        return this.statuses.get(ref) ?? "pending";
     }
-    set(issueNumber, status) {
-        this.statuses.set(issueNumber, status);
+    set(ref, status) {
+        this.statuses.set(ref, status);
     }
-    remove(issueNumber) {
-        this.statuses.delete(issueNumber);
+    remove(ref) {
+        this.statuses.delete(ref);
     }
 }
 export class FileStatusStore {
@@ -17,8 +22,8 @@ export class FileStatusStore {
     constructor(configDir) {
         this.configDir = configDir;
     }
-    get(issueNumber) {
-        const filePath = this.statusFilePath(issueNumber);
+    get(ref) {
+        const filePath = this.statusFilePath(ref);
         try {
             return fs.readFileSync(filePath, "utf-8").trim();
         }
@@ -26,38 +31,38 @@ export class FileStatusStore {
             return "pending";
         }
     }
-    set(issueNumber, status) {
+    set(ref, status) {
         const dir = path.join(this.configDir, "status");
         fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(this.statusFilePath(issueNumber), status);
+        fs.writeFileSync(this.statusFilePath(ref), status);
     }
-    remove(issueNumber) {
+    remove(ref) {
         try {
-            fs.unlinkSync(this.statusFilePath(issueNumber));
+            fs.unlinkSync(this.statusFilePath(ref));
         }
         catch (err) {
             if (err.code !== "ENOENT")
                 throw err;
         }
     }
-    statusFilePath(issueNumber) {
-        return path.join(this.configDir, "status", `issue-${issueNumber}.status`);
+    statusFilePath(ref) {
+        return path.join(this.configDir, "status", `issue-${encodeRefForFilename(ref)}.status`);
     }
 }
 export class InMemoryMetadataStore {
     metadata = new Map();
-    get(issueNumber) {
-        return this.metadata.get(issueNumber) ?? {};
+    get(ref) {
+        return this.metadata.get(ref) ?? {};
     }
-    set(issueNumber, metadata) {
-        this.metadata.set(issueNumber, metadata);
+    set(ref, metadata) {
+        this.metadata.set(ref, metadata);
     }
-    update(issueNumber, partial) {
-        const current = this.get(issueNumber);
-        this.metadata.set(issueNumber, { ...current, ...partial });
+    update(ref, partial) {
+        const current = this.get(ref);
+        this.metadata.set(ref, { ...current, ...partial });
     }
-    remove(issueNumber) {
-        this.metadata.delete(issueNumber);
+    remove(ref) {
+        this.metadata.delete(ref);
     }
 }
 export class FileMetadataStore {
@@ -65,8 +70,8 @@ export class FileMetadataStore {
     constructor(configDir) {
         this.configDir = configDir;
     }
-    get(issueNumber) {
-        const filePath = this.metadataFilePath(issueNumber);
+    get(ref) {
+        const filePath = this.metadataFilePath(ref);
         try {
             return JSON.parse(fs.readFileSync(filePath, "utf-8"));
         }
@@ -74,26 +79,26 @@ export class FileMetadataStore {
             return {};
         }
     }
-    set(issueNumber, metadata) {
+    set(ref, metadata) {
         const dir = path.join(this.configDir, "metadata");
         fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(this.metadataFilePath(issueNumber), JSON.stringify(metadata, null, 2));
+        fs.writeFileSync(this.metadataFilePath(ref), JSON.stringify(metadata, null, 2));
     }
-    update(issueNumber, partial) {
-        const current = this.get(issueNumber);
-        this.set(issueNumber, { ...current, ...partial });
+    update(ref, partial) {
+        const current = this.get(ref);
+        this.set(ref, { ...current, ...partial });
     }
-    remove(issueNumber) {
+    remove(ref) {
         try {
-            fs.unlinkSync(this.metadataFilePath(issueNumber));
+            fs.unlinkSync(this.metadataFilePath(ref));
         }
         catch (err) {
             if (err.code !== "ENOENT")
                 throw err;
         }
     }
-    metadataFilePath(issueNumber) {
-        return path.join(this.configDir, "metadata", `issue-${issueNumber}.json`);
+    metadataFilePath(ref) {
+        return path.join(this.configDir, "metadata", `issue-${encodeRefForFilename(ref)}.json`);
     }
 }
 //# sourceMappingURL=status.js.map

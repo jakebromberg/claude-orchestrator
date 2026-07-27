@@ -18,8 +18,8 @@ export interface ReportData {
 export function generateReport(
   configName: string,
   issues: Issue[],
-  getStatus: (n: number) => Status,
-  getMetadata: (n: number) => IssueMetadata,
+  getStatus: (ref: string) => Status,
+  getMetadata: (ref: string) => IssueMetadata,
   startedAt: Date,
   finishedAt: Date,
 ): ReportData {
@@ -32,12 +32,12 @@ export function generateReport(
     finishedAt: finishedAt.toISOString(),
     durationSeconds,
     issues: issues.map((issue) => {
-      const meta = getMetadata(issue.number);
+      const meta = getMetadata(issue.ref);
       return {
         number: issue.number,
         description: issue.description,
         wave: issue.wave,
-        status: getStatus(issue.number),
+        status: getStatus(issue.ref),
         ...(meta.prUrl ? { prUrl: meta.prUrl, prNumber: meta.prNumber } : {}),
       };
     }),

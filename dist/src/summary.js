@@ -19,7 +19,7 @@ export function createPrintSummary(options) {
         console.log(`  ${separatorLine}`);
         // Rows
         for (const issue of issues) {
-            const status = getStatus(issue.number);
+            const status = getStatus(issue.ref);
             let color = NC;
             if (status === "succeeded")
                 color = GREEN;
@@ -36,7 +36,7 @@ export function createPrintSummary(options) {
         // Totals
         let succeeded = 0, failed = 0, running = 0, pending = 0, skipped = 0;
         for (const issue of issues) {
-            const status = getStatus(issue.number);
+            const status = getStatus(issue.ref);
             if (status === "succeeded")
                 succeeded++;
             else if (status === "failed")

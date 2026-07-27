@@ -1,16 +1,22 @@
 import { describe, it, expect, vi } from "vitest";
+import { refOf, normalizeDep } from "../src/ref.js";
 import { mergePrs, type MergeDeps } from "../src/merge.js";
 import type { Issue, IssueMetadata, Status } from "../src/types.js";
 
-function makeIssue(overrides: Partial<Issue> = {}): Issue {
-  return {
+function makeIssue(overrides: Omit<Partial<Issue>, "deps"> & { deps?: (number | string)[] } = {}): Issue {
+  const { deps: depOverride, ref: refOverride, ...rest } = overrides;
+  const base = {
     number: 1,
     slug: "test-issue",
     wave: 1,
-    deps: [],
     dependsOn: [],
     description: "Test issue",
-    ...overrides,
+    ...rest,
+  };
+  return {
+    ...base,
+    ref: refOverride ?? refOf(base),
+    deps: (depOverride ?? []).map((d) => normalizeDep(d, base)),
   };
 }
 
@@ -39,7 +45,7 @@ describe("mergePrs", () => {
     const deps = makeMergeDeps();
     const results = await mergePrs([issue], deps);
 
-    expect(results.get(1)).toBe("merged");
+    expect(results.get("1")).toBe("merged");
     expect(deps.runCommand).toHaveBeenCalledWith(
       "gh pr merge https://github.com/org/repo/pull/1 --rebase",
     );
@@ -50,7 +56,7 @@ describe("mergePrs", () => {
     const deps = makeMergeDeps();
     const results = await mergePrs([issue], deps, { admin: true });
 
-    expect(results.get(1)).toBe("merged");
+    expect(results.get("1")).toBe("merged");
     expect(deps.runCommand).toHaveBeenCalledWith(
       "gh pr merge https://github.com/org/repo/pull/1 --rebase --admin",
     );
@@ -63,7 +69,7 @@ describe("mergePrs", () => {
     });
     const results = await mergePrs([issue], deps);
 
-    expect(results.get(1)).toBe("skipped");
+    expect(results.get("1")).toBe("skipped");
     expect(deps.runCommand).not.toHaveBeenCalled();
   });
 
@@ -74,7 +80,7 @@ describe("mergePrs", () => {
     });
     const results = await mergePrs([issue], deps);
 
-    expect(results.get(1)).toBe("skipped");
+    expect(results.get("1")).toBe("skipped");
     expect(deps.runCommand).not.toHaveBeenCalled();
   });
 
@@ -87,7 +93,7 @@ describe("mergePrs", () => {
     });
     const results = await mergePrs([issue], deps);
 
-    expect(results.get(1)).toBe("failed");
+    expect(results.get("1")).toBe("failed");
     expect(deps.logger.error).toHaveBeenCalledWith(
       expect.stringContaining("merge conflict"),
     );
@@ -101,9 +107,9 @@ describe("mergePrs", () => {
     ];
     const mergeOrder: number[] = [];
     const deps = makeMergeDeps({
-      getMetadata: vi.fn((n: number) => ({
+      getMetadata: vi.fn((n: string) => ({
         prUrl: `https://github.com/org/repo/pull/${n}`,
-        prNumber: n,
+        prNumber: Number(n),
       })),
       runCommand: vi.fn((cmd: string) => {
         const match = cmd.match(/pull\/(\d+)/);
@@ -134,15 +140,15 @@ describe("mergePrs", () => {
       3: {},
     };
     const deps = makeMergeDeps({
-      getStatus: vi.fn((n: number) => statusMap[n] ?? "pending"),
-      getMetadata: vi.fn((n: number) => metadataMap[n] ?? {}),
+      getStatus: vi.fn((n: string) => statusMap[Number(n)] ?? "pending"),
+      getMetadata: vi.fn((n: string) => metadataMap[Number(n)] ?? {}),
     });
 
     const results = await mergePrs(issues, deps);
 
-    expect(results.get(1)).toBe("merged");
-    expect(results.get(2)).toBe("skipped"); // failed status
-    expect(results.get(3)).toBe("skipped"); // no PR URL
+    expect(results.get("1")).toBe("merged");
+    expect(results.get("2")).toBe("skipped"); // failed status
+    expect(results.get("3")).toBe("skipped"); // no PR URL
   });
 
   describe("onMergeConflict hook", () => {
@@ -159,7 +165,7 @@ describe("mergePrs", () => {
 
       const results = await mergePrs([issue], deps);
 
-      expect(results.get(1)).toBe("failed");
+      expect(results.get("1")).toBe("failed");
       expect(onMergeConflict).toHaveBeenCalledWith(issue, expect.any(Array), "main");
     });
 
@@ -180,7 +186,7 @@ describe("mergePrs", () => {
 
       const results = await mergePrs([issue], deps);
 
-      expect(results.get(1)).toBe("merged");
+      expect(results.get("1")).toBe("merged");
       expect(mergeCallCount).toBe(2);
     });
 
@@ -197,7 +203,7 @@ describe("mergePrs", () => {
 
       const results = await mergePrs([issue], deps);
 
-      expect(results.get(1)).toBe("failed");
+      expect(results.get("1")).toBe("failed");
       expect(deps.logger.error).toHaveBeenCalledWith(expect.stringContaining("#1"));
     });
 
@@ -211,7 +217,7 @@ describe("mergePrs", () => {
 
       const results = await mergePrs([issue], deps);
 
-      expect(results.get(1)).toBe("failed");
+      expect(results.get("1")).toBe("failed");
       expect(onMergeConflict).not.toHaveBeenCalled();
     });
 
@@ -223,7 +229,7 @@ describe("mergePrs", () => {
 
       const results = await mergePrs([issue], deps);
 
-      expect(results.get(1)).toBe("failed");
+      expect(results.get("1")).toBe("failed");
     });
 
     it("passes baseBranch from deps to the hook", async () => {
@@ -250,7 +256,7 @@ describe("mergePrs", () => {
 
       const results = await mergePrs([issue], deps);
 
-      expect(results.get(1)).toBe("failed");
+      expect(results.get("1")).toBe("failed");
       expect(deps.logger.warn).toHaveBeenCalledWith(expect.stringContaining("hook exploded"));
     });
   });
@@ -271,7 +277,7 @@ describe("mergePrs", () => {
       };
       const commands: string[] = [];
       const deps = makeMergeDeps({
-        getMetadata: vi.fn((n: number) => metadataMap[n] ?? {}),
+        getMetadata: vi.fn((n: string) => metadataMap[Number(n)] ?? {}),
         runCommand: vi.fn((cmd: string) => {
           commands.push(cmd);
           return "";
@@ -281,8 +287,8 @@ describe("mergePrs", () => {
 
       const results = await mergePrs(issues, deps);
 
-      expect(results.get(1)).toBe("merged");
-      expect(results.get(2)).toBe("merged");
+      expect(results.get("1")).toBe("merged");
+      expect(results.get("2")).toBe("merged");
 
       // After merging #1, should rebase #2 before merging it
       const mergeIdx1 = commands.findIndex((c) => c.includes("pull/1"));
@@ -315,7 +321,7 @@ describe("mergePrs", () => {
       };
       const commands: string[] = [];
       const deps = makeMergeDeps({
-        getMetadata: vi.fn((n: number) => metadataMap[n] ?? {}),
+        getMetadata: vi.fn((n: string) => metadataMap[Number(n)] ?? {}),
         runCommand: vi.fn((cmd: string) => {
           commands.push(cmd);
           // Rebase fails for issue-2
@@ -329,9 +335,9 @@ describe("mergePrs", () => {
 
       const results = await mergePrs(issues, deps);
 
-      expect(results.get(1)).toBe("merged");
-      expect(results.get(2)).toBe("rebase-failed");
-      expect(results.get(3)).toBe("merged"); // Still tries #3
+      expect(results.get("1")).toBe("merged");
+      expect(results.get("2")).toBe("rebase-failed");
+      expect(results.get("3")).toBe("merged"); // Still tries #3
 
       // Verify rebase --abort was called for issue-2
       expect(commands).toContain('git -C "/worktrees/issue-2" rebase --abort');
@@ -348,7 +354,7 @@ describe("mergePrs", () => {
       };
       const commands: string[] = [];
       const deps = makeMergeDeps({
-        getMetadata: vi.fn((n: number) => metadataMap[n] ?? {}),
+        getMetadata: vi.fn((n: string) => metadataMap[Number(n)] ?? {}),
         runCommand: vi.fn((cmd: string) => {
           commands.push(cmd);
           return "";
@@ -358,8 +364,8 @@ describe("mergePrs", () => {
 
       const results = await mergePrs(issues, deps);
 
-      expect(results.get(1)).toBe("merged");
-      expect(results.get(2)).toBe("merged");
+      expect(results.get("1")).toBe("merged");
+      expect(results.get("2")).toBe("merged");
 
       // Only gh pr merge commands, no git commands
       const gitCommands = commands.filter((c) => c.startsWith("git "));
@@ -381,8 +387,8 @@ describe("mergePrs", () => {
       };
       const commands: string[] = [];
       const deps = makeMergeDeps({
-        getStatus: vi.fn((n: number) => statusMap[n] ?? "pending"),
-        getMetadata: vi.fn((n: number) => metadataMap[n] ?? {}),
+        getStatus: vi.fn((n: string) => statusMap[Number(n)] ?? "pending"),
+        getMetadata: vi.fn((n: string) => metadataMap[Number(n)] ?? {}),
         runCommand: vi.fn((cmd: string) => {
           commands.push(cmd);
           return "";

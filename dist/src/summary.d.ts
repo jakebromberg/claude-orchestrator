@@ -14,4 +14,4 @@ export interface SummaryOptions {
  * Each config provides column definitions and a title; the renderer handles
  * layout, colorization, and totals.
  */
-export declare function createPrintSummary(options: SummaryOptions): (issues: Issue[], getStatus: (n: number) => Status) => void;
+export declare function createPrintSummary(options: SummaryOptions): (issues: Issue[], getStatus: (ref: string) => Status) => void;

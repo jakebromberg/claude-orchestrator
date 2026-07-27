@@ -1,19 +1,25 @@
 import { describe, it, expect, vi } from "vitest";
+import { refOf, normalizeDep } from "../src/ref.js";
 import {
   gatherUpstreamContext,
   type UpstreamContextDeps,
 } from "../src/upstream-context.js";
 import type { Issue } from "../src/types.js";
 
-function makeIssue(overrides: Partial<Issue> = {}): Issue {
-  return {
+function makeIssue(overrides: Omit<Partial<Issue>, "deps"> & { deps?: (number | string)[] } = {}): Issue {
+  const { deps: depOverride, ref: refOverride, ...rest } = overrides;
+  const base = {
     number: 1,
     slug: "test-issue",
     wave: 1,
-    deps: [],
     dependsOn: [],
     description: "Test issue",
-    ...overrides,
+    ...rest,
+  };
+  return {
+    ...base,
+    ref: refOverride ?? refOf(base),
+    deps: (depOverride ?? []).map((d) => normalizeDep(d, base)),
   };
 }
 

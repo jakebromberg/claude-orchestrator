@@ -27,7 +27,7 @@ export declare class Orchestrator {
  * Clean up worktrees and remote branches for issues that were successfully merged.
  * Failures are non-fatal (logged as warnings) so one failed cleanup doesn't block others.
  */
-export declare function cleanUpMergedIssues(issues: Issue[], mergeResults: Map<number, MergeResult>, deps: {
+export declare function cleanUpMergedIssues(issues: Issue[], mergeResults: Map<string, MergeResult>, deps: {
     removeWorktree: (issue: Issue) => Promise<void>;
     runCommand: (cmd: string) => string;
     logger: Logger;
