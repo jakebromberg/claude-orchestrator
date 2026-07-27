@@ -446,4 +446,46 @@ describe("YamlConfigSchema", () => {
       expect(result.success).toBe(false);
     });
   });
+
+  describe("repos map", () => {
+    it("accepts a repos entry with the known override fields", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          repos: {
+            "WXYC/wxyc-ios-64": {
+              baseBranch: "master",
+              postSessionCheck: { commands: ["xcodebuild test"] },
+              sequentialPaths: [{ dir: "m", pattern: "(\\d+)" }],
+              appendableFiles: [
+                { path: "j.json", format: "json-array", arrayPath: "e", keyField: "id" },
+              ],
+            },
+          },
+        } as Partial<YamlConfig>),
+      );
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects a typo'd per-repo field instead of silently dropping it", () => {
+      // A dropped `baseBrnch` would leave the repo on the wrong base branch —
+      // the exact failure the strict object guard exists to catch.
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          repos: { "WXYC/wxyc-ios-64": { baseBrnch: "master" } },
+        } as unknown as Partial<YamlConfig>),
+      );
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects an unknown key inside a per-repo postSessionCheck", () => {
+      const result = YamlConfigSchema.safeParse(
+        makeValid({
+          repos: {
+            "WXYC/x": { postSessionCheck: { commands: ["npm test"], cwdd: "scripts" } },
+          },
+        } as unknown as Partial<YamlConfig>),
+      );
+      expect(result.success).toBe(false);
+    });
+  });
 });

@@ -21,7 +21,7 @@ export declare const YamlConfigSchema: z.ZodObject<{
     postSessionCheck: z.ZodOptional<z.ZodObject<{
         commands: z.ZodArray<z.ZodString>;
         cwd: z.ZodOptional<z.ZodString>;
-    }, z.core.$strip>>;
+    }, z.core.$strict>>;
     summary: z.ZodOptional<z.ZodObject<{
         title: z.ZodString;
         columns: z.ZodArray<z.ZodObject<{
@@ -53,34 +53,34 @@ export declare const YamlConfigSchema: z.ZodObject<{
         postSessionCheck: z.ZodOptional<z.ZodObject<{
             commands: z.ZodArray<z.ZodString>;
             cwd: z.ZodOptional<z.ZodString>;
-        }, z.core.$strip>>;
+        }, z.core.$strict>>;
         sequentialPaths: z.ZodOptional<z.ZodArray<z.ZodObject<{
             dir: z.ZodString;
             pattern: z.ZodString;
-        }, z.core.$strip>>>;
+        }, z.core.$strict>>>;
         appendableFiles: z.ZodOptional<z.ZodArray<z.ZodObject<{
             path: z.ZodString;
             format: z.ZodLiteral<"json-array">;
             arrayPath: z.ZodString;
             keyField: z.ZodString;
-        }, z.core.$strip>>>;
-    }, z.core.$strip>>>;
+        }, z.core.$strict>>>;
+    }, z.core.$strict>>>;
     sequentialPaths: z.ZodOptional<z.ZodArray<z.ZodObject<{
         dir: z.ZodString;
         pattern: z.ZodString;
-    }, z.core.$strip>>>;
+    }, z.core.$strict>>>;
     appendableFiles: z.ZodOptional<z.ZodArray<z.ZodObject<{
         path: z.ZodString;
         format: z.ZodLiteral<"json-array">;
         arrayPath: z.ZodString;
         keyField: z.ZodString;
-    }, z.core.$strip>>>;
+    }, z.core.$strict>>>;
     sharedFiles: z.ZodOptional<z.ZodArray<z.ZodString>>;
     sequentialDomains: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodObject<{
         paths: z.ZodArray<z.ZodObject<{
             dir: z.ZodString;
             pattern: z.ZodString;
-        }, z.core.$strip>>;
+        }, z.core.$strict>>;
         width: z.ZodNumber;
     }, z.core.$strip>>>;
     issues: z.ZodArray<z.ZodObject<{

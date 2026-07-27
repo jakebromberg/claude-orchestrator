@@ -33,10 +33,13 @@ export interface ResolvedRepoSettings {
 export declare function resolveRepoSettings(yaml: YamlConfig, repoKey: string | undefined): ResolvedRepoSettings;
 /**
  * The union of every appendable-file spec configured anywhere in the config —
- * top-level plus every repo entry — deduplicated by `path` (first occurrence
- * wins). Used by the repo-agnostic consumers (the `ownsFiles` exemption
- * allowlist and the merge-driver path lookup), which operate over the whole
- * config regardless of which repo owns a file.
+ * top-level plus every repo entry — deduplicated by `path`. Used by the
+ * repo-agnostic consumers (the `ownsFiles` exemption allowlist and the
+ * merge-driver path lookup), which key on `path` alone regardless of which repo
+ * owns a file. Identical specs at the same path collapse to one; specs that
+ * share a path but disagree on `format`/`arrayPath`/`keyField` throw, since the
+ * path-keyed merge driver could otherwise apply one repo's merge rules to
+ * another repo's file.
  */
 export declare function allAppendableFiles(yaml: YamlConfig): AppendableFileSpec[];
 /**

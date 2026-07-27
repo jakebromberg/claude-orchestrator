@@ -24,17 +24,25 @@ const YamlSummarySchema = z.object({
   columns: z.array(YamlSummaryColumnSchema).min(1),
 });
 
-const YamlPostSessionCheckSchema = z.object({
-  commands: z.array(z.string().min(1)).min(1),
-  cwd: z.string().optional(),
-});
+// These object schemas are `.strict()` so a typo'd key (e.g. `baseBrnch`,
+// `commnds`) is a load error rather than being silently dropped — a dropped
+// per-repo field would leave that repo on the wrong base branch/check profile,
+// the exact footgun the `repos:` typo guard exists to prevent.
+const YamlPostSessionCheckSchema = z
+  .object({
+    commands: z.array(z.string().min(1)).min(1),
+    cwd: z.string().optional(),
+  })
+  .strict();
 
-const AppendableFileSpecSchema = z.object({
-  path: z.string().min(1),
-  format: z.literal("json-array"),
-  arrayPath: z.string().min(1),
-  keyField: z.string().min(1),
-});
+const AppendableFileSpecSchema = z
+  .object({
+    path: z.string().min(1),
+    format: z.literal("json-array"),
+    arrayPath: z.string().min(1),
+    keyField: z.string().min(1),
+  })
+  .strict();
 
 const SequentialPathConfigSchema = z.object({
   dir: z.string().min(1),
@@ -60,14 +68,16 @@ const SequentialPathConfigSchema = z.object({
       },
       { message: "pattern must contain at least one capture group" },
     ),
-});
+}).strict();
 
-const RepoConfigSchema = z.object({
-  baseBranch: z.string().min(1).optional(),
-  postSessionCheck: YamlPostSessionCheckSchema.optional(),
-  sequentialPaths: z.array(SequentialPathConfigSchema).optional(),
-  appendableFiles: z.array(AppendableFileSpecSchema).optional(),
-});
+const RepoConfigSchema = z
+  .object({
+    baseBranch: z.string().min(1).optional(),
+    postSessionCheck: YamlPostSessionCheckSchema.optional(),
+    sequentialPaths: z.array(SequentialPathConfigSchema).optional(),
+    appendableFiles: z.array(AppendableFileSpecSchema).optional(),
+  })
+  .strict();
 
 /**
  * Zod schema for validating a parsed YAML orchestrator config.

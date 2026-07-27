@@ -144,22 +144,38 @@ describe("allAppendableFiles", () => {
     expect(allAppendableFiles(yaml).map((f) => f.path).sort()).toEqual(["bs.json", "shared.json"]);
   });
 
-  it("dedupes by path, preferring the first occurrence", () => {
+  it("dedupes identical specs at the same path to a single entry", () => {
     const yaml = makeYaml({
       appendableFiles: [
-        { path: "dup.json", format: "json-array", arrayPath: "top", keyField: "id" },
+        { path: "dup.json", format: "json-array", arrayPath: "entries", keyField: "id" },
       ],
       repos: {
         "WXYC/bs": {
           appendableFiles: [
-            { path: "dup.json", format: "json-array", arrayPath: "repo", keyField: "id" },
+            { path: "dup.json", format: "json-array", arrayPath: "entries", keyField: "id" },
           ],
         },
       },
     });
     const all = allAppendableFiles(yaml);
     expect(all).toHaveLength(1);
-    expect(all[0]!.arrayPath).toBe("top");
+    expect(all[0]!.arrayPath).toBe("entries");
+  });
+
+  it("throws when two specs share a path but disagree on how to merge it", () => {
+    const yaml = makeYaml({
+      appendableFiles: [
+        { path: "dup.json", format: "json-array", arrayPath: "entries", keyField: "id" },
+      ],
+      repos: {
+        "WXYC/bs": {
+          appendableFiles: [
+            { path: "dup.json", format: "json-array", arrayPath: "entries", keyField: "version" },
+          ],
+        },
+      },
+    });
+    expect(() => allAppendableFiles(yaml)).toThrow(/dup\.json/);
   });
 });
 
