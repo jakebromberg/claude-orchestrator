@@ -117,6 +117,30 @@ createMain({
 });
 ```
 
+#### Per-repo settings: the `repos:` map
+
+`deriveWorktreeHooks` places each repo's worktree correctly; the `repos:` map handles the other half — that each repo has its own base branch, CI profile, and collision domains. Keyed by `owner/repo`, every entry may override `baseBranch`, `postSessionCheck`, `sequentialPaths`, and `appendableFiles` for the issues that declare that `repo` (or inherit it from `defaultRepo`):
+
+```yaml
+defaultRepo: WXYC/Backend-Service
+baseBranch: main                       # top-level default for every repo
+postSessionCheck:
+  commands: ["npm run ci:testmock"]    # default check profile
+repos:
+  WXYC/wxyc-ios-64:
+    baseBranch: master                 # iOS forks from master, not main
+    postSessionCheck:
+      commands: ["xcodebuild test -scheme WXYC"]
+  WXYC/library-metadata-lookup:
+    postSessionCheck:
+      commands: ["ruff check .", "pytest -q"]
+issues:
+  - { number: 924, slug: lml-perf, dependsOn: [], description: "...", repo: WXYC/library-metadata-lookup }
+  - { number: 685, slug: ios-tab, dependsOn: [924], description: "...", repo: WXYC/wxyc-ios-64 }
+```
+
+Resolution is **replace, not deep-merge**: an entry that sets `postSessionCheck` uses only its own commands, and one that omits a field inherits the top-level value for it. The resolved `baseBranch` flows into that repo's collision diffs and counter seeding, so an iOS migration scan targets `origin/master` while a Backend-Service one targets `origin/main`; collision detection also considers only same-repo peers, since files in different repos can't collide. A `repos:` key that no issue references (nor `defaultRepo`) is a hard load error — an unused key is almost always a typo that would otherwise silently leave the real repo on the wrong base branch.
+
 ### 3. Run it
 
 ```bash
@@ -229,11 +253,13 @@ This is a brute-force serialization — an issue that only depends on a non-seri
 For projects that don't want to give up parallelism but do want a safety net, configure `sequentialPaths` to detect collisions in `postSessionCheck`. After each session completes successfully (and any configured `commands` pass), the orchestrator scans the current branch's added files matching the pattern, then walks peer worktrees and `origin/<baseBranch>` for the same captured key. On a collision, the session is marked failed; if `retryOnCheckFailure` is enabled, the failure context — including the suggested next-safe number — is injected into the retry prompt.
 
 ```yaml
-baseBranch: main           # optional, defaults to "main"
+baseBranch: main           # optional, defaults to "main"; override per repo under `repos:`
 sequentialPaths:
   - dir: shared/database/src/migrations
     pattern: "(\\d{4})_.*\\.sql"
 ```
+
+`baseBranch`, `postSessionCheck`, `sequentialPaths`, and `appendableFiles` can all be overridden per repo via the [`repos:` map](#per-repo-settings-the-repos-map) — in a cross-repo DAG the scan targets each issue's repo base branch (iOS `origin/master`, others `origin/main`) and only same-repo peers.
 
 The pattern must compile as a JavaScript regex and contain at least one capture group; group 1 is the unique key (typically a zero-padded number). Multiple `sequentialPaths` entries are independent number spaces.
 

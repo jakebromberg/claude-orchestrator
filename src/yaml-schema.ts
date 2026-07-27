@@ -62,6 +62,13 @@ const SequentialPathConfigSchema = z.object({
     ),
 });
 
+const RepoConfigSchema = z.object({
+  baseBranch: z.string().min(1).optional(),
+  postSessionCheck: YamlPostSessionCheckSchema.optional(),
+  sequentialPaths: z.array(SequentialPathConfigSchema).optional(),
+  appendableFiles: z.array(AppendableFileSpecSchema).optional(),
+});
+
 /**
  * Zod schema for validating a parsed YAML orchestrator config.
  *
@@ -89,6 +96,7 @@ export const YamlConfigSchema = z.object({
   retryOnCheckFailure: z.object({ maxRetries: z.number().int().positive(), enabled: z.boolean().optional() }).optional(),
   mergeConflictRetry: z.object({ enabled: z.boolean().optional(), maxAttempts: z.number().int().positive().optional() }).optional(),
   baseBranch: z.string().min(1).optional(),
+  repos: z.record(z.string().min(1), RepoConfigSchema).optional(),
   sequentialPaths: z.array(SequentialPathConfigSchema).optional(),
   appendableFiles: z.array(AppendableFileSpecSchema).optional(),
   sharedFiles: z.array(z.string().min(1)).optional(),

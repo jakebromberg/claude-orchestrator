@@ -3,6 +3,7 @@ import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { YamlConfigSchema } from "./yaml-schema.js";
 import { deriveHooks } from "./yaml-hooks.js";
+import { allAppendableFiles, unknownRepoKeys } from "./repo-settings.js";
 import { validateConfig } from "./schema.js";
 /**
  * Resolve all relative path fields on a parsed `YamlConfig` against the
@@ -38,6 +39,15 @@ export async function loadYamlConfig(yamlPath, options = {}) {
     const yaml = YamlConfigSchema.parse(parsed);
     // Resolve relative paths against the YAML file's directory
     resolveYamlPaths(yaml, path.dirname(yamlPath));
+    // Guard against typo'd `repos:` keys. An unused key silently leaves the real
+    // repo on the top-level defaults (e.g. `main` instead of `master`) — exactly
+    // the mistake per-repo settings exist to prevent — so fail loud at load.
+    const unknown = unknownRepoKeys(yaml);
+    if (unknown.length > 0) {
+        throw new Error(`repos: map has ${unknown.length} key(s) not referenced by any issue's ` +
+            `repo or defaultRepo: ${unknown.join(", ")}. ` +
+            `Remove them or fix the spelling.`);
+    }
     // Derive hooks from YAML fields. `yamlPath` is threaded through so the
     // {{CLAIM_NUMBER}} prompt variable can reference this exact config file.
     // `readFile` is wired to `fs.readFileSync` via the default-import namespace
@@ -57,7 +67,7 @@ export async function loadYamlConfig(yamlPath, options = {}) {
     // plus any appendableFiles paths (handled mechanically by the merge driver).
     const ignoredOwnsFiles = [
         ...(yaml.sharedFiles ?? []),
-        ...(yaml.appendableFiles?.map((f) => f.path) ?? []),
+        ...allAppendableFiles(yaml).map((f) => f.path),
     ];
     // Build raw config and validate (computes waves, checks graph)
     return validateConfig({

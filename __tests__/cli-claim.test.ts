@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
-import { parseClaimArgs, runClaim } from "../src/cli-claim.js";
+import { parseClaimArgs, runClaim, resolveClaimBaseBranch } from "../src/cli-claim.js";
 import { InMemoryCounterStore } from "../src/counter-store.js";
 import type { YamlConfig } from "../src/yaml-types.js";
 
@@ -21,6 +21,38 @@ function baseYaml(): YamlConfig {
     },
   };
 }
+
+describe("resolveClaimBaseBranch", () => {
+  it("defaults to 'main' when no repo info is present", () => {
+    expect(resolveClaimBaseBranch(baseYaml(), 1)).toBe("main");
+  });
+
+  it("uses the claiming issue's repo base branch", () => {
+    const yaml: YamlConfig = {
+      ...baseYaml(),
+      issues: [
+        { number: 1, slug: "ios", dependsOn: [], description: "iOS", repo: "WXYC/ios" },
+      ],
+      repos: { "WXYC/ios": { baseBranch: "master" } },
+    };
+    expect(resolveClaimBaseBranch(yaml, 1)).toBe("master");
+  });
+
+  it("falls back to defaultRepo when the issue has no explicit repo", () => {
+    const yaml: YamlConfig = {
+      ...baseYaml(),
+      defaultRepo: "WXYC/ios",
+      issues: [{ number: 5, slug: "x", dependsOn: [], description: "X" }],
+      repos: { "WXYC/ios": { baseBranch: "master" } },
+    };
+    expect(resolveClaimBaseBranch(yaml, 5)).toBe("master");
+  });
+
+  it("falls back to the top-level default when the issue number is unknown", () => {
+    const yaml: YamlConfig = { ...baseYaml(), baseBranch: "trunk" };
+    expect(resolveClaimBaseBranch(yaml, 999)).toBe("trunk");
+  });
+});
 
 describe("parseClaimArgs", () => {
   it("parses all required flags", () => {
