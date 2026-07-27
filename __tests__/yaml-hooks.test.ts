@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { refOf, normalizeDep } from "../src/ref.js";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { deriveHooks } from "../src/yaml-hooks.js";
@@ -20,15 +21,20 @@ function makeYaml(overrides: Partial<YamlConfig> = {}): YamlConfig {
   };
 }
 
-function makeIssue(overrides: Partial<Issue> = {}): Issue {
-  return {
+function makeIssue(overrides: Omit<Partial<Issue>, "deps"> & { deps?: (number | string)[] } = {}): Issue {
+  const { deps: depOverride, ref: refOverride, ...rest } = overrides;
+  const base = {
     number: 1,
     slug: "foo",
+    wave: 1,
     dependsOn: [],
     description: "Foo issue",
-    wave: 1,
-    deps: [],
-    ...overrides,
+    ...rest,
+  };
+  return {
+    ...base,
+    ref: refOverride ?? refOf(base),
+    deps: (depOverride ?? []).map((d) => normalizeDep(d, base)),
   };
 }
 

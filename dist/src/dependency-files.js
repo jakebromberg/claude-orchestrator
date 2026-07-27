@@ -5,8 +5,8 @@
  */
 export function getDependencyFiles(issue, allIssues, getMetadata) {
     const files = new Set();
-    for (const depNumber of issue.deps) {
-        const depMeta = getMetadata(depNumber);
+    for (const depRef of issue.deps) {
+        const depMeta = getMetadata(depRef);
         if (depMeta.filesChanged) {
             for (const file of depMeta.filesChanged) {
                 files.add(file);

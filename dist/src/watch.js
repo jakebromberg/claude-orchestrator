@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { colors } from "./log.js";
+import { encodeRefForFilename } from "./ref.js";
 const COLUMNS = [
     { header: "Issue", width: 7, value: (i) => `#${i.number}` },
     { header: "Repo", width: 12, value: (i) => i.repo ?? "-" },
@@ -29,7 +30,7 @@ export function renderDashboard(options) {
     lines.push(`  ${separator}`);
     // Rows
     for (const issue of config.issues) {
-        const status = getStatus(issue.number);
+        const status = getStatus(issue.ref);
         const logLine = getLastLogLine(issue);
         let color = NC;
         if (status === "succeeded")
@@ -47,7 +48,7 @@ export function renderDashboard(options) {
     // Totals
     let succeeded = 0, failed = 0, running = 0, pending = 0, skipped = 0;
     for (const issue of config.issues) {
-        const status = getStatus(issue.number);
+        const status = getStatus(issue.ref);
         if (status === "succeeded")
             succeeded++;
         else if (status === "failed")
@@ -104,7 +105,7 @@ export function startWatch(options) {
             config,
             getStatus: (n) => statusStore.get(n),
             getLastLogLine: (issue) => {
-                const logPath = path.join(config.configDir, "logs", `issue-${issue.number}.log`);
+                const logPath = path.join(config.configDir, "logs", `issue-${encodeRefForFilename(issue.ref)}.log`);
                 return readLastLogLine(logPath, readFileTail);
             },
         });

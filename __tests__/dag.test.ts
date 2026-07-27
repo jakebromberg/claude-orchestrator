@@ -66,8 +66,8 @@ describe("computeWaves", () => {
     });
   });
 
-  describe("deps alias", () => {
-    it("copies dependsOn into deps for backward compat", () => {
+  describe("deps normalization", () => {
+    it("normalizes dependsOn into ref-valued deps (bare numbers when no repo)", () => {
       const specs = [
         spec({ number: 1, slug: "a" }),
         spec({ number: 2, slug: "b", dependsOn: [1] }),
@@ -76,7 +76,12 @@ describe("computeWaves", () => {
       const issues = computeWaves(specs);
 
       expect(issues[0].deps).toEqual([]);
-      expect(issues[1].deps).toEqual([1]);
+      expect(issues[1].deps).toEqual(["1"]);
+    });
+
+    it("sets ref to the bare number when no repo is known", () => {
+      const issues = computeWaves([spec({ number: 7, slug: "a" })]);
+      expect(issues[0].ref).toBe("7");
     });
   });
 
@@ -226,6 +231,75 @@ describe("computeWaves", () => {
 
       expect(byNumber.get(1)!.serial).toBe(true);
       expect(byNumber.get(2)!.serial).toBeUndefined();
+    });
+  });
+
+  describe("cross-repo identity", () => {
+    it("treats the same number in different repos as distinct nodes", () => {
+      const specs = [
+        spec({ number: 924, slug: "lml", repo: "WXYC/lml" }),
+        spec({ number: 924, slug: "bs", repo: "WXYC/backend", dependsOn: ["WXYC/lml#924"] }),
+      ];
+
+      const issues = computeWaves(specs);
+      const byRef = new Map(issues.map((i) => [i.ref, i]));
+
+      expect(issues).toHaveLength(2);
+      expect(byRef.get("WXYC/lml#924")!.wave).toBe(1);
+      expect(byRef.get("WXYC/backend#924")!.wave).toBe(2);
+      expect(byRef.get("WXYC/backend#924")!.deps).toEqual(["WXYC/lml#924"]);
+    });
+
+    it("does not see a false cycle when colliding numbers depend across repos", () => {
+      // Under the old bare-number keying, lml#1 and bs#1 collapsed to one node
+      // and bs#1 -> lml#1 looked like a self-cycle. It must not now.
+      const specs = [
+        spec({ number: 1, slug: "lml", repo: "WXYC/lml" }),
+        spec({ number: 1, slug: "bs", repo: "WXYC/backend", dependsOn: ["WXYC/lml#1"] }),
+      ];
+
+      expect(() => computeWaves(specs)).not.toThrow();
+      const issues = computeWaves(specs);
+      const byRef = new Map(issues.map((i) => [i.ref, i]));
+      expect(byRef.get("WXYC/lml#1")!.wave).toBe(1);
+      expect(byRef.get("WXYC/backend#1")!.wave).toBe(2);
+    });
+
+    it("resolves a leading-hash dep against the citing issue's own repo", () => {
+      const specs = [
+        spec({ number: 1, slug: "a", repo: "WXYC/lml" }),
+        spec({ number: 2, slug: "b", repo: "WXYC/lml", dependsOn: ["#1"] }),
+      ];
+
+      const issues = computeWaves(specs);
+      const byRef = new Map(issues.map((i) => [i.ref, i]));
+      expect(byRef.get("WXYC/lml#2")!.deps).toEqual(["WXYC/lml#1"]);
+      expect(byRef.get("WXYC/lml#2")!.wave).toBe(2);
+    });
+
+    it("applies defaultRepo to repo-less issues and their bare deps", () => {
+      const specs = [
+        spec({ number: 1, slug: "a" }),
+        spec({ number: 2, slug: "b", dependsOn: [1] }),
+      ];
+
+      const issues = computeWaves(specs, { defaultRepo: "WXYC/lml" });
+      const byRef = new Map(issues.map((i) => [i.ref, i]));
+      expect(byRef.get("WXYC/lml#1")!.wave).toBe(1);
+      expect(byRef.get("WXYC/lml#2")!.deps).toEqual(["WXYC/lml#1"]);
+    });
+
+    it("slides same-file cross-repo conflicts deterministically by (repo, number)", () => {
+      const specs = [
+        spec({ number: 5, slug: "bs", repo: "WXYC/backend", ownsFiles: ["shared.ts"] }),
+        spec({ number: 5, slug: "lml", repo: "WXYC/lml", ownsFiles: ["shared.ts"] }),
+      ];
+
+      const issues = computeWaves(specs);
+      const byRef = new Map(issues.map((i) => [i.ref, i]));
+      // "WXYC/backend" < "WXYC/lml", so backend keeps wave 1, lml slides.
+      expect(byRef.get("WXYC/backend#5")!.wave).toBe(1);
+      expect(byRef.get("WXYC/lml#5")!.wave).toBe(2);
     });
   });
 

@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import type { Issue, OrchestratorConfig, Status, StatusStore } from "./types.js";
 import { colors } from "./log.js";
+import { encodeRefForFilename } from "./ref.js";
 
 export type WriteFn = (text: string) => void;
 export type ReadFileTail = (filePath: string, bytes: number) => string;
@@ -20,7 +21,7 @@ export interface WatchHandle {
 
 export interface RenderOptions {
   config: OrchestratorConfig;
-  getStatus: (n: number) => Status;
+  getStatus: (ref: string) => Status;
   getLastLogLine: (issue: Issue) => string;
 }
 
@@ -70,7 +71,7 @@ export function renderDashboard(options: RenderOptions): string {
 
   // Rows
   for (const issue of config.issues) {
-    const status = getStatus(issue.number);
+    const status = getStatus(issue.ref);
     const logLine = getLastLogLine(issue);
 
     let color = NC;
@@ -94,7 +95,7 @@ export function renderDashboard(options: RenderOptions): string {
     pending = 0,
     skipped = 0;
   for (const issue of config.issues) {
-    const status = getStatus(issue.number);
+    const status = getStatus(issue.ref);
     if (status === "succeeded") succeeded++;
     else if (status === "failed") failed++;
     else if (status === "running") running++;
@@ -165,7 +166,7 @@ export function startWatch(options: WatchOptions): WatchHandle {
         const logPath = path.join(
           config.configDir,
           "logs",
-          `issue-${issue.number}.log`,
+          `issue-${encodeRefForFilename(issue.ref)}.log`,
         );
         return readLastLogLine(logPath, readFileTail);
       },

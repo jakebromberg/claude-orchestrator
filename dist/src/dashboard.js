@@ -21,8 +21,8 @@ export function createDashboardServer(deps, options = {}) {
         return config.issues.map((issue) => ({
             number: issue.number,
             slug: issue.slug,
-            status: statusStore.get(issue.number),
-            metadata: metadataStore.get(issue.number),
+            status: statusStore.get(issue.ref),
+            metadata: metadataStore.get(issue.ref),
         }));
     }
     const htmlContent = renderDashboardHtml(config.name);
@@ -73,7 +73,7 @@ export function createDashboardServer(deps, options = {}) {
         if (metaMatch && req.method === "GET") {
             const issueNumber = parseInt(metaMatch[1], 10);
             res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify(metadataStore.get(issueNumber)));
+            res.end(JSON.stringify(metadataStore.get(String(issueNumber))));
             return;
         }
         if (pathname === "/api/events" && req.method === "GET") {

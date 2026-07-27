@@ -6,12 +6,12 @@ export function generateReport(configName, issues, getStatus, getMetadata, start
         finishedAt: finishedAt.toISOString(),
         durationSeconds,
         issues: issues.map((issue) => {
-            const meta = getMetadata(issue.number);
+            const meta = getMetadata(issue.ref);
             return {
                 number: issue.number,
                 description: issue.description,
                 wave: issue.wave,
-                status: getStatus(issue.number),
+                status: getStatus(issue.ref),
                 ...(meta.prUrl ? { prUrl: meta.prUrl, prNumber: meta.prNumber } : {}),
             };
         }),

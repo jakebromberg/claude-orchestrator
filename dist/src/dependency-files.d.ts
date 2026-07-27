@@ -4,4 +4,4 @@ import type { Issue, IssueMetadata } from "./types.js";
  * Walks the issue's deps array and gathers filesChanged from their metadata.
  * Returns a deduplicated, sorted list of file paths.
  */
-export declare function getDependencyFiles(issue: Issue, allIssues: Issue[], getMetadata: (issueNumber: number) => IssueMetadata): string[];
+export declare function getDependencyFiles(issue: Issue, allIssues: Issue[], getMetadata: (ref: string) => IssueMetadata): string[];
