@@ -15,12 +15,6 @@ export function createDashboardServer(deps, options = {}) {
     const { statusStore, metadataStore, config, logger, readLogTail } = deps;
     const port = options.port ?? 3000;
     const host = options.host ?? "127.0.0.1";
-    // The HTTP API addresses issues by their bare number (what the client knows),
-    // but state and log files are keyed by composite ref ("owner/repo#N"). Resolve
-    // number -> ref via the config so repo-qualified issues aren't looked up under
-    // the wrong key. (A cross-repo DAG with the same number in two repos can't be
-    // disambiguated by number alone; that's a follow-up for the multi-repo UI.)
-    const refByNumber = new Map(config.issues.map((i) => [i.number, i.ref]));
     const sseClients = new Set();
     const intervals = new Set();
     function getStatusSnapshot() {
@@ -64,9 +58,8 @@ export function createDashboardServer(deps, options = {}) {
         const logsMatch = pathname.match(/^\/api\/logs\/(\d+)$/);
         if (logsMatch && req.method === "GET") {
             const issueNumber = parseInt(logsMatch[1], 10);
-            const ref = refByNumber.get(issueNumber) ?? String(issueNumber);
             try {
-                const logTail = readLogTail(ref, 8192);
+                const logTail = readLogTail(issueNumber, 8192);
                 res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
                 res.end(logTail);
             }
@@ -79,9 +72,8 @@ export function createDashboardServer(deps, options = {}) {
         const metaMatch = pathname.match(/^\/api\/metadata\/(\d+)$/);
         if (metaMatch && req.method === "GET") {
             const issueNumber = parseInt(metaMatch[1], 10);
-            const ref = refByNumber.get(issueNumber) ?? String(issueNumber);
             res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify(metadataStore.get(ref)));
+            res.end(JSON.stringify(metadataStore.get(String(issueNumber))));
             return;
         }
         if (pathname === "/api/events" && req.method === "GET") {
