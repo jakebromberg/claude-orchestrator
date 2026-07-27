@@ -26,6 +26,7 @@ export { createMain } from "./create-main.js";
 // YAML config
 export { loadYamlConfig, resolveYamlPaths } from "./yaml-loader.js";
 export { deriveHooks, buildClaimCommand } from "./yaml-hooks.js";
+export { deriveWorktreeHooks } from "./worktree-hooks.js";
 export { interpolate } from "./interpolate.js";
 // Journal-aware merge driver (issue #37)
 export { getNestedArray, setNestedArray, extractJsonObjects, parseConflictSections, mergeJsonArrays, mergeJsonDocuments, resolveConflict, } from "./merge-appendable.js";

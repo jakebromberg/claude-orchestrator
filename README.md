@@ -67,6 +67,31 @@ const hooksOverride: HooksOverride = {
   async setUpWorktree(issue) { /* create git worktree + install deps */ },
   async removeWorktree(issue) { /* remove git worktree */ },
 };
+```
+
+#### Cross-repo checkouts: `deriveWorktreeHooks`
+
+For a DAG that spans repos, wiring `setUpWorktree`/`removeWorktree` by hand is repetitive. `deriveWorktreeHooks` packages the common shape — locate each issue's checkout, fork a branch off that repo's own base branch, and place the worktree in the sibling `<repo>-worktrees/` directory:
+
+```typescript
+import { deriveWorktreeHooks } from "@funlandresearch/claude-orchestrator";
+import type { HooksOverride } from "@funlandresearch/claude-orchestrator";
+
+// Defaults: reposDir = ~/Developer/WXYC, branch = orchestrator/<slug>,
+// base branch derived per-repo from `git rev-parse --abbrev-ref origin/HEAD`.
+const hooksOverride: HooksOverride = { ...deriveWorktreeHooks() };
+```
+
+Each issue's `repo` (`owner/repo`, e.g. `WXYC/library-metadata-lookup`) resolves to the checkout `<reposDir>/library-metadata-lookup` — the owner is the parent directory. The base branch is **derived, never assumed**: a repo whose `origin/HEAD` points at `master` (such as `wxyc-ios-64`) forks from `master`, while repos on `main` fork from `main`. Override any of `reposDir`, `repoOf`, `worktreeRoot`, `baseBranchOf`, or `getBranchName` to fit a different layout:
+
+```typescript
+const hooksOverride: HooksOverride = {
+  ...deriveWorktreeHooks({
+    reposDir: "/srv/checkouts",
+    baseBranchOf: (repoDir) => (repoDir.endsWith("wxyc-ios-64") ? "master" : "main"),
+  }),
+};
+```
 
 createMain({
   configs: {
