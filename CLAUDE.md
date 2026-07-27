@@ -11,6 +11,7 @@ src/
 ├── engine.ts             # Orchestrator class, cleanUpMergedIssues
 ├── schema.ts             # Zod validation + validateConfig()
 ├── dag.ts                # Topological sort: computeWaves()
+├── ref.ts                # Composite issue identity: refOf / normalizeDep / encode/decode / compareRef
 ├── cli.ts                # Argument parsing (pure function)
 ├── status.ts             # Status/metadata stores (file-backed + in-memory)
 ├── process-pool.ts       # Parallel process management
@@ -78,6 +79,12 @@ stallTimeout: 600
 promptTemplate: "prompt.md"
 branchPrefix: "orchestrator/"
 
+# Repo assigned to issues that don't declare their own `repo`, used to build each
+# issue's composite ref ("owner/repo#N"). When unset, repo-less issues key on
+# their bare number "N" (single-repo back-compat; on-disk state filenames and
+# numeric ordering are unchanged).
+defaultRepo: "owner/repo"
+
 # Post-session validation commands
 postSessionCheck:
   commands: ["npm test", "npm run typecheck"]
@@ -137,9 +144,13 @@ issues:
   - number: 1
     slug: feature-name
     dependsOn: []
+    # repo: "owner/repo"  # optional; overrides defaultRepo for this issue's ref
     description: "Feature description"
     # serial: true  # optional; runs this issue alone in its own wave (e.g. for migrations)
     # ownsFiles:    # optional; files this issue expects to write (triggers wave serialization on overlap)
+  # dependsOn entries are a bare number/numeric-string (same repo as this issue)
+  # or a fully-qualified cross-repo ref "owner/repo#N":
+  #   dependsOn: [1, "WXYC/other-repo#2"]
 ```
 
 ### CLI Modes
