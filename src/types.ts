@@ -295,7 +295,13 @@ export interface Deps {
   commandExists(command: string): boolean;
   getLogFileSize(logFile: string): number;
   readFile(path: string): string;
-  runCommand(cmd: string): string;
+  /**
+   * Run a shell command, returning stdout. Throws on non-zero exit (the thrown
+   * error carries `status`/`stderr`/`stdout` when it comes from `execSync`).
+   * `options.timeout` (ms) bounds the run — used for mode-node commands so a
+   * hung deploy/gate can't block the engine indefinitely; omit/0 for unbounded.
+   */
+  runCommand(cmd: string, options?: { timeout?: number }): string;
   truncateFile(path: string): void;
 }
 
