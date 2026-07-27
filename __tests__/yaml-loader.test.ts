@@ -280,6 +280,65 @@ issues:
     ).rejects.toThrow(/capture group/i);
   });
 
+  it("rejects a repos: key not referenced by any issue or defaultRepo", async () => {
+    readFileSpy.mockReturnValue(`
+name: "Typo repo key"
+configDir: "./cfg"
+worktreeDir: "./wt"
+projectRoot: "."
+stallTimeout: 300
+defaultRepo: "WXYC/backend"
+repos:
+  "WXYC/backned":
+    baseBranch: master
+issues:
+  - number: 1
+    slug: foo
+    dependsOn: []
+    description: "Foo"
+`);
+
+    await expect(
+      loadYamlConfig("/projects/test/orch.yaml"),
+    ).rejects.toThrow(/WXYC\/backned/);
+  });
+
+  it("loads a valid per-repo config and exempts per-repo appendableFiles from ownsFiles conflicts", async () => {
+    readFileSpy.mockReturnValue(`
+name: "Cross-repo"
+configDir: "./cfg"
+worktreeDir: "./wt"
+projectRoot: "."
+stallTimeout: 300
+defaultRepo: "WXYC/backend"
+repos:
+  "WXYC/ios":
+    baseBranch: master
+    appendableFiles:
+      - path: "changelog.json"
+        format: json-array
+        arrayPath: entries
+        keyField: id
+issues:
+  - number: 1
+    slug: api
+    dependsOn: []
+    description: "Backend API"
+    ownsFiles: ["changelog.json"]
+  - number: 2
+    slug: ui
+    dependsOn: []
+    description: "iOS UI"
+    repo: "WXYC/ios"
+    ownsFiles: ["changelog.json"]
+`);
+
+    const config = await loadYamlConfig("/projects/test/orch.yaml");
+    // Both issues "own" changelog.json but it's a per-repo appendable file, so
+    // it's exempt from the ownsFiles conflict detector — they stay in wave 1.
+    expect(config.issues.every((i) => i.wave === 1)).toBe(true);
+  });
+
   it("computes wave assignments via validateConfig", async () => {
     readFileSpy.mockReturnValue(MINIMAL_YAML);
 

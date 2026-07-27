@@ -19,6 +19,7 @@ import { parse as parseYaml } from "yaml";
 import { YamlConfigSchema } from "./yaml-schema.js";
 import { FileCounterStore, type CounterStore } from "./counter-store.js";
 import { seedFromGit } from "./seed-from-git.js";
+import { resolveRepoSettings } from "./repo-settings.js";
 import { resolveYamlPaths } from "./yaml-loader.js";
 import type { YamlConfig } from "./yaml-types.js";
 
@@ -97,6 +98,18 @@ export interface RunClaimOptions {
   seed: () => number;
 }
 
+/**
+ * Base branch to seed a claim against, resolved from the claiming issue's repo
+ * (iOS `master`, others `main`) via the `repos:` map, falling back to
+ * `defaultRepo` and the top-level default. Bare-number targeting: when the same
+ * number exists in multiple repos the first declared issue wins — acceptable
+ * because claim domains (e.g. migrations) live in a single repo.
+ */
+export function resolveClaimBaseBranch(yaml: YamlConfig, issueNumber: number): string {
+  const claimingRepo = yaml.issues.find((i) => i.number === issueNumber)?.repo;
+  return resolveRepoSettings(yaml, claimingRepo ?? yaml.defaultRepo).baseBranch;
+}
+
 export function runClaim(opts: RunClaimOptions): ClaimResult {
   if (!opts.yaml.sequentialDomains) {
     throw new Error(
@@ -129,7 +142,9 @@ function loadYaml(yamlPath: string): YamlConfig {
 function main(): void {
   const args = parseClaimArgs(process.argv.slice(2));
   const yaml = loadYaml(args.config);
-  const baseBranch = yaml.baseBranch ?? "main";
+  // Seed the counter against the claiming issue's repo's base branch (iOS
+  // `master`, not `main`), falling back to the top-level default.
+  const baseBranch = resolveClaimBaseBranch(yaml, args.issue);
   // `runClaim` rejects unknown domains before the seed function fires, so
   // domainConfig is guaranteed to exist when seed() is invoked.
   const domainConfig = yaml.sequentialDomains?.[args.domain]!;

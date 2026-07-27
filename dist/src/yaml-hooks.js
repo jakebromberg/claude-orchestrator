@@ -6,6 +6,7 @@ import { createPrintSummary } from "./summary.js";
 import { interpolate } from "./interpolate.js";
 import { createLabelSyncHandler } from "./label-sync.js";
 import { detectCollisions, gatherCollisionInputs } from "./collision-check.js";
+import { resolveRepoSettings } from "./repo-settings.js";
 import { shellQuote } from "./shell-quote.js";
 function defaultClaimHelperPath() {
     const here = fileURLToPath(import.meta.url);
@@ -146,14 +147,22 @@ export function deriveHooks(yaml, deps = {}) {
                 "Provide an override in your .hooks.ts file.");
         },
     };
-    // Compile sequentialPaths regexes once. Bad regex / missing capture group
-    // is rejected by zod at load time, so we just compile here.
-    const sequentialEntries = yaml.sequentialPaths ?? [];
-    const baseBranch = yaml.baseBranch ?? "main";
-    // Attach postSessionCheck if either commands or sequentialPaths are set.
-    if (yaml.postSessionCheck || sequentialEntries.length > 0) {
-        const cmdConfig = yaml.postSessionCheck;
+    // Attach postSessionCheck if a check profile (commands or sequentialPaths) is
+    // configured at the top level or for any repo in the `repos:` map. The
+    // effective profile is resolved per-issue (by the issue's repo) at call time.
+    const anyRepoHasCheck = Object.values(yaml.repos ?? {}).some((r) => r.postSessionCheck || (r.sequentialPaths?.length ?? 0) > 0);
+    if (yaml.postSessionCheck ||
+        (yaml.sequentialPaths?.length ?? 0) > 0 ||
+        anyRepoHasCheck) {
         hooks.postSessionCheck = async (issue, worktreePath) => {
+            // Resolve this issue's repo's effective check profile: its commands, its
+            // collision domains, and — critically — its base branch (iOS `master`,
+            // not `main`) so the diffs below target the right ref.
+            const repoKey = issue.repo ?? yaml.defaultRepo;
+            const settings = resolveRepoSettings(yaml, repoKey);
+            const cmdConfig = settings.postSessionCheck;
+            const sequentialEntries = settings.sequentialPaths;
+            const baseBranch = settings.baseBranch;
             const run = runCommand ?? ((cmd, dir) => execSync(cmd, { cwd: dir, encoding: "utf-8" }));
             // 1. Run configured commands first; first failure short-circuits.
             if (cmdConfig) {
@@ -173,10 +182,14 @@ export function deriveHooks(yaml, deps = {}) {
                     }
                 }
             }
-            // 2. Sequential-file collision scan, when configured.
+            // 2. Sequential-file collision scan, when configured. Only same-repo
+            // peers can collide on this repo's numbered files, and they share this
+            // issue's base branch — so peers in other repos are excluded (a
+            // cross-repo peer would also drag in the wrong base branch here).
             if (sequentialEntries.length > 0) {
                 const peers = yaml.issues
-                    .filter((peer) => peer.number !== issue.number)
+                    .filter((peer) => (peer.repo ?? yaml.defaultRepo) === repoKey &&
+                    peer.number !== issue.number)
                     .map((peer) => ({
                     slug: peer.slug,
                     worktreePath: path.join(yaml.worktreeDir, peer.slug),

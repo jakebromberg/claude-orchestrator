@@ -489,6 +489,132 @@ describe("deriveHooks", () => {
     });
   });
 
+  describe("postSessionCheck + repos (per-repo overrides)", () => {
+    it("attaches the hook when only a repo (not top-level) defines a check", () => {
+      const hooks = deriveHooks(
+        makeYaml({
+          issues: [
+            { number: 1, slug: "foo", dependsOn: [], description: "F", repo: "WXYC/bs" },
+          ],
+          repos: { "WXYC/bs": { postSessionCheck: { commands: ["npm test"] } } },
+        }),
+      );
+      expect(hooks.postSessionCheck).toBeDefined();
+    });
+
+    it("runs the issue's repo's commands, not the top-level ones", async () => {
+      const runCommand = vi.fn().mockReturnValue("");
+      const hooks = deriveHooks(
+        makeYaml({
+          postSessionCheck: { commands: ["top-level-check"] },
+          issues: [
+            { number: 1, slug: "ios", dependsOn: [], description: "iOS", repo: "WXYC/ios" },
+            { number: 2, slug: "lml", dependsOn: [], description: "LML", repo: "WXYC/lml" },
+          ],
+          repos: {
+            "WXYC/ios": { postSessionCheck: { commands: ["xcodebuild test"] } },
+            "WXYC/lml": { postSessionCheck: { commands: ["ruff check", "pytest"] } },
+          },
+        }),
+        { runCommand },
+      );
+      await hooks.postSessionCheck!(
+        makeIssue({ number: 1, slug: "ios", repo: "WXYC/ios" }),
+        "/tmp/worktrees/ios",
+      );
+      expect(runCommand).toHaveBeenCalledWith("xcodebuild test", "/tmp/worktrees/ios");
+      expect(runCommand).not.toHaveBeenCalledWith("top-level-check", expect.anything());
+    });
+
+    it("falls back to the top-level commands for a repo without an override", async () => {
+      const runCommand = vi.fn().mockReturnValue("");
+      const hooks = deriveHooks(
+        makeYaml({
+          postSessionCheck: { commands: ["top-level-check"] },
+          issues: [
+            { number: 3, slug: "web", dependsOn: [], description: "W", repo: "WXYC/web" },
+          ],
+          repos: { "WXYC/web": { baseBranch: "release" } },
+        }),
+        { runCommand },
+      );
+      await hooks.postSessionCheck!(
+        makeIssue({ number: 3, slug: "web", repo: "WXYC/web" }),
+        "/tmp/worktrees/web",
+      );
+      expect(runCommand).toHaveBeenCalledWith("top-level-check", "/tmp/worktrees/web");
+    });
+
+    it("scans collisions against the issue's repo base branch (iOS master)", async () => {
+      const ranges: string[] = [];
+      const runGitCommand = vi.fn((_file: string, args: string[]) => {
+        if (args.includes("fetch")) return "";
+        if (args.includes("merge-base")) return "base1\n";
+        const range = args.find((a) => a.includes(".."));
+        if (range) ranges.push(range);
+        return "";
+      });
+      const hooks = deriveHooks(
+        makeYaml({
+          issues: [
+            { number: 1, slug: "ios", dependsOn: [], description: "iOS", repo: "WXYC/ios" },
+          ],
+          repos: {
+            "WXYC/ios": {
+              baseBranch: "master",
+              sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+            },
+          },
+        }),
+        { runGitCommand, existsSync: () => false },
+      );
+      const result = await hooks.postSessionCheck!(
+        makeIssue({ number: 1, slug: "ios", repo: "WXYC/ios" }),
+        "/tmp/worktrees/ios",
+      );
+      expect(result.passed).toBe(true);
+      expect(ranges).toContain("base1..origin/master");
+      expect(ranges).not.toContain("base1..origin/main");
+    });
+
+    it("excludes cross-repo peers from the collision scan", async () => {
+      const diffedPaths = new Set<string>();
+      const runGitCommand = vi.fn((_file: string, args: string[]) => {
+        if (args.includes("fetch")) return "";
+        if (args.includes("merge-base")) return "base1\n";
+        if (args.includes("diff")) {
+          const ci = args.indexOf("-C");
+          if (ci >= 0) diffedPaths.add(args[ci + 1]!);
+        }
+        return "";
+      });
+      const hooks = deriveHooks(
+        makeYaml({
+          worktreeDir: "/tmp/wt",
+          issues: [
+            { number: 1, slug: "ios-a", dependsOn: [], description: "A", repo: "WXYC/ios" },
+            { number: 2, slug: "ios-b", dependsOn: [], description: "B", repo: "WXYC/ios" },
+            { number: 3, slug: "lml-x", dependsOn: [], description: "X", repo: "WXYC/lml" },
+          ],
+          repos: {
+            "WXYC/ios": {
+              baseBranch: "master",
+              sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+            },
+          },
+        }),
+        { runGitCommand, existsSync: () => true },
+      );
+      await hooks.postSessionCheck!(
+        makeIssue({ number: 1, slug: "ios-a", repo: "WXYC/ios" }),
+        "/tmp/wt/ios-a",
+      );
+      // Same-repo peer ios-b is scanned; cross-repo peer lml-x is not.
+      expect(diffedPaths.has("/tmp/wt/ios-b")).toBe(true);
+      expect(diffedPaths.has("/tmp/wt/lml-x")).toBe(false);
+    });
+  });
+
   // The package ships as ESM ("type": "module") so inline `require(...)` calls
   // crash at runtime with "require is not defined". Vitest's esbuild transform
   // hides this in unit tests by polyfilling `require`, so we guard the source

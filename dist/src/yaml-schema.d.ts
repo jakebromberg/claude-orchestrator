@@ -48,6 +48,23 @@ export declare const YamlConfigSchema: z.ZodObject<{
         maxAttempts: z.ZodOptional<z.ZodNumber>;
     }, z.core.$strip>>;
     baseBranch: z.ZodOptional<z.ZodString>;
+    repos: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodObject<{
+        baseBranch: z.ZodOptional<z.ZodString>;
+        postSessionCheck: z.ZodOptional<z.ZodObject<{
+            commands: z.ZodArray<z.ZodString>;
+            cwd: z.ZodOptional<z.ZodString>;
+        }, z.core.$strip>>;
+        sequentialPaths: z.ZodOptional<z.ZodArray<z.ZodObject<{
+            dir: z.ZodString;
+            pattern: z.ZodString;
+        }, z.core.$strip>>>;
+        appendableFiles: z.ZodOptional<z.ZodArray<z.ZodObject<{
+            path: z.ZodString;
+            format: z.ZodLiteral<"json-array">;
+            arrayPath: z.ZodString;
+            keyField: z.ZodString;
+        }, z.core.$strip>>>;
+    }, z.core.$strip>>>;
     sequentialPaths: z.ZodOptional<z.ZodArray<z.ZodObject<{
         dir: z.ZodString;
         pattern: z.ZodString;

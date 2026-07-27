@@ -55,6 +55,7 @@ import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { YamlConfigSchema } from "./yaml-schema.js";
 import { resolveYamlPaths } from "./yaml-loader.js";
+import { allAppendableFiles } from "./repo-settings.js";
 import { mergeJsonDocuments, resolveConflict } from "./merge-appendable.js";
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -71,12 +72,15 @@ function loadAppendableConfig(yamlPath, filePath) {
     const parsed = parseYaml(raw);
     const yaml = YamlConfigSchema.parse(parsed);
     resolveYamlPaths(yaml, path.dirname(path.resolve(yamlPath)));
-    if (!yaml.appendableFiles || yaml.appendableFiles.length === 0) {
+    // Include per-repo appendableFiles, not just the top-level ones, so a
+    // repo-scoped entry is still resolvable by the merge driver.
+    const appendable = allAppendableFiles(yaml);
+    if (appendable.length === 0) {
         throw new Error(`No appendableFiles configured in ${yamlPath}`);
     }
-    const entry = yaml.appendableFiles.find((f) => f.path === filePath);
+    const entry = appendable.find((f) => f.path === filePath);
     if (!entry) {
-        const known = yaml.appendableFiles.map((f) => f.path).join(", ");
+        const known = appendable.map((f) => f.path).join(", ");
         throw new Error(`No appendableFiles entry for path "${filePath}" in ${yamlPath}. Known: ${known}`);
     }
     return { arrayPath: entry.arrayPath, keyField: entry.keyField };

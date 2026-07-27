@@ -56,6 +56,23 @@ export interface AppendableFileSpec {
     /** Field whose value uniquely identifies each entry (e.g. `"idx"`). */
     keyField: string;
 }
+/**
+ * Per-repo overrides in a cross-repo YAML config, keyed by `owner/repo` in the
+ * `repos:` map. Each field, when set, replaces the top-level default wholesale
+ * for issues belonging to that repo (see `resolveRepoSettings`). Lets a single
+ * DAG span repos with different base branches (iOS `master` vs `main`), CI
+ * commands (LML `pytest`/`ruff` vs BS `npm run ci:*`), and collision domains.
+ */
+export interface RepoConfig {
+    /** Base branch for this repo's collision diffs and counter seeding. */
+    baseBranch?: string;
+    /** CI/check profile run in this repo's worktrees after a session exits 0. */
+    postSessionCheck?: YamlPostSessionCheck;
+    /** Sequential-file collision domains scoped to this repo. */
+    sequentialPaths?: SequentialPathConfig[];
+    /** Append-style JSON files wired to the merge driver, scoped to this repo. */
+    appendableFiles?: AppendableFileSpec[];
+}
 /** Issue definition in a YAML config. */
 export interface YamlIssue {
     number: number;
@@ -114,8 +131,18 @@ export interface YamlConfig {
         enabled?: boolean;
         maxAttempts?: number;
     };
-    /** Base branch used for collision detection diffs. Default `"main"`. */
+    /**
+     * Base branch used for collision detection diffs and counter seeding.
+     * Default `"main"`. Overridable per repo via `repos.<owner/repo>.baseBranch`.
+     */
     baseBranch?: string;
+    /**
+     * Per-repo overrides for cross-repo DAGs, keyed by `owner/repo`. Each entry
+     * may override `baseBranch`, `postSessionCheck`, `sequentialPaths`, and
+     * `appendableFiles` for issues that declare that `repo`. Issues without a
+     * matching entry fall back to the top-level defaults. See `RepoConfig`.
+     */
+    repos?: Record<string, RepoConfig>;
     /**
      * Domains of sequentially-numbered files to check for collisions across
      * peer worktrees. Detection runs inside `postSessionCheck` after configured

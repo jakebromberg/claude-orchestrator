@@ -34,4 +34,12 @@ export interface RunClaimOptions {
     store: CounterStore;
     seed: () => number;
 }
+/**
+ * Base branch to seed a claim against, resolved from the claiming issue's repo
+ * (iOS `master`, others `main`) via the `repos:` map, falling back to
+ * `defaultRepo` and the top-level default. Bare-number targeting: when the same
+ * number exists in multiple repos the first declared issue wins — acceptable
+ * because claim domains (e.g. migrations) live in a single repo.
+ */
+export declare function resolveClaimBaseBranch(yaml: YamlConfig, issueNumber: number): string;
 export declare function runClaim(opts: RunClaimOptions): ClaimResult;

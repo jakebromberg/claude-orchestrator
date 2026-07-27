@@ -31,6 +31,8 @@ src/
 ├── yaml-schema.ts        # Zod schema for YAML config validation
 ├── yaml-hooks.ts         # deriveHooks() — YAML fields → OrchestratorHooks
 ├── yaml-loader.ts        # loadYamlConfig() — full YAML→config pipeline
+├── worktree-hooks.ts     # deriveWorktreeHooks() — reusable per-repo checkout/worktree hooks
+├── repo-settings.ts      # resolveRepoSettings() — per-repo baseBranch/CI/collision overrides (repos: map)
 ├── github.ts             # GitHub CLI wrapper (labels, comments)
 ├── upstream-context.ts   # HANDOFF.md reading for agent-to-agent context
 ├── issue-comments.ts     # Post run summary comments on GitHub issues
@@ -105,8 +107,22 @@ labelSync:
   prefix: "orchestrator"
   repo: "owner/repo"  # optional, falls back to issue-level repo
 
-# Base branch used for collision-detection diffs (default "main")
+# Base branch used for collision-detection diffs and counter seeding (default "main")
 baseBranch: "main"
+
+# Per-repo overrides for cross-repo DAGs, keyed by owner/repo. Each entry may
+# override baseBranch, postSessionCheck, sequentialPaths, appendableFiles for
+# issues that declare (or inherit via defaultRepo) that repo. Replace semantics,
+# not deep-merge; an omitted field inherits the top-level value. A key not
+# referenced by any issue/defaultRepo is a hard load error (typo guard).
+repos:
+  "WXYC/wxyc-ios-64":
+    baseBranch: "master"                       # iOS forks from master, not main
+    postSessionCheck:
+      commands: ["xcodebuild test -scheme WXYC"]
+  "WXYC/library-metadata-lookup":
+    postSessionCheck:
+      commands: ["ruff check .", "pytest -q"]
 
 # Detect sequentially-numbered-file collisions across peer worktrees during postSessionCheck
 sequentialPaths:

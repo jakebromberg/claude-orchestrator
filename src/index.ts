@@ -54,6 +54,8 @@ export { deriveHooks, buildClaimCommand } from "./yaml-hooks.js";
 export type { DeriveHooksDeps } from "./yaml-hooks.js";
 export { deriveWorktreeHooks } from "./worktree-hooks.js";
 export type { DeriveWorktreeHooksOptions, WorktreeHooks } from "./worktree-hooks.js";
+export { resolveRepoSettings, allAppendableFiles, unknownRepoKeys } from "./repo-settings.js";
+export type { ResolvedRepoSettings } from "./repo-settings.js";
 export { interpolate } from "./interpolate.js";
 export type {
   YamlConfig,
@@ -65,6 +67,7 @@ export type {
   SequentialPathConfig,
   SequentialDomainConfig,
   AppendableFileSpec,
+  RepoConfig,
 } from "./yaml-types.js";
 
 // Journal-aware merge driver (issue #37)

@@ -18,6 +18,7 @@ import { parse as parseYaml } from "yaml";
 import { YamlConfigSchema } from "./yaml-schema.js";
 import { FileCounterStore } from "./counter-store.js";
 import { seedFromGit } from "./seed-from-git.js";
+import { resolveRepoSettings } from "./repo-settings.js";
 import { resolveYamlPaths } from "./yaml-loader.js";
 function takeValue(argv, i, flag) {
     const v = argv[i + 1];
@@ -72,6 +73,17 @@ export function parseClaimArgs(argv) {
         throw new Error("--domain is required");
     return { config, issue, domain };
 }
+/**
+ * Base branch to seed a claim against, resolved from the claiming issue's repo
+ * (iOS `master`, others `main`) via the `repos:` map, falling back to
+ * `defaultRepo` and the top-level default. Bare-number targeting: when the same
+ * number exists in multiple repos the first declared issue wins — acceptable
+ * because claim domains (e.g. migrations) live in a single repo.
+ */
+export function resolveClaimBaseBranch(yaml, issueNumber) {
+    const claimingRepo = yaml.issues.find((i) => i.number === issueNumber)?.repo;
+    return resolveRepoSettings(yaml, claimingRepo ?? yaml.defaultRepo).baseBranch;
+}
 export function runClaim(opts) {
     if (!opts.yaml.sequentialDomains) {
         throw new Error("Config has no sequentialDomains; cannot claim a number.");
@@ -97,7 +109,9 @@ function loadYaml(yamlPath) {
 function main() {
     const args = parseClaimArgs(process.argv.slice(2));
     const yaml = loadYaml(args.config);
-    const baseBranch = yaml.baseBranch ?? "main";
+    // Seed the counter against the claiming issue's repo's base branch (iOS
+    // `master`, not `main`), falling back to the top-level default.
+    const baseBranch = resolveClaimBaseBranch(yaml, args.issue);
     // `runClaim` rejects unknown domains before the seed function fires, so
     // domainConfig is guaranteed to exist when seed() is invoked.
     const domainConfig = yaml.sequentialDomains?.[args.domain];
