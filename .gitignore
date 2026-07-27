@@ -150,3 +150,6 @@ worktrees/
 # upstream-context.ts). It belongs in the worktree only — never on main,
 # otherwise the next agent inherits it as a permanent file.
 HANDOFF.md
+
+# Per-config orchestrator run state (analogous to root .orchestrator/state/)
+wxyc/**/.orchestrator/

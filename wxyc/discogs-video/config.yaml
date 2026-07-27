@@ -1,0 +1,42 @@
+name: "Discogs Video ETL"
+configDir: ".orchestrator/discogs-video"
+worktreeDir: "./worktrees/discogs-video"
+projectRoot: "."
+stallTimeout: 900
+promptTemplate: "./prompt.md"
+branchPrefix: "feature/"
+
+claudeArgs: ["--model", "sonnet"]
+
+
+issues:
+  - number: 1
+    slug: xml-converter-videos
+    dependsOn: []
+    repo: "WXYC/discogs-xml-converter"
+    description: |
+      Add video/URL parsing to discogs-xml-converter.
+      Parse <videos>/<video> elements from Discogs XML releases dump.
+      Output release_video.csv with columns: release_id, sequence, src, title, duration, embed.
+      Also update PostgreSQL COPY output in pg_output.rs.
+      Write unit tests for parser and integration tests for CLI output.
+
+  - number: 2
+    slug: cache-video-import
+    dependsOn: [1]
+    repo: "WXYC/discogs-cache"
+    description: |
+      Add release_video table to discogs-cache schema and import pipeline.
+      Schema: release_video(release_id FK, sequence, src, title, duration, embed) with ON DELETE CASCADE.
+      Add TableConfig in import_csv.py for release_video.csv.
+      Write unit tests, integration tests (postgres marker), and E2E tests.
+
+  - number: 3
+    slug: lml-video-support
+    dependsOn: [2]
+    repo: "WXYC/library-metadata-lookup"
+    description: |
+      Update library-metadata-lookup cache service to persist and read video data.
+      Update write_release() to INSERT videos. Update get_release() to SELECT videos.
+      Add ReleaseVideo model. Map Discogs API video response to model.
+      Write unit tests and integration tests.
