@@ -74,7 +74,7 @@ describe("validateConfig", () => {
       expect(byRef.get("WXYC/lml#2")!.deps).toEqual(["WXYC/lml#1"]);
     });
 
-    it("waves the 3-repo discogs-video chain in order (real config shape)", () => {
+    it("waves a 3-repo cross-repo dependency chain in order", () => {
       const config = validateConfig(makeRawConfig([
         makeSpec({ number: 1, slug: "xml", repo: "WXYC/discogs-xml-converter" }),
         makeSpec({ number: 2, slug: "cache", repo: "WXYC/discogs-cache", dependsOn: ["WXYC/discogs-xml-converter#1"] }),
