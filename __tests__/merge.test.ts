@@ -411,4 +411,120 @@ describe("mergePrs", () => {
       expect(deps.runCommand).not.toHaveBeenCalled();
     });
   });
+
+  describe("per-repo base branch", () => {
+    it("rebases a remaining PR onto its own repo's base branch, not main", async () => {
+      // #2's repo forks from `master`; the intra-wave rebase after merging #1
+      // must fetch/rebase against origin/master, never origin/main. (getBaseBranch
+      // keys off number here so refs stay bare and the by-number mocks apply;
+      // the repo→base mapping itself is tested at the hook layer.)
+      const issues = [
+        makeIssue({ number: 1, wave: 1 }),
+        makeIssue({ number: 2, wave: 1 }),
+      ];
+      const metadataMap: Record<number, IssueMetadata> = {
+        1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1 },
+        2: { prUrl: "https://github.com/org/repo/pull/2", prNumber: 2 },
+      };
+      const worktreeMap: Record<number, string> = {
+        1: "/worktrees/issue-1",
+        2: "/worktrees/issue-2",
+      };
+      const commands: string[] = [];
+      const deps = makeMergeDeps({
+        getMetadata: vi.fn((n: string) => metadataMap[Number(n)] ?? {}),
+        runCommand: vi.fn((cmd: string) => {
+          commands.push(cmd);
+          return "";
+        }),
+        getWorktreePath: vi.fn((issue: Issue) => worktreeMap[issue.number]),
+        getBaseBranch: vi.fn((issue: Issue) =>
+          issue.number === 2 ? "master" : "main",
+        ),
+      });
+
+      const results = await mergePrs(issues, deps);
+
+      expect(results.get("2")).toBe("merged");
+      expect(commands).toContain('git -C "/worktrees/issue-2" fetch origin master');
+      expect(commands).toContain('git -C "/worktrees/issue-2" rebase origin/master');
+      // And nothing rebased #2 against main.
+      expect(commands).not.toContain('git -C "/worktrees/issue-2" rebase origin/main');
+    });
+
+    it("resolves each remaining PR's base branch independently", async () => {
+      // #2 → master; #3 → main. One getBaseBranch, two answers.
+      const issues = [
+        makeIssue({ number: 1, wave: 1 }),
+        makeIssue({ number: 2, wave: 1 }),
+        makeIssue({ number: 3, wave: 1 }),
+      ];
+      const metadataMap: Record<number, IssueMetadata> = {
+        1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1 },
+        2: { prUrl: "https://github.com/org/repo/pull/2", prNumber: 2 },
+        3: { prUrl: "https://github.com/org/repo/pull/3", prNumber: 3 },
+      };
+      const commands: string[] = [];
+      const deps = makeMergeDeps({
+        getMetadata: vi.fn((n: string) => metadataMap[Number(n)] ?? {}),
+        runCommand: vi.fn((cmd: string) => {
+          commands.push(cmd);
+          return "";
+        }),
+        getWorktreePath: vi.fn((issue: Issue) => `/worktrees/issue-${issue.number}`),
+        getBaseBranch: vi.fn((issue: Issue) =>
+          issue.number === 2 ? "master" : "main",
+        ),
+      });
+
+      await mergePrs(issues, deps);
+
+      expect(commands).toContain('git -C "/worktrees/issue-2" rebase origin/master');
+      expect(commands).toContain('git -C "/worktrees/issue-3" rebase origin/main');
+    });
+
+    it("passes each issue's own base branch to onMergeConflict", async () => {
+      const issue = makeIssue({ number: 1, repo: "WXYC/wxyc-ios-64" });
+      const onMergeConflict = vi.fn().mockResolvedValue({ resolved: false });
+      const deps = makeMergeDeps({
+        runCommand: vi.fn(() => { throw new Error("Merge conflict"); }),
+        onMergeConflict,
+        getBaseBranch: vi.fn(() => "master"),
+      });
+
+      await mergePrs([issue], deps);
+
+      expect(onMergeConflict).toHaveBeenCalledWith(issue, expect.any(Array), "master");
+    });
+
+    it("getBaseBranch wins over the deps.baseBranch fallback", async () => {
+      const issue = makeIssue({ number: 1, repo: "WXYC/wxyc-ios-64" });
+      const onMergeConflict = vi.fn().mockResolvedValue({ resolved: false });
+      const deps = makeMergeDeps({
+        runCommand: vi.fn(() => { throw new Error("Merge conflict"); }),
+        onMergeConflict,
+        getBaseBranch: vi.fn(() => "master"),
+        baseBranch: "develop",
+      });
+
+      await mergePrs([issue], deps);
+
+      expect(onMergeConflict).toHaveBeenCalledWith(issue, expect.any(Array), "master");
+    });
+
+    it("falls back to deps.baseBranch when getBaseBranch returns undefined", async () => {
+      const issue = makeIssue({ number: 1 });
+      const onMergeConflict = vi.fn().mockResolvedValue({ resolved: false });
+      const deps = makeMergeDeps({
+        runCommand: vi.fn(() => { throw new Error("Merge conflict"); }),
+        onMergeConflict,
+        getBaseBranch: vi.fn(() => undefined),
+        baseBranch: "develop",
+      });
+
+      await mergePrs([issue], deps);
+
+      expect(onMergeConflict).toHaveBeenCalledWith(issue, expect.any(Array), "develop");
+    });
+  });
 });

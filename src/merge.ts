@@ -19,7 +19,16 @@ export interface MergeDeps {
    * Errors thrown by this hook are non-fatal (logged as warnings).
    */
   onMergeConflict?: (issue: Issue, conflictFiles: string[], baseBranch: string) => Promise<{ resolved: boolean; details?: string }>;
-  /** Base branch name passed to `onMergeConflict`. Defaults to `"main"`. */
+  /**
+   * Base branch for an issue's PR — its repo's own default branch (iOS forks
+   * from `master`, others from `main`). Used for the intra-wave rebase and the
+   * `baseBranch` passed to `onMergeConflict`. When absent, or when it returns
+   * `undefined` for an issue, resolution falls back to `baseBranch` then `main`.
+   * In a cross-repo run this must resolve per-repo, or the rebase targets the
+   * wrong ref (e.g. an iOS PR rebased onto the nonexistent `origin/main`).
+   */
+  getBaseBranch?: (issue: Issue) => string | undefined;
+  /** Base branch fallback when `getBaseBranch` is absent/undefined. Defaults to `"main"`. */
   baseBranch?: string;
 }
 
@@ -28,17 +37,26 @@ function isConflictError(message: string): boolean {
 }
 
 /**
- * Rebase a branch against origin/main in the given worktree.
+ * Resolve the base branch for `issue`: its repo's own default via
+ * `getBaseBranch`, then the run-wide `baseBranch`, then `"main"`.
+ */
+function resolveBaseBranch(deps: MergeDeps, issue: Issue): string {
+  return deps.getBaseBranch?.(issue) ?? deps.baseBranch ?? "main";
+}
+
+/**
+ * Rebase a branch against `origin/<baseBranch>` in the given worktree.
  * Returns true on success, false on failure (with rebase --abort attempted).
  */
 function rebaseBranch(
   worktreePath: string,
+  baseBranch: string,
   runCommand: MergeDeps["runCommand"],
   logger: Logger,
 ): boolean {
   try {
-    runCommand(`git -C "${worktreePath}" fetch origin main`);
-    runCommand(`git -C "${worktreePath}" rebase origin/main`);
+    runCommand(`git -C "${worktreePath}" fetch origin ${baseBranch}`);
+    runCommand(`git -C "${worktreePath}" rebase origin/${baseBranch}`);
     runCommand(`git -C "${worktreePath}" push --force-with-lease`);
     return true;
   } catch {
@@ -73,9 +91,10 @@ function rebaseRemaining(
     if (remainingStatus !== "succeeded" || !remainingMetadata.prUrl) continue;
 
     const worktreePath = deps.getWorktreePath(remaining);
-    deps.logger.info(`#${remaining.number}: rebasing against main`);
+    const baseBranch = resolveBaseBranch(deps, remaining);
+    deps.logger.info(`#${remaining.number}: rebasing against ${baseBranch}`);
 
-    if (!rebaseBranch(worktreePath, deps.runCommand, deps.logger)) {
+    if (!rebaseBranch(worktreePath, baseBranch, deps.runCommand, deps.logger)) {
       deps.logger.error(`#${remaining.number}: rebase failed, skipping merge`);
       results.set(remaining.ref, "rebase-failed");
     }
@@ -138,7 +157,7 @@ export async function mergePrs(
       const message = err instanceof Error ? err.message : String(err);
 
       if (isConflictError(message) && deps.onMergeConflict) {
-        const baseBranch = deps.baseBranch ?? "main";
+        const baseBranch = resolveBaseBranch(deps, issue);
         let resolved = false;
         try {
           const resolution = await deps.onMergeConflict(issue, [], baseBranch);

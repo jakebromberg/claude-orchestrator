@@ -140,6 +140,13 @@ export interface OrchestratorHooks {
     removeWorktree(issue: Issue): Promise<void>;
     getWorktreePath(issue: Issue): string;
     getBranchName(issue: Issue): string;
+    /**
+     * Optional: the base branch an issue's PR targets — its repo's own default
+     * branch (iOS `master`, others `main`). Used by the merge step's intra-wave
+     * rebase and conflict-resolution prompt so a cross-repo PR rebases onto the
+     * right ref. When absent, the merge falls back to `"main"`.
+     */
+    getBaseBranch?(issue: Issue): string;
     interpolatePrompt(issue: Issue, extraVars?: Record<string, string>): Promise<string>;
     getClaudeArgs(issue: Issue): string[];
     printSummary(issues: Issue[], getStatus: (ref: string) => Status): void;

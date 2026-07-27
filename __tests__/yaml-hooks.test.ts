@@ -60,6 +60,44 @@ describe("deriveHooks", () => {
     });
   });
 
+  describe("getBaseBranch", () => {
+    it("defaults to main when no baseBranch is configured", () => {
+      const hooks = deriveHooks(makeYaml());
+      expect(hooks.getBaseBranch?.(makeIssue())).toBe("main");
+    });
+
+    it("uses the top-level baseBranch for repos without an override", () => {
+      const hooks = deriveHooks(makeYaml({ baseBranch: "develop" }));
+      expect(hooks.getBaseBranch?.(makeIssue())).toBe("develop");
+    });
+
+    it("resolves the issue's repo override from the repos: map", () => {
+      const hooks = deriveHooks(
+        makeYaml({
+          baseBranch: "main",
+          repos: { "WXYC/wxyc-ios-64": { baseBranch: "master" } },
+        }),
+      );
+      // iOS issue → master; a repo without an override → the top-level main.
+      expect(
+        hooks.getBaseBranch?.(makeIssue({ repo: "WXYC/wxyc-ios-64" })),
+      ).toBe("master");
+      expect(
+        hooks.getBaseBranch?.(makeIssue({ repo: "WXYC/library-metadata-lookup" })),
+      ).toBe("main");
+    });
+
+    it("falls back to defaultRepo for a repo-less issue", () => {
+      const hooks = deriveHooks(
+        makeYaml({
+          defaultRepo: "WXYC/wxyc-ios-64",
+          repos: { "WXYC/wxyc-ios-64": { baseBranch: "master" } },
+        }),
+      );
+      expect(hooks.getBaseBranch?.(makeIssue())).toBe("master");
+    });
+  });
+
   describe("isRetryableStatus", () => {
     it("defaults to only 'failed'", () => {
       const hooks = deriveHooks(makeYaml());

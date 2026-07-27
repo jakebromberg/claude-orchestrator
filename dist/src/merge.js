@@ -2,13 +2,20 @@ function isConflictError(message) {
     return /conflict/i.test(message);
 }
 /**
- * Rebase a branch against origin/main in the given worktree.
+ * Resolve the base branch for `issue`: its repo's own default via
+ * `getBaseBranch`, then the run-wide `baseBranch`, then `"main"`.
+ */
+function resolveBaseBranch(deps, issue) {
+    return deps.getBaseBranch?.(issue) ?? deps.baseBranch ?? "main";
+}
+/**
+ * Rebase a branch against `origin/<baseBranch>` in the given worktree.
  * Returns true on success, false on failure (with rebase --abort attempted).
  */
-function rebaseBranch(worktreePath, runCommand, logger) {
+function rebaseBranch(worktreePath, baseBranch, runCommand, logger) {
     try {
-        runCommand(`git -C "${worktreePath}" fetch origin main`);
-        runCommand(`git -C "${worktreePath}" rebase origin/main`);
+        runCommand(`git -C "${worktreePath}" fetch origin ${baseBranch}`);
+        runCommand(`git -C "${worktreePath}" rebase origin/${baseBranch}`);
         runCommand(`git -C "${worktreePath}" push --force-with-lease`);
         return true;
     }
@@ -38,8 +45,9 @@ function rebaseRemaining(sorted, startIndex, results, deps) {
         if (remainingStatus !== "succeeded" || !remainingMetadata.prUrl)
             continue;
         const worktreePath = deps.getWorktreePath(remaining);
-        deps.logger.info(`#${remaining.number}: rebasing against main`);
-        if (!rebaseBranch(worktreePath, deps.runCommand, deps.logger)) {
+        const baseBranch = resolveBaseBranch(deps, remaining);
+        deps.logger.info(`#${remaining.number}: rebasing against ${baseBranch}`);
+        if (!rebaseBranch(worktreePath, baseBranch, deps.runCommand, deps.logger)) {
             deps.logger.error(`#${remaining.number}: rebase failed, skipping merge`);
             results.set(remaining.ref, "rebase-failed");
         }
@@ -85,7 +93,7 @@ export async function mergePrs(issues, deps, options) {
         catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             if (isConflictError(message) && deps.onMergeConflict) {
-                const baseBranch = deps.baseBranch ?? "main";
+                const baseBranch = resolveBaseBranch(deps, issue);
                 let resolved = false;
                 try {
                     const resolution = await deps.onMergeConflict(issue, [], baseBranch);

@@ -98,6 +98,7 @@ export class Orchestrator {
           logger: this.deps.logger,
           getWorktreePath: (issue) => this.config.hooks.getWorktreePath(issue),
           onMergeConflict: this.config.hooks.onMergeConflict?.bind(this.config.hooks),
+          getBaseBranch: (issue) => this.config.hooks.getBaseBranch?.(issue),
         }, { admin: true });
         await cleanUpMergedIssues(waveIssues, mergeResults, {
           removeWorktree: (issue) => this.config.hooks.removeWorktree(issue),

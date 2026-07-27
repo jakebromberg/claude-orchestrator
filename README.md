@@ -139,7 +139,7 @@ issues:
   - { number: 685, slug: ios-tab, dependsOn: [924], description: "...", repo: WXYC/wxyc-ios-64 }
 ```
 
-Resolution is **replace, not deep-merge**: an entry that sets `postSessionCheck` uses only its own commands, and one that omits a field inherits the top-level value for it. The resolved `baseBranch` flows into that repo's collision diffs and counter seeding, so an iOS migration scan targets `origin/master` while a Backend-Service one targets `origin/main`; collision detection also considers only same-repo peers, since files in different repos can't collide. A `repos:` key that no issue references (nor `defaultRepo`) is a hard load error — an unused key is almost always a typo that would otherwise silently leave the real repo on the wrong base branch.
+Resolution is **replace, not deep-merge**: an entry that sets `postSessionCheck` uses only its own commands, and one that omits a field inherits the top-level value for it. The resolved `baseBranch` flows into that repo's collision diffs, counter seeding, **and the merge step's intra-wave rebase** — so a merged iOS PR is rebased onto `origin/master` and a Backend-Service one onto `origin/main`, and each PR's conflict-resolution prompt names its own base. (Without this, a cross-repo `after-wave` merge would rebase every PR onto `origin/main`, which doesn't exist for a `master`-based repo.) Collision detection also considers only same-repo peers, since files in different repos can't collide. A `repos:` key that no issue references (nor `defaultRepo`) is a hard load error — an unused key is almost always a typo that would otherwise silently leave the real repo on the wrong base branch.
 
 #### Per-issue model & effort
 

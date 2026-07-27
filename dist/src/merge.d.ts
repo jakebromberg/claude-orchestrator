@@ -19,7 +19,16 @@ export interface MergeDeps {
         resolved: boolean;
         details?: string;
     }>;
-    /** Base branch name passed to `onMergeConflict`. Defaults to `"main"`. */
+    /**
+     * Base branch for an issue's PR — its repo's own default branch (iOS forks
+     * from `master`, others from `main`). Used for the intra-wave rebase and the
+     * `baseBranch` passed to `onMergeConflict`. When absent, or when it returns
+     * `undefined` for an issue, resolution falls back to `baseBranch` then `main`.
+     * In a cross-repo run this must resolve per-repo, or the rebase targets the
+     * wrong ref (e.g. an iOS PR rebased onto the nonexistent `origin/main`).
+     */
+    getBaseBranch?: (issue: Issue) => string | undefined;
+    /** Base branch fallback when `getBaseBranch` is absent/undefined. Defaults to `"main"`. */
     baseBranch?: string;
 }
 /**

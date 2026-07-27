@@ -1982,6 +1982,42 @@ describe("Orchestrator", () => {
       expect(rebaseCommands[0]).toContain("/worktrees/issue-2");
     });
 
+    it("rebases each PR onto its repo's base branch via the getBaseBranch hook", async () => {
+      // #2 forks from `master`; the hook must drive the intra-wave rebase onto
+      // origin/master rather than the hardcoded origin/main.
+      const issues = [
+        makeIssue({ number: 1, slug: "issue-1", wave: 1 }),
+        makeIssue({ number: 2, slug: "issue-2", wave: 1 }),
+      ];
+      const readFile = vi.fn(() => "PR: https://github.com/org/repo/pull/10");
+      const commands: string[] = [];
+      const runCommand = vi.fn((cmd: string) => {
+        commands.push(cmd);
+        return "";
+      });
+      const config = makeConfig(issues, {
+        getBaseBranch: vi.fn((issue: Issue) =>
+          issue.number === 2 ? "master" : "main",
+        ),
+      });
+      const deps = makeDeps({ readFile, runCommand });
+      deps.metadataStore.set("1", { prUrl: "https://github.com/org/repo/pull/10", prNumber: 10 });
+      deps.metadataStore.set("2", { prUrl: "https://github.com/org/repo/pull/11", prNumber: 11 });
+
+      const orchestrator = new Orchestrator(config, deps, { mergePolicy: "after-wave" });
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runAllWaves();
+
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(2));
+      runner.resolvers.get(1000)!(0);
+      runner.resolvers.get(1001)!(0);
+
+      await promise;
+
+      expect(commands).toContain('git -C "/worktrees/issue-2" rebase origin/master');
+      expect(commands).not.toContain('git -C "/worktrees/issue-2" rebase origin/main');
+    });
+
     it("cleans up worktrees and remote branches after merging", async () => {
       const issues = [
         makeIssue({ number: 1, slug: "my-feature", wave: 1 }),
