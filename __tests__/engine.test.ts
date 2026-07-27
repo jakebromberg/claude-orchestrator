@@ -864,6 +864,28 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(0);
       await promise;
     });
+
+    it("lets a config's getClaudeArgs --model win via the CLI's last-wins rule", async () => {
+      const issue = makeIssue({ number: 1, wave: 1 }); // policy alone would pick sonnet
+      const { orchestrator, deps } = makeOrchestrator([issue], {
+        getClaudeArgs: () => ["--model", "opus"],
+      });
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+
+      // Two --model flags coexist: the policy's (sonnet) and the config's (opus).
+      // The CLI takes the LAST, so the per-issue flag must appear first (lower
+      // index) for the config override to win. This guards against a reorder
+      // that would silently discard a config's model.
+      const args = runner.spawned[0].args;
+      expect(args.lastIndexOf("--model")).toBeGreaterThan(args.indexOf("--model"));
+      expect(args[args.indexOf("--model") + 1]).toBe("sonnet");
+      expect(args[args.lastIndexOf("--model") + 1]).toBe("opus");
+
+      runner.resolvers.get(1000)!(0);
+      await promise;
+    });
   });
 
   describe("maxParallel configuration", () => {

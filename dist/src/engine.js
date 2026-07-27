@@ -396,7 +396,8 @@ export class Orchestrator {
             const failureContext = checkResult.output ?? checkResult.summary ?? "unknown failure";
             const retryPrompt = `${originalPrompt}\n\n## CI Failure Context\n\nThe following checks failed:\n\n${failureContext}\n\nPlease fix these issues.`;
             const tools = this.config.allowedTools ?? DEFAULT_ALLOWED_TOOLS;
-            // Escalate effort one tier per attempt (capped at max), keeping the model.
+            // Escalate effort one tier per attempt (capped at max), keeping the model
+            // (the Haiku guardrail may still promote a weak model to Sonnet).
             const retryArgs = [
                 "-p", retryPrompt,
                 ...perIssueSpawnArgs(issue, this.config, attempt),

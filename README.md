@@ -162,7 +162,9 @@ issues:
     extraDirs: ["../wxyc-shared"]   # extra read-only dirs (`--add-dir`); relative paths resolve against the config file
 ```
 
-Precedence for effort is explicit `effort` → `complexity` tier → `defaultEffort` → `medium`. A [CI-failure retry](#ci-failure-retry) bumps effort one tier per attempt (capped at `max`) while keeping the model. One guardrail applies: a Haiku-class model resolved to `high` effort or above is promoted to Sonnet instead — a weak model straining costs more per token than a stronger model deliberating less. `model` accepts an alias (`haiku`/`sonnet`/`opus`) or a full model id. A config's `claudeArgs`/`getClaudeArgs` output is appended after these, so it can still override the model via last-wins.
+Precedence for effort is explicit `effort` → `complexity` tier → `defaultEffort` → `medium`. A [CI-failure retry](#ci-failure-retry) bumps effort one tier per attempt (capped at `max`) while keeping the model — subject to the guardrail below. That guardrail: a Haiku-class model resolved to `high` effort or above is promoted to Sonnet instead — a weak model straining costs more per token than a stronger model deliberating less. `model` accepts an alias (`haiku`/`sonnet`/`opus`) or a full model id.
+
+On the implement and retry spawns, a config's `claudeArgs`/`getClaudeArgs` output is appended after these, so it can still override the model via the CLI's last-`--model` rule; the merge-conflict resolver always runs at the issue's own tier. This Sonnet-tiered baseline replaces the previous hardcoded Opus for **every** config, including a programmatic `OrchestratorConfig` with no `model`/`defaultModel` — a bare config that ran Opus before now runs Sonnet. Set `model: opus` (per issue) or `defaultModel: opus` (run-wide) to opt back in.
 
 ### 3. Run it
 
@@ -356,7 +358,7 @@ Upstream agents can write a `HANDOFF.md` file in their worktree root. When downs
 
 ### CI Failure Retry
 
-Set `retryOnCheckFailure: { maxRetries: 2 }` in YAML to automatically retry agent sessions when `postSessionCheck` fails. The failure output is injected into the retry prompt so the agent has context to fix the issues. Each retry also escalates the session's [effort](#per-issue-model--effort) one tier (capped at `max`), keeping the model fixed.
+Set `retryOnCheckFailure: { maxRetries: 2 }` in YAML to automatically retry agent sessions when `postSessionCheck` fails. The failure output is injected into the retry prompt so the agent has context to fix the issues. Each retry also escalates the session's [effort](#per-issue-model--effort) one tier (capped at `max`), keeping the model fixed (except the Haiku guardrail, which may promote a weak model to Sonnet once effort reaches `high`).
 
 ### Task Decomposition
 

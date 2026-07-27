@@ -40,7 +40,8 @@ export interface ModelEffortInputs {
     /**
      * 1-based CI-failure retry attempt; `0`/`undefined` is the initial spawn.
      * Each attempt bumps effort one tier (cumulative, capped at `max`), keeping
-     * the model fixed.
+     * the model fixed — except the Haiku guardrail below, which may promote to
+     * Sonnet once escalation reaches `high`.
      */
     retryAttempt?: number;
 }
