@@ -350,4 +350,56 @@ issues:
     expect(config.issues[1].wave).toBe(2);
     expect(config.issues[1].deps).toEqual(["1"]);
   });
+
+  it("threads model/effort fields and resolves per-issue extraDirs", async () => {
+    readFileSpy.mockReturnValue(`
+name: "Model Config"
+configDir: "./config"
+worktreeDir: "./worktrees"
+projectRoot: "."
+stallTimeout: 300
+defaultModel: sonnet
+defaultEffort: low
+issues:
+  - number: 1
+    slug: alpha
+    dependsOn: []
+    description: "Alpha"
+    model: opus
+    effort: high
+    complexity: complex
+    extraDirs: ["../wxyc-shared", "/abs/dir"]
+`);
+
+    const config = await loadYamlConfig("/projects/test/orchestrator.yaml");
+
+    expect(config.defaultModel).toBe("sonnet");
+    expect(config.defaultEffort).toBe("low");
+    const issue = config.issues[0];
+    expect(issue.model).toBe("opus");
+    expect(issue.effort).toBe("high");
+    expect(issue.complexity).toBe("complex");
+    // Relative extraDirs resolve against the YAML file's directory; absolute pass through.
+    expect(issue.extraDirs).toEqual(["/projects/wxyc-shared", "/abs/dir"]);
+  });
+
+  it("rejects an invalid effort tier in YAML", async () => {
+    readFileSpy.mockReturnValue(`
+name: "Bad Effort"
+configDir: "./config"
+worktreeDir: "./worktrees"
+projectRoot: "."
+stallTimeout: 300
+issues:
+  - number: 1
+    slug: alpha
+    dependsOn: []
+    description: "Alpha"
+    effort: turbo
+`);
+
+    await expect(
+      loadYamlConfig("/projects/test/orchestrator.yaml"),
+    ).rejects.toThrow();
+  });
 });

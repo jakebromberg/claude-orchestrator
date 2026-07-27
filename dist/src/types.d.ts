@@ -11,6 +11,28 @@ export interface IssueSpec {
     description: string;
     repo?: string;
     mode?: string;
+    /**
+     * Model for this issue's implement session — an alias (`haiku`/`sonnet`/`opus`)
+     * or a full model id. Overrides the config-level `defaultModel`; falls back to
+     * Sonnet. See `resolveModelEffort` in `model-effort.ts`.
+     */
+    model?: string;
+    /**
+     * Explicit effort tier (`low|medium|high|xhigh|max`) for this issue's session,
+     * overriding the `complexity`-derived default.
+     */
+    effort?: string;
+    /**
+     * Complexity tag that sets the default effort when `effort` is unset:
+     * `mechanical`→low, `normal`→medium, `complex`→high.
+     */
+    complexity?: string;
+    /**
+     * Extra read-only directories the agent may access (`claude --add-dir`), e.g.
+     * a sibling repo whose types this issue consumes. In YAML configs, relative
+     * paths resolve against the config file's directory.
+     */
+    extraDirs?: string[];
     /** Override global stall timeout for this issue (seconds). 0 disables monitoring. */
     stallTimeout?: number;
     /**
@@ -52,6 +74,10 @@ export interface RawOrchestratorConfig {
     stallTimeout: number;
     /** Repo assigned to issues without their own `repo`, for composite refs. */
     defaultRepo?: string;
+    /** Default model for issues that don't set their own `model`. Falls back to Sonnet. */
+    defaultModel?: string;
+    /** Default effort tier for issues without an explicit `effort` or `complexity`. */
+    defaultEffort?: string;
     issues: IssueSpec[];
     hooks: OrchestratorHooks;
     allowedTools?: string[];
@@ -71,6 +97,10 @@ export interface OrchestratorConfig {
     stallTimeout: number;
     /** Repo assigned to issues without their own `repo`, for composite refs. */
     defaultRepo?: string;
+    /** Default model for issues that don't set their own `model`. Falls back to Sonnet. */
+    defaultModel?: string;
+    /** Default effort tier for issues without an explicit `effort` or `complexity`. */
+    defaultEffort?: string;
     issues: Issue[];
     hooks: OrchestratorHooks;
     allowedTools?: string[];

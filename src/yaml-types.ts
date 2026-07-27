@@ -89,6 +89,14 @@ export interface YamlIssue {
   description: string;
   repo?: string;
   mode?: string;
+  /** Model for this issue's session. See `IssueSpec.model`. */
+  model?: string;
+  /** Explicit effort tier for this issue. See `IssueSpec.effort`. */
+  effort?: string;
+  /** Complexity tag driving the default effort. See `IssueSpec.complexity`. */
+  complexity?: string;
+  /** Extra read-only dirs for the agent (`--add-dir`). See `IssueSpec.extraDirs`. */
+  extraDirs?: string[];
   stallTimeout?: number;
   /** Run this issue alone in its own wave. See `IssueSpec.serial`. */
   serial?: boolean;
@@ -108,6 +116,10 @@ export interface YamlConfig {
   worktreeDir: string;
   projectRoot: string;
   defaultRepo?: string;
+  /** Default model for issues that don't set their own `model`. Falls back to Sonnet. */
+  defaultModel?: string;
+  /** Default effort tier for issues without an explicit `effort` or `complexity`. */
+  defaultEffort?: string;
   stallTimeout: number;
   allowedTools?: string[];
 

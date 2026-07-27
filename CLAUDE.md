@@ -33,6 +33,7 @@ src/
 ├── yaml-loader.ts        # loadYamlConfig() — full YAML→config pipeline
 ├── worktree-hooks.ts     # deriveWorktreeHooks() — reusable per-repo checkout/worktree hooks
 ├── repo-settings.ts      # resolveRepoSettings() — per-repo baseBranch/CI/collision overrides (repos: map)
+├── model-effort.ts       # resolveModelEffort() / perIssueSpawnArgs() — per-issue model/effort policy
 ├── github.ts             # GitHub CLI wrapper (labels, comments)
 ├── upstream-context.ts   # HANDOFF.md reading for agent-to-agent context
 ├── issue-comments.ts     # Post run summary comments on GitHub issues
@@ -110,6 +111,13 @@ labelSync:
 # Base branch used for collision-detection diffs and counter seeding (default "main")
 baseBranch: "main"
 
+# Default model/effort for the per-issue policy (model-effort.ts). Baseline is
+# Sonnet; effort defaults to medium (or the per-issue complexity tier). Retries
+# escalate effort one tier per attempt (cap max); Haiku at high+ effort is
+# promoted to Sonnet. Per-issue model/effort/complexity override these.
+defaultModel: "sonnet"
+defaultEffort: "medium"
+
 # Per-repo overrides for cross-repo DAGs, keyed by owner/repo. Each entry may
 # override baseBranch, postSessionCheck, sequentialPaths, appendableFiles for
 # issues that declare (or inherit via defaultRepo) that repo. Replace semantics,
@@ -162,6 +170,10 @@ issues:
     dependsOn: []
     # repo: "owner/repo"  # optional; overrides defaultRepo for this issue's ref
     description: "Feature description"
+    # model: opus         # optional; alias (haiku/sonnet/opus) or full id; overrides defaultModel
+    # effort: high        # optional; low|medium|high|xhigh|max; overrides the complexity tier
+    # complexity: complex # optional; mechanical→low, normal→medium, complex→high (sets default effort)
+    # extraDirs: ["../wxyc-shared"]  # optional; extra read-only dirs (--add-dir); relative to config file
     # serial: true  # optional; runs this issue alone in its own wave (e.g. for migrations)
     # ownsFiles:    # optional; files this issue expects to write (triggers wave serialization on overlap)
   # dependsOn entries are a bare number/numeric-string (same repo as this issue)

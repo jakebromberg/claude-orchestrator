@@ -816,6 +816,38 @@ describe("deriveHooks", () => {
 
       expect(commands[0].cmd).toContain("99");
     });
+
+    it("resolves at the default Sonnet / medium tier (not Opus)", async () => {
+      const commands: Array<{ cmd: string; cwd: string }> = [];
+      const hooks = deriveHooks(
+        makeYaml({ mergeConflictRetry: { enabled: true } }),
+        { runCommand: vi.fn((cmd, cwd) => { commands.push({ cmd, cwd }); return ""; }) },
+      );
+
+      await hooks.onMergeConflict!(makeIssue(), [], "main");
+
+      expect(commands[0].cmd).toContain("'--model' 'sonnet'");
+      expect(commands[0].cmd).toContain("'--effort' 'medium'");
+      expect(commands[0].cmd).not.toContain("opus");
+    });
+
+    it("resolves at the issue's own model / effort, with its extra dirs", async () => {
+      const commands: Array<{ cmd: string; cwd: string }> = [];
+      const hooks = deriveHooks(
+        makeYaml({ mergeConflictRetry: { enabled: true } }),
+        { runCommand: vi.fn((cmd, cwd) => { commands.push({ cmd, cwd }); return ""; }) },
+      );
+
+      await hooks.onMergeConflict!(
+        makeIssue({ model: "opus", effort: "max", extraDirs: ["/repo/wxyc-shared"] }),
+        [],
+        "main",
+      );
+
+      expect(commands[0].cmd).toContain("'--model' 'opus'");
+      expect(commands[0].cmd).toContain("'--effort' 'max'");
+      expect(commands[0].cmd).toContain("'--add-dir' '/repo/wxyc-shared'");
+    });
   });
 
   describe("setUpWorktree and removeWorktree", () => {

@@ -14,6 +14,14 @@ export declare const YamlConfigSchema: z.ZodObject<{
     stallTimeout: z.ZodNumber;
     allowedTools: z.ZodOptional<z.ZodArray<z.ZodString>>;
     defaultRepo: z.ZodOptional<z.ZodString>;
+    defaultModel: z.ZodOptional<z.ZodString>;
+    defaultEffort: z.ZodOptional<z.ZodEnum<{
+        low: "low";
+        medium: "medium";
+        high: "high";
+        xhigh: "xhigh";
+        max: "max";
+    }>>;
     branchPrefix: z.ZodOptional<z.ZodString>;
     retryableStatuses: z.ZodOptional<z.ZodArray<z.ZodString>>;
     promptTemplate: z.ZodOptional<z.ZodString>;
@@ -90,6 +98,20 @@ export declare const YamlConfigSchema: z.ZodObject<{
         description: z.ZodString;
         repo: z.ZodOptional<z.ZodString>;
         mode: z.ZodOptional<z.ZodString>;
+        model: z.ZodOptional<z.ZodString>;
+        effort: z.ZodOptional<z.ZodEnum<{
+            low: "low";
+            medium: "medium";
+            high: "high";
+            xhigh: "xhigh";
+            max: "max";
+        }>>;
+        complexity: z.ZodOptional<z.ZodEnum<{
+            mechanical: "mechanical";
+            normal: "normal";
+            complex: "complex";
+        }>>;
+        extraDirs: z.ZodOptional<z.ZodArray<z.ZodString>>;
         stallTimeout: z.ZodOptional<z.ZodNumber>;
         serial: z.ZodOptional<z.ZodBoolean>;
         ownsFiles: z.ZodOptional<z.ZodArray<z.ZodString>>;

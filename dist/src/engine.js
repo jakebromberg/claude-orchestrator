@@ -4,6 +4,7 @@ import { extractPrUrl } from "./pr-tracker.js";
 import { mergePrs } from "./merge.js";
 import { gatherUpstreamContext } from "./upstream-context.js";
 import { encodeRefForFilename } from "./ref.js";
+import { perIssueSpawnArgs } from "./model-effort.js";
 const STALL_CHECK_INTERVAL_MS = 10_000;
 const DEFAULT_ALLOWED_TOOLS = [
     "Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Task",
@@ -228,8 +229,9 @@ export class Orchestrator {
             const args = [
                 "-p",
                 prompt,
-                "--model",
-                "opus",
+                // Per-issue model/effort (+ any --add-dir) come first so a config's
+                // generic getClaudeArgs (below) can still override via last-wins.
+                ...perIssueSpawnArgs(issue, this.config),
                 "--allowedTools",
                 tools.join(","),
                 ...extraArgs,
@@ -394,9 +396,10 @@ export class Orchestrator {
             const failureContext = checkResult.output ?? checkResult.summary ?? "unknown failure";
             const retryPrompt = `${originalPrompt}\n\n## CI Failure Context\n\nThe following checks failed:\n\n${failureContext}\n\nPlease fix these issues.`;
             const tools = this.config.allowedTools ?? DEFAULT_ALLOWED_TOOLS;
+            // Escalate effort one tier per attempt (capped at max), keeping the model.
             const retryArgs = [
                 "-p", retryPrompt,
-                "--model", "opus",
+                ...perIssueSpawnArgs(issue, this.config, attempt),
                 "--allowedTools", tools.join(","),
                 ...this.config.hooks.getClaudeArgs(issue),
                 "--output-format", "stream-json",

@@ -744,6 +744,128 @@ describe("Orchestrator", () => {
     });
   });
 
+  describe("model & effort", () => {
+    it("defaults to Sonnet / medium effort on the primary spawn (not Opus)", async () => {
+      const issue = makeIssue({ number: 1, wave: 1 });
+      const { orchestrator, deps } = makeOrchestrator([issue]);
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+
+      const args = runner.spawned[0].args;
+      expect(args[args.indexOf("--model") + 1]).toBe("sonnet");
+      expect(args[args.indexOf("--effort") + 1]).toBe("medium");
+      expect(args).not.toContain("opus");
+
+      runner.resolvers.get(1000)!(0);
+      await promise;
+    });
+
+    it("honors per-issue model, effort, and extraDirs", async () => {
+      const issue = makeIssue({
+        number: 1,
+        wave: 1,
+        model: "opus",
+        effort: "max",
+        extraDirs: ["/repo/wxyc-shared"],
+      });
+      const { orchestrator, deps } = makeOrchestrator([issue]);
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+
+      const args = runner.spawned[0].args;
+      expect(args[args.indexOf("--model") + 1]).toBe("opus");
+      expect(args[args.indexOf("--effort") + 1]).toBe("max");
+      const addDirIdx = args.indexOf("--add-dir");
+      expect(addDirIdx).toBeGreaterThan(-1);
+      expect(args[addDirIdx + 1]).toBe("/repo/wxyc-shared");
+
+      runner.resolvers.get(1000)!(0);
+      await promise;
+    });
+
+    it("derives effort from complexity", async () => {
+      const issue = makeIssue({ number: 1, wave: 1, complexity: "complex" });
+      const { orchestrator, deps } = makeOrchestrator([issue]);
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+
+      const args = runner.spawned[0].args;
+      expect(args[args.indexOf("--effort") + 1]).toBe("high");
+
+      runner.resolvers.get(1000)!(0);
+      await promise;
+    });
+
+    it("applies config defaultModel / defaultEffort when the issue sets none", async () => {
+      const issue = makeIssue({ number: 1, wave: 1 });
+      const config = makeConfig([issue]);
+      config.defaultModel = "opus";
+      config.defaultEffort = "high";
+      const deps = makeDeps();
+      const orchestrator = new Orchestrator(config, deps);
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+
+      const args = runner.spawned[0].args;
+      expect(args[args.indexOf("--model") + 1]).toBe("opus");
+      expect(args[args.indexOf("--effort") + 1]).toBe("high");
+
+      runner.resolvers.get(1000)!(0);
+      await promise;
+    });
+
+    it("escalates effort one tier on a CI-failure retry, keeping the model", async () => {
+      let checkCallCount = 0;
+      const issue = makeIssue({ number: 1, wave: 1, complexity: "normal" });
+      const config = makeConfig([issue], {
+        postSessionCheck: vi.fn(async () => {
+          checkCallCount++;
+          return checkCallCount === 1
+            ? { passed: false, output: "boom", summary: "failed" }
+            : { passed: true };
+        }),
+      });
+      config.retryOnCheckFailure = { maxRetries: 2, enabled: true };
+      const deps = makeDeps();
+      const orchestrator = new Orchestrator(config, deps);
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+      const primary = runner.spawned[0].args;
+      expect(primary[primary.indexOf("--effort") + 1]).toBe("medium");
+      runner.resolvers.get(1000)!(0);
+
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(2));
+      const retry = runner.spawned[1].args;
+      expect(retry[retry.indexOf("--effort") + 1]).toBe("high");
+      expect(retry[retry.indexOf("--model") + 1]).toBe("sonnet");
+      runner.resolvers.get(1001)!(0);
+
+      await promise;
+      expect(deps.statusStore.get("1")).toBe("succeeded");
+    });
+
+    it("promotes a Haiku issue to Sonnet at high effort (guardrail)", async () => {
+      const issue = makeIssue({ number: 1, wave: 1, model: "haiku", complexity: "complex" });
+      const { orchestrator, deps } = makeOrchestrator([issue]);
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+
+      const args = runner.spawned[0].args;
+      expect(args[args.indexOf("--model") + 1]).toBe("sonnet");
+      expect(args[args.indexOf("--effort") + 1]).toBe("high");
+
+      runner.resolvers.get(1000)!(0);
+      await promise;
+    });
+  });
+
   describe("maxParallel configuration", () => {
     it("respects maxParallel from constructor options", async () => {
       const issues = [

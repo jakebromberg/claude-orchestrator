@@ -18,6 +18,14 @@ export function resolveYamlPaths(yaml, yamlDir) {
     if (yaml.promptTemplate) {
         yaml.promptTemplate = path.resolve(yamlDir, yaml.promptTemplate);
     }
+    // Per-issue extra read dirs (`--add-dir`) are paths like other config paths —
+    // resolve any relative entry against the YAML file's directory so they don't
+    // silently resolve against each worktree's cwd at spawn time.
+    for (const issue of yaml.issues) {
+        if (issue.extraDirs) {
+            issue.extraDirs = issue.extraDirs.map((dir) => path.resolve(yamlDir, dir));
+        }
+    }
 }
 /**
  * Load an orchestrator config from a YAML file.
@@ -79,6 +87,8 @@ export async function loadYamlConfig(yamlPath, options = {}) {
         issues: yaml.issues,
         hooks,
         ...(yaml.defaultRepo && { defaultRepo: yaml.defaultRepo }),
+        ...(yaml.defaultModel && { defaultModel: yaml.defaultModel }),
+        ...(yaml.defaultEffort && { defaultEffort: yaml.defaultEffort }),
         ...(yaml.allowedTools && { allowedTools: yaml.allowedTools }),
         ...(yaml.issueComments && { issueComments: { repo: yaml.issueComments.repo, enabled: yaml.issueComments.enabled ?? true } }),
         ...(yaml.labelSync && { labelSync: yaml.labelSync }),

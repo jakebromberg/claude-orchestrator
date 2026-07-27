@@ -251,4 +251,50 @@ describe("validateConfig", () => {
       ).toThrow(/cycle/i);
     });
   });
+
+  describe("model & effort fields", () => {
+    it("accepts and preserves per-issue model/effort/complexity/extraDirs", () => {
+      const config = validateConfig(makeRawConfig([
+        makeSpec({
+          number: 1,
+          slug: "a",
+          model: "opus",
+          effort: "max",
+          complexity: "complex",
+          extraDirs: ["/repo/wxyc-shared"],
+        }),
+      ]));
+      const issue = config.issues[0];
+      expect(issue.model).toBe("opus");
+      expect(issue.effort).toBe("max");
+      expect(issue.complexity).toBe("complex");
+      expect(issue.extraDirs).toEqual(["/repo/wxyc-shared"]);
+    });
+
+    it("threads config-level defaultModel / defaultEffort onto the resolved config", () => {
+      const config = validateConfig({
+        ...makeRawConfig([makeSpec({ number: 1, slug: "a" })]),
+        defaultModel: "sonnet",
+        defaultEffort: "high",
+      });
+      expect(config.defaultModel).toBe("sonnet");
+      expect(config.defaultEffort).toBe("high");
+    });
+
+    it("rejects an invalid effort tier", () => {
+      expect(() =>
+        validateConfig(makeRawConfig([
+          makeSpec({ number: 1, slug: "a", effort: "extreme" as never }),
+        ])),
+      ).toThrow();
+    });
+
+    it("rejects an invalid complexity tag", () => {
+      expect(() =>
+        validateConfig(makeRawConfig([
+          makeSpec({ number: 1, slug: "a", complexity: "trivial" as never }),
+        ])),
+      ).toThrow();
+    });
+  });
 });
