@@ -5,8 +5,8 @@ export interface MergeOptions {
     admin?: boolean;
 }
 export interface MergeDeps {
-    getStatus: (issueNumber: number) => Status;
-    getMetadata: (issueNumber: number) => IssueMetadata;
+    getStatus: (ref: string) => Status;
+    getMetadata: (ref: string) => IssueMetadata;
     runCommand: (cmd: string) => string;
     logger: Logger;
     getWorktreePath?: (issue: Issue) => string;
@@ -27,4 +27,4 @@ export interface MergeDeps {
  * After each successful merge, rebases remaining candidates against updated main
  * (when getWorktreePath is provided). Returns a map of issue number to merge result.
  */
-export declare function mergePrs(issues: Issue[], deps: MergeDeps, options?: MergeOptions): Promise<Map<number, MergeResult>>;
+export declare function mergePrs(issues: Issue[], deps: MergeDeps, options?: MergeOptions): Promise<Map<string, MergeResult>>;
