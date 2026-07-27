@@ -34,8 +34,16 @@ export function computeWaves(specs: IssueSpec[], options?: ComputeWavesOptions):
   if (specs.length === 0) return [];
 
   const defaultRepo = options?.defaultRepo;
-  const refFor = (s: IssueSpec) => refOf(s, defaultRepo);
-  const depsFor = (s: IssueSpec) => s.dependsOn.map((d) => normalizeDep(d, s, defaultRepo));
+  // Compute each spec's ref and normalized deps exactly once; the wave passes
+  // below read them many times, so recomputing per access would be wasteful.
+  const identity = new Map<IssueSpec, { ref: string; deps: string[] }>(
+    specs.map((s) => [
+      s,
+      { ref: refOf(s, defaultRepo), deps: s.dependsOn.map((d) => normalizeDep(d, s, defaultRepo)) },
+    ]),
+  );
+  const refFor = (s: IssueSpec) => identity.get(s)!.ref;
+  const depsFor = (s: IssueSpec) => identity.get(s)!.deps;
 
   // Keyed by ref, not number: colliding numbers across repos stay distinct.
   const dependents = new Map<string, string[]>();

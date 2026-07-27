@@ -12,6 +12,7 @@ import { startWatch } from "./watch.js";
 import { mergePrs } from "./merge.js";
 import { generateReport, formatReport } from "./report.js";
 import { postRunSummaryComments } from "./issue-comments.js";
+import { encodeRefForFilename } from "./ref.js";
 import { shellQuote } from "./shell-quote.js";
 /** Exported for testing. Builds the `gh issue create` command string with shell-safe quoting. */
 export function buildGhIssueCreateCommand(repo, title) {
@@ -212,8 +213,8 @@ export async function createMain(options) {
             metadataStore: deps.metadataStore,
             config,
             logger: deps.logger,
-            readLogTail: (issueNumber, maxBytes) => {
-                const logFile = path.join(config.configDir, "logs", `issue-${issueNumber}.log`);
+            readLogTail: (ref, maxBytes) => {
+                const logFile = path.join(config.configDir, "logs", `issue-${encodeRefForFilename(ref)}.log`);
                 const fd = fs.openSync(logFile, "r");
                 try {
                     const stat = fs.fstatSync(fd);
