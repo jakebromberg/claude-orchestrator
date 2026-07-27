@@ -8,8 +8,8 @@ export interface MergeOptions {
 }
 
 export interface MergeDeps {
-  getStatus: (ref: string) => Status;
-  getMetadata: (ref: string) => IssueMetadata;
+  getStatus: (issueNumber: number) => Status;
+  getMetadata: (issueNumber: number) => IssueMetadata;
   runCommand: (cmd: string) => string;
   logger: Logger;
   getWorktreePath?: (issue: Issue) => string;
@@ -58,7 +58,7 @@ function rebaseBranch(
 function rebaseRemaining(
   sorted: Issue[],
   startIndex: number,
-  results: Map<string, MergeResult>,
+  results: Map<number, MergeResult>,
   deps: MergeDeps,
 ): void {
   if (!deps.getWorktreePath) return;
@@ -66,10 +66,10 @@ function rebaseRemaining(
   for (let j = startIndex; j < sorted.length; j++) {
     const remaining = sorted[j];
 
-    if (results.get(remaining.ref) === "rebase-failed") continue;
+    if (results.get(remaining.number) === "rebase-failed") continue;
 
-    const remainingStatus = deps.getStatus(remaining.ref);
-    const remainingMetadata = deps.getMetadata(remaining.ref);
+    const remainingStatus = deps.getStatus(remaining.number);
+    const remainingMetadata = deps.getMetadata(remaining.number);
     if (remainingStatus !== "succeeded" || !remainingMetadata.prUrl) continue;
 
     const worktreePath = deps.getWorktreePath(remaining);
@@ -77,7 +77,7 @@ function rebaseRemaining(
 
     if (!rebaseBranch(worktreePath, deps.runCommand, deps.logger)) {
       deps.logger.error(`#${remaining.number}: rebase failed, skipping merge`);
-      results.set(remaining.ref, "rebase-failed");
+      results.set(remaining.number, "rebase-failed");
     }
   }
 }
@@ -91,19 +91,19 @@ export async function mergePrs(
   issues: Issue[],
   deps: MergeDeps,
   options?: MergeOptions,
-): Promise<Map<string, MergeResult>> {
-  const results = new Map<string, MergeResult>();
+): Promise<Map<number, MergeResult>> {
+  const results = new Map<number, MergeResult>();
 
   // Sort issues by wave for ordered merging
   const sorted = [...issues].sort((a, b) => a.wave - b.wave);
 
   for (let i = 0; i < sorted.length; i++) {
     const issue = sorted[i];
-    const status = deps.getStatus(issue.ref);
-    const metadata = deps.getMetadata(issue.ref);
+    const status = deps.getStatus(issue.number);
+    const metadata = deps.getMetadata(issue.number);
 
     // Skip issues already marked rebase-failed
-    if (results.get(issue.ref) === "rebase-failed") {
+    if (results.get(issue.number) === "rebase-failed") {
       deps.logger.info(`#${issue.number}: skipped (rebase failed)`);
       continue;
     }
@@ -112,7 +112,7 @@ export async function mergePrs(
       deps.logger.info(
         `#${issue.number}: skipped (status: ${status})`,
       );
-      results.set(issue.ref, "skipped");
+      results.set(issue.number, "skipped");
       continue;
     }
 
@@ -120,7 +120,7 @@ export async function mergePrs(
       deps.logger.info(
         `#${issue.number}: skipped (no PR URL in metadata)`,
       );
-      results.set(issue.ref, "skipped");
+      results.set(issue.number, "skipped");
       continue;
     }
 
@@ -166,11 +166,11 @@ export async function mergePrs(
 
     if (merged) {
       deps.logger.info(`#${issue.number}: merged`);
-      results.set(issue.ref, "merged");
+      results.set(issue.number, "merged");
       rebaseRemaining(sorted, i + 1, results, deps);
     } else {
       deps.logger.error(`#${issue.number}: merge failed: ${failureMessage}`);
-      results.set(issue.ref, "failed");
+      results.set(issue.number, "failed");
     }
   }
 

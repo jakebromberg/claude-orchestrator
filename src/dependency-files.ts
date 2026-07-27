@@ -8,12 +8,12 @@ import type { Issue, IssueMetadata } from "./types.js";
 export function getDependencyFiles(
   issue: Issue,
   allIssues: Issue[],
-  getMetadata: (ref: string) => IssueMetadata,
+  getMetadata: (issueNumber: number) => IssueMetadata,
 ): string[] {
   const files = new Set<string>();
 
-  for (const depRef of issue.deps) {
-    const depMeta = getMetadata(depRef);
+  for (const depNumber of issue.deps) {
+    const depMeta = getMetadata(depNumber);
     if (depMeta.filesChanged) {
       for (const file of depMeta.filesChanged) {
         files.add(file);

@@ -67,7 +67,7 @@ export interface AppendableFileSpec {
 export interface YamlIssue {
   number: number;
   slug: string;
-  dependsOn: (number | string)[];
+  dependsOn: number[];
   description: string;
   repo?: string;
   mode?: string;
@@ -89,7 +89,6 @@ export interface YamlConfig {
   configDir: string;
   worktreeDir: string;
   projectRoot: string;
-  defaultRepo?: string;
   stallTimeout: number;
   allowedTools?: string[];
 

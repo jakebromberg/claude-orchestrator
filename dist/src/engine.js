@@ -3,7 +3,6 @@ import { StallMonitor } from "./stall-monitor.js";
 import { extractPrUrl } from "./pr-tracker.js";
 import { mergePrs } from "./merge.js";
 import { gatherUpstreamContext } from "./upstream-context.js";
-import { encodeRefForFilename } from "./ref.js";
 const STALL_CHECK_INTERVAL_MS = 10_000;
 const DEFAULT_ALLOWED_TOOLS = [
     "Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Task",
@@ -30,7 +29,7 @@ export class Orchestrator {
     async resetStaleStatuses() {
         const promises = [];
         for (const issue of this.config.issues) {
-            if (this.deps.statusStore.get(issue.ref) === "running") {
+            if (this.deps.statusStore.get(issue.number) === "running") {
                 this.deps.logger.warn(`Issue #${issue.number} has stale 'running' status, resetting to pending`);
                 promises.push(this.setStatus(issue, "pending"));
             }
@@ -40,7 +39,7 @@ export class Orchestrator {
     async handleInterrupt() {
         const promises = [];
         for (const issue of this.config.issues) {
-            if (this.deps.statusStore.get(issue.ref) === "running") {
+            if (this.deps.statusStore.get(issue.number) === "running") {
                 promises.push(this.setStatus(issue, "interrupted"));
             }
         }
@@ -97,7 +96,7 @@ export class Orchestrator {
         this.deps.logger.header("Retrying Failed Issues");
         const retryable = [];
         for (const issue of this.config.issues) {
-            const status = this.deps.statusStore.get(issue.ref);
+            const status = this.deps.statusStore.get(issue.number);
             if (this.config.hooks.isRetryableStatus(status)) {
                 await this.setStatus(issue, "pending");
                 retryable.push(issue);
@@ -119,8 +118,8 @@ export class Orchestrator {
             // `remove` is optional on both store interfaces (backwards-compat); a
             // downstream impl that predates the field is treated as "leaves state in
             // place," which is no worse than the previous behaviour.
-            this.deps.statusStore.remove?.(issue.ref);
-            this.deps.metadataStore.remove?.(issue.ref);
+            this.deps.statusStore.remove?.(issue.number);
+            this.deps.metadataStore.remove?.(issue.number);
         }
         this.deps.logger.info("Cleanup complete");
     }
@@ -128,8 +127,8 @@ export class Orchestrator {
     // Private
     // -----------------------------------------------------------------------
     async setStatus(issue, newStatus) {
-        const oldStatus = this.deps.statusStore.get(issue.ref);
-        this.deps.statusStore.set(issue.ref, newStatus);
+        const oldStatus = this.deps.statusStore.get(issue.number);
+        this.deps.statusStore.set(issue.number, newStatus);
         if (this.config.hooks.onStatusChange) {
             try {
                 await this.config.hooks.onStatusChange(issue, oldStatus, newStatus);
@@ -143,7 +142,7 @@ export class Orchestrator {
         const ready = [];
         for (const issue of issues) {
             // Skip already succeeded
-            const currentStatus = this.deps.statusStore.get(issue.ref);
+            const currentStatus = this.deps.statusStore.get(issue.number);
             if (currentStatus === "succeeded") {
                 this.deps.logger.info(`Issue #${issue.number} already succeeded, skipping`);
                 this.refreshMetadata(issue);
@@ -196,12 +195,12 @@ export class Orchestrator {
         return true;
     }
     refreshMetadata(issue) {
-        const logFile = `${this.config.configDir}/logs/issue-${encodeRefForFilename(issue.ref)}.log`;
+        const logFile = `${this.config.configDir}/logs/issue-${issue.number}.log`;
         try {
             const logContent = this.deps.readFile(logFile);
             const pr = extractPrUrl(logContent);
             if (pr) {
-                this.deps.metadataStore.update(issue.ref, {
+                this.deps.metadataStore.update(issue.number, {
                     prUrl: pr.url,
                     prNumber: pr.number,
                 });
@@ -223,7 +222,7 @@ export class Orchestrator {
             this.deps.logger.step(`Launching Claude session for issue #${issue.number}: ${issue.description}`);
             const worktreePath = this.config.hooks.getWorktreePath(issue);
             const extraArgs = this.config.hooks.getClaudeArgs(issue);
-            const logFile = `${this.config.configDir}/logs/issue-${encodeRefForFilename(issue.ref)}.log`;
+            const logFile = `${this.config.configDir}/logs/issue-${issue.number}.log`;
             const tools = this.config.allowedTools ?? DEFAULT_ALLOWED_TOOLS;
             const args = [
                 "-p",
@@ -241,8 +240,8 @@ export class Orchestrator {
                 "--verbose",
             ];
             const launchTime = new Date().toISOString();
-            this.deps.metadataStore.update(issue.ref, { startedAt: launchTime });
-            const stderrFile = `${this.config.configDir}/logs/issue-${encodeRefForFilename(issue.ref)}.stderr.log`;
+            this.deps.metadataStore.update(issue.number, { startedAt: launchTime });
+            const stderrFile = `${this.config.configDir}/logs/issue-${issue.number}.stderr.log`;
             const handle = this.deps.processRunner.spawn("claude", args, { cwd: worktreePath, logFile, stderrFile });
             handle.issueNumber = issue.number;
             let monitor = null;
@@ -262,7 +261,7 @@ export class Orchestrator {
             const postCheck = handle.exitCode.then(async (exitCode) => {
                 monitor?.stop();
                 const finishTime = new Date().toISOString();
-                this.deps.metadataStore.update(issue.ref, {
+                this.deps.metadataStore.update(issue.number, {
                     exitCode,
                     finishedAt: finishTime,
                 });
@@ -271,7 +270,7 @@ export class Orchestrator {
                     const logContent = this.deps.readFile(logFile);
                     const pr = extractPrUrl(logContent);
                     if (pr) {
-                        this.deps.metadataStore.update(issue.ref, {
+                        this.deps.metadataStore.update(issue.number, {
                             prUrl: pr.url,
                             prNumber: pr.number,
                         });
@@ -312,7 +311,7 @@ export class Orchestrator {
                         }
                         const retryExitCode = await retryHandle.exitCode;
                         retryMonitor?.stop();
-                        this.deps.metadataStore.update(issue.ref, {
+                        this.deps.metadataStore.update(issue.number, {
                             exitCode: retryExitCode,
                             finishedAt: new Date().toISOString(),
                         });
@@ -320,7 +319,7 @@ export class Orchestrator {
                             const logContent = this.deps.readFile(logFile);
                             const pr = extractPrUrl(logContent);
                             if (pr) {
-                                this.deps.metadataStore.update(issue.ref, {
+                                this.deps.metadataStore.update(issue.number, {
                                     prUrl: pr.url,
                                     prNumber: pr.number,
                                 });
@@ -404,7 +403,7 @@ export class Orchestrator {
             ];
             const retryHandle = this.deps.processRunner.spawn("claude", retryArgs, { cwd: worktreePath, logFile, stderrFile });
             const retryExitCode = await retryHandle.exitCode;
-            this.deps.metadataStore.update(issue.ref, {
+            this.deps.metadataStore.update(issue.number, {
                 exitCode: retryExitCode,
                 finishedAt: new Date().toISOString(),
                 retryCount: attempt,
@@ -432,7 +431,7 @@ export class Orchestrator {
  */
 export async function cleanUpMergedIssues(issues, mergeResults, deps) {
     for (const issue of issues) {
-        if (mergeResults.get(issue.ref) !== "merged")
+        if (mergeResults.get(issue.number) !== "merged")
             continue;
         try {
             await deps.removeWorktree(issue);

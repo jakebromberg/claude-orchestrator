@@ -15,8 +15,8 @@ export interface IssueCommentDeps {
     runCommand: (cmd: string, options?: {
         input?: string;
     }) => string;
-    getStatus: (ref: string) => Status;
-    getMetadata: (ref: string) => IssueMetadata;
+    getStatus: (issueNumber: number) => Status;
+    getMetadata: (issueNumber: number) => IssueMetadata;
     logger: Logger;
 }
 /**

@@ -1,14 +1,11 @@
 import { z } from "zod/v4";
 import { computeWaves } from "./dag.js";
-import { refOf, normalizeDep } from "./ref.js";
 import type { OrchestratorConfig, RawOrchestratorConfig } from "./types.js";
 
 const IssueSpecSchema = z.object({
   number: z.number().int().positive(),
   slug: z.string().min(1),
-  // A dep is a bare number/numeric string (same repo) or a qualified
-  // cross-repo ref "owner/repo#N". Referential validity is checked below.
-  dependsOn: z.array(z.union([z.number().int().positive(), z.string().min(1)])),
+  dependsOn: z.array(z.number().int().positive()),
   description: z.string().min(1),
   repo: z.string().optional(),
   mode: z.string().optional(),
@@ -27,7 +24,6 @@ const RawConfigSchema = z
     issues: z.array(IssueSpecSchema),
     hooks: z.any(),
     allowedTools: z.array(z.string()).optional(),
-    defaultRepo: z.string().optional(),
     issueComments: z.object({ repo: z.string(), enabled: z.boolean() }).optional(),
     labelSync: z.object({ prefix: z.string(), repo: z.string().optional() }).optional(),
     retryOnCheckFailure: z.object({ maxRetries: z.number().int().positive(), enabled: z.boolean() }).optional(),
@@ -35,25 +31,25 @@ const RawConfigSchema = z
   .check((ctx) => {
     const issues = ctx.value.issues;
     const input = ctx.value;
-    const defaultRepo = ctx.value.defaultRepo;
 
-    // Issues are identified by ref, so the same number in two repos is not a
-    // duplicate. Slugs remain globally unique (they name worktrees/branches).
-    const refs = new Set<string>();
-    const slugs = new Set<string>();
+    // Check for duplicate issue numbers
+    const numbers = new Set<number>();
     for (const issue of issues) {
-      const ref = refOf(issue, defaultRepo);
-      if (refs.has(ref)) {
+      if (numbers.has(issue.number)) {
         ctx.issues.push({
           code: "custom",
           input,
-          message: `Duplicate issue (same repo and number): ${ref}`,
+          message: `Duplicate issue number: #${issue.number}`,
           path: ["issues"],
         });
         return;
       }
-      refs.add(ref);
+      numbers.add(issue.number);
+    }
 
+    // Check for duplicate slugs
+    const slugs = new Set<string>();
+    for (const issue of issues) {
       if (slugs.has(issue.slug)) {
         ctx.issues.push({
           code: "custom",
@@ -66,25 +62,23 @@ const RawConfigSchema = z
       slugs.add(issue.slug);
     }
 
-    // Check dependency references by ref.
+    // Check dependency references
     for (const issue of issues) {
-      const ref = refOf(issue, defaultRepo);
       for (const dep of issue.dependsOn) {
-        const depRef = normalizeDep(dep, issue, defaultRepo);
-        if (depRef === ref) {
+        if (dep === issue.number) {
           ctx.issues.push({
             code: "custom",
             input,
-            message: `Issue ${ref} has a self-referencing dependency`,
+            message: `Issue #${issue.number} has a self-referencing dependency`,
             path: ["issues"],
           });
           return;
         }
-        if (!refs.has(depRef)) {
+        if (!numbers.has(dep)) {
           ctx.issues.push({
             code: "custom",
             input,
-            message: `Issue ${ref} depends on ${depRef}, which does not exist`,
+            message: `Issue #${issue.number} depends on #${dep}, which does not exist`,
             path: ["issues"],
           });
           return;
@@ -92,9 +86,9 @@ const RawConfigSchema = z
       }
     }
 
-    // Check for cycles via computeWaves.
+    // Check for cycles via computeWaves
     try {
-      computeWaves(issues, { defaultRepo });
+      computeWaves(issues);
     } catch (err) {
       ctx.issues.push({
         code: "custom",
@@ -123,10 +117,7 @@ export interface ValidateConfigOptions {
  */
 export function validateConfig(raw: RawOrchestratorConfig, options?: ValidateConfigOptions): OrchestratorConfig {
   const parsed = RawConfigSchema.parse(raw);
-  const issues = computeWaves(parsed.issues, {
-    ignoredOwnsFiles: options?.ignoredOwnsFiles,
-    defaultRepo: parsed.defaultRepo,
-  });
+  const issues = computeWaves(parsed.issues, { ignoredOwnsFiles: options?.ignoredOwnsFiles });
 
   return {
     name: parsed.name,
@@ -136,7 +127,6 @@ export function validateConfig(raw: RawOrchestratorConfig, options?: ValidateCon
     stallTimeout: parsed.stallTimeout,
     issues,
     hooks: parsed.hooks,
-    ...(parsed.defaultRepo && { defaultRepo: parsed.defaultRepo }),
     ...(parsed.allowedTools && { allowedTools: parsed.allowedTools }),
     ...(parsed.issueComments && { issueComments: parsed.issueComments }),
     ...(parsed.labelSync && { labelSync: parsed.labelSync }),

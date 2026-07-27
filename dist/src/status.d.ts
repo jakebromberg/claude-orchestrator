@@ -1,31 +1,31 @@
 import type { Status, StatusStore, IssueMetadata, MetadataStore } from "./types.js";
 export declare class InMemoryStatusStore implements StatusStore {
     private statuses;
-    get(ref: string): Status;
-    set(ref: string, status: Status): void;
-    remove(ref: string): void;
+    get(issueNumber: number): Status;
+    set(issueNumber: number, status: Status): void;
+    remove(issueNumber: number): void;
 }
 export declare class FileStatusStore implements StatusStore {
     private configDir;
     constructor(configDir: string);
-    get(ref: string): Status;
-    set(ref: string, status: Status): void;
-    remove(ref: string): void;
+    get(issueNumber: number): Status;
+    set(issueNumber: number, status: Status): void;
+    remove(issueNumber: number): void;
     private statusFilePath;
 }
 export declare class InMemoryMetadataStore implements MetadataStore {
     private metadata;
-    get(ref: string): IssueMetadata;
-    set(ref: string, metadata: IssueMetadata): void;
-    update(ref: string, partial: Partial<IssueMetadata>): void;
-    remove(ref: string): void;
+    get(issueNumber: number): IssueMetadata;
+    set(issueNumber: number, metadata: IssueMetadata): void;
+    update(issueNumber: number, partial: Partial<IssueMetadata>): void;
+    remove(issueNumber: number): void;
 }
 export declare class FileMetadataStore implements MetadataStore {
     private configDir;
     constructor(configDir: string);
-    get(ref: string): IssueMetadata;
-    set(ref: string, metadata: IssueMetadata): void;
-    update(ref: string, partial: Partial<IssueMetadata>): void;
-    remove(ref: string): void;
+    get(issueNumber: number): IssueMetadata;
+    set(issueNumber: number, metadata: IssueMetadata): void;
+    update(issueNumber: number, partial: Partial<IssueMetadata>): void;
+    remove(issueNumber: number): void;
     private metadataFilePath;
 }

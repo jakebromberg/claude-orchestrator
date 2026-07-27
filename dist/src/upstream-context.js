@@ -21,8 +21,8 @@ export function gatherUpstreamContext(issue, allIssues, deps) {
     if (issue.deps.length === 0)
         return "";
     const sections = [];
-    for (const depRef of issue.deps) {
-        const depIssue = allIssues.find((i) => i.ref === depRef);
+    for (const depNumber of issue.deps) {
+        const depIssue = allIssues.find((i) => i.number === depNumber);
         if (!depIssue)
             continue;
         const worktreePath = deps.getWorktreePath(depIssue);

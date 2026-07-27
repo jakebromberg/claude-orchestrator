@@ -42,51 +42,6 @@ function makeSpec(overrides: Partial<IssueSpec> = {}): IssueSpec {
 }
 
 describe("validateConfig", () => {
-  describe("cross-repo identity", () => {
-    it("accepts the same number in different repos with a cross-repo dependency", () => {
-      const config = validateConfig(makeRawConfig([
-        makeSpec({ number: 924, slug: "lml", repo: "WXYC/lml" }),
-        makeSpec({ number: 924, slug: "bs", repo: "WXYC/backend", dependsOn: ["WXYC/lml#924"] }),
-      ]));
-      const byRef = new Map(config.issues.map((i) => [i.ref, i]));
-      expect(byRef.get("WXYC/lml#924")!.wave).toBe(1);
-      expect(byRef.get("WXYC/backend#924")!.wave).toBe(2);
-    });
-
-    it("rejects a cross-repo dependency on a ref that does not exist", () => {
-      expect(() =>
-        validateConfig(makeRawConfig([
-          makeSpec({ number: 1, slug: "a", repo: "WXYC/lml", dependsOn: ["WXYC/backend#999"] }),
-        ])),
-      ).toThrow(/WXYC\/backend#999/);
-    });
-
-    it("applies defaultRepo so repo-less issues and bare deps resolve", () => {
-      const config = validateConfig({
-        ...makeRawConfig([
-          makeSpec({ number: 1, slug: "a" }),
-          makeSpec({ number: 2, slug: "b", dependsOn: [1] }),
-        ]),
-        defaultRepo: "WXYC/lml",
-      });
-      const byRef = new Map(config.issues.map((i) => [i.ref, i]));
-      expect(byRef.get("WXYC/lml#1")!.wave).toBe(1);
-      expect(byRef.get("WXYC/lml#2")!.deps).toEqual(["WXYC/lml#1"]);
-    });
-
-    it("waves the 3-repo discogs-video chain in order (real config shape)", () => {
-      const config = validateConfig(makeRawConfig([
-        makeSpec({ number: 1, slug: "xml", repo: "WXYC/discogs-xml-converter" }),
-        makeSpec({ number: 2, slug: "cache", repo: "WXYC/discogs-cache", dependsOn: ["WXYC/discogs-xml-converter#1"] }),
-        makeSpec({ number: 3, slug: "lml", repo: "WXYC/library-metadata-lookup", dependsOn: ["WXYC/discogs-cache#2"] }),
-      ]));
-      const byRef = new Map(config.issues.map((i) => [i.ref, i]));
-      expect(byRef.get("WXYC/discogs-xml-converter#1")!.wave).toBe(1);
-      expect(byRef.get("WXYC/discogs-cache#2")!.wave).toBe(2);
-      expect(byRef.get("WXYC/library-metadata-lookup#3")!.wave).toBe(3);
-    });
-  });
-
   describe("valid configs", () => {
     it("accepts a config with no issues", () => {
       const config = validateConfig(makeRawConfig([]));

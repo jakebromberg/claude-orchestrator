@@ -20,7 +20,7 @@ export interface SummaryOptions {
  */
 export function createPrintSummary(
   options: SummaryOptions,
-): (issues: Issue[], getStatus: (ref: string) => Status) => void {
+): (issues: Issue[], getStatus: (n: number) => Status) => void {
   const { title, columns, extraTotals } = options;
 
   return (issues, getStatus) => {
@@ -40,7 +40,7 @@ export function createPrintSummary(
 
     // Rows
     for (const issue of issues) {
-      const status = getStatus(issue.ref);
+      const status = getStatus(issue.number);
       let color = NC;
       if (status === "succeeded") color = GREEN;
       else if (status === "failed") color = RED;
@@ -58,7 +58,7 @@ export function createPrintSummary(
     // Totals
     let succeeded = 0, failed = 0, running = 0, pending = 0, skipped = 0;
     for (const issue of issues) {
-      const status = getStatus(issue.ref);
+      const status = getStatus(issue.number);
       if (status === "succeeded") succeeded++;
       else if (status === "failed") failed++;
       else if (status === "running") running++;

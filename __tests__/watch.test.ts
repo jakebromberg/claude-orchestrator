@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { refOf, normalizeDep } from "../src/ref.js";
 import type { Issue, OrchestratorConfig, OrchestratorHooks, Status } from "../src/types.js";
 import { InMemoryStatusStore } from "../src/status.js";
 import { renderDashboard, readLastLogLine, startWatch } from "../src/watch.js";
@@ -8,20 +7,15 @@ import { renderDashboard, readLastLogLine, startWatch } from "../src/watch.js";
 // Test helpers
 // ---------------------------------------------------------------------------
 
-function makeIssue(overrides: Omit<Partial<Issue>, "deps"> & { deps?: (number | string)[] } = {}): Issue {
-  const { deps: depOverride, ref: refOverride, ...rest } = overrides;
-  const base = {
+function makeIssue(overrides: Partial<Issue> = {}): Issue {
+  return {
     number: 1,
     slug: "test-issue",
-    wave: 1,
     dependsOn: [],
     description: "Test issue",
-    ...rest,
-  };
-  return {
-    ...base,
-    ref: refOverride ?? refOf(base),
-    deps: (depOverride ?? []).map((d) => normalizeDep(d, base)),
+    wave: 1,
+    deps: [],
+    ...overrides,
   };
 }
 
@@ -104,9 +98,9 @@ describe("renderDashboard", () => {
       makeIssue({ number: 35, description: "Playwright structure", wave: 2 }),
     ];
     const config = makeConfig(issues);
-    const statusMap: Record<string, Status> = {
-      "frontend#32": "succeeded",
-      "35": "running",
+    const statusMap: Record<number, Status> = {
+      32: "succeeded",
+      35: "running",
     };
     const output = renderDashboard({
       config,
@@ -198,7 +192,7 @@ describe("renderDashboard", () => {
     };
     const output = renderDashboard({
       config,
-      getStatus: (n) => statusMap[Number(n)] ?? "pending",
+      getStatus: (n) => statusMap[n] ?? "pending",
       getLastLogLine: () => "",
     });
     const plain = stripAnsi(output);
@@ -322,7 +316,7 @@ describe("startWatch", () => {
     const writes: string[] = [];
     const config = makeConfig([makeIssue({ number: 1 })]);
     const statusStore = new InMemoryStatusStore();
-    statusStore.set("1", "running");
+    statusStore.set(1, "running");
 
     const handle = startWatch({
       config,
@@ -340,7 +334,7 @@ describe("startWatch", () => {
     const writes: string[] = [];
     const config = makeConfig([makeIssue({ number: 42 })]);
     const statusStore = new InMemoryStatusStore();
-    statusStore.set("42", "failed");
+    statusStore.set(42, "failed");
 
     const handle = startWatch({
       config,

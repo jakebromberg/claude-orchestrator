@@ -289,6 +289,6 @@ issues:
     expect(config.issues[0].wave).toBe(1);
     expect(config.issues[0].deps).toEqual([]);
     expect(config.issues[1].wave).toBe(2);
-    expect(config.issues[1].deps).toEqual(["1"]);
+    expect(config.issues[1].deps).toEqual([1]);
   });
 });

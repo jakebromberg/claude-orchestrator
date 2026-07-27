@@ -23,7 +23,7 @@ issues:
 
   - number: 2
     slug: cache-video-import
-    dependsOn: ["WXYC/discogs-xml-converter#1"]
+    dependsOn: [1]
     repo: "WXYC/discogs-cache"
     description: |
       Add release_video table to discogs-cache schema and import pipeline.
@@ -33,7 +33,7 @@ issues:
 
   - number: 3
     slug: lml-video-support
-    dependsOn: ["WXYC/discogs-cache#2"]
+    dependsOn: [2]
     repo: "WXYC/library-metadata-lookup"
     description: |
       Update library-metadata-lookup cache service to persist and read video data.

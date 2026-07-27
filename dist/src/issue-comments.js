@@ -12,10 +12,10 @@
  */
 export function postRunSummaryComments(issues, config, deps) {
     for (const issue of issues) {
-        const status = deps.getStatus(issue.ref);
+        const status = deps.getStatus(issue.number);
         if (status === "pending")
             continue;
-        const metadata = deps.getMetadata(issue.ref);
+        const metadata = deps.getMetadata(issue.number);
         const body = buildCommentBody(issue, status, metadata, config);
         const repo = issue.repo ?? config.repo;
         try {

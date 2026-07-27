@@ -1,22 +1,16 @@
 import { describe, it, expect, vi } from "vitest";
-import { refOf, normalizeDep } from "../src/ref.js";
 import { createLabelSyncHandler, type LabelSyncDeps } from "../src/label-sync.js";
 import type { Issue, Status, Logger } from "../src/types.js";
 
-function makeIssue(overrides: Omit<Partial<Issue>, "deps"> & { deps?: (number | string)[] } = {}): Issue {
-  const { deps: depOverride, ref: refOverride, ...rest } = overrides;
-  const base = {
+function makeIssue(overrides: Partial<Issue> = {}): Issue {
+  return {
     number: 1,
     slug: "test-issue",
     wave: 1,
+    deps: [],
     dependsOn: [],
     description: "Test issue",
-    ...rest,
-  };
-  return {
-    ...base,
-    ref: refOverride ?? refOf(base),
-    deps: (depOverride ?? []).map((d) => normalizeDep(d, base)),
+    ...overrides,
   };
 }
 
