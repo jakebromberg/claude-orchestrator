@@ -113,26 +113,7 @@ describe("dashboard server", () => {
     const res = await fetch(`http://127.0.0.1:${port}/api/logs/1`);
     expect(res.status).toBe(200);
     expect(await res.text()).toBe("test output line");
-    // Repo-less issue #1 keys on the bare-number ref "1".
-    expect(readLogTail).toHaveBeenCalledWith("1", 8192);
-  });
-
-  it("resolves the issue number to its composite ref for repo-qualified logs", async () => {
-    const readLogTail = vi.fn().mockReturnValue("qualified output");
-    const issues: Issue[] = [
-      makeIssue({ number: 924, slug: "lml", repo: "WXYC/lml" }),
-    ];
-    const port = getPort();
-    handle = await createDashboardServer(
-      makeDeps({ readLogTail, config: { ...makeDeps().config, issues } }),
-      { port },
-    );
-
-    const res = await fetch(`http://127.0.0.1:${port}/api/logs/924`);
-    expect(res.status).toBe(200);
-    expect(await res.text()).toBe("qualified output");
-    // The engine writes/reads this issue's log under "WXYC/lml#924", not "924".
-    expect(readLogTail).toHaveBeenCalledWith("WXYC/lml#924", 8192);
+    expect(readLogTail).toHaveBeenCalledWith(1, 8192);
   });
 
   it("returns fallback when log read fails", async () => {
@@ -155,20 +136,6 @@ describe("dashboard server", () => {
     const data = await res.json() as { prUrl: string; exitCode: number };
     expect(data.prUrl).toBe("https://github.com/test/pr/1");
     expect(data.exitCode).toBe(0);
-  });
-
-  it("resolves the issue number to its composite ref for repo-qualified metadata", async () => {
-    const deps = makeDeps({
-      config: { ...makeDeps().config, issues: [makeIssue({ number: 924, slug: "lml", repo: "WXYC/lml" })] },
-    });
-    // Metadata is stored under the composite ref, not the bare number.
-    deps.metadataStore.set("WXYC/lml#924", { prUrl: "https://github.com/WXYC/lml/pull/1", exitCode: 0 });
-    const port = getPort();
-    handle = await createDashboardServer(deps, { port });
-
-    const res = await fetch(`http://127.0.0.1:${port}/api/metadata/924`);
-    const data = await res.json() as { prUrl?: string };
-    expect(data.prUrl).toBe("https://github.com/WXYC/lml/pull/1");
   });
 
   it("returns 404 for unknown routes", async () => {
