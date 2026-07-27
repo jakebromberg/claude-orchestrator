@@ -20,7 +20,7 @@ src/
 ├── summary.ts            # Data-driven summary table renderer
 ├── watch.ts              # Live terminal dashboard
 ├── pr-tracker.ts         # PR URL extraction from logs
-├── merge.ts              # PR merge with rebase
+├── merge.ts              # PR merge with rebase onto each PR's per-repo base branch
 ├── run-history.ts        # Run record persistence
 ├── dependency-files.ts   # Dependency file detection
 ├── report.ts             # Post-run report generation

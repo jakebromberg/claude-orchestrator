@@ -167,6 +167,13 @@ export function deriveHooks(
       return branchPrefix + issue.slug;
     },
 
+    getBaseBranch(issue: Issue): string {
+      // This issue's repo's own default branch (iOS `master`, others `main`),
+      // resolved the same way postSessionCheck/onMergeConflict resolve it — so
+      // the merge step rebases a cross-repo PR onto the correct ref.
+      return resolveRepoSettings(yaml, issue.repo ?? yaml.defaultRepo).baseBranch;
+    },
+
     isRetryableStatus(status: Status): boolean {
       return retryableSet.has(status);
     },
