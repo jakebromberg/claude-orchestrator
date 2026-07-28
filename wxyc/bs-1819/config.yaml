@@ -1,0 +1,153 @@
+# BS#1819 — "Protect local catalog search from LML enrichment degradation".
+#
+# The first real cross-repo orchestrator config: the children of the BS#1819
+# epic span three implementation repos (library-metadata-lookup, wxyc-canary,
+# wxyc-ios-64) plus two synthetic DAG nodes that model deploy ordering. Preview
+# the wave partition before running it:
+#
+#   npx tsx wxyc/bs-1819/run.ts bs-1819 --plan
+#
+# Every issue keys on its composite ref (owner/repo#N), so numbers never collide
+# across repos. Each repo forks from its own base branch (iOS `master`, the rest
+# `main`) and runs its own CI. The run holds at the `wait-canary` manual gate
+# until a human confirms the prod canary is green (see hooks.ts confirmCutover).
+
+name: "bs-1819"
+configDir: "./.orchestrator/state"
+worktreeDir: "./.orchestrator/worktrees"
+projectRoot: "../.."
+stallTimeout: 1800
+promptTemplate: "./prompt.md"
+branchPrefix: "orchestrator/"
+
+# The BS#1819 epic parent lives in Backend-Service; its children are the LML /
+# canary / iOS issues below. defaultRepo is the dominant repo, used for the ref
+# of any node that omits its own `repo` and for deterministic ordering.
+defaultRepo: "WXYC/library-metadata-lookup"
+defaultModel: "sonnet"
+
+# Per-repo base branch + CI. A repo entry replaces the top-level default wholesale
+# (see resolveRepoSettings). Keys must be referenced by an issue's `repo` or by
+# `defaultRepo`, or the load fails (unknownRepoKeys).
+baseBranch: "main"
+repos:
+  WXYC/library-metadata-lookup:
+    baseBranch: "main"
+    postSessionCheck:
+      commands:
+        - "ruff check ."
+        - "ruff format --check ."
+        - "pytest -m 'not pg and not external_api and not stack and not slow' -q"
+  WXYC/wxyc-canary:
+    baseBranch: "main"
+    postSessionCheck:
+      commands:
+        - "npm ci --no-audit --no-fund --prefer-offline"
+        - "npm run build"
+        - "npm test"
+  WXYC/wxyc-ios-64:
+    baseBranch: "master"
+    postSessionCheck:
+      commands:
+        - "xcodebuild test -scheme WXYC -destination 'platform=iOS Simulator,name=iPhone 15' -quiet"
+
+retryOnCheckFailure:
+  maxRetries: 1
+
+# YAML descriptions are one-liners — the agent reads the canonical body via
+# `gh issue view <N> -R <repo>`. Two nodes (#926, ios#685) are already CLOSED;
+# they stay in the graph to preserve the topology (#929 consumes the #926 ADR;
+# ios#685 is the terminal consumer). A real run skips closed issues; the preview
+# shows them in place. deploy-lml / wait-canary (#9001/#9002) are synthetic
+# non-issue DAG nodes, not GitHub issues.
+issues:
+  # ---- Wave 1: independent LML lane-isolation work ----
+  - number: 924
+    slug: reserve-bulk-headroom
+    repo: WXYC/library-metadata-lookup
+    dependsOn: []
+    complexity: normal
+    description: "Cap LML_BULK_GLOBAL_MAX_CONCURRENT below the interactive lane in prod so >=3 of the 5 Discogs permits stay reserved for interactive. Env-only + acceptance against the #923 semaphore_queue_depth measurement."
+
+  - number: 926
+    slug: local-search-isolation-adr
+    repo: WXYC/library-metadata-lookup
+    dependsOn: []
+    complexity: normal
+    description: "Decision record: LML local-search isolation mechanism (measured escalation ladder). RESOLVED — ADR landed; node retained to anchor the #929 edge."
+
+  - number: 928
+    slug: low-priority-lane-policy
+    repo: WXYC/library-metadata-lookup
+    dependsOn: []
+    complexity: normal
+    description: "Low-priority lane policy for batch/cron/backfill callers: typed client with no interactive default + a CI grep guard. Upstream-blocked by BS#1826 (X-Caller-Class enum) — coordinate before merging."
+
+  - number: 930
+    slug: bounded-admission-control
+    repo: WXYC/library-metadata-lookup
+    dependsOn: []
+    complexity: complex
+    model: opus
+    description: "Bounded admission control + caller-deadline (over the whole spine+tail, raw caller budget) + degraded responses for enrichment-heavy lookup. Split PR1 deadline+degraded / PR2 admission gate. Upstream-blocked by LML#943 (degraded LookupResponse discriminator) — must land first."
+
+  - number: 931
+    slug: traffic-class-observability
+    repo: WXYC/library-metadata-lookup
+    dependsOn: []
+    complexity: normal
+    description: "Traffic-class-aware observability for LML: endpoint family, caller reason, queue wait, admission result, timeout phase. The non-BS backstop for caller-reason telemetry."
+
+  # ---- Wave 2: LML work that builds on wave 1 ----
+  - number: 927
+    slug: discogs-semaphore-class-priority
+    repo: WXYC/library-metadata-lookup
+    dependsOn: [924]
+    complexity: complex
+    model: opus
+    description: "Durable Discogs-semaphore class priority: reserve interactive headroom below the shared 5-permit gate where interactive and bulk actually collide. The code version of #924's env floor."
+
+  - number: 929
+    slug: protect-local-search
+    repo: WXYC/library-metadata-lookup
+    dependsOn: [926]
+    complexity: complex
+    model: opus
+    description: "Protect local catalog search under enrichment load — implement the #926 escalation ladder. SLO: /library/search p95<=200ms / p99<=500ms under /lookup/bulk saturation. Rung (a) verdict = a controlled prod bulk drain."
+
+  # ---- Wave 3: deploy LML once all its lane-isolation work is merged ----
+  # Synthetic command mode-node: exit-0 of the deploy is the cross-repo cutover,
+  # so dependents (canary#82) release automatically — no manual gate here.
+  - number: 9001
+    slug: deploy-lml
+    repo: WXYC/library-metadata-lookup
+    mode: deploy
+    command: "gh workflow run deploy.yml -R WXYC/library-metadata-lookup --ref main"
+    dependsOn: [924, 926, 927, 928, 929, 930, 931]
+    description: "Deploy library-metadata-lookup once every lane-isolation change is merged. Command mode-node — no worktree, no model."
+
+  # ---- Wave 4: verify isolation live in prod ----
+  - number: 82
+    slug: protected-search-canaries
+    repo: WXYC/wxyc-canary
+    dependsOn: ["WXYC/library-metadata-lookup#9001"]
+    complexity: normal
+    description: "Add protected-search + separate enrichment canaries to verify local-search isolation (BS#1819): 2 checks, single-dimension CheckFailure alarms (no dimensionless companion). Depends on LML being deployed."
+
+  # ---- Wave 5: human confirms the canary is green before iOS consumes ----
+  # Command-less manual gate — the run holds here until confirmCutover approves.
+  - number: 9002
+    slug: wait-canary
+    repo: WXYC/wxyc-canary
+    mode: gate
+    dependsOn: [82]
+    description: "Manual cutover: confirm the protected-search canary is green in prod before releasing the iOS consumer. Synthetic gate node — the run holds for confirmCutover."
+
+  # ---- Wave 6: iOS consumes the now-verified metadata path ----
+  - number: 685
+    slug: hasv2metadata-inline-render
+    repo: WXYC/wxyc-ios-64
+    dependsOn: ["WXYC/wxyc-canary#9002"]
+    complexity: normal
+    extraDirs: ["../wxyc-shared"]
+    description: "hasV2Metadata: terminal rows with any inline field render inline (no proxy fetch). RESOLVED — landed; node retained as the terminal consumer. Two-gate fix; upstream base-first assembly was BS#1827."

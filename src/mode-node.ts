@@ -64,7 +64,13 @@ export function cutoverReason(
   issue: Issue,
   lookup: (ref: string) => Issue | undefined,
 ): string | undefined {
-  if (isManualGate(issue)) return `manual ${issue.mode} gate`;
+  // A command-less `gate` node is just "a manual gate"; a command-less
+  // `deploy`/`publish` is "a manual deploy/publish gate" (its command was
+  // omitted, so a human performs the cutover). Avoid the "manual gate gate"
+  // stutter for the literal `gate` kind.
+  if (isManualGate(issue)) {
+    return issue.mode === "gate" ? "manual gate" : `manual ${issue.mode} gate`;
+  }
 
   const ownRepo = repoOfRef(issue.ref);
   for (const depRef of issue.deps) {

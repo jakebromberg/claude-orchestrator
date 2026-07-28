@@ -89,9 +89,14 @@ describe("cutoverReason", () => {
     expect(cutoverReason(b, lookupOf([a, b]))).toBeUndefined();
   });
 
-  it("gates a command-less manual gate node", () => {
+  it("gates a command-less manual gate node without a stutter", () => {
     const gate = mk({ number: 1, repo: "WXYC/lml", mode: "gate" });
-    expect(cutoverReason(gate, lookupOf([gate]))).toMatch(/manual/i);
+    expect(cutoverReason(gate, lookupOf([gate]))).toBe("manual gate");
+  });
+
+  it("names the kind for a command-less deploy/publish gate", () => {
+    const deploy = mk({ number: 1, repo: "WXYC/lml", mode: "deploy" });
+    expect(cutoverReason(deploy, lookupOf([deploy]))).toBe("manual deploy gate");
   });
 
   it("gates a bare cross-repo edge into a plain node", () => {
