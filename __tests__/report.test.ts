@@ -180,6 +180,24 @@ describe("formatReport", () => {
     expect(md).toContain("Failed: WXYC/Backend-Service#924");
   });
 
+  it("labels a repo-qualified-but-slashless ref by its ref, not a bare #N", () => {
+    // An owner-less repo (`repo: "Backend-Service"`) still produces a
+    // repo-qualified ref. Cross-repo detection keys on `repoOfRef`'s `#` rule,
+    // not a `/` substring, so the qualifier survives here.
+    const report = generateReport(
+      "Slashless",
+      [makeIssue({ number: 924, repo: "Backend-Service", wave: 1, description: "BS" })],
+      () => "failed" as Status,
+      () => ({}),
+      new Date("2026-01-01T00:00:00Z"),
+      new Date("2026-01-01T00:01:00Z"),
+    );
+
+    const md = formatReport(report);
+    expect(md).toContain("| Backend-Service#924 | BS | 1 | failed | — |");
+    expect(md).toContain("Failed: Backend-Service#924");
+  });
+
   it("omits next steps when no failures", () => {
     const report = generateReport(
       "Test",

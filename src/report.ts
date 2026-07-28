@@ -1,4 +1,16 @@
 import type { Issue, Status, IssueMetadata } from "./types.js";
+import { repoOfRef } from "./ref.js";
+
+/**
+ * Human label for a report row. Cross-repo runs need the qualified ref to
+ * disambiguate same-numbered issues; a repo-less (single-repo) ref keeps the
+ * familiar `#N`. Cross-repo detection reuses `repoOfRef` — the canonical
+ * `#`-based identity rule — so the report never disagrees with the DAG/store
+ * layer about whether a ref is repo-qualified.
+ */
+function refLabel(issue: { ref: string; number: number }): string {
+  return repoOfRef(issue.ref) !== undefined ? issue.ref : `#${issue.number}`;
+}
 
 export interface ReportData {
   configName: string;
@@ -82,7 +94,7 @@ export function formatReport(report: ReportData): string {
       : "—";
     // A bare `#N` is ambiguous in a cross-repo run (same number, two repos);
     // show the qualified ref there and keep `#N` for single-repo readability.
-    const label = issue.ref.includes("/") ? issue.ref : `#${issue.number}`;
+    const label = refLabel(issue);
     lines.push(
       `| ${label} | ${issue.description} | ${issue.wave} | ${issue.status} | ${pr} |`,
     );
@@ -96,7 +108,7 @@ export function formatReport(report: ReportData): string {
     lines.push("- Review failed issues and retry with `--retry-failed`");
     const failedIssues = report.issues
       .filter((i) => i.status === "failed")
-      .map((i) => (i.ref.includes("/") ? i.ref : `#${i.number}`));
+      .map(refLabel);
     lines.push(`- Failed: ${failedIssues.join(", ")}`);
     lines.push("");
   }
