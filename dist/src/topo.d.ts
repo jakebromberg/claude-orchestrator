@@ -33,7 +33,15 @@ export interface LayeredPartition {
     waves: string[][];
     /** Nodes dropped because a dependency can never be satisfied. */
     blocked: BlockedNode[];
-    /** Nodes left after progress stalled with no external cause — a dependency cycle. */
+    /**
+     * Nodes left after progress stalled with no external cause: the members of a
+     * dependency cycle *plus* any node transitively blocked behind one (a node all
+     * of whose remaining paths lead into a cycle can never ship, but is not itself
+     * a cycle member). We do not run an SCC pass to separate the two — every caller
+     * today treats the whole set as unshippable (`computeWaves` throws on it), so
+     * the finer split has no consumer. Revisit if a planner needs to point only at
+     * the true cycle members.
+     */
     cyclic: string[];
 }
 /**

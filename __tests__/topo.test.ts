@@ -121,6 +121,18 @@ describe("layeredTopoSort", () => {
       expect(waves).toEqual([["1"]]);
       expect(cyclic).toEqual(["2", "3"]);
     });
+
+    it("includes a node blocked BEHIND a cycle in cyclic (no SCC split)", () => {
+      // #1<->#2 cycle; #3 depends on #1. #3 is not itself a cycle member, but all
+      // its remaining paths lead into the cycle so it can never ship. Per the
+      // documented `cyclic` contract we report it alongside the true members
+      // rather than running an SCC pass to separate the two.
+      const nodes = [node("1", ["2"]), node("2", ["1"]), node("3", ["1"])];
+      const { waves, blocked, cyclic } = layeredTopoSort(nodes);
+      expect(waves).toEqual([]);
+      expect(blocked).toEqual([]);
+      expect(cyclic).toEqual(["1", "2", "3"]);
+    });
   });
 
   describe("external blockers", () => {

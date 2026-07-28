@@ -10,7 +10,7 @@
 //
 // The callers wrap this core differently and deliberately are NOT collapsed into
 // one call: `computeWaves` throws on any unplaced node and layers file-ownership
-// / serial post-processing on top; `planWaves` reports `{waves, blocked, cycles}`
+// / serial post-processing on top; `planWaves` reports `{waves, blocked, cyclic}`
 // gracefully and re-plans against a growing `done` frontier. Only the sort is
 // shared — see the plan's "share only the topo core" decision.
 //
@@ -56,7 +56,6 @@ export function readySet(nodes, done = []) {
  */
 export function layeredTopoSort(nodes, options = {}) {
     const order = options.order ?? compareRefString;
-    const originalScope = new Set(nodes.map((n) => n.ref));
     const byRef = new Map(nodes.map((n) => [n.ref, n]));
     const emitted = new Set(options.done ?? []);
     const remaining = new Set([...byRef.keys()].filter((r) => !emitted.has(r)));
@@ -72,9 +71,10 @@ export function layeredTopoSort(nodes, options = {}) {
                 continue;
             remaining.delete(b.ref);
             removedExternal = true;
-            // A missing dep never in the DAG is a true external blocker; a missing dep
-            // that WAS in scope (but got dropped) makes this node transitively unreachable.
-            const reason = b.missing.some((d) => !originalScope.has(d))
+            // A missing dep never in the DAG (never a key in `byRef`) is a true external
+            // blocker; a missing dep that WAS in scope (but got dropped) makes this node
+            // transitively unreachable.
+            const reason = b.missing.some((d) => !byRef.has(d))
                 ? "external"
                 : "unreachable";
             blocked.push({ ref: b.ref, missing: b.missing, reason });
