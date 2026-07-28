@@ -195,7 +195,7 @@ A **cutover gate** stops the engine before releasing an issue behind a command-l
 
 ### Wave-plan preview (`--plan`)
 
-Before committing compute to a cross-repo run, `--plan` prints — read-only, no worktrees, no dispatch — the exact wave partition the engine would execute: each issue grouped under its wave by composite ref (so colliding numbers across repos stay distinct), its resolved model/effort or mode-node kind + command, its dependencies, and a trailing list of the HITL cutover gates where the run will hold. It's the acceptance check for a new config: confirm the waves and gates read correctly before you run it for real. Rendered by the pure `renderPlanPreview(config)` (`plan-preview.ts`).
+Before committing compute to a cross-repo run, `--plan` prints — read-only, no worktrees, no dispatch — the exact wave partition the engine would execute: each issue grouped under its wave by composite ref (so colliding numbers across repos stay distinct), its resolved model/effort or mode-node kind + command, its dependencies, and a trailing list of the HITL cutover gates where the run will hold. It's the acceptance check for a new config: confirm the waves and gates read correctly before you run it for real. Rendered by the pure `renderPlanPreview(config)` (`plan-preview.ts`). The model/effort shown is the per-issue + config-default policy; it does not reflect a config that pins the model via generic `claudeArgs`/`getClaudeArgs` (which the engine applies last).
 
 ### CLI Modes
 

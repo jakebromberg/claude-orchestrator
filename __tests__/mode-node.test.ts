@@ -3,6 +3,7 @@ import {
   isModeNode,
   isCommandNode,
   isManualGate,
+  manualGateLabel,
   cutoverReason,
   MODE_NODE_KINDS,
 } from "../src/mode-node.js";
@@ -79,6 +80,17 @@ describe("mode-node classification", () => {
       expect(isManualGate({ mode: "gate", command: "gh workflow run smoke.yml" })).toBe(false);
       expect(isManualGate({})).toBe(false);
     });
+  });
+});
+
+describe("manualGateLabel", () => {
+  it("names a gate node without a stutter", () => {
+    expect(manualGateLabel({ mode: "gate" })).toBe("manual gate");
+  });
+
+  it("names the kind for deploy/publish gates", () => {
+    expect(manualGateLabel({ mode: "deploy" })).toBe("manual deploy gate");
+    expect(manualGateLabel({ mode: "publish" })).toBe("manual publish gate");
   });
 });
 

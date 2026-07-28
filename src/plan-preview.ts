@@ -10,8 +10,16 @@
  *     gates that hold pending `confirmCutover`?
  *
  * Pure (returns a string), so it is unit-tested directly and wired into the CLI
- * as the `--plan` mode. Reads only `config.issues` — which already carry their
- * `wave`/`ref`/`deps` from `computeWaves` (run inside `validateConfig`).
+ * as the `--plan` mode. Reads `config.issues` — which already carry their
+ * `wave`/`ref`/`deps` from `computeWaves` (run inside `validateConfig`) — plus
+ * `config.name` and the `defaultModel`/`defaultEffort`/`defaultRepo` defaults.
+ *
+ * Accuracy caveat: the model/effort shown is the per-issue + config-default
+ * policy (`resolveModelEffort`). It does NOT resolve a config's generic
+ * `claudeArgs`/`getClaudeArgs` overrides, which the engine appends last (and the
+ * CLI takes the last `--model`). A config that pins the model via `claudeArgs`
+ * rather than per-issue `model` will run that model even though `--plan` shows
+ * the policy default.
  */
 
 import type { Issue, OrchestratorConfig } from "./types.js";

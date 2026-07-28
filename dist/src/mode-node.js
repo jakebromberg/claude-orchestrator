@@ -32,6 +32,17 @@ export function isManualGate(issue) {
     return isModeNode(issue) && !isCommandNode(issue);
 }
 /**
+ * Human-readable label for a command-less manual gate. A literal `gate` node is
+ * just "a manual gate"; a command-less `deploy`/`publish` is "a manual
+ * deploy/publish gate" (its command was omitted, so a human performs the
+ * cutover). One source of truth so every site that names a manual gate — the
+ * cutover reason, the engine's confirmation log — reads the same, with no
+ * "manual gate gate" stutter for the `gate` kind.
+ */
+export function manualGateLabel(issue) {
+    return issue.mode === "gate" ? "manual gate" : `manual ${issue.mode} gate`;
+}
+/**
  * Whether running `issue` requires a manual cutover confirmation, and why —
  * `undefined` when it can release automatically.
  *
@@ -50,13 +61,8 @@ export function isManualGate(issue) {
  *   them — so `lookup` returns a node for every real dep.
  */
 export function cutoverReason(issue, lookup) {
-    // A command-less `gate` node is just "a manual gate"; a command-less
-    // `deploy`/`publish` is "a manual deploy/publish gate" (its command was
-    // omitted, so a human performs the cutover). Avoid the "manual gate gate"
-    // stutter for the literal `gate` kind.
-    if (isManualGate(issue)) {
-        return issue.mode === "gate" ? "manual gate" : `manual ${issue.mode} gate`;
-    }
+    if (isManualGate(issue))
+        return manualGateLabel(issue);
     const ownRepo = repoOfRef(issue.ref);
     for (const depRef of issue.deps) {
         if (repoOfRef(depRef) === ownRepo)

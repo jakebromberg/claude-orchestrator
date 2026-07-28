@@ -2603,6 +2603,10 @@ describe("cutover gate", () => {
       expect(confirmCutover).toHaveBeenCalledWith(gate, expect.stringMatching(/manual/i));
       expect(deps.statusStore.get("1")).toBe("succeeded");
       expect(deps.statusStore.get("2")).toBe("succeeded");
+      // The confirmation log names the gate without the "manual gate gate" stutter.
+      const infoCalls = (deps.logger.info as ReturnType<typeof vi.fn>).mock.calls.flat().join(" ");
+      expect(infoCalls).toContain("(manual gate) confirmed");
+      expect(infoCalls).not.toContain("manual gate gate");
     });
 
     it("holds a manual gate when no confirmCutover hook is wired", async () => {

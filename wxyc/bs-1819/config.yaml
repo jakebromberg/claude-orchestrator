@@ -57,9 +57,12 @@ retryOnCheckFailure:
 # YAML descriptions are one-liners — the agent reads the canonical body via
 # `gh issue view <N> -R <repo>`. Two nodes (#926, ios#685) are already CLOSED;
 # they stay in the graph to preserve the topology (#929 consumes the #926 ADR;
-# ios#685 is the terminal consumer). A real run skips closed issues; the preview
-# shows them in place. deploy-lml / wait-canary (#9001/#9002) are synthetic
-# non-issue DAG nodes, not GitHub issues.
+# ios#685 is the terminal consumer) and to render in the preview. This bundle's
+# deliverable is the `--plan` preview; it does NOT wire a `shouldSkipIssue`, so a
+# real (non-`--plan`) run would spawn sessions for the closed nodes and fire the
+# deploy command — before running it for real, wire a `shouldSkipIssue` that
+# consults issue state (or prune the landed nodes). deploy-lml / wait-canary
+# (#9001/#9002) are synthetic non-issue DAG nodes, not GitHub issues.
 issues:
   # ---- Wave 1: independent LML lane-isolation work ----
   - number: 924
