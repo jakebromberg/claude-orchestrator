@@ -128,8 +128,21 @@ describe("compareRefString", () => {
     expect(compareRefString("5", "WXYC/lml#1")).toBeLessThan(0);
   });
 
-  it("is consistent with compareRef for the same refs", () => {
-    expect(compareRefString("WXYC/lml#10", "WXYC/lml#2")).toBeGreaterThan(0);
-    expect(compareRef({ repo: "WXYC/lml", number: 10 }, { repo: "WXYC/lml", number: 2 })).toBeGreaterThan(0);
+  it("returns 0 for equal refs (stable sort)", () => {
+    expect(compareRefString("WXYC/lml#5", "WXYC/lml#5")).toBe(0);
+    expect(compareRefString("5", "5")).toBe(0);
+  });
+
+  it.each([
+    [{ repo: "WXYC/lml", number: 9 }, { repo: "WXYC/lml", number: 10 }], // same repo
+    [{ repo: "WXYC/a", number: 100 }, { repo: "WXYC/b", number: 1 }], // cross repo
+    [{ number: 9 }, { number: 10 }], // bare vs bare
+    [{ number: 5 }, { repo: "WXYC/lml", number: 1 }], // bare vs qualified
+  ])("agrees in sign with compareRef (%o vs %o)", (a, b) => {
+    const sign = (n: number) => Math.sign(n);
+    // Both directions, since compareRef and compareRefString are used for the
+    // same tie-breaking (topo waves vs dag file-conflict/serial ordering).
+    expect(sign(compareRefString(refOf(a), refOf(b)))).toBe(sign(compareRef(a, b)));
+    expect(sign(compareRefString(refOf(b), refOf(a)))).toBe(sign(compareRef(b, a)));
   });
 });

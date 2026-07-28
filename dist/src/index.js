@@ -3,7 +3,7 @@ export { Orchestrator, cleanUpMergedIssues } from "./engine.js";
 export { validateConfig } from "./schema.js";
 export { computeWaves } from "./dag.js";
 export { parseArgs } from "./cli.js";
-// Topological-sort core — shared with ship-dag's planner so the two never drift.
+// Topological-sort core — to be shared with ship-dag's planner (C2b) so the two won't drift.
 export { readySet, layeredTopoSort } from "./topo.js";
 // Composite issue identity (the ref rules both planners key on).
 export { refOf, normalizeDep, repoOfRef, compareRef, compareRefString, encodeRefForFilename, decodeRefFromFilename, } from "./ref.js";

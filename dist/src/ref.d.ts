@@ -36,5 +36,17 @@ export declare function compareRef(a: RefLike, b: RefLike, defaultRepo?: string)
  * for callers that hold refs, not `RefLike` objects (the shared topo core and
  * ship-dag's planner). Numeric within a repo (so `#9` sorts before `#10`); bare
  * refs share the empty repo and therefore order purely numerically.
+ *
+ * Preconditions / caveats:
+ * - Assumes a numeric `#N` tail. A non-numeric tail (`"repo#gate"`) yields `NaN`,
+ *   which the sort spec treats as "equal" — an unstable, meaningless order. Every
+ *   engine ref satisfies this (`IssueSpec.number` is a `number`); an out-of-repo
+ *   caller synthesizing non-numeric refs must not rely on their ordering.
+ * - Intentionally differs from {@link compareRef} on a bare ref when a
+ *   `defaultRepo` is in play: here a bare ref is the empty repo, whereas
+ *   `compareRef(a, b, defaultRepo)` resolves it to `defaultRepo`. Only matters
+ *   for tie-breaking a set that mixes bare and qualified refs — `computeWaves`
+ *   normalizes every ref via `refOf(spec, defaultRepo)` first, so it can't arise
+ *   there.
  */
 export declare function compareRefString(a: string, b: string): number;
