@@ -5,7 +5,7 @@ import { mergePrs } from "./merge.js";
 import { gatherUpstreamContext } from "./upstream-context.js";
 import { encodeRefForFilename } from "./ref.js";
 import { perIssueSpawnArgs } from "./model-effort.js";
-import { isModeNode, isCommandNode, cutoverReason } from "./mode-node.js";
+import { isModeNode, isCommandNode, cutoverReason, manualGateLabel } from "./mode-node.js";
 import type { MergeResult } from "./merge.js";
 import type {
   Issue,
@@ -320,7 +320,7 @@ export class Orchestrator {
         // Confirmed manual gate — a no-op checkpoint that releases dependents.
         await this.setStatus(issue, "succeeded");
         this.deps.logger.info(
-          `${issue.ref} (manual ${issue.mode} gate) confirmed`,
+          `${issue.ref} (${manualGateLabel(issue)}) confirmed`,
         );
         continue;
       }

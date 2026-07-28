@@ -26,6 +26,15 @@ export declare function isCommandNode(issue: Pick<IssueSpec, "mode" | "command">
  */
 export declare function isManualGate(issue: Pick<IssueSpec, "mode" | "command">): boolean;
 /**
+ * Human-readable label for a command-less manual gate. A literal `gate` node is
+ * just "a manual gate"; a command-less `deploy`/`publish` is "a manual
+ * deploy/publish gate" (its command was omitted, so a human performs the
+ * cutover). One source of truth so every site that names a manual gate — the
+ * cutover reason, the engine's confirmation log — reads the same, with no
+ * "manual gate gate" stutter for the `gate` kind.
+ */
+export declare function manualGateLabel(issue: Pick<IssueSpec, "mode">): string;
+/**
  * Whether running `issue` requires a manual cutover confirmation, and why —
  * `undefined` when it can release automatically.
  *

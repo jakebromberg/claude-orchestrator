@@ -322,7 +322,7 @@ export async function createMain(options) {
         return;
     }
     // Validate --detach compatibility
-    if (args.detach && ["tail", "help", "status", "watch", "cleanup"].includes(args.mode)) {
+    if (args.detach && ["tail", "help", "status", "plan", "watch", "cleanup"].includes(args.mode)) {
         console.error(`--detach cannot be combined with --${args.mode}`);
         process.exit(1);
     }

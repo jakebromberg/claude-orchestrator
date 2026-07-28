@@ -36,6 +36,16 @@ describe("renderPlanPreview", () => {
     expect(out).toContain("2 waves");
   });
 
+  it("renders an empty config without throwing", () => {
+    const out = renderPlanPreview({ name: "empty", issues: [] });
+    expect(out).toContain("empty");
+    expect(out).toContain("0 issues");
+    expect(out).toContain("0 waves");
+    expect(out).toContain("0 HITL gates");
+    expect(out).not.toContain("Wave 1");
+    expect(out).not.toContain("HITL cutover gates");
+  });
+
   it("singularizes counts of one", () => {
     const out = renderPlanPreview({
       name: "solo",

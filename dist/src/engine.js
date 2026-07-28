@@ -5,7 +5,7 @@ import { mergePrs } from "./merge.js";
 import { gatherUpstreamContext } from "./upstream-context.js";
 import { encodeRefForFilename } from "./ref.js";
 import { perIssueSpawnArgs } from "./model-effort.js";
-import { isModeNode, isCommandNode, cutoverReason } from "./mode-node.js";
+import { isModeNode, isCommandNode, cutoverReason, manualGateLabel } from "./mode-node.js";
 const STALL_CHECK_INTERVAL_MS = 10_000;
 const DEFAULT_ALLOWED_TOOLS = [
     "Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Task",
@@ -249,7 +249,7 @@ export class Orchestrator {
             if (!isCommandNode(issue)) {
                 // Confirmed manual gate — a no-op checkpoint that releases dependents.
                 await this.setStatus(issue, "succeeded");
-                this.deps.logger.info(`${issue.ref} (manual ${issue.mode} gate) confirmed`);
+                this.deps.logger.info(`${issue.ref} (${manualGateLabel(issue)}) confirmed`);
                 continue;
             }
             await this.setStatus(issue, "running");
