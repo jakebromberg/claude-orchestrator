@@ -8,6 +8,7 @@ export function generateReport(configName, issues, getStatus, getMetadata, start
         issues: issues.map((issue) => {
             const meta = getMetadata(issue.ref);
             return {
+                ref: issue.ref,
                 number: issue.number,
                 description: issue.description,
                 wave: issue.wave,
@@ -39,7 +40,10 @@ export function formatReport(report) {
         const pr = issue.prUrl
             ? `[#${issue.prNumber}](${issue.prUrl})`
             : "—";
-        lines.push(`| #${issue.number} | ${issue.description} | ${issue.wave} | ${issue.status} | ${pr} |`);
+        // A bare `#N` is ambiguous in a cross-repo run (same number, two repos);
+        // show the qualified ref there and keep `#N` for single-repo readability.
+        const label = issue.ref.includes("/") ? issue.ref : `#${issue.number}`;
+        lines.push(`| ${label} | ${issue.description} | ${issue.wave} | ${issue.status} | ${pr} |`);
     }
     lines.push("");
     // Next steps
@@ -49,7 +53,7 @@ export function formatReport(report) {
         lines.push("- Review failed issues and retry with `--retry-failed`");
         const failedIssues = report.issues
             .filter((i) => i.status === "failed")
-            .map((i) => `#${i.number}`);
+            .map((i) => (i.ref.includes("/") ? i.ref : `#${i.number}`));
         lines.push(`- Failed: ${failedIssues.join(", ")}`);
         lines.push("");
     }
