@@ -142,6 +142,32 @@ describe("computeWaves", () => {
 
       expect(() => computeWaves(specs)).toThrow(/cycle/i);
     });
+
+    it("throws when a dependsOn points to an out-of-scope issue", () => {
+      // The dep #99 is not in the spec set. Like the pre-refactor Kahn (whose
+      // in-degree never reached 0), the layered core reports #2 as unplaced and
+      // computeWaves treats any unplaced node as a hard error. This pins the
+      // throw-on-out-of-scope contract so a future edit can't silently loosen it
+      // (e.g. by dropping blocked nodes gracefully the way planWaves does).
+      const specs = [
+        spec({ number: 1, slug: "a" }),
+        spec({ number: 2, slug: "b", dependsOn: [99] }),
+      ];
+
+      expect(() => computeWaves(specs)).toThrow(/cycle/i);
+    });
+
+    it("throws even when an acyclic prefix exists (all-or-nothing)", () => {
+      // #1 is layerable, but #2<->#3 cycle. computeWaves throws rather than
+      // shipping the #1 prefix — the opposite of planWaves' graceful partition.
+      const specs = [
+        spec({ number: 1, slug: "a" }),
+        spec({ number: 2, slug: "b", dependsOn: [3] }),
+        spec({ number: 3, slug: "c", dependsOn: [2] }),
+      ];
+
+      expect(() => computeWaves(specs)).toThrow(/cycle/i);
+    });
   });
 
   describe("empty input", () => {

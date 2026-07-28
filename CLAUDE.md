@@ -11,7 +11,7 @@ src/
 ├── engine.ts             # Orchestrator class, cleanUpMergedIssues
 ├── schema.ts             # Zod validation + validateConfig()
 ├── dag.ts                # Wave assignment: computeWaves() — wraps topo.ts, adds ownsFiles/serial splitting
-├── topo.ts               # Shared topological-sort core: readySet / layeredTopoSort (also used by ship-dag's planner)
+├── topo.ts               # Shared topological-sort core: readySet / layeredTopoSort (ship-dag's planner adopts it in C2b)
 ├── ref.ts                # Composite issue identity: refOf / normalizeDep / encode/decode / compareRef / compareRefString
 ├── cli.ts                # Argument parsing (pure function)
 ├── status.ts             # Status/metadata stores (file-backed + in-memory)
@@ -60,7 +60,7 @@ src/
 - **Dependency injection**: `Deps` interface for all external interactions
 - **In-memory testing**: All behavioral tests use `InMemoryStatusStore`,
   `InMemoryMetadataStore`, `createSilentLogger`, and mock `ProcessRunner`
-- **Wave scheduling**: `computeWaves()` layers `dependsOn` into waves, with same-file ownership detection via `ownsFiles` (issues in the same candidate wave that claim overlapping non-shared files are slid to later waves by ascending issue number). The topological sort itself lives in `topo.ts` (`layeredTopoSort` / `readySet`) — a single composite-keyed core shared with ship-dag's `plan-waves.mjs`, so the engine's planner and the skill's planner can't drift. `computeWaves` throws on any unplaced node (a cycle, or an out-of-scope dep); ship-dag wraps the same core to report `{waves, blocked, cycles}` gracefully against a `done` frontier.
+- **Wave scheduling**: `computeWaves()` layers `dependsOn` into waves, with same-file ownership detection via `ownsFiles` (issues in the same candidate wave that claim overlapping non-shared files are slid to later waves by ascending issue number). The topological sort itself lives in `topo.ts` (`layeredTopoSort` / `readySet`) — a single composite-keyed core that ship-dag's `plan-waves.mjs` imports in C2b, so the engine's planner and the skill's planner won't drift. `computeWaves` throws on any unplaced node (a cycle, or an out-of-scope dep); ship-dag wraps the same core to report `{waves, blocked, cycles}` gracefully against a `done` frontier.
 - **Config validation**: Zod schema in `validateConfig()` with cycle detection
 - **YAML configs**: Alternative to pure-TS configs — `loadYamlConfig()` reads
   a YAML file, validates it, derives convention-based hooks, and merges

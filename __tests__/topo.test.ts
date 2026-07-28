@@ -12,9 +12,12 @@ describe("readySet", () => {
     expect(blockedExternally).toEqual([]);
   });
 
-  it("holds back a node whose dep is not yet done", () => {
-    const { ready } = readySet([node("1", ["2"]), node("2")]);
+  it("holds back a node whose dep is not yet done (held, not blocked)", () => {
+    const { ready, blockedExternally } = readySet([node("1", ["2"]), node("2")]);
     expect(ready).toEqual(["2"]);
+    // #1 is waiting on an in-scope dep, so it must NOT be reported as externally
+    // blocked — it will ship on a later pass once #2 is done.
+    expect(blockedExternally).toEqual([]);
   });
 
   it("releases a node once its dep is in the done frontier", () => {
@@ -25,6 +28,14 @@ describe("readySet", () => {
   it("omits already-done nodes from ready", () => {
     const { ready } = readySet([node("1"), node("2")], ["1"]);
     expect(ready).toEqual(["2"]);
+  });
+
+  it("counts a done dep as met while still flagging a co-located external dep", () => {
+    // #1 depends on both #2 (done) and #99 (external). `unmet` filters out the
+    // done dep first, so only #99 survives to the external check.
+    const { ready, blockedExternally } = readySet([node("1", ["2", "99"])], ["2"]);
+    expect(ready).toEqual([]);
+    expect(blockedExternally).toEqual([{ ref: "1", missing: ["99"] }]);
   });
 
   it("flags a node whose dep is neither done nor in scope as blockedExternally", () => {
@@ -140,6 +151,20 @@ describe("layeredTopoSort", () => {
       const { waves, blocked } = layeredTopoSort([node("1", ["99"])], { done: ["99"] });
       expect(waves).toEqual([["1"]]);
       expect(blocked).toEqual([]);
+    });
+
+    it("separates an external blocker from an unrelated cycle in one graph", () => {
+      // Exercises the removed-external / genuine-stall interaction: after #1 is
+      // dropped as external, the #2<->#3 cycle must still surface as `cyclic`,
+      // not be swept up with the external blocker.
+      const { waves, blocked, cyclic } = layeredTopoSort([
+        node("1", ["99"]),
+        node("2", ["3"]),
+        node("3", ["2"]),
+      ]);
+      expect(waves).toEqual([]);
+      expect(blocked).toEqual([{ ref: "1", missing: ["99"], reason: "external" }]);
+      expect(cyclic).toEqual(["2", "3"]);
     });
   });
 });

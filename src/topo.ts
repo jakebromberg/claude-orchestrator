@@ -1,8 +1,9 @@
 // topo.ts — the shared, composite-keyed topological-sort core.
 //
-// Exactly one implementation of the layered Kahn partition, used by BOTH the
-// engine's `computeWaves` (dag.ts) and ship-dag's `planWaves` (plan-waves.mjs),
-// so the two planners can never drift. Everything is keyed on composite refs
+// The single implementation of the layered Kahn partition: used today by the
+// engine's `computeWaves` (dag.ts), and — once ship-dag's `planWaves`
+// (plan-waves.mjs) imports it in C2b — by that planner too, so the two won't
+// drift. Everything is keyed on composite refs
 // (opaque strings like `"owner/repo#12"`, or a bare `"12"` in single-repo runs),
 // so the same issue number in two repos stays two distinct nodes and a
 // cross-repo dependency edge is honored.

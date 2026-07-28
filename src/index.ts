@@ -14,7 +14,7 @@ export { computeWaves } from "./dag.js";
 export type { ComputeWavesOptions } from "./dag.js";
 export { parseArgs } from "./cli.js";
 
-// Topological-sort core — shared with ship-dag's planner so the two never drift.
+// Topological-sort core — to be shared with ship-dag's planner (C2b) so the two won't drift.
 export { readySet, layeredTopoSort } from "./topo.js";
 export type { TopoNode, ReadySet, BlockedNode, LayeredPartition } from "./topo.js";
 
