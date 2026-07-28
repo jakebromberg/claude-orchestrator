@@ -1977,7 +1977,7 @@ describe("Orchestrator", () => {
       await promise;
 
       // After merging #1, should rebase #2's worktree before merging it
-      const rebaseCommands = commands.filter((c) => c.includes("rebase origin/main"));
+      const rebaseCommands = commands.filter((c) => c.includes(`rebase origin/'main'`));
       expect(rebaseCommands.length).toBeGreaterThanOrEqual(1);
       expect(rebaseCommands[0]).toContain("/worktrees/issue-2");
     });
@@ -2014,8 +2014,8 @@ describe("Orchestrator", () => {
 
       await promise;
 
-      expect(commands).toContain('git -C "/worktrees/issue-2" rebase origin/master');
-      expect(commands).not.toContain('git -C "/worktrees/issue-2" rebase origin/main');
+      expect(commands).toContain(`git -C "/worktrees/issue-2" rebase origin/'master'`);
+      expect(commands).not.toContain(`git -C "/worktrees/issue-2" rebase origin/'main'`);
     });
 
     it("cleans up worktrees and remote branches after merging", async () => {
@@ -2683,6 +2683,64 @@ describe("cutover gate", () => {
       expect(deps.runCommand).toHaveBeenCalledWith("npm publish", expect.anything());
       expect(deps.statusStore.get("WXYC/wxyc-shared#1")).toBe("succeeded");
       expect(deps.statusStore.get("WXYC/backend#2")).toBe("succeeded");
+    });
+  });
+
+  describe("recovery + observability", () => {
+    it("resumes a held gate on a full re-run once confirmCutover approves", async () => {
+      const gate = makeIssue({ number: 1, slug: "gate", wave: 1, mode: "gate" });
+      const consumer = makeIssue({ number: 2, slug: "consume", wave: 2, deps: [1] });
+
+      // State persists across the two runs (as the file-backed stores would).
+      const statusStore = new InMemoryStatusStore();
+      const metadataStore = new InMemoryMetadataStore();
+
+      // Run 1: no confirmCutover → the gate holds, its dependent skips.
+      const deps1 = makeDeps({ statusStore, metadataStore });
+      await new Orchestrator(makeConfig([gate, consumer]), deps1).runAllWaves();
+      expect(statusStore.get("1")).toBe("pending");
+      expect(statusStore.get("2")).toBe("skipped");
+
+      // Run 2: same state, hook now wired → gate confirmed, consumer runs.
+      const deps2 = makeDeps({ statusStore, metadataStore });
+      const config2 = makeConfig([gate, consumer], { confirmCutover: vi.fn(async () => true) });
+      const runner2 = deps2.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = new Orchestrator(config2, deps2).runAllWaves();
+      await vi.waitFor(() => expect(runner2.spawned.length).toBe(1));
+      runner2.resolvers.get(1000)!(0);
+      await promise;
+
+      expect(statusStore.get("1")).toBe("succeeded");
+      expect(statusStore.get("2")).toBe("succeeded");
+    });
+
+    it("logs an end-of-run summary listing held gates", async () => {
+      const gate = makeIssue({ number: 1, slug: "gate", wave: 1, mode: "gate" });
+      const consumer = makeIssue({ number: 2, slug: "consume", wave: 2, deps: [1] });
+      const { orchestrator, deps } = makeOrchestrator([gate, consumer]); // no hook
+
+      await orchestrator.runAllWaves();
+
+      const warns = (deps.logger.warn as ReturnType<typeof vi.fn>).mock.calls
+        .map((c) => c[0]).join("\n");
+      expect(warns).toContain("held at a cutover gate");
+      expect(warns).toContain(gate.ref); // names the held issue
+    });
+
+    it("names the composite ref (not a bare number) in the held-gate warning", async () => {
+      const upstream = makeIssue({ number: 1, slug: "shared", wave: 1, repo: "WXYC/wxyc-shared" });
+      const consumer = makeIssue({ number: 2, slug: "bs", wave: 2, repo: "WXYC/backend", deps: ["WXYC/wxyc-shared#1"] });
+      const { orchestrator, deps } = makeOrchestrator([upstream, consumer]);
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+
+      const promise = orchestrator.runAllWaves();
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+      runner.resolvers.get(1000)!(0);
+      await promise;
+
+      const warns = (deps.logger.warn as ReturnType<typeof vi.fn>).mock.calls
+        .map((c) => c[0]).join("\n");
+      expect(warns).toContain("WXYC/backend#2 held at cutover gate");
     });
   });
 });

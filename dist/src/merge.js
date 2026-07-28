@@ -1,3 +1,4 @@
+import { shellQuote } from "./shell-quote.js";
 function isConflictError(message) {
     return /conflict/i.test(message);
 }
@@ -14,8 +15,12 @@ function resolveBaseBranch(deps, issue) {
  */
 function rebaseBranch(worktreePath, baseBranch, runCommand, logger) {
     try {
-        runCommand(`git -C "${worktreePath}" fetch origin ${baseBranch}`);
-        runCommand(`git -C "${worktreePath}" rebase origin/${baseBranch}`);
+        // baseBranch is config-derived (per-repo `baseBranch`), so quote it like the
+        // repo's other execSync command-strings do — `origin/'master'` collapses to
+        // `origin/master` at the shell, but a value with a space/metachar can't break
+        // the command.
+        runCommand(`git -C "${worktreePath}" fetch origin ${shellQuote(baseBranch)}`);
+        runCommand(`git -C "${worktreePath}" rebase origin/${shellQuote(baseBranch)}`);
         runCommand(`git -C "${worktreePath}" push --force-with-lease`);
         return true;
     }
@@ -30,8 +35,8 @@ function rebaseBranch(worktreePath, baseBranch, runCommand, logger) {
     }
 }
 /**
- * Rebase remaining wave candidates against updated main after a successful merge.
- * Issues marked rebase-failed in `results` are skipped.
+ * Rebase remaining wave candidates against their own repo's updated base branch
+ * after a successful merge. Issues marked rebase-failed in `results` are skipped.
  */
 function rebaseRemaining(sorted, startIndex, results, deps) {
     if (!deps.getWorktreePath)
@@ -55,7 +60,7 @@ function rebaseRemaining(sorted, startIndex, results, deps) {
 }
 /**
  * Merge PRs for succeeded issues in wave order.
- * After each successful merge, rebases remaining candidates against updated main
+ * After each successful merge, rebases remaining candidates against their base branch
  * (when getWorktreePath is provided). Returns a map of issue number to merge result.
  */
 export async function mergePrs(issues, deps, options) {

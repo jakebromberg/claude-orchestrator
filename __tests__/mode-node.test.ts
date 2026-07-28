@@ -114,6 +114,18 @@ describe("cutoverReason", () => {
     expect(cutoverReason(consumer, lookupOf([gate, consumer]))).toBeUndefined();
   });
 
+  it("gates when one of several deps is a bare cross-repo plain node", () => {
+    const sameRepo = mk({ number: 1, repo: "WXYC/backend" });
+    const crossRepo = mk({ number: 2, repo: "WXYC/wxyc-shared" });
+    const consumer = mk({
+      number: 3, repo: "WXYC/backend",
+      dependsOn: [1, "WXYC/wxyc-shared#2"], // one same-repo, one cross-repo plain
+    });
+    expect(
+      cutoverReason(consumer, lookupOf([sameRepo, crossRepo, consumer])),
+    ).toMatch(/cross-repo/i);
+  });
+
   it("does not gate a single-repo run (bare refs, no repo)", () => {
     const a = mk({ number: 1 });
     const b = mk({ number: 2, dependsOn: [1] });

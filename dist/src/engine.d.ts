@@ -11,6 +11,12 @@ export declare class Orchestrator {
     handleInterrupt(): Promise<void>;
     runWave(wave: number): Promise<void>;
     runAllWaves(): Promise<void>;
+    /**
+     * After a full run, a held cutover gate is left `pending` and its dependents
+     * `skipped` while the process exits normally — so without an aggregate signal
+     * a run that quietly skipped half the DAG reads as a clean success. Surface it.
+     */
+    private reportHeldGates;
     runSpecific(issueNumbers: number[]): Promise<void>;
     retryFailed(): Promise<void>;
     cleanup(): Promise<void>;

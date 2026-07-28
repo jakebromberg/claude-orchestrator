@@ -108,6 +108,30 @@ export class Orchestrator {
         });
       }
     }
+
+    this.reportHeldGates();
+  }
+
+  /**
+   * After a full run, a held cutover gate is left `pending` and its dependents
+   * `skipped` while the process exits normally — so without an aggregate signal
+   * a run that quietly skipped half the DAG reads as a clean success. Surface it.
+   */
+  private reportHeldGates(): void {
+    const held = this.config.issues.filter(
+      (i) => this.deps.statusStore.get(i.ref) === "pending",
+    );
+    if (held.length === 0) return;
+
+    const skipped = this.config.issues.filter(
+      (i) => this.deps.statusStore.get(i.ref) === "skipped",
+    ).length;
+    this.deps.logger.warn(
+      `Run finished with ${held.length} issue(s) held at a cutover gate` +
+        (skipped > 0 ? ` and ${skipped} dependent(s) skipped` : "") +
+        ` — wire a confirmCutover hook or re-run the full plan (run-all) once ` +
+        `the upstream is live. Held: ${held.map((i) => i.ref).join(", ")}`,
+    );
   }
 
   async runSpecific(issueNumbers: number[]): Promise<void> {
@@ -224,9 +248,10 @@ export class Orchestrator {
       const gateReason = cutoverReason(issue, (ref) => byRef.get(ref));
       if (gateReason && !(await this.confirmCutover(issue, gateReason))) {
         this.deps.logger.warn(
-          `Issue #${issue.number} held at cutover gate (${gateReason}); ` +
-            `awaiting confirmation. Wire a confirmCutover hook to approve, or ` +
-            `re-run after the upstream is live.`,
+          `${issue.ref} held at cutover gate (${gateReason}); awaiting ` +
+            `confirmation. Wire a confirmCutover hook to approve, or re-run the ` +
+            `full plan (run-all) once the upstream is live — retry-failed does ` +
+            `not resume held gates.`,
         );
         continue;
       }
@@ -295,14 +320,14 @@ export class Orchestrator {
         // Confirmed manual gate — a no-op checkpoint that releases dependents.
         await this.setStatus(issue, "succeeded");
         this.deps.logger.info(
-          `Issue #${issue.number} (manual ${issue.mode} gate) confirmed`,
+          `${issue.ref} (manual ${issue.mode} gate) confirmed`,
         );
         continue;
       }
 
       await this.setStatus(issue, "running");
       this.deps.logger.step(
-        `Running ${issue.mode} node #${issue.number}: ${issue.command}`,
+        `Running ${issue.mode} node ${issue.ref}: ${issue.command}`,
       );
       this.deps.metadataStore.update(issue.ref, {
         startedAt: new Date().toISOString(),
@@ -321,7 +346,7 @@ export class Orchestrator {
           finishedAt: new Date().toISOString(),
         });
         await this.setStatus(issue, "succeeded");
-        this.deps.logger.info(`Issue #${issue.number} (${issue.mode}) succeeded`);
+        this.deps.logger.info(`${issue.ref} (${issue.mode}) succeeded`);
       } catch (err) {
         // Preserve the command's real exit code and stderr/stdout — for a
         // deploy/publish node the failure output is the whole diagnostic.
@@ -332,7 +357,7 @@ export class Orchestrator {
         });
         await this.setStatus(issue, "failed");
         this.deps.logger.error(
-          `Issue #${issue.number} (${issue.mode}) failed (exit ${exitCode}): ${detail}`,
+          `${issue.ref} (${issue.mode}) failed (exit ${exitCode}): ${detail}`,
         );
       }
     }

@@ -44,8 +44,10 @@ export function isManualGate(issue) {
  *     cutover is already handled: a command node's command success is the gate,
  *     and a manual gate's own confirmation already served as one.
  *
- * @param lookup resolves a dep ref to its issue (deps that don't resolve are
- *   ignored — the schema already rejects dangling refs).
+ * @param lookup resolves a dep ref to its issue. An unresolved *cross-repo* dep
+ *   is treated conservatively as a cutover (gated); an unresolved *same-repo*
+ *   dep is ignored. Dangling refs can't occur at runtime — the schema rejects
+ *   them — so `lookup` returns a node for every real dep.
  */
 export function cutoverReason(issue, lookup) {
     if (isManualGate(issue))
