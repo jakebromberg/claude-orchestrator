@@ -27,6 +27,11 @@ export function parseArgs(argv: string[]): ParsedArgs {
         i++;
         break;
 
+      case "--plan":
+        result.mode = "plan";
+        i++;
+        break;
+
       case "--cleanup":
         result.mode = "cleanup";
         i++;

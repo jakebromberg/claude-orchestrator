@@ -13,6 +13,7 @@ import { mergePrs } from "./merge.js";
 import { generateReport, formatReport } from "./report.js";
 import { postRunSummaryComments } from "./issue-comments.js";
 import { encodeRefForFilename } from "./ref.js";
+import { renderPlanPreview } from "./plan-preview.js";
 import { shellQuote } from "./shell-quote.js";
 /** Exported for testing. Builds the `gh issue create` command string with shell-safe quoting. */
 export function buildGhIssueCreateCommand(repo, title) {
@@ -190,6 +191,11 @@ export async function createMain(options) {
     // Handle status
     if (args.mode === "status") {
         config.hooks.printSummary(config.issues, (n) => deps.statusStore.get(n));
+        process.exit(0);
+    }
+    // Handle plan (read-only wave-plan preview — no worktrees, no dispatch)
+    if (args.mode === "plan") {
+        console.log(renderPlanPreview(config));
         process.exit(0);
     }
     // Handle watch

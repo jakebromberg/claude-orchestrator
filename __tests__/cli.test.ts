@@ -27,6 +27,10 @@ describe("parseArgs", () => {
     expect(parseArgs(["--status"]).mode).toBe("status");
   });
 
+  it("parses --plan", () => {
+    expect(parseArgs(["--plan"]).mode).toBe("plan");
+  });
+
   it("parses --cleanup", () => {
     expect(parseArgs(["--cleanup"]).mode).toBe("cleanup");
   });

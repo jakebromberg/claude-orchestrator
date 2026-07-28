@@ -201,6 +201,7 @@ export interface OrchestratorHooks {
 export type ParsedMode =
   | "help"
   | "status"
+  | "plan"
   | "watch"
   | "cleanup"
   | "merge"

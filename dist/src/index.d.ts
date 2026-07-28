@@ -36,6 +36,8 @@ export { resolveModelEffort, modelEffortArgs, extraDirsArgs, modelEffortInputs, 
 export type { Effort, Complexity, ModelEffortInputs, ResolvedModelEffort } from "./model-effort.js";
 export { isModeNode, isCommandNode, isManualGate, cutoverReason, MODE_NODE_KINDS } from "./mode-node.js";
 export type { ModeNodeKind } from "./mode-node.js";
+export { renderPlanPreview } from "./plan-preview.js";
+export type { PlanPreviewConfig } from "./plan-preview.js";
 export { interpolate } from "./interpolate.js";
 export type { YamlConfig, HooksOverride, YamlSummaryColumn, YamlSummary, YamlPostSessionCheck, YamlIssue, SequentialPathConfig, SequentialDomainConfig, AppendableFileSpec, RepoConfig, } from "./yaml-types.js";
 export { getNestedArray, setNestedArray, extractJsonObjects, parseConflictSections, mergeJsonArrays, mergeJsonDocuments, resolveConflict, } from "./merge-appendable.js";

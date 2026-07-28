@@ -202,6 +202,7 @@ Confirmation comes from an optional `confirmCutover(issue, reason)` hook (return
 
 ```bash
 npx tsx orchestrate.ts myconfig              # Run all waves (up to 4 in parallel)
+npx tsx orchestrate.ts myconfig --plan       # Preview the wave partition (read-only)
 npx tsx orchestrate.ts myconfig --parallel 8 # Run up to 8 issues concurrently
 npx tsx orchestrate.ts myconfig --status     # Show status table
 npx tsx orchestrate.ts myconfig --wave 1     # Run wave 1 only

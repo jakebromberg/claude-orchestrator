@@ -1,6 +1,6 @@
 {
   "name": "@funlandresearch/claude-orchestrator",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "description": "TypeScript engine for launching parallel headless Claude sessions against GitHub issues",
   "type": "module",
   "exports": {
