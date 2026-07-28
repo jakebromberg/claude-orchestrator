@@ -1,5 +1,6 @@
 import type { Issue, IssueSpec } from "./types.js";
-import { refOf, normalizeDep, compareRef } from "./ref.js";
+import { refOf, normalizeDep, compareRef, compareRefString } from "./ref.js";
+import { layeredTopoSort, type TopoNode } from "./topo.js";
 
 /** Options for `computeWaves`. */
 export interface ComputeWavesOptions {
@@ -45,64 +46,28 @@ export function computeWaves(specs: IssueSpec[], options?: ComputeWavesOptions):
   const refFor = (s: IssueSpec) => identity.get(s)!.ref;
   const depsFor = (s: IssueSpec) => identity.get(s)!.deps;
 
-  // Keyed by ref, not number: colliding numbers across repos stay distinct.
-  const dependents = new Map<string, string[]>();
-  const inDegree = new Map<string, number>();
+  // The layered topological partition is the shared topo core (also used by
+  // ship-dag's planner); keyed by ref, colliding numbers across repos stay
+  // distinct. `computeWaves` treats any unplaced node — a cycle member, or a
+  // node whose dependency is out of scope — as a hard error, matching the
+  // pre-refactor Kahn behavior (validateConfig already rules out-of-scope deps
+  // out upstream, so in the normal path only real cycles reach here).
+  const topoNodes: TopoNode[] = specs.map((spec) => ({ ref: refFor(spec), deps: depsFor(spec) }));
+  const { waves, blocked, cyclic } = layeredTopoSort(topoNodes);
 
-  for (const spec of specs) {
-    dependents.set(refFor(spec), []);
-    inDegree.set(refFor(spec), depsFor(spec).length);
+  const unplaced = [...cyclic, ...blocked.map((b) => b.ref)].sort(compareRefString);
+  if (unplaced.length > 0) {
+    throw new Error(`Dependency cycle detected among issues: ${unplaced.join(", ")}`);
   }
 
-  for (const spec of specs) {
-    for (const dep of depsFor(spec)) {
-      dependents.get(dep)?.push(refFor(spec));
-    }
-  }
-
-  // Kahn's algorithm: process nodes with in-degree 0, compute waves.
-  const waves = new Map<string, number>();
-  const queue: string[] = [];
-
-  for (const spec of specs) {
-    if (depsFor(spec).length === 0) {
-      queue.push(refFor(spec));
-      waves.set(refFor(spec), 1);
-    }
-  }
-
-  let processed = 0;
-
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    processed++;
-
-    const currentWave = waves.get(current)!;
-
-    for (const dependent of dependents.get(current) ?? []) {
-      const existingWave = waves.get(dependent) ?? 0;
-      waves.set(dependent, Math.max(existingWave, currentWave + 1));
-
-      const remaining = inDegree.get(dependent)! - 1;
-      inDegree.set(dependent, remaining);
-
-      if (remaining === 0) {
-        queue.push(dependent);
-      }
-    }
-  }
-
-  if (processed < specs.length) {
-    const inCycle = specs
-      .filter((s) => !waves.has(refFor(s)) || inDegree.get(refFor(s))! > 0)
-      .map((s) => refFor(s))
-      .join(", ");
-    throw new Error(`Dependency cycle detected among issues: ${inCycle}`);
-  }
+  const waveOf = new Map<string, number>();
+  waves.forEach((layer, i) => {
+    for (const ref of layer) waveOf.set(ref, i + 1);
+  });
 
   let issues: Issue[] = specs.map((spec) => ({
     ...spec,
-    wave: waves.get(refFor(spec))!,
+    wave: waveOf.get(refFor(spec))!,
     ref: refFor(spec),
     deps: depsFor(spec),
   }));

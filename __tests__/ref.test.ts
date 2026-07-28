@@ -6,6 +6,7 @@ import {
   encodeRefForFilename,
   decodeRefFromFilename,
   compareRef,
+  compareRefString,
 } from "../src/ref.js";
 
 describe("refOf", () => {
@@ -107,5 +108,28 @@ describe("compareRef", () => {
     const b = { repo: "WXYC/lml", number: 2 };
     // defaultRepo "WXYC/lml" makes a's repo equal b's, so numeric order applies.
     expect(compareRef(a, b, "WXYC/lml")).toBeLessThan(0);
+  });
+});
+
+describe("compareRefString", () => {
+  it("orders numerically within the same repo (#9 before #10)", () => {
+    expect(compareRefString("WXYC/lml#9", "WXYC/lml#10")).toBeLessThan(0);
+  });
+
+  it("orders bare-number refs numerically, not lexically", () => {
+    expect(compareRefString("9", "10")).toBeLessThan(0);
+  });
+
+  it("orders by repo first, then number", () => {
+    expect(compareRefString("WXYC/a#100", "WXYC/b#1")).toBeLessThan(0);
+  });
+
+  it("treats a bare ref as the empty repo, sorting it before any qualified ref", () => {
+    expect(compareRefString("5", "WXYC/lml#1")).toBeLessThan(0);
+  });
+
+  it("is consistent with compareRef for the same refs", () => {
+    expect(compareRefString("WXYC/lml#10", "WXYC/lml#2")).toBeGreaterThan(0);
+    expect(compareRef({ repo: "WXYC/lml", number: 10 }, { repo: "WXYC/lml", number: 2 })).toBeGreaterThan(0);
   });
 });

@@ -30,3 +30,11 @@ export declare function decodeRefFromFilename(encoded: string): string;
  * repo-less issues so single-repo DAGs order purely numerically as before.
  */
 export declare function compareRef(a: RefLike, b: RefLike, defaultRepo?: string): number;
+/**
+ * Deterministic ordering for refs already in string form (`"owner/repo#N"` or a
+ * bare `"N"`) — the same repo-then-number ordering as {@link compareRef}, but
+ * for callers that hold refs, not `RefLike` objects (the shared topo core and
+ * ship-dag's planner). Numeric within a repo (so `#9` sorts before `#10`); bare
+ * refs share the empty repo and therefore order purely numerically.
+ */
+export declare function compareRefString(a: string, b: string): number;

@@ -14,6 +14,17 @@ export { computeWaves } from "./dag.js";
 export type { ComputeWavesOptions } from "./dag.js";
 export { parseArgs } from "./cli.js";
 
+// Topological-sort core — shared with ship-dag's planner so the two never drift.
+export { readySet, layeredTopoSort } from "./topo.js";
+export type { TopoNode, ReadySet, BlockedNode, LayeredPartition } from "./topo.js";
+
+// Composite issue identity (the ref rules both planners key on).
+export {
+  refOf, normalizeDep, repoOfRef, compareRef, compareRefString,
+  encodeRefForFilename, decodeRefFromFilename,
+} from "./ref.js";
+export type { RefLike } from "./ref.js";
+
 // Stores
 export { FileStatusStore, FileMetadataStore, InMemoryStatusStore, InMemoryMetadataStore } from "./status.js";
 
