@@ -72,4 +72,20 @@ export function compareRef(a, b, defaultRepo) {
         return ra < rb ? -1 : 1;
     return a.number - b.number;
 }
+/**
+ * Deterministic ordering for refs already in string form (`"owner/repo#N"` or a
+ * bare `"N"`) — the same repo-then-number ordering as {@link compareRef}, but
+ * for callers that hold refs, not `RefLike` objects (the shared topo core and
+ * ship-dag's planner). Numeric within a repo (so `#9` sorts before `#10`); bare
+ * refs share the empty repo and therefore order purely numerically.
+ */
+export function compareRefString(a, b) {
+    const ha = a.indexOf("#");
+    const hb = b.indexOf("#");
+    const ra = ha >= 0 ? a.slice(0, ha) : "";
+    const rb = hb >= 0 ? b.slice(0, hb) : "";
+    if (ra !== rb)
+        return ra < rb ? -1 : 1;
+    return Number(ha >= 0 ? a.slice(ha + 1) : a) - Number(hb >= 0 ? b.slice(hb + 1) : b);
+}
 //# sourceMappingURL=ref.js.map
