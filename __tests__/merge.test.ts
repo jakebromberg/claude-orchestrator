@@ -292,8 +292,8 @@ describe("mergePrs", () => {
 
       // After merging #1, should rebase #2 before merging it
       const mergeIdx1 = commands.findIndex((c) => c.includes("pull/1"));
-      const fetchIdx = commands.findIndex((c) => c.includes('git -C "/worktrees/issue-2" fetch origin main'));
-      const rebaseIdx = commands.findIndex((c) => c.includes('git -C "/worktrees/issue-2" rebase origin/main'));
+      const fetchIdx = commands.findIndex((c) => c.includes(`git -C "/worktrees/issue-2" fetch origin 'main'`));
+      const rebaseIdx = commands.findIndex((c) => c.includes(`git -C "/worktrees/issue-2" rebase origin/'main'`));
       const pushIdx = commands.findIndex((c) => c.includes('git -C "/worktrees/issue-2" push --force-with-lease'));
       const mergeIdx2 = commands.findIndex((c) => c.includes("pull/2"));
 
@@ -325,7 +325,7 @@ describe("mergePrs", () => {
         runCommand: vi.fn((cmd: string) => {
           commands.push(cmd);
           // Rebase fails for issue-2
-          if (cmd.includes('git -C "/worktrees/issue-2" rebase origin/main')) {
+          if (cmd.includes(`git -C "/worktrees/issue-2" rebase origin/'main'`)) {
             throw new Error("conflict");
           }
           return "";
@@ -446,10 +446,34 @@ describe("mergePrs", () => {
       const results = await mergePrs(issues, deps);
 
       expect(results.get("2")).toBe("merged");
-      expect(commands).toContain('git -C "/worktrees/issue-2" fetch origin master');
-      expect(commands).toContain('git -C "/worktrees/issue-2" rebase origin/master');
+      expect(commands).toContain(`git -C "/worktrees/issue-2" fetch origin 'master'`);
+      expect(commands).toContain(`git -C "/worktrees/issue-2" rebase origin/'master'`);
       // And nothing rebased #2 against main.
-      expect(commands).not.toContain('git -C "/worktrees/issue-2" rebase origin/main');
+      expect(commands).not.toContain(`git -C "/worktrees/issue-2" rebase origin/'main'`);
+    });
+
+    it("shell-quotes the base branch so an exotic name can't break the command", async () => {
+      const issues = [
+        makeIssue({ number: 1, wave: 1 }),
+        makeIssue({ number: 2, wave: 1 }),
+      ];
+      const metadataMap: Record<number, IssueMetadata> = {
+        1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1 },
+        2: { prUrl: "https://github.com/org/repo/pull/2", prNumber: 2 },
+      };
+      const commands: string[] = [];
+      const deps = makeMergeDeps({
+        getMetadata: vi.fn((n: string) => metadataMap[Number(n)] ?? {}),
+        runCommand: vi.fn((cmd: string) => { commands.push(cmd); return ""; }),
+        getWorktreePath: vi.fn((issue: Issue) => `/worktrees/issue-${issue.number}`),
+        // A name with a space would split argv if interpolated raw.
+        getBaseBranch: vi.fn(() => "release 2"),
+      });
+
+      await mergePrs(issues, deps);
+
+      expect(commands).toContain(`git -C "/worktrees/issue-2" fetch origin 'release 2'`);
+      expect(commands).toContain(`git -C "/worktrees/issue-2" rebase origin/'release 2'`);
     });
 
     it("resolves each remaining PR's base branch independently", async () => {
@@ -479,8 +503,8 @@ describe("mergePrs", () => {
 
       await mergePrs(issues, deps);
 
-      expect(commands).toContain('git -C "/worktrees/issue-2" rebase origin/master');
-      expect(commands).toContain('git -C "/worktrees/issue-3" rebase origin/main');
+      expect(commands).toContain(`git -C "/worktrees/issue-2" rebase origin/'master'`);
+      expect(commands).toContain(`git -C "/worktrees/issue-3" rebase origin/'main'`);
     });
 
     it("passes each issue's own base branch to onMergeConflict", async () => {

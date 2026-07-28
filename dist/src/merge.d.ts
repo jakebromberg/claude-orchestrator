@@ -33,7 +33,7 @@ export interface MergeDeps {
 }
 /**
  * Merge PRs for succeeded issues in wave order.
- * After each successful merge, rebases remaining candidates against updated main
+ * After each successful merge, rebases remaining candidates against their base branch
  * (when getWorktreePath is provided). Returns a map of issue number to merge result.
  */
 export declare function mergePrs(issues: Issue[], deps: MergeDeps, options?: MergeOptions): Promise<Map<string, MergeResult>>;
