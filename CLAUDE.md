@@ -193,12 +193,17 @@ issues:
 
 A **cutover gate** stops the engine before releasing an issue behind a command-less manual gate or a bare cross-repo dependency (a dep in another repo that isn't itself a mode-node — a command node's exit-0 or a manual gate's own confirmation already counts as the cutover). Confirmation comes from an optional `confirmCutover(issue, reason)` hook; when it's absent, gated issues **hold** (left `pending`, dependents skip) — a cross-repo run wires `confirmCutover` or uses command mode-nodes to progress unattended. See `cutoverReason` in `mode-node.ts`.
 
+### Wave-plan preview (`--plan`)
+
+Before committing compute to a cross-repo run, `--plan` prints — read-only, no worktrees, no dispatch — the exact wave partition the engine would execute: each issue grouped under its wave by composite ref (so colliding numbers across repos stay distinct), its resolved model/effort or mode-node kind + command, its dependencies, and a trailing list of the HITL cutover gates where the run will hold. It's the acceptance check for a new config: confirm the waves and gates read correctly before you run it for real. Rendered by the pure `renderPlanPreview(config)` (`plan-preview.ts`).
+
 ### CLI Modes
 
 ```bash
 <script> <config> [options]
   --help, -h         Show help
   --status           Show current issue statuses
+  --plan             Preview the wave partition without running (read-only)
   --watch            Live terminal dashboard
   --dashboard        Web dashboard (HTTP + SSE)
   --port <n>         Port for web dashboard (default: 3000)

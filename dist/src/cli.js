@@ -21,6 +21,10 @@ export function parseArgs(argv) {
                 result.mode = "status";
                 i++;
                 break;
+            case "--plan":
+                result.mode = "plan";
+                i++;
+                break;
             case "--cleanup":
                 result.mode = "cleanup";
                 i++;

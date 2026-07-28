@@ -14,6 +14,7 @@ import { mergePrs } from "./merge.js";
 import { generateReport, formatReport } from "./report.js";
 import { postRunSummaryComments } from "./issue-comments.js";
 import { encodeRefForFilename } from "./ref.js";
+import { renderPlanPreview } from "./plan-preview.js";
 import { shellQuote } from "./shell-quote.js";
 
 export type ConfigFactory =
@@ -229,6 +230,12 @@ export async function createMain(options: MainOptions): Promise<void> {
   // Handle status
   if (args.mode === "status") {
     config.hooks.printSummary(config.issues, (n) => deps.statusStore.get(n));
+    process.exit(0);
+  }
+
+  // Handle plan (read-only wave-plan preview — no worktrees, no dispatch)
+  if (args.mode === "plan") {
+    console.log(renderPlanPreview(config));
     process.exit(0);
   }
 

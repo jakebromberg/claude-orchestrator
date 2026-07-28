@@ -186,7 +186,7 @@ export interface OrchestratorHooks {
      */
     confirmCutover?(issue: Issue, reason: string): Promise<boolean>;
 }
-export type ParsedMode = "help" | "status" | "watch" | "cleanup" | "merge" | "retry-failed" | "tail" | "run-all" | "run-specific" | "decompose" | "dashboard";
+export type ParsedMode = "help" | "status" | "plan" | "watch" | "cleanup" | "merge" | "retry-failed" | "tail" | "run-all" | "run-specific" | "decompose" | "dashboard";
 export interface ParsedArgs {
     mode: ParsedMode;
     wave?: number;

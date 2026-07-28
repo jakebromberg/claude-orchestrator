@@ -69,6 +69,8 @@ export {
 export type { Effort, Complexity, ModelEffortInputs, ResolvedModelEffort } from "./model-effort.js";
 export { isModeNode, isCommandNode, isManualGate, cutoverReason, MODE_NODE_KINDS } from "./mode-node.js";
 export type { ModeNodeKind } from "./mode-node.js";
+export { renderPlanPreview } from "./plan-preview.js";
+export type { PlanPreviewConfig } from "./plan-preview.js";
 export { interpolate } from "./interpolate.js";
 export type {
   YamlConfig,

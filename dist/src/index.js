@@ -30,6 +30,7 @@ export { deriveWorktreeHooks } from "./worktree-hooks.js";
 export { resolveRepoSettings, allAppendableFiles, unknownRepoKeys } from "./repo-settings.js";
 export { resolveModelEffort, modelEffortArgs, extraDirsArgs, modelEffortInputs, perIssueSpawnArgs, EFFORT_LADDER, DEFAULT_MODEL, DEFAULT_EFFORT, } from "./model-effort.js";
 export { isModeNode, isCommandNode, isManualGate, cutoverReason, MODE_NODE_KINDS } from "./mode-node.js";
+export { renderPlanPreview } from "./plan-preview.js";
 export { interpolate } from "./interpolate.js";
 // Journal-aware merge driver (issue #37)
 export { getNestedArray, setNestedArray, extractJsonObjects, parseConflictSections, mergeJsonArrays, mergeJsonDocuments, resolveConflict, } from "./merge-appendable.js";
