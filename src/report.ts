@@ -6,6 +6,14 @@ export interface ReportData {
   finishedAt: string;
   durationSeconds: number;
   issues: Array<{
+    /**
+     * Composite issue identity (`"owner/repo#N"`, or a bare `"N"` in a
+     * single-repo run). The bare `number` collides across repos, so consumers
+     * that map a report row back to a `(repo, issue, PR)` — e.g. ship-dag's
+     * review/merge pass after the engine implements a cross-repo wave — must
+     * key on this, not on `number`.
+     */
+    ref: string;
     number: number;
     description: string;
     wave: number;
@@ -34,6 +42,7 @@ export function generateReport(
     issues: issues.map((issue) => {
       const meta = getMetadata(issue.ref);
       return {
+        ref: issue.ref,
         number: issue.number,
         description: issue.description,
         wave: issue.wave,
@@ -71,8 +80,11 @@ export function formatReport(report: ReportData): string {
     const pr = issue.prUrl
       ? `[#${issue.prNumber}](${issue.prUrl})`
       : "—";
+    // A bare `#N` is ambiguous in a cross-repo run (same number, two repos);
+    // show the qualified ref there and keep `#N` for single-repo readability.
+    const label = issue.ref.includes("/") ? issue.ref : `#${issue.number}`;
     lines.push(
-      `| #${issue.number} | ${issue.description} | ${issue.wave} | ${issue.status} | ${pr} |`,
+      `| ${label} | ${issue.description} | ${issue.wave} | ${issue.status} | ${pr} |`,
     );
   }
   lines.push("");
@@ -84,7 +96,7 @@ export function formatReport(report: ReportData): string {
     lines.push("- Review failed issues and retry with `--retry-failed`");
     const failedIssues = report.issues
       .filter((i) => i.status === "failed")
-      .map((i) => `#${i.number}`);
+      .map((i) => (i.ref.includes("/") ? i.ref : `#${i.number}`));
     lines.push(`- Failed: ${failedIssues.join(", ")}`);
     lines.push("");
   }

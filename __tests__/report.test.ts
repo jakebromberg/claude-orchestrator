@@ -72,6 +72,63 @@ describe("generateReport", () => {
     });
     expect(report.issues[1].prUrl).toBeUndefined();
   });
+
+  it("carries each issue's composite ref, keeping same-numbered cross-repo issues distinct", () => {
+    // Two issues share the number 924 but live in different repos — the bare
+    // `number` collides, so a consumer (ship-dag's review/merge pass) can only
+    // map a report row back to (repo, PR) via the composite ref.
+    const issues = [
+      makeIssue({ number: 924, repo: "WXYC/library-metadata-lookup", wave: 1, description: "LML" }),
+      makeIssue({ number: 924, repo: "WXYC/Backend-Service", wave: 1, description: "BS" }),
+    ];
+    const status: Record<string, Status> = {
+      "WXYC/library-metadata-lookup#924": "succeeded",
+      "WXYC/Backend-Service#924": "failed",
+    };
+    const meta: Record<string, IssueMetadata> = {
+      "WXYC/library-metadata-lookup#924": {
+        prUrl: "https://github.com/WXYC/library-metadata-lookup/pull/50",
+        prNumber: 50,
+      },
+      "WXYC/Backend-Service#924": {},
+    };
+
+    const report = generateReport(
+      "Cross-repo",
+      issues,
+      (ref) => status[ref] ?? "pending",
+      (ref) => meta[ref] ?? {},
+      new Date("2026-01-01T00:00:00Z"),
+      new Date("2026-01-01T00:01:00Z"),
+    );
+
+    expect(report.issues[0]).toMatchObject({
+      ref: "WXYC/library-metadata-lookup#924",
+      number: 924,
+      status: "succeeded",
+      prNumber: 50,
+    });
+    expect(report.issues[1]).toMatchObject({
+      ref: "WXYC/Backend-Service#924",
+      number: 924,
+      status: "failed",
+    });
+    // Same number, distinct refs — the disambiguator the consumer keys on.
+    expect(report.issues[0].ref).not.toBe(report.issues[1].ref);
+  });
+
+  it("uses the bare number as the ref for a single-repo (repo-less) run", () => {
+    const report = generateReport(
+      "Single-repo",
+      [makeIssue({ number: 7, wave: 1 })],
+      () => "succeeded" as Status,
+      () => ({}),
+      new Date("2026-01-01T00:00:00Z"),
+      new Date("2026-01-01T00:01:00Z"),
+    );
+
+    expect(report.issues[0].ref).toBe("7");
+  });
 });
 
 describe("formatReport", () => {
@@ -100,6 +157,27 @@ describe("formatReport", () => {
     expect(md).toContain("| #2 | Task B | 2 | failed | — |");
     expect(md).toContain("## Next Steps");
     expect(md).toContain("#2");
+  });
+
+  it("labels rows by qualified ref in a cross-repo run", () => {
+    const report = generateReport(
+      "Cross-repo",
+      [
+        makeIssue({ number: 924, repo: "WXYC/library-metadata-lookup", wave: 1, description: "LML" }),
+        makeIssue({ number: 924, repo: "WXYC/Backend-Service", wave: 1, description: "BS" }),
+      ],
+      (ref) => (ref === "WXYC/library-metadata-lookup#924" ? "succeeded" : "failed") as Status,
+      () => ({}),
+      new Date("2026-01-01T00:00:00Z"),
+      new Date("2026-01-01T00:01:00Z"),
+    );
+
+    const md = formatReport(report);
+    // Qualified refs disambiguate the two same-numbered rows in both the table
+    // and the failed-issues next-steps line.
+    expect(md).toContain("| WXYC/library-metadata-lookup#924 | LML | 1 | succeeded |");
+    expect(md).toContain("| WXYC/Backend-Service#924 | BS | 1 | failed | — |");
+    expect(md).toContain("Failed: WXYC/Backend-Service#924");
   });
 
   it("omits next steps when no failures", () => {
