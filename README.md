@@ -15,31 +15,48 @@ npm install github:jakebromberg/claude-orchestrator
 
 ## Authentication & billing
 
-Sessions run on the **Claude Code login** — the credential from `claude` / `/login` — so orchestrated work counts against your Claude subscription rather than Anthropic API credits. The orchestrator drives the `claude` CLI; it never calls the Anthropic API directly.
+> **Changed in 0.11.0.** Sessions previously inherited whatever credentials were in your environment. If your setup relies on an ambient `ANTHROPIC_API_KEY`, see [Opting in to API billing](#opting-in-to-api-billing) before upgrading.
 
-Because the CLI resolves credentials from the environment before falling back to that login, an `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) exported in your shell would otherwise silently reroute every session onto pay-per-token API billing. Those two variables are therefore stripped from spawned sessions. Nothing else is touched — `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL` and other routing/config variables pass through, as does the full environment of your `postSessionCheck` commands (your test suite may legitimately need an API key).
+Sessions run on the **Claude Code login** — the credential from `claude` / `/login`, or a token from `claude setup-token` (`CLAUDE_CODE_OAUTH_TOKEN`) for CI — so orchestrated work counts against your Claude subscription rather than Anthropic API credits. The orchestrator drives the `claude` CLI; it never calls the Anthropic API directly.
 
-Each run prints the mode it's using:
+Because the CLI resolves credentials from the environment *before* falling back to that login, an `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` exported in your shell would otherwise silently reroute every session onto pay-per-token API billing. Those two variables are stripped from spawned sessions. `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL` and other routing/config variables pass through untouched.
+
+Each run prints the mode it's using, naming any credential it dropped:
 
 ```
 ℹ Auth: Claude Code login (sessions count against your Claude subscription)
+ℹ Auth: Claude Code login — ANTHROPIC_API_KEY ignored (set CLAUDE_ORCHESTRATOR_USE_API_KEY=1 to bill API credits instead)
 ```
 
-To bill sessions to the Anthropic API instead, opt in explicitly:
+### What the scrub does and doesn't cover
+
+- It applies to the session **and everything the session runs** — a command the agent executes through its Bash tool sees the scrubbed environment too.
+- `postSessionCheck` is the deliberate exception: it runs *your* commands (tests, lint, typecheck), which may legitimately need an API key, so it keeps the full environment. If your test suite is credential-dependent, note that the agent running it in-session and the orchestrator running it afterwards will see different environments.
+- `ANTHROPIC_CUSTOM_HEADERS` is not scrubbed — it also carries ordinary headers a proxy may require. If you use it to pass a credential, opt in explicitly so the billing mode is accurate.
+
+### Opting in to API billing
+
+You need this if you authenticate with an API key rather than a subscription, or if you route Claude Code through an **LLM gateway** (`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`) — the gateway token is a credential, so it is scrubbed like any other, and subscription auth won't work against your gateway.
 
 ```bash
 export CLAUDE_ORCHESTRATOR_USE_API_KEY=1
 ```
 
-Programmatic consumers can pass the same choice directly: `createRealProcessRunner({ useApiKey: true })`.
+Only `1`, `true`, `yes`, and `on` enable it; anything else — including an unrecognised value or a typo — leaves sessions on the Claude Code login, so a mistake can't quietly start spending.
 
-You can confirm which credential a past session used — the CLI records it in the `init` event of each session log:
+Programmatic consumers can pass the same choice to the session spawner: `createRealProcessRunner({ useApiKey: true })`. Note that this covers sessions only — the `--decompose` and merge-conflict paths read the environment variable, so set it if you use them.
+
+### Verifying
+
+The CLI records which credential a session used in the `init` event of its log:
 
 ```bash
-grep -o '"apiKeySource":"[^"]*"' .orchestrator/state/logs/issue-1.log
+grep -o '"apiKeySource":"[^"]*"' <configDir>/logs/issue-*.log
 ```
 
-`"none"` or `"claude.ai"` means the subscription login; `"ANTHROPIC_API_KEY"` means API credits.
+Anything other than `"ANTHROPIC_API_KEY"` (in practice `"none"`) means the session was not billed to API credits.
+
+Amazon Bedrock and Google Vertex backends are not supported: their `CLAUDE_CODE_USE_*` selectors are stripped along with the other `CLAUDE*` variables.
 
 ## Quick Start
 

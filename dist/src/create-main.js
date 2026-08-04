@@ -15,7 +15,7 @@ import { postRunSummaryComments } from "./issue-comments.js";
 import { encodeRefForFilename } from "./ref.js";
 import { renderPlanPreview } from "./plan-preview.js";
 import { shellQuote } from "./shell-quote.js";
-import { claudeSessionEnv, usesApiKeyBilling, USE_API_KEY_ENV_VAR } from "./claude-env.js";
+import { authBanner, claudeExecOptions } from "./claude-env.js";
 /** Exported for testing. Builds the `gh issue create` command string with shell-safe quoting. */
 export function buildGhIssueCreateCommand(repo, title) {
     return `gh issue create --repo ${shellQuote(repo)} --title ${shellQuote(title)} --body-file -`;
@@ -144,9 +144,7 @@ export async function createMain(options) {
             // the API rather than the Claude Code login.
             runCommand: (cmd, options) => execSync(cmd, {
                 stdio: ["pipe", "pipe", "pipe"],
-                encoding: "utf-8",
-                env: claudeSessionEnv(),
-                ...(options?.input ? { input: options.input } : {}),
+                ...claudeExecOptions({ input: options?.input }),
             }),
             readFile: (p) => fs.readFileSync(p, "utf-8"),
             logger: consoleLogger,
@@ -357,7 +355,11 @@ export async function createMain(options) {
         const logFile = path.join(config.configDir, "logs", "orchestrator.log");
         const logFd = fs.openSync(logFile, "a");
         try {
-            // Strip Claude Code env vars so child sessions don't think they're nested
+            // Strip Claude Code env vars so child sessions don't think they're nested.
+            // Deliberately NOT claudeSessionEnv(): the child here is another
+            // orchestrator, not a `claude` session. It needs CLAUDE_ORCHESTRATOR_USE_API_KEY
+            // (and, when that opt-in is set, the API credentials) intact so the
+            // detached run makes the same auth choice this one would.
             const env = { ...process.env };
             delete env.CLAUDECODE;
             delete env.CLAUDE_CODE_ENTRYPOINT;
@@ -400,14 +402,8 @@ export async function createMain(options) {
     console.log("");
     deps.logger.info(`Max parallel sessions: ${args.maxParallel}`);
     deps.logger.info(`Worktree directory: ${config.worktreeDir}`);
-    // Billing mode is invisible once a run is under way — the only in-band signal
-    // is `apiKeySource` buried in each session's stream-json log — so state it up front.
-    if (usesApiKeyBilling()) {
-        deps.logger.warn(`Auth: ANTHROPIC_API_KEY (${USE_API_KEY_ENV_VAR} is set) — sessions bill Anthropic API credits`);
-    }
-    else {
-        deps.logger.info("Auth: Claude Code login (sessions count against your Claude subscription)");
-    }
+    const auth = authBanner();
+    deps.logger[auth.level](auth.message);
     deps.logger.info(`Log directory: ${config.configDir}/logs`);
     console.log("");
     // Capture start time for run record (before dispatch and signal handler)

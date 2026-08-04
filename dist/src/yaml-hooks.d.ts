@@ -3,6 +3,17 @@ import type { YamlConfig } from "./yaml-types.js";
 /** I/O dependencies injectable for testing. */
 export interface DeriveHooksDeps {
     readFile?: (path: string) => string;
+    /**
+     * Runs both the `postSessionCheck` commands and the `onMergeConflict`
+     * resolver. Their defaults differ: the check inherits the full environment
+     * (it runs the project's own commands, which may need an API key), while the
+     * resolver launches `claude` under `claudeExecOptions()`.
+     *
+     * Overriding this collapses that distinction — an injected runner is used
+     * verbatim for both, so the merge-conflict session will authenticate with
+     * whatever environment the override passes. Apply `claudeSessionEnv()`
+     * yourself in the override if you want sessions on the Claude Code login.
+     */
     runCommand?: (cmd: string, cwd: string) => string;
     /**
      * Used by collision detection to run git commands with an argument array
