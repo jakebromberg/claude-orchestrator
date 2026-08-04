@@ -2,13 +2,22 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 type ExecOptions = { cwd?: string; encoding?: string; env?: NodeJS.ProcessEnv };
 
-// yaml-hooks reaches child_process through named imports, so the module has to
-// be mocked (a vi.spyOn on the namespace wouldn't rebind the named binding).
+// The rest of the suite tests behaviour through injected fakes (see CLAUDE.md,
+// "In-memory testing"). This file mocks the module instead because the subject
+// *is* the fallback used when nothing is injected — deriveHooks' default
+// command runner — which by definition can't be reached through the seam.
+// yaml-hooks binds child_process via named imports, so vi.spyOn on the
+// namespace wouldn't rebind it; the module has to be mocked. Spread the real
+// module so an added named import elsewhere in the graph doesn't break linking.
 const { execSync, execFileSync } = vi.hoisted(() => ({
   execSync: vi.fn<(cmd: string, options?: ExecOptions) => string>(() => ""),
   execFileSync: vi.fn<(file: string, args?: string[]) => string>(() => ""),
 }));
-vi.mock("node:child_process", () => ({ execSync, execFileSync }));
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:child_process")>()),
+  execSync,
+  execFileSync,
+}));
 
 const { deriveHooks } = await import("../src/yaml-hooks.js");
 import type { YamlConfig } from "../src/yaml-types.js";
@@ -40,6 +49,7 @@ describe("onMergeConflict default command runner", () => {
   afterEach(() => {
     if (saved !== undefined) process.env.ANTHROPIC_API_KEY = saved;
     else delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.CLAUDE_ORCHESTRATOR_USE_API_KEY;
   });
 
   it("runs claude without the API credentials that would bill API credits", async () => {
@@ -71,6 +81,5 @@ describe("onMergeConflict default command runner", () => {
 
     const [, opts] = execSync.mock.calls[0];
     expect(opts!.env!.ANTHROPIC_API_KEY).toBe("sk-ant-test");
-    delete process.env.CLAUDE_ORCHESTRATOR_USE_API_KEY;
   });
 });

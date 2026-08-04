@@ -9,7 +9,7 @@ import { detectCollisions, gatherCollisionInputs } from "./collision-check.js";
 import { resolveRepoSettings } from "./repo-settings.js";
 import { perIssueSpawnArgs } from "./model-effort.js";
 import { shellQuote } from "./shell-quote.js";
-import { claudeSessionEnv } from "./claude-env.js";
+import { claudeExecOptions } from "./claude-env.js";
 function defaultClaimHelperPath() {
     const here = fileURLToPath(import.meta.url);
     return path.join(path.dirname(here), "cli-claim.js");
@@ -235,7 +235,7 @@ export function deriveHooks(yaml, deps = {}) {
         // postSessionCheck runner above deliberately keeps the full environment:
         // it runs the project's own commands, which may need those credentials.)
         const resolveRunCommand = runCommand
-            ?? ((cmd, cwd) => execSync(cmd, { cwd, encoding: "utf-8", env: claudeSessionEnv() }));
+            ?? ((cmd, cwd) => execSync(cmd, claudeExecOptions({ cwd })));
         hooks.onMergeConflict = async (issue, conflictFiles, hookBaseBranch) => {
             const worktreePath = path.join(yaml.worktreeDir, issue.slug);
             const fileList = conflictFiles.length > 0
