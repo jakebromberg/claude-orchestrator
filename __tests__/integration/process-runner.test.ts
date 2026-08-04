@@ -101,6 +101,63 @@ describe("createRealProcessRunner (integration)", () => {
     }
   });
 
+  describe("API credential stripping", () => {
+    const CREDENTIALS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+    const saved: Record<string, string | undefined> = {};
+
+    /** Spawn a child that reports which of the credential vars it can see. */
+    async function visibleCredentials(
+      spawner: ReturnType<typeof createRealProcessRunner>,
+    ): Promise<string[]> {
+      const logFile = path.join(tmpDir, `creds-${Math.random()}.log`);
+      const handle = spawner.spawn(
+        "node",
+        [
+          "-e",
+          `console.log(JSON.stringify(
+            ${JSON.stringify(CREDENTIALS)}.filter(k => process.env[k] !== undefined)
+          ))`,
+        ],
+        { cwd: tmpDir, logFile },
+      );
+      await handle.exitCode;
+      return JSON.parse(fs.readFileSync(logFile, "utf-8").trim());
+    }
+
+    beforeEach(() => {
+      for (const key of [...CREDENTIALS, "CLAUDE_ORCHESTRATOR_USE_API_KEY"]) {
+        saved[key] = process.env[key];
+      }
+      process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+      process.env.ANTHROPIC_AUTH_TOKEN = "test-token";
+      delete process.env.CLAUDE_ORCHESTRATOR_USE_API_KEY;
+    });
+
+    afterEach(() => {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value !== undefined) process.env[key] = value;
+        else delete process.env[key];
+      }
+    });
+
+    it("strips API credentials so sessions use the Claude Code login", async () => {
+      expect(await visibleCredentials(runner)).toEqual([]);
+    });
+
+    it("keeps credentials when CLAUDE_ORCHESTRATOR_USE_API_KEY is set", async () => {
+      process.env.CLAUDE_ORCHESTRATOR_USE_API_KEY = "1";
+      expect(await visibleCredentials(createRealProcessRunner())).toEqual(
+        CREDENTIALS,
+      );
+    });
+
+    it("keeps credentials when constructed with useApiKey", async () => {
+      expect(
+        await visibleCredentials(createRealProcessRunner({ useApiKey: true })),
+      ).toEqual(CREDENTIALS);
+    });
+  });
+
   it("captures stderr to separate file when stderrFile is provided", async () => {
     const logFile = path.join(tmpDir, "stdout-only.log");
     const stderrFile = path.join(tmpDir, "stderr-only.log");

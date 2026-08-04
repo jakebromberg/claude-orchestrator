@@ -13,6 +13,34 @@ npm install @funlandresearch/claude-orchestrator
 npm install github:jakebromberg/claude-orchestrator
 ```
 
+## Authentication & billing
+
+Sessions run on the **Claude Code login** — the credential from `claude` / `/login` — so orchestrated work counts against your Claude subscription rather than Anthropic API credits. The orchestrator drives the `claude` CLI; it never calls the Anthropic API directly.
+
+Because the CLI resolves credentials from the environment before falling back to that login, an `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) exported in your shell would otherwise silently reroute every session onto pay-per-token API billing. Those two variables are therefore stripped from spawned sessions. Nothing else is touched — `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL` and other routing/config variables pass through, as does the full environment of your `postSessionCheck` commands (your test suite may legitimately need an API key).
+
+Each run prints the mode it's using:
+
+```
+ℹ Auth: Claude Code login (sessions count against your Claude subscription)
+```
+
+To bill sessions to the Anthropic API instead, opt in explicitly:
+
+```bash
+export CLAUDE_ORCHESTRATOR_USE_API_KEY=1
+```
+
+Programmatic consumers can pass the same choice directly: `createRealProcessRunner({ useApiKey: true })`.
+
+You can confirm which credential a past session used — the CLI records it in the `init` event of each session log:
+
+```bash
+grep -o '"apiKeySource":"[^"]*"' .orchestrator/state/logs/issue-1.log
+```
+
+`"none"` or `"claude.ai"` means the subscription login; `"ANTHROPIC_API_KEY"` means API credits.
+
 ## Quick Start
 
 ### 1. Create a YAML config

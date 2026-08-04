@@ -55,6 +55,12 @@ export type { ReportData } from "./report.js";
 
 // Process runner & main factory
 export { createRealProcessRunner } from "./real-process-runner.js";
+export {
+  claudeSessionEnv,
+  usesApiKeyBilling,
+  API_CREDENTIAL_ENV_VARS,
+  USE_API_KEY_ENV_VAR,
+} from "./claude-env.js";
 export { createMain } from "./create-main.js";
 export type { ConfigFactory, MainOptions } from "./create-main.js";
 
