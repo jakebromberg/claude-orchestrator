@@ -16,6 +16,7 @@ import { postRunSummaryComments } from "./issue-comments.js";
 import { encodeRefForFilename } from "./ref.js";
 import { renderPlanPreview } from "./plan-preview.js";
 import { shellQuote } from "./shell-quote.js";
+import { claudeSessionEnv, usesApiKeyBilling, USE_API_KEY_ENV_VAR } from "./claude-env.js";
 
 export type ConfigFactory =
   | ((projectRoot: string) => OrchestratorConfig)
@@ -168,9 +169,13 @@ export async function createMain(options: MainOptions): Promise<void> {
       issueNumber: args.decomposeIssue,
       repo: args.decomposeRepo,
     }, {
+      // Decomposition shells out to `claude -p`, so it runs with the scrubbed
+      // session env — an exported ANTHROPIC_API_KEY would otherwise bill it to
+      // the API rather than the Claude Code login.
       runCommand: (cmd, options) => execSync(cmd, {
         stdio: ["pipe", "pipe", "pipe"],
         encoding: "utf-8",
+        env: claudeSessionEnv(),
         ...(options?.input ? { input: options.input } : {}),
       }),
       readFile: (p) => fs.readFileSync(p, "utf-8"),
@@ -446,6 +451,15 @@ export async function createMain(options: MainOptions): Promise<void> {
   console.log("");
   deps.logger.info(`Max parallel sessions: ${args.maxParallel}`);
   deps.logger.info(`Worktree directory: ${config.worktreeDir}`);
+  // Billing mode is invisible once a run is under way — the only in-band signal
+  // is `apiKeySource` buried in each session's stream-json log — so state it up front.
+  if (usesApiKeyBilling()) {
+    deps.logger.warn(
+      `Auth: ANTHROPIC_API_KEY (${USE_API_KEY_ENV_VAR} is set) — sessions bill Anthropic API credits`,
+    );
+  } else {
+    deps.logger.info("Auth: Claude Code login (sessions count against your Claude subscription)");
+  }
   deps.logger.info(`Log directory: ${config.configDir}/logs`);
   console.log("");
 

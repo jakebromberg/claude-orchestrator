@@ -1,8 +1,19 @@
 import fs from "node:fs";
 import { spawn as nodeSpawn } from "node:child_process";
 import type { ProcessRunner } from "./types.js";
+import { claudeSessionEnv } from "./claude-env.js";
 
-export function createRealProcessRunner(): ProcessRunner {
+/**
+ * Spawn Claude Code sessions as real child processes.
+ *
+ * @param options.useApiKey - Bill sessions to the Anthropic API instead of the
+ *   Claude Code login. Defaults to the `CLAUDE_ORCHESTRATOR_USE_API_KEY` env var
+ *   (i.e. off), so sessions don't silently consume API credits when an
+ *   `ANTHROPIC_API_KEY` happens to be exported in the operator's shell.
+ */
+export function createRealProcessRunner(
+  runnerOptions: { useApiKey?: boolean } = {},
+): ProcessRunner {
   return {
     spawn(
       command: string,
@@ -14,15 +25,10 @@ export function createRealProcessRunner(): ProcessRunner {
         ? fs.openSync(options.stderrFile, "a")
         : null;
 
-      // Strip all Claude Code env vars so child sessions don't think they're nested.
-      // Use a prefix match rather than hardcoding specific names, since Claude Code
-      // may add new env vars in future versions or IDEs may inject their own.
-      const env = { ...process.env };
-      for (const key of Object.keys(env)) {
-        if (key.startsWith("CLAUDE")) {
-          delete env[key];
-        }
-      }
+      // Drop the parent's Claude Code env vars (so the child isn't seen as a
+      // nested session) and its API credentials (so the session authenticates
+      // with the Claude Code login rather than billing API credits).
+      const env = claudeSessionEnv(process.env, runnerOptions);
 
       const child = nodeSpawn(command, args, {
         cwd: options.cwd,

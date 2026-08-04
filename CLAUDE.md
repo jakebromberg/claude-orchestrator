@@ -25,6 +25,7 @@ src/
 ├── run-history.ts        # Run record persistence
 ├── dependency-files.ts   # Dependency file detection
 ├── report.ts             # Post-run report generation
+├── claude-env.ts         # claudeSessionEnv() — child env for spawned `claude` sessions (auth/billing)
 ├── real-process-runner.ts # Real child_process spawner
 ├── create-main.ts        # Generic entry point factory (sync or async ConfigFactory)
 ├── interpolate.ts        # {{var}} template substitution
@@ -61,6 +62,7 @@ src/
 - **In-memory testing**: All behavioral tests use `InMemoryStatusStore`,
   `InMemoryMetadataStore`, `createSilentLogger`, and mock `ProcessRunner`
 - **Wave scheduling**: `computeWaves()` layers `dependsOn` into waves, with same-file ownership detection via `ownsFiles` (issues in the same candidate wave that claim overlapping non-shared files are slid to later waves by ascending issue number). The topological sort itself lives in `topo.ts` (`layeredTopoSort` / `readySet`) — a single composite-keyed core that ship-dag's `plan-waves.mjs` imports in C2b, so the engine's planner and the skill's planner won't drift. `computeWaves` throws on any unplaced node (a cycle, or an out-of-scope dep); ship-dag wraps the same core to report `{waves, blocked, cyclic}` gracefully against a `done` frontier.
+- **Session auth/billing**: The engine drives the `claude` CLI, never the Anthropic API — but the CLI reads credentials from the environment before falling back to the Claude Code login, so an exported `ANTHROPIC_API_KEY` would silently bill every session as API credits (visible as `"apiKeySource":"ANTHROPIC_API_KEY"` in a session's stream-json `init` event). `claudeSessionEnv()` (`claude-env.ts`) builds the child env for every `claude` launch: it strips `CLAUDE*` (nested-session detection) plus `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` (billing), leaving other `ANTHROPIC_*` routing/config vars alone. Applied at all three launch sites — `real-process-runner.ts` (sessions), `create-main.ts` (`--decompose`), and `yaml-hooks.ts` (`onMergeConflict`) — but deliberately **not** to the `postSessionCheck` runner, which runs the project's own commands and may need those credentials. Opt back in with `CLAUDE_ORCHESTRATOR_USE_API_KEY=1` or `createRealProcessRunner({ useApiKey: true })`.
 - **Config validation**: Zod schema in `validateConfig()` with cycle detection
 - **YAML configs**: Alternative to pure-TS configs — `loadYamlConfig()` reads
   a YAML file, validates it, derives convention-based hooks, and merges
