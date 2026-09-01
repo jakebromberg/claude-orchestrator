@@ -35,14 +35,43 @@ const PR_URL_EXACT = new RegExp(`^${PR_URL_PATTERN.source}$`);
  * newest mention is the best available signal within a repo.
  */
 export function extractPrUrl(logContent, expectedRepo) {
+    return extractPrUrlCandidates(logContent, expectedRepo)[0] ?? null;
+}
+/**
+ * Every distinct PR URL in `logContent` for `expectedRepo`, **newest mention
+ * first** — the same filter and ordering {@link extractPrUrl} applies, but
+ * without collapsing to a single guess.
+ *
+ * `extractPrUrl` returns only the newest mention, which is right when the real
+ * PR is the last thing a session prints but wrong whenever anything prints a
+ * same-repo PR URL after `gh pr create`. That is not hypothetical: the log is
+ * opened for *append*, so a check-failure retry re-emits the whole prompt —
+ * including the `UPSTREAM_CONTEXT` gathered from upstream worktrees' handoff
+ * notes, which routinely cite the upstream issue's own PR in the same repo. A
+ * single-guess scrape hands that to the verifier, the verifier correctly
+ * rejects it (wrong head branch), and the run's genuine PR is dropped.
+ *
+ * Callers should therefore verify candidates in order and take the first that
+ * proves to be theirs, rather than treating one failure as final.
+ *
+ * Duplicates are collapsed (first occurrence in newest-first order wins), so a
+ * URL quoted N times costs one verification, not N.
+ */
+export function extractPrUrlCandidates(logContent, expectedRepo) {
     const matches = [...logContent.matchAll(PR_URL_PATTERN)];
     const candidates = expectedRepo
         ? matches.filter((m) => `${m[1]}/${m[2]}`.toLowerCase() === expectedRepo.toLowerCase())
         : matches;
-    if (candidates.length === 0)
-        return null;
-    const last = candidates[candidates.length - 1];
-    return { url: last[0], number: parseInt(last[3], 10) };
+    const seen = new Set();
+    const out = [];
+    for (let i = candidates.length - 1; i >= 0; i--) {
+        const m = candidates[i];
+        if (seen.has(m[0]))
+            continue;
+        seen.add(m[0]);
+        out.push({ url: m[0], number: parseInt(m[3], 10) });
+    }
+    return out;
 }
 /**
  * The `owner/repo` a PR URL points at, or `null` if `url` is not a PR URL.

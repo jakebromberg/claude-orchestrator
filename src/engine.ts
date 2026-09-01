@@ -1,6 +1,6 @@
 import { ProcessPool } from "./process-pool.js";
 import { StallMonitor } from "./stall-monitor.js";
-import { extractPrUrl, repoOfPrUrl } from "./pr-tracker.js";
+import { extractPrUrlCandidates, repoOfPrUrl } from "./pr-tracker.js";
 import { mergePrs } from "./merge.js";
 import { gatherUpstreamContext } from "./upstream-context.js";
 import { encodeRefForFilename, repoOfRef } from "./ref.js";
@@ -20,6 +20,16 @@ import type {
 } from "./types.js";
 
 const STALL_CHECK_INTERVAL_MS = 10_000;
+
+/**
+ * How many scraped PR URLs to put to `gh pr view` before giving up.
+ *
+ * Verification is a blocking network call per candidate, so an unbounded loop
+ * would let a transcript that name-drops many same-repo PRs stall a wave. The
+ * run's own PR is near the newest end in every case this defends against, so a
+ * handful of the newest candidates is all that is worth paying for.
+ */
+const MAX_PR_CANDIDATES_VERIFIED = 5;
 
 const DEFAULT_ALLOWED_TOOLS = [
   "Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Task",
@@ -408,7 +418,18 @@ export class Orchestrator {
    */
   private refreshMetadata(issue: Issue): void {
     const logFile = `${this.config.configDir}/logs/issue-${encodeRefForFilename(issue.ref)}.log`;
-    this.recordPrFromLog(issue, logFile);
+    try {
+      this.recordPrFromLog(issue, logFile);
+    } catch (err) {
+      // This runs in `prepareIssues`, before a single session is launched, and
+      // only ever *improves* the reporting of work that already succeeded. A
+      // failing metadata write or a throwing hook must not take the wave down.
+      this.deps.logger.warn(
+        `Issue #${issue.number}: could not refresh PR metadata ` +
+          `(${err instanceof Error ? err.message : String(err)}); ` +
+          `leaving what is already recorded in place`,
+      );
+    }
   }
 
   /**
@@ -441,26 +462,39 @@ export class Orchestrator {
     // if there is none, leave the extraction unconstrained — the identity check
     // below is what actually gates recording.
     const expectedRepo = repoOfRef(issue.ref) ?? this.config.defaultRepo;
-    const pr = extractPrUrl(logContent, expectedRepo);
-    if (!pr) return;
+    const candidates = extractPrUrlCandidates(logContent, expectedRepo);
+    if (candidates.length === 0) return;
 
-    const prRepo = expectedRepo ?? repoOfPrUrl(pr.url);
-    if (!prRepo || !this.verifyPrIdentity(issue, pr.number, prRepo)) {
-      this.deps.logger.warn(
-        `Issue #${issue.number}: not recording ${pr.url} — could not confirm ` +
-          `it is an open PR for branch ${this.config.hooks.getBranchName(issue)}. ` +
-          `Either the session never opened it (a PR URL quoted in a log is not ` +
-          `proof that it did), or it has since merged or closed. A PR already ` +
-          `recorded for this issue is left in place.`,
-      );
+    // Nothing new since the last look: the newest mention is already what the
+    // store holds, and it only got there by passing the check below. Re-asking
+    // would cost a blocking `gh` round-trip per issue on every re-run, and
+    // would "fail" the moment the PR merges — warning about healthy work.
+    if (candidates[0].url === this.deps.metadataStore.get(issue.ref).prUrl) return;
+
+    // Verify newest-first and take the first PR that proves to be ours. Only
+    // the newest mention is likely to be this run's PR, but it is not reliably
+    // the last thing printed (see `extractPrUrlCandidates`), so one rejection
+    // is not proof the session opened nothing.
+    for (const pr of candidates.slice(0, MAX_PR_CANDIDATES_VERIFIED)) {
+      const prRepo = expectedRepo ?? repoOfPrUrl(pr.url);
+      if (!prRepo || !this.verifyPrIdentity(issue, pr.number, prRepo)) continue;
+
+      this.deps.metadataStore.update(issue.ref, {
+        prUrl: pr.url,
+        prNumber: pr.number,
+      });
+      this.deps.logger.info(`Issue #${issue.number} created PR: ${pr.url}`);
       return;
     }
 
-    this.deps.metadataStore.update(issue.ref, {
-      prUrl: pr.url,
-      prNumber: pr.number,
-    });
-    this.deps.logger.info(`Issue #${issue.number} created PR: ${pr.url}`);
+    this.deps.logger.warn(
+      `Issue #${issue.number}: not recording ${candidates[0].url} — could not ` +
+        `confirm any of the ${candidates.length} PR URL(s) in its log is an open ` +
+        `PR for branch ${this.config.hooks.getBranchName(issue)}. Either the ` +
+        `session never opened one (a PR URL quoted in a log is not proof that ` +
+        `it did), or it has since merged or closed. A PR already recorded for ` +
+        `this issue is left in place.`,
+    );
   }
 
   /**
@@ -518,10 +552,12 @@ export class Orchestrator {
 
     let raw: string;
     try {
-      // Same quoting idiom as the merge step's rebase: the worktree path is
-      // ours, the base branch is config-derived and therefore quoted.
+      // Both interpolations are quoted: `worktreeDir` and the base branch are
+      // config-derived, and `shell-quote.ts` is explicitly the idiom for every
+      // execSync command string (issue #28). `merge.ts` still interpolates its
+      // worktree path bare — same wart, worth fixing there separately.
       raw = this.deps.runCommand(
-        `git -C "${worktreePath}" rev-list --count origin/${shellQuote(baseBranch)}..HEAD`,
+        `git -C ${shellQuote(worktreePath)} rev-list --count origin/${shellQuote(baseBranch)}..HEAD`,
       );
     } catch (err) {
       this.deps.logger.warn(

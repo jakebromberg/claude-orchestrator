@@ -1547,6 +1547,77 @@ describe("Orchestrator", () => {
         "https://github.com/WXYC/wxyc-dj-ios/pull/152",
       );
     });
+
+    it("finds its own PR behind a later same-repo URL that fails verification", async () => {
+      // The log is opened for append and a check-failure retry re-emits the
+      // prompt, so `UPSTREAM_CONTEXT` — built from upstream worktrees' handoff
+      // notes — can quote an upstream issue's PR *in the same repo* after this
+      // session already printed its own. Verifying only the newest mention
+      // would reject that one and silently drop the real PR.
+      const log = `${OWN_PR_LOG}\nUpstream context: https://github.com/WXYC/wxyc-dj-ios/pull/900`;
+      const runCommand = vi.fn((cmd: string) => {
+        if (cmd.startsWith("gh pr view 900"))
+          return JSON.stringify({ state: "OPEN", headRefName: "some/upstream-branch" });
+        if (cmd.startsWith("gh pr view 152"))
+          return JSON.stringify({ state: "OPEN", headRefName: "orchestrator/test-issue" });
+        if (cmd.includes("rev-list --count")) return "3";
+        return "";
+      });
+      const { deps, ref } = await runOnce(log, runCommand as never);
+
+      expect(deps.metadataStore.get(ref)).toMatchObject({
+        prUrl: "https://github.com/WXYC/wxyc-dj-ios/pull/152",
+        prNumber: 152,
+      });
+    });
+
+    it("does not re-ask gh about a PR it already recorded", async () => {
+      // A re-run re-scrapes every already-succeeded issue. Once the PR merges,
+      // re-verifying would fail and warn about a perfectly healthy issue — and
+      // cost one blocking `gh` round-trip per issue before anything launches.
+      const issue = makeIosIssue();
+      const runCommand = makeVerifyStub();
+      const { orchestrator, deps } = makeOrchestrator([issue], undefined, {
+        readFile: vi.fn(() => OWN_PR_LOG),
+        runCommand,
+      });
+      deps.statusStore.set(issue.ref, "succeeded");
+      deps.metadataStore.set(issue.ref, {
+        prUrl: "https://github.com/WXYC/wxyc-dj-ios/pull/152",
+        prNumber: 152,
+      });
+
+      await orchestrator.runWave(1);
+
+      expect(deps.metadataStore.get(issue.ref).prUrl).toBe(
+        "https://github.com/WXYC/wxyc-dj-ios/pull/152",
+      );
+      const commands = runCommand.mock.calls.map((c) => c[0]);
+      expect(commands.some((c) => c.includes("gh pr view"))).toBe(false);
+      expect(deps.logger.warn).not.toHaveBeenCalledWith(
+        expect.stringContaining("could not confirm"),
+      );
+    });
+
+    it("does not abort the run when refreshing metadata throws", async () => {
+      // `refreshMetadata` runs inside `prepareIssues`, before any session is
+      // launched. A failing metadata write (ENOSPC, EACCES) must not take the
+      // whole wave down with it.
+      const issue = makeIosIssue();
+      const { orchestrator, deps } = makeOrchestrator([issue], undefined, {
+        readFile: vi.fn(() => OWN_PR_LOG),
+        runCommand: makeVerifyStub(),
+      });
+      deps.statusStore.set(issue.ref, "succeeded");
+      vi.spyOn(deps.metadataStore, "update").mockImplementation(() => {
+        throw new Error("ENOSPC: no space left on device");
+      });
+
+      await expect(orchestrator.runWave(1)).resolves.not.toThrow();
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("could not refresh PR metadata"),
+      );
+    });
   });
 
   describe("commit check on clean exit", () => {
@@ -1591,7 +1662,7 @@ describe("Orchestrator", () => {
       });
 
       expect(runCommand).toHaveBeenCalledWith(
-        `git -C "/worktrees/test-issue" rev-list --count origin/'master'..HEAD`,
+        `git -C '/worktrees/test-issue' rev-list --count origin/'master'..HEAD`,
       );
     });
 
