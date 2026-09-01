@@ -43,7 +43,7 @@ export { startWatch, renderDashboard, readLastLogLine } from "./watch.js";
 export type { WatchOptions, WatchHandle, RenderOptions, WriteFn, ReadFileTail } from "./watch.js";
 
 // PR & merge
-export { extractPrUrl } from "./pr-tracker.js";
+export { extractPrUrl, repoOfPrUrl } from "./pr-tracker.js";
 export { mergePrs } from "./merge.js";
 export type { MergeResult, MergeOptions, MergeDeps } from "./merge.js";
 

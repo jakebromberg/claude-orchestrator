@@ -18,7 +18,7 @@ export { StallMonitor } from "./stall-monitor.js";
 // Watch
 export { startWatch, renderDashboard, readLastLogLine } from "./watch.js";
 // PR & merge
-export { extractPrUrl } from "./pr-tracker.js";
+export { extractPrUrl, repoOfPrUrl } from "./pr-tracker.js";
 export { mergePrs } from "./merge.js";
 // History & reports
 export { writeRunRecord, listRuns } from "./run-history.js";

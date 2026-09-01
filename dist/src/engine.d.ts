@@ -45,7 +45,49 @@ export declare class Orchestrator {
      */
     private confirmCutover;
     private checkDeps;
+    /**
+     * Re-derive an already-succeeded issue's PR metadata from its session log, so
+     * a re-run reports the same PR the original run opened.
+     *
+     * Existing metadata is never cleared when the log yields nothing: the log may
+     * be truncated, rotated, or from a different run, and — since nothing reaches
+     * the store without passing {@link verifyPrIdentity} — what is already there
+     * was true when it was written. That also covers the benign case where the PR
+     * has since merged and no longer verifies as open.
+     */
     private refreshMetadata;
+    /**
+     * Scrape the session log for the PR this run opened and record it — but only
+     * once it has been proven to be this run's PR.
+     *
+     * Two independent narrowings stand between a string in a log and a `prUrl` in
+     * the store, because a wrong value here is not merely a reporting error:
+     * `mergePrs` feeds `metadata.prUrl` straight to `gh pr merge`, so under any
+     * `mergePolicy` other than `"none"` a foreign URL is a merge of someone
+     * else's branch.
+     *
+     *  1. `extractPrUrl` only considers URLs under the issue's own `owner/repo`.
+     *  2. {@link verifyPrIdentity} asks GitHub whether that PR is open on this
+     *     run's branch.
+     *
+     * A candidate that fails either is dropped with a warning rather than
+     * recorded, and existing metadata is left untouched.
+     */
+    private recordPrFromLog;
+    /**
+     * Confirm a scraped PR URL identifies this run's own PR.
+     *
+     * Presence in a log proves nothing (see `pr-tracker.ts`); identity does. The
+     * PR must exist, still be open, and have this run's branch as its head — a
+     * sibling repo's PR quoted in a CLAUDE.md, an already-merged PR someone cited
+     * by number, and a stale URL from an earlier attempt each fail at least one
+     * of those.
+     *
+     * Anything that is not an affirmative "yes" — a `gh` failure, unparseable
+     * output, a deleted PR — counts as unverified. Failing closed is the point:
+     * the store is what `mergePrs` acts on.
+     */
+    private verifyPrIdentity;
     private launchAndWait;
     private isZeroByteLog;
     private runPostSessionCheck;

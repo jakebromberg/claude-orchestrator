@@ -84,6 +84,31 @@ function makeMockRunner(): ProcessRunner & {
   };
 }
 
+/**
+ * `runCommand` stub answering the PR identity check the engine performs before
+ * it records a scraped URL: `gh pr view --json state,headRefName`. Everything
+ * else returns "". The defaults describe a healthy run — an open PR whose head
+ * is the branch `makeHooks()` names for a default `makeIssue()`.
+ */
+function makeVerifyStub(
+  overrides: {
+    state?: string;
+    headRefName?: string;
+    ghThrows?: boolean;
+  } = {},
+) {
+  return vi.fn((cmd: string) => {
+    if (cmd.startsWith("gh pr view")) {
+      if (overrides.ghThrows) throw new Error("no pull requests found");
+      return JSON.stringify({
+        state: overrides.state ?? "OPEN",
+        headRefName: overrides.headRefName ?? "orchestrator/test-issue",
+      });
+    }
+    return "";
+  });
+}
+
 function makeSilentLogger(): Logger {
   return {
     info: vi.fn(),
@@ -1304,7 +1329,11 @@ describe("Orchestrator", () => {
       const readFile = vi.fn(() =>
         "Created PR: https://github.com/org/repo/pull/42\nDone.",
       );
-      const { orchestrator, deps } = makeOrchestrator([issue], undefined, { readFile });
+      // A scraped URL is only recorded once `gh` confirms it is this run's PR.
+      const { orchestrator, deps } = makeOrchestrator([issue], undefined, {
+        readFile,
+        runCommand: makeVerifyStub(),
+      });
 
       const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
       const promise = orchestrator.runWave(1);
@@ -1358,7 +1387,10 @@ describe("Orchestrator", () => {
       const readFile = vi.fn(() =>
         "Created PR: https://github.com/org/repo/pull/99\nThen failed.",
       );
-      const { orchestrator, deps } = makeOrchestrator([issue], undefined, { readFile });
+      const { orchestrator, deps } = makeOrchestrator([issue], undefined, {
+        readFile,
+        runCommand: makeVerifyStub(),
+      });
 
       const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
       const promise = orchestrator.runWave(1);
@@ -1389,6 +1421,128 @@ describe("Orchestrator", () => {
       expect(deps.statusStore.get("1")).toBe("succeeded");
       const meta = deps.metadataStore.get("1");
       expect(meta.prUrl).toBeUndefined();
+    });
+  });
+
+  describe("PR identity verification", () => {
+    // The WXYC/wxyc-dj-ios#145 false green, end to end. The session opened no
+    // PR at all; its transcript quoted a *different* repo's PR — merged two
+    // weeks earlier — because the repo's CLAUDE.md cites it by name and an Edit
+    // tool_result echoed the file back. The engine recorded that URL and
+    // reported the run green against someone else's work.
+    const FOREIGN_PR_LOG =
+      `{"type":"user","message":{"role":"user","content":[{"type":"tool_result",` +
+      `"content":"The file CLAUDE.md has been updated successfully. It is copied ` +
+      `in by that repo's postgenerate:swift hook ` +
+      `([wxyc-shared#358](https://github.com/WXYC/wxyc-shared/pull/358))."}]}}`;
+
+    const OWN_PR_LOG = "Created PR: https://github.com/WXYC/wxyc-dj-ios/pull/152";
+
+    function makeIosIssue() {
+      return makeIssue({ number: 145, repo: "WXYC/wxyc-dj-ios", wave: 1 });
+    }
+
+    async function runOnce(
+      readFileContent: string,
+      runCommand: ReturnType<typeof makeVerifyStub>,
+    ) {
+      const issue = makeIosIssue();
+      const { orchestrator, deps } = makeOrchestrator([issue], undefined, {
+        readFile: vi.fn(() => readFileContent),
+        runCommand,
+      });
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+      runner.resolvers.get(1000)!(0);
+      await promise;
+      return { deps, ref: issue.ref };
+    }
+
+    it("does not record a PR URL belonging to another repo", async () => {
+      const runCommand = makeVerifyStub();
+      const { deps, ref } = await runOnce(FOREIGN_PR_LOG, runCommand);
+
+      expect(deps.metadataStore.get(ref).prUrl).toBeUndefined();
+      expect(deps.metadataStore.get(ref).prNumber).toBeUndefined();
+      // The foreign URL is filtered offline — GitHub is never even asked about it.
+      const commands = runCommand.mock.calls.map((c) => c[0]);
+      expect(commands.some((c) => c.includes("gh pr view"))).toBe(false);
+    });
+
+    it("does not record a PR whose head branch is not this run's branch", async () => {
+      const runCommand = makeVerifyStub({ headRefName: "someone-elses-branch" });
+      const { deps, ref } = await runOnce(OWN_PR_LOG, runCommand);
+
+      expect(deps.metadataStore.get(ref).prUrl).toBeUndefined();
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("could not confirm"),
+      );
+    });
+
+    it("does not record a PR that is no longer open", async () => {
+      const runCommand = makeVerifyStub({ state: "MERGED" });
+      const { deps, ref } = await runOnce(OWN_PR_LOG, runCommand);
+
+      expect(deps.metadataStore.get(ref).prUrl).toBeUndefined();
+    });
+
+    it("does not record a PR that gh cannot see", async () => {
+      const runCommand = makeVerifyStub({ ghThrows: true });
+      const { deps, ref } = await runOnce(OWN_PR_LOG, runCommand);
+
+      expect(deps.metadataStore.get(ref).prUrl).toBeUndefined();
+    });
+
+    it("records the PR once gh confirms it is open on this run's branch", async () => {
+      const runCommand = makeVerifyStub();
+      const { deps, ref } = await runOnce(OWN_PR_LOG, runCommand);
+
+      expect(deps.metadataStore.get(ref)).toMatchObject({
+        prUrl: "https://github.com/WXYC/wxyc-dj-ios/pull/152",
+        prNumber: 152,
+      });
+      expect(runCommand).toHaveBeenCalledWith(
+        "gh pr view 152 --repo 'WXYC/wxyc-dj-ios' --json state,headRefName",
+      );
+    });
+
+    it("scopes extraction to the run-wide defaultRepo when the issue has none", async () => {
+      const issue = makeIssue({ number: 1, wave: 1 });
+      const config = makeConfig([issue]);
+      config.defaultRepo = "WXYC/wxyc-dj-ios";
+      const deps = makeDeps({
+        readFile: vi.fn(() => FOREIGN_PR_LOG),
+        runCommand: makeVerifyStub(),
+      });
+      const orchestrator = new Orchestrator(config, deps);
+
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+      runner.resolvers.get(1000)!(0);
+      await promise;
+
+      expect(deps.metadataStore.get("1").prUrl).toBeUndefined();
+    });
+
+    it("does not overwrite verified metadata with an unverifiable scrape", async () => {
+      const issue = makeIosIssue();
+      const { orchestrator, deps } = makeOrchestrator([issue], undefined, {
+        readFile: vi.fn(() => FOREIGN_PR_LOG),
+        runCommand: makeVerifyStub(),
+      });
+      deps.statusStore.set(issue.ref, "succeeded");
+      deps.metadataStore.set(issue.ref, {
+        prUrl: "https://github.com/WXYC/wxyc-dj-ios/pull/152",
+        prNumber: 152,
+      });
+
+      await orchestrator.runWave(1);
+
+      expect(deps.metadataStore.get(issue.ref).prUrl).toBe(
+        "https://github.com/WXYC/wxyc-dj-ios/pull/152",
+      );
     });
   });
 
@@ -1756,7 +1910,10 @@ describe("Orchestrator", () => {
       const readFile = vi.fn(() =>
         "Created PR: https://github.com/org/repo/pull/55\nDone.",
       );
-      const { orchestrator, deps } = makeOrchestrator([issue], undefined, { readFile });
+      const { orchestrator, deps } = makeOrchestrator([issue], undefined, {
+        readFile,
+        runCommand: makeVerifyStub(),
+      });
 
       // Mark as succeeded with stale metadata
       deps.statusStore.set("1", "succeeded");
@@ -1845,7 +2002,7 @@ describe("Orchestrator", () => {
       const readFile = vi.fn(() =>
         "https://github.com/org/repo/pull/10",
       );
-      const runCommand = vi.fn(() => "");
+      const runCommand = vi.fn((_cmd: string) => "");
       const config = makeConfig(issues);
       const deps = makeDeps({ readFile, runCommand });
       const orchestrator = new Orchestrator(config, deps, {
@@ -1863,7 +2020,10 @@ describe("Orchestrator", () => {
 
       await promise;
 
-      expect(runCommand).not.toHaveBeenCalled();
+      // The engine still shells out to verify each session's PR; what must not
+      // happen under `"none"` is a merge.
+      const commands = runCommand.mock.calls.map((c) => c[0]);
+      expect(commands.some((c) => c.includes("gh pr merge"))).toBe(false);
     });
 
     it("merges after each wave when policy is after-wave", async () => {
@@ -1874,7 +2034,7 @@ describe("Orchestrator", () => {
       const readFile = vi.fn(() =>
         "PR: https://github.com/org/repo/pull/10",
       );
-      const runCommand = vi.fn(() => "");
+      const runCommand = vi.fn((_cmd: string) => "");
       const config = makeConfig(issues);
       const deps = makeDeps({ readFile, runCommand });
       deps.metadataStore.set("1", {
@@ -1910,8 +2070,13 @@ describe("Orchestrator", () => {
       expect(runCommand).toHaveBeenCalledWith(
         expect.stringContaining("git push origin --delete"),
       );
-      // 2 merges + 2 branch deletions = 4 total
-      expect(runCommand).toHaveBeenCalledTimes(4);
+      // 2 merges + 2 branch deletions. (The run's other `runCommand` traffic is
+      // the per-session PR identity check, which is not merge activity.)
+      const commands = runCommand.mock.calls.map((c) => c[0]);
+      expect(commands.filter((c) => c.includes("gh pr merge"))).toHaveLength(2);
+      expect(
+        commands.filter((c) => c.includes("git push origin --delete")),
+      ).toHaveLength(2);
     });
 
     it("skips merge for failed issues in wave", async () => {
