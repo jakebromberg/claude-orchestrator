@@ -493,6 +493,78 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Positive evidence that a session committed nothing on its branch.
+   *
+   * A `claude -p` session that ends its turn mid-task exits 0, so the child's
+   * exit code reports "the process finished", not "the work landed". Both
+   * observed false greens looked exactly like that: a clean exit over a
+   * worktree whose branch held zero commits, the work complete but uncommitted.
+   * One `git rev-list --count` against the issue's base branch separates the
+   * two cases.
+   *
+   * Deliberately asymmetric. Only a well-formed count of zero is treated as
+   * proof that nothing was produced. A throw or unparseable output means the
+   * check could not run at all (worktree already removed, no `origin/<base>`
+   * ref, git unavailable) — that is not evidence the session failed, so it
+   * warns and lets the run's own result stand rather than converting an
+   * unrelated git problem into a wall of false reds.
+   */
+  private producedNoCommits(issue: Issue): boolean {
+    const worktreePath = this.config.hooks.getWorktreePath(issue);
+    const baseBranch = this.config.hooks.getBaseBranch?.(issue) ?? "main";
+
+    let raw: string;
+    try {
+      // Same quoting idiom as the merge step's rebase: the worktree path is
+      // ours, the base branch is config-derived and therefore quoted.
+      raw = this.deps.runCommand(
+        `git -C "${worktreePath}" rev-list --count origin/${shellQuote(baseBranch)}..HEAD`,
+      );
+    } catch (err) {
+      this.deps.logger.warn(
+        `Issue #${issue.number}: could not count commits on its branch ` +
+          `(${err instanceof Error ? err.message : String(err)}); ` +
+          `leaving the session's own result in place`,
+      );
+      return false;
+    }
+
+    const trimmed = raw.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      this.deps.logger.warn(
+        `Issue #${issue.number}: unexpected commit count ${JSON.stringify(trimmed)}; ` +
+          `leaving the session's own result in place`,
+      );
+      return false;
+    }
+    return trimmed === "0";
+  }
+
+  /**
+   * Record the outcome of a session that exited 0 and passed its post-session
+   * check. `succeeded` is contingent on the run having actually produced a
+   * commit — see {@link producedNoCommits} for why a clean exit is not enough.
+   */
+  private async recordCleanExit(
+    issue: Issue,
+    note: string,
+    logFile: string,
+  ): Promise<void> {
+    if (this.producedNoCommits(issue)) {
+      await this.setStatus(issue, "failed");
+      this.deps.logger.error(
+        `Issue #${issue.number} exited cleanly but left no commits on ` +
+          `${this.config.hooks.getBranchName(issue)} — the work was never ` +
+          `committed, so this is not a success. Log: ${logFile}`,
+      );
+      return;
+    }
+
+    await this.setStatus(issue, "succeeded");
+    this.deps.logger.info(`Issue #${issue.number} succeeded${note}`);
+  }
+
   private async launchAndWait(
     ready: Array<{ issue: Issue; prompt: string; sessionId: string }>,
   ): Promise<void> {
@@ -641,10 +713,7 @@ export class Orchestrator {
             const zeroRetryCheck = await this.runPostSessionCheck(issue, worktreePath);
             if (!await this.handleCheckResultWithRetry(issue, zeroRetryCheck, prompt, worktreePath, logFile, stderrFile)) return;
 
-            await this.setStatus(issue, "succeeded");
-            this.deps.logger.info(
-              `Issue #${issue.number} succeeded (after retry)`,
-            );
+            await this.recordCleanExit(issue, " (after retry)", logFile);
             return;
           }
 
@@ -658,8 +727,7 @@ export class Orchestrator {
         const checkResult = await this.runPostSessionCheck(issue, worktreePath);
         if (!await this.handleCheckResultWithRetry(issue, checkResult, prompt, worktreePath, logFile, stderrFile)) return;
 
-        await this.setStatus(issue, "succeeded");
-        this.deps.logger.info(`Issue #${issue.number} succeeded`);
+        await this.recordCleanExit(issue, "", logFile);
       });
       postCheckPromises.push(postCheck);
 
@@ -758,8 +826,10 @@ export class Orchestrator {
 
       checkResult = await this.runPostSessionCheck(issue, worktreePath);
       if (checkResult.passed) {
+        // Checks pass — the caller still gates `succeeded` on the run having
+        // produced a commit, so don't claim success here.
         this.deps.logger.info(
-          `Issue #${issue.number} succeeded after retry ${attempt}`,
+          `Issue #${issue.number} passed checks after retry ${attempt}`,
         );
         return true;
       }

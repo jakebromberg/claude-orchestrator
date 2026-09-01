@@ -88,6 +88,30 @@ export declare class Orchestrator {
      * the store is what `mergePrs` acts on.
      */
     private verifyPrIdentity;
+    /**
+     * Positive evidence that a session committed nothing on its branch.
+     *
+     * A `claude -p` session that ends its turn mid-task exits 0, so the child's
+     * exit code reports "the process finished", not "the work landed". Both
+     * observed false greens looked exactly like that: a clean exit over a
+     * worktree whose branch held zero commits, the work complete but uncommitted.
+     * One `git rev-list --count` against the issue's base branch separates the
+     * two cases.
+     *
+     * Deliberately asymmetric. Only a well-formed count of zero is treated as
+     * proof that nothing was produced. A throw or unparseable output means the
+     * check could not run at all (worktree already removed, no `origin/<base>`
+     * ref, git unavailable) — that is not evidence the session failed, so it
+     * warns and lets the run's own result stand rather than converting an
+     * unrelated git problem into a wall of false reds.
+     */
+    private producedNoCommits;
+    /**
+     * Record the outcome of a session that exited 0 and passed its post-session
+     * check. `succeeded` is contingent on the run having actually produced a
+     * commit — see {@link producedNoCommits} for why a clean exit is not enough.
+     */
+    private recordCleanExit;
     private launchAndWait;
     private isZeroByteLog;
     private runPostSessionCheck;
