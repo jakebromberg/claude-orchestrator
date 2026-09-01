@@ -18,7 +18,7 @@ export { StallMonitor } from "./stall-monitor.js";
 export type { StallMonitorOptions } from "./stall-monitor.js";
 export { startWatch, renderDashboard, readLastLogLine } from "./watch.js";
 export type { WatchOptions, WatchHandle, RenderOptions, WriteFn, ReadFileTail } from "./watch.js";
-export { extractPrUrl, repoOfPrUrl } from "./pr-tracker.js";
+export { extractPrUrl, extractPrUrlCandidates, repoOfPrUrl } from "./pr-tracker.js";
 export { mergePrs } from "./merge.js";
 export type { MergeResult, MergeOptions, MergeDeps } from "./merge.js";
 export { writeRunRecord, listRuns } from "./run-history.js";

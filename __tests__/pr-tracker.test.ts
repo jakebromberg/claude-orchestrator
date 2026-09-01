@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { extractPrUrl, repoOfPrUrl } from "../src/pr-tracker.js";
+import {
+  extractPrUrl,
+  extractPrUrlCandidates,
+  repoOfPrUrl,
+} from "../src/pr-tracker.js";
 
 describe("extractPrUrl", () => {
   it("extracts PR URL from typical log output", () => {
@@ -132,5 +136,41 @@ describe("repoOfPrUrl", () => {
 
   it("returns null for a non-PR URL", () => {
     expect(repoOfPrUrl("https://github.com/org/repo/issues/5")).toBeNull();
+  });
+});
+
+describe("extractPrUrlCandidates", () => {
+  it("returns every own-repo match, newest mention first", () => {
+    const log = `opened https://github.com/org/repo/pull/1
+then https://github.com/org/repo/pull/2
+then https://github.com/org/repo/pull/3`;
+    expect(extractPrUrlCandidates(log, "org/repo").map((c) => c.number)).toEqual([
+      3, 2, 1,
+    ]);
+  });
+
+  it("collapses repeated mentions of the same URL to one candidate", () => {
+    // The wxyc-dj-ios transcript quoted its foreign URL four times; re-verifying
+    // one URL once per mention would be four identical `gh` round-trips.
+    const log = Array(4)
+      .fill("see https://github.com/org/repo/pull/7")
+      .join("\n");
+    expect(extractPrUrlCandidates(log, "org/repo")).toEqual([
+      { url: "https://github.com/org/repo/pull/7", number: 7 },
+    ]);
+  });
+
+  it("still applies the own-repo filter", () => {
+    const log = `https://github.com/org/repo/pull/1
+https://github.com/other/repo/pull/2`;
+    expect(extractPrUrlCandidates(log, "org/repo").map((c) => c.number)).toEqual([1]);
+  });
+
+  it("agrees with extractPrUrl on the winning candidate", () => {
+    const log = `https://github.com/org/repo/pull/1
+https://github.com/org/repo/pull/9`;
+    expect(extractPrUrlCandidates(log, "org/repo")[0]).toEqual(
+      extractPrUrl(log, "org/repo"),
+    );
   });
 });

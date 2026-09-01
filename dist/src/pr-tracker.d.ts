@@ -20,6 +20,30 @@ export declare function extractPrUrl(logContent: string, expectedRepo?: string):
     number: number;
 } | null;
 /**
+ * Every distinct PR URL in `logContent` for `expectedRepo`, **newest mention
+ * first** — the same filter and ordering {@link extractPrUrl} applies, but
+ * without collapsing to a single guess.
+ *
+ * `extractPrUrl` returns only the newest mention, which is right when the real
+ * PR is the last thing a session prints but wrong whenever anything prints a
+ * same-repo PR URL after `gh pr create`. That is not hypothetical: the log is
+ * opened for *append*, so a check-failure retry re-emits the whole prompt —
+ * including the `UPSTREAM_CONTEXT` gathered from upstream worktrees' handoff
+ * notes, which routinely cite the upstream issue's own PR in the same repo. A
+ * single-guess scrape hands that to the verifier, the verifier correctly
+ * rejects it (wrong head branch), and the run's genuine PR is dropped.
+ *
+ * Callers should therefore verify candidates in order and take the first that
+ * proves to be theirs, rather than treating one failure as final.
+ *
+ * Duplicates are collapsed (first occurrence in newest-first order wins), so a
+ * URL quoted N times costs one verification, not N.
+ */
+export declare function extractPrUrlCandidates(logContent: string, expectedRepo?: string): Array<{
+    url: string;
+    number: number;
+}>;
+/**
  * The `owner/repo` a PR URL points at, or `null` if `url` is not a PR URL.
  *
  * Used to address `gh pr view --repo` when the caller had no expected repo to
