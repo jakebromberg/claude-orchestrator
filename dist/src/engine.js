@@ -389,7 +389,8 @@ export class Orchestrator {
         // the newest mention is likely to be this run's PR, but it is not reliably
         // the last thing printed (see `extractPrUrlCandidates`), so one rejection
         // is not proof the session opened nothing.
-        for (const pr of candidates.slice(0, MAX_PR_CANDIDATES_VERIFIED)) {
+        const verified = candidates.slice(0, MAX_PR_CANDIDATES_VERIFIED);
+        for (const pr of verified) {
             const prRepo = expectedRepo ?? repoOfPrUrl(pr.url);
             if (!prRepo || !this.verifyPrIdentity(issue, pr.number, prRepo))
                 continue;
@@ -401,7 +402,8 @@ export class Orchestrator {
             return;
         }
         this.deps.logger.warn(`Issue #${issue.number}: not recording ${candidates[0].url} — could not ` +
-            `confirm any of the ${candidates.length} PR URL(s) in its log is an open ` +
+            `confirm any of the ${verified.length} PR URL(s) checked from its log ` +
+            `is an open ` +
             `PR for branch ${this.config.hooks.getBranchName(issue)}. Either the ` +
             `session never opened one (a PR URL quoted in a log is not proof that ` +
             `it did), or it has since merged or closed. A PR already recorded for ` +
