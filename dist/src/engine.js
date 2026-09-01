@@ -362,9 +362,11 @@ export class Orchestrator {
             return;
         const prRepo = expectedRepo ?? repoOfPrUrl(pr.url);
         if (!prRepo || !this.verifyPrIdentity(issue, pr.number, prRepo)) {
-            this.deps.logger.warn(`Issue #${issue.number}: ignoring ${pr.url} — could not confirm it is ` +
-                `an open PR for branch ${this.config.hooks.getBranchName(issue)}. ` +
-                `A PR URL quoted in a session log is not proof the session opened it.`);
+            this.deps.logger.warn(`Issue #${issue.number}: not recording ${pr.url} — could not confirm ` +
+                `it is an open PR for branch ${this.config.hooks.getBranchName(issue)}. ` +
+                `Either the session never opened it (a PR URL quoted in a log is not ` +
+                `proof that it did), or it has since merged or closed. A PR already ` +
+                `recorded for this issue is left in place.`);
             return;
         }
         this.deps.metadataStore.update(issue.ref, {
