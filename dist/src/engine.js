@@ -1,11 +1,12 @@
 import { ProcessPool } from "./process-pool.js";
 import { StallMonitor } from "./stall-monitor.js";
-import { extractPrUrl } from "./pr-tracker.js";
+import { extractPrUrl, repoOfPrUrl } from "./pr-tracker.js";
 import { mergePrs } from "./merge.js";
 import { gatherUpstreamContext } from "./upstream-context.js";
-import { encodeRefForFilename } from "./ref.js";
+import { encodeRefForFilename, repoOfRef } from "./ref.js";
 import { perIssueSpawnArgs } from "./model-effort.js";
 import { isModeNode, isCommandNode, cutoverReason, manualGateLabel } from "./mode-node.js";
+import { shellQuote } from "./shell-quote.js";
 const STALL_CHECK_INTERVAL_MS = 10_000;
 const DEFAULT_ALLOWED_TOOLS = [
     "Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Task",
@@ -312,22 +313,94 @@ export class Orchestrator {
         }
         return true;
     }
+    /**
+     * Re-derive an already-succeeded issue's PR metadata from its session log, so
+     * a re-run reports the same PR the original run opened.
+     *
+     * Existing metadata is never cleared when the log yields nothing: the log may
+     * be truncated, rotated, or from a different run, and — since nothing reaches
+     * the store without passing {@link verifyPrIdentity} — what is already there
+     * was true when it was written. That also covers the benign case where the PR
+     * has since merged and no longer verifies as open.
+     */
     refreshMetadata(issue) {
         const logFile = `${this.config.configDir}/logs/issue-${encodeRefForFilename(issue.ref)}.log`;
+        this.recordPrFromLog(issue, logFile);
+    }
+    /**
+     * Scrape the session log for the PR this run opened and record it — but only
+     * once it has been proven to be this run's PR.
+     *
+     * Two independent narrowings stand between a string in a log and a `prUrl` in
+     * the store, because a wrong value here is not merely a reporting error:
+     * `mergePrs` feeds `metadata.prUrl` straight to `gh pr merge`, so under any
+     * `mergePolicy` other than `"none"` a foreign URL is a merge of someone
+     * else's branch.
+     *
+     *  1. `extractPrUrl` only considers URLs under the issue's own `owner/repo`.
+     *  2. {@link verifyPrIdentity} asks GitHub whether that PR is open on this
+     *     run's branch.
+     *
+     * A candidate that fails either is dropped with a warning rather than
+     * recorded, and existing metadata is left untouched.
+     */
+    recordPrFromLog(issue, logFile) {
+        let logContent;
         try {
-            const logContent = this.deps.readFile(logFile);
-            const pr = extractPrUrl(logContent);
-            if (pr) {
-                this.deps.metadataStore.update(issue.ref, {
-                    prUrl: pr.url,
-                    prNumber: pr.number,
-                });
-            }
-            // If no PR URL found in log, do NOT clear existing metadata
-            // (the log might be truncated or from a different run)
+            logContent = this.deps.readFile(logFile);
         }
         catch {
-            // Log file may not exist — this is fine, just skip
+            // Log file may not exist (process killed early, or never started).
+            return;
+        }
+        // A bare-number ref carries no repo; fall back to the run-wide default, and
+        // if there is none, leave the extraction unconstrained — the identity check
+        // below is what actually gates recording.
+        const expectedRepo = repoOfRef(issue.ref) ?? this.config.defaultRepo;
+        const pr = extractPrUrl(logContent, expectedRepo);
+        if (!pr)
+            return;
+        const prRepo = expectedRepo ?? repoOfPrUrl(pr.url);
+        if (!prRepo || !this.verifyPrIdentity(issue, pr.number, prRepo)) {
+            this.deps.logger.warn(`Issue #${issue.number}: ignoring ${pr.url} — could not confirm it is ` +
+                `an open PR for branch ${this.config.hooks.getBranchName(issue)}. ` +
+                `A PR URL quoted in a session log is not proof the session opened it.`);
+            return;
+        }
+        this.deps.metadataStore.update(issue.ref, {
+            prUrl: pr.url,
+            prNumber: pr.number,
+        });
+        this.deps.logger.info(`Issue #${issue.number} created PR: ${pr.url}`);
+    }
+    /**
+     * Confirm a scraped PR URL identifies this run's own PR.
+     *
+     * Presence in a log proves nothing (see `pr-tracker.ts`); identity does. The
+     * PR must exist, still be open, and have this run's branch as its head — a
+     * sibling repo's PR quoted in a CLAUDE.md, an already-merged PR someone cited
+     * by number, and a stale URL from an earlier attempt each fail at least one
+     * of those.
+     *
+     * Anything that is not an affirmative "yes" — a `gh` failure, unparseable
+     * output, a deleted PR — counts as unverified. Failing closed is the point:
+     * the store is what `mergePrs` acts on.
+     */
+    verifyPrIdentity(issue, prNumber, repo) {
+        const branch = this.config.hooks.getBranchName(issue);
+        let raw;
+        try {
+            raw = this.deps.runCommand(`gh pr view ${prNumber} --repo ${shellQuote(repo)} --json state,headRefName`);
+        }
+        catch {
+            return false;
+        }
+        try {
+            const view = JSON.parse(raw);
+            return view.state === "OPEN" && view.headRefName === branch;
+        }
+        catch {
+            return false;
         }
     }
     async launchAndWait(ready) {
@@ -384,21 +457,8 @@ export class Orchestrator {
                     exitCode,
                     finishedAt: finishTime,
                 });
-                // Extract PR URL from log file
-                try {
-                    const logContent = this.deps.readFile(logFile);
-                    const pr = extractPrUrl(logContent);
-                    if (pr) {
-                        this.deps.metadataStore.update(issue.ref, {
-                            prUrl: pr.url,
-                            prNumber: pr.number,
-                        });
-                        this.deps.logger.info(`Issue #${issue.number} created PR: ${pr.url}`);
-                    }
-                }
-                catch {
-                    // Log file may not exist if process was killed early
-                }
+                // Recover the PR this session opened (verified, not merely scraped).
+                this.recordPrFromLog(issue, logFile);
                 if (exitCode !== 0) {
                     if (this.isZeroByteLog(logFile)) {
                         // 0-byte stall — retry once
@@ -434,18 +494,7 @@ export class Orchestrator {
                             exitCode: retryExitCode,
                             finishedAt: new Date().toISOString(),
                         });
-                        try {
-                            const logContent = this.deps.readFile(logFile);
-                            const pr = extractPrUrl(logContent);
-                            if (pr) {
-                                this.deps.metadataStore.update(issue.ref, {
-                                    prUrl: pr.url,
-                                    prNumber: pr.number,
-                                });
-                                this.deps.logger.info(`Issue #${issue.number} created PR: ${pr.url}`);
-                            }
-                        }
-                        catch { }
+                        this.recordPrFromLog(issue, logFile);
                         if (retryExitCode !== 0) {
                             if (this.isZeroByteLog(logFile) && !fallbackTriggered) {
                                 fallbackTriggered = true;
