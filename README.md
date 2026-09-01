@@ -329,6 +329,12 @@ The engine uses dependency injection for all external interactions:
 
 All behavioral tests run in-memory without spawning real processes.
 
+### What `succeeded` means
+
+`succeeded` is a claim that the run's work landed, not that its process exited cleanly — an agent that ends its turn mid-task exits 0. Before recording it, the engine counts commits on the issue's branch (`git rev-list --count origin/<base>..HEAD`, with `<base>` from the `getBaseBranch` hook); a clean exit over a branch holding zero commits is recorded as `failed`. When the count can't be determined at all — worktree already removed, no `origin/<base>` ref, git unavailable — the engine warns and leaves the session's own result in place. Only positive evidence of zero commits downgrades a run.
+
+The PR a session opened is recovered by scraping its log, and is verified before it is recorded: only URLs under the issue's own `owner/repo` are candidates, and `gh pr view <n> --repo <owner/repo> --json state,headRefName` must confirm the PR exists, is open, and has this run's branch as its head. An unverifiable URL is dropped with a warning rather than stored, and existing metadata is left untouched. This matters beyond reporting — `--merge` hands `metadata.prUrl` straight to `gh pr merge`, so a PR URL merely quoted somewhere in a multi-megabyte transcript must never reach it.
+
 ### Wave Scheduling
 
 Issues declare dependencies via `dependsOn`. The engine computes waves using

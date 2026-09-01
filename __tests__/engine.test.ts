@@ -85,8 +85,9 @@ function makeMockRunner(): ProcessRunner & {
 }
 
 /**
- * `runCommand` stub answering the PR identity check the engine performs before
- * it records a scraped URL: `gh pr view --json state,headRefName`. Everything
+ * `runCommand` stub for the two things the engine now verifies on the success
+ * path: `gh pr view --json state,headRefName` (is this scraped PR really ours?)
+ * and `git rev-list --count` (did the session commit anything?). Everything
  * else returns "". The defaults describe a healthy run — an open PR whose head
  * is the branch `makeHooks()` names for a default `makeIssue()`.
  */
@@ -94,6 +95,7 @@ function makeVerifyStub(
   overrides: {
     state?: string;
     headRefName?: string;
+    commits?: string;
     ghThrows?: boolean;
   } = {},
 ) {
@@ -105,6 +107,7 @@ function makeVerifyStub(
         headRefName: overrides.headRefName ?? "orchestrator/test-issue",
       });
     }
+    if (cmd.includes("rev-list --count")) return overrides.commits ?? "3";
     return "";
   });
 }
@@ -1546,6 +1549,96 @@ describe("Orchestrator", () => {
     });
   });
 
+  describe("commit check on clean exit", () => {
+    // Half two of the same defect: a session that ends its turn mid-task exits
+    // 0, and the engine read that exit code as "the work landed". In both
+    // observed failures the work sat complete-but-uncommitted in the worktree
+    // with zero commits on the branch, and the run reported succeeded.
+
+    async function runToCleanExit(runCommand: Deps["runCommand"], hooks?: Partial<OrchestratorHooks>) {
+      const issue = makeIssue({ number: 1, wave: 1 });
+      const { orchestrator, deps } = makeOrchestrator([issue], hooks, {
+        readFile: vi.fn(() => "Work complete."),
+        runCommand,
+      });
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+      runner.resolvers.get(1000)!(0);
+      await promise;
+      return deps;
+    }
+
+    it("fails an exit-0 session that left no commits on its branch", async () => {
+      const deps = await runToCleanExit(makeVerifyStub({ commits: "0" }));
+
+      expect(deps.statusStore.get("1")).toBe("failed");
+      expect(deps.logger.error).toHaveBeenCalledWith(
+        expect.stringContaining("left no commits"),
+      );
+    });
+
+    it("succeeds an exit-0 session whose branch carries commits", async () => {
+      const deps = await runToCleanExit(makeVerifyStub({ commits: "2" }));
+
+      expect(deps.statusStore.get("1")).toBe("succeeded");
+    });
+
+    it("counts commits against the issue's own base branch", async () => {
+      const runCommand = makeVerifyStub({ commits: "1" });
+      await runToCleanExit(runCommand, {
+        getBaseBranch: vi.fn(() => "master"),
+      });
+
+      expect(runCommand).toHaveBeenCalledWith(
+        `git -C "/worktrees/test-issue" rev-list --count origin/'master'..HEAD`,
+      );
+    });
+
+    it("leaves the result in place when the commit count cannot be determined", async () => {
+      // A git failure is not evidence the session did nothing — an unrelated
+      // git problem must not turn every issue red.
+      const runCommand = vi.fn((cmd: string) => {
+        if (cmd.includes("rev-list")) throw new Error("not a git repository");
+        return "";
+      });
+      const deps = await runToCleanExit(runCommand);
+
+      expect(deps.statusStore.get("1")).toBe("succeeded");
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("could not count commits"),
+      );
+    });
+
+    it("leaves the result in place when the commit count is unparseable", async () => {
+      const deps = await runToCleanExit(makeVerifyStub({ commits: "fatal: bad revision" }));
+
+      expect(deps.statusStore.get("1")).toBe("succeeded");
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("unexpected commit count"),
+      );
+    });
+
+    it("does not commit-check a session that already failed", async () => {
+      const issue = makeIssue({ number: 1, wave: 1 });
+      const runCommand = makeVerifyStub({ commits: "0" });
+      const { orchestrator, deps } = makeOrchestrator([issue], undefined, {
+        readFile: vi.fn(() => "no PR here"),
+        runCommand,
+        getLogFileSize: () => 1000,
+      });
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+      runner.resolvers.get(1000)!(1);
+      await promise;
+
+      expect(deps.statusStore.get("1")).toBe("failed");
+      const commands = runCommand.mock.calls.map((c) => c[0]);
+      expect(commands.some((c) => c.includes("rev-list"))).toBe(false);
+    });
+  });
+
   describe("auto-retry on 0-byte stall", () => {
     it("retries once on 0-byte log + non-zero exit and succeeds", async () => {
       const issue = makeIssue({ number: 1, wave: 1 });
@@ -2020,8 +2113,8 @@ describe("Orchestrator", () => {
 
       await promise;
 
-      // The engine still shells out to verify each session's PR; what must not
-      // happen under `"none"` is a merge.
+      // The engine still shells out to verify each session's PR and commits;
+      // what must not happen under `"none"` is a merge.
       const commands = runCommand.mock.calls.map((c) => c[0]);
       expect(commands.some((c) => c.includes("gh pr merge"))).toBe(false);
     });
@@ -2071,7 +2164,7 @@ describe("Orchestrator", () => {
         expect.stringContaining("git push origin --delete"),
       );
       // 2 merges + 2 branch deletions. (The run's other `runCommand` traffic is
-      // the per-session PR identity check, which is not merge activity.)
+      // the per-session PR/commit verification, which is not merge activity.)
       const commands = runCommand.mock.calls.map((c) => c[0]);
       expect(commands.filter((c) => c.includes("gh pr merge"))).toHaveLength(2);
       expect(
