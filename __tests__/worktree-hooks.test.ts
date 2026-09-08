@@ -384,3 +384,34 @@ describe("deriveWorktreeHooks — default baseBranchOf", () => {
     );
   });
 });
+
+describe("deriveWorktreeHooks — getBaseBranch", () => {
+  // `producedNoCommits` counts commits against `origin/<getBaseBranch()>`, and
+  // falls back to "main" when the hook is absent. deriveWorktreeHooks already
+  // resolves the true base from origin/HEAD for `worktree add`, so withholding
+  // it here silently disabled the commit check on every repo whose default
+  // branch is not `main` — e.g. WXYC/wxyc-ios-64, which is on `master`.
+  it("exposes the base branch it already resolves for worktree add", () => {
+    const git = makeGit({ base: "master" });
+    const hooks = deriveWorktreeHooks({ reposDir: REPOS, runGit: git.runGit });
+    expect(hooks.getBaseBranch!(makeIssue("WXYC/wxyc-ios-64", "s"))).toBe("master");
+  });
+
+  it("returns a bare branch name, not the origin/-prefixed start point", () => {
+    // `baseBranchOf` returns "origin/master" because `worktree add` forks from
+    // the remote-tracking ref. Every getBaseBranch consumer (merge.ts,
+    // yaml-hooks.ts) expects a bare name and prepends `origin/` itself, so
+    // leaking the prefix here would produce `origin/origin/master`.
+    const git = makeGit({ base: "master" });
+    const hooks = deriveWorktreeHooks({ reposDir: REPOS, runGit: git.runGit });
+    expect(hooks.getBaseBranch!(makeIssue("WXYC/wxyc-ios-64", "s"))).not.toMatch(/^origin\//);
+  });
+
+  it("strips the prefix from an explicit baseBranchOf override too", () => {
+    const hooks = deriveWorktreeHooks({
+      reposDir: REPOS,
+      baseBranchOf: () => "origin/develop",
+    });
+    expect(hooks.getBaseBranch!(makeIssue("WXYC/lml", "s"))).toBe("develop");
+  });
+});
