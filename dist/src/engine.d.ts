@@ -74,6 +74,7 @@ export declare class Orchestrator {
      * recorded, and existing metadata is left untouched.
      */
     private recordPrFromLog;
+    private recordPrFromLogUnguarded;
     /**
      * Confirm a scraped PR URL identifies this run's own PR.
      *
@@ -87,6 +88,17 @@ export declare class Orchestrator {
      * output, a deleted PR — counts as unverified. Failing closed is the point:
      * the store is what `mergePrs` acts on.
      */
+    /**
+     * Bound for the synchronous shell-outs the post-check path makes.
+     *
+     * `deps.runCommand` is `execSync`, so an unbounded `gh`/`git` blocks the
+     * event loop — and with it every other session's StallMonitor and log-size
+     * polling. Neither of these calls is covered by a stall monitor, so a `gh`
+     * that hangs on network backoff or an unanswerable auth prompt would deadlock
+     * the whole run. Same reasoning, and the same source, as `runModeNodes`.
+     * A stall timeout of 0 means unbounded there, and means unbounded here.
+     */
+    private commandTimeoutFor;
     private verifyPrIdentity;
     /**
      * Positive evidence that a session committed nothing on its branch.

@@ -418,18 +418,7 @@ export class Orchestrator {
    */
   private refreshMetadata(issue: Issue): void {
     const logFile = `${this.config.configDir}/logs/issue-${encodeRefForFilename(issue.ref)}.log`;
-    try {
-      this.recordPrFromLog(issue, logFile);
-    } catch (err) {
-      // This runs in `prepareIssues`, before a single session is launched, and
-      // only ever *improves* the reporting of work that already succeeded. A
-      // failing metadata write or a throwing hook must not take the wave down.
-      this.deps.logger.warn(
-        `Issue #${issue.number}: could not refresh PR metadata ` +
-          `(${err instanceof Error ? err.message : String(err)}); ` +
-          `leaving what is already recorded in place`,
-      );
-    }
+    this.recordPrFromLog(issue, logFile, "refresh PR metadata");
   }
 
   /**
@@ -449,7 +438,32 @@ export class Orchestrator {
    * A candidate that fails either is dropped with a warning rather than
    * recorded, and existing metadata is left untouched.
    */
-  private recordPrFromLog(issue: Issue, logFile: string): void {
+  private recordPrFromLog(
+    issue: Issue,
+    logFile: string,
+    context = "record its PR",
+  ): void {
+    // Recovering a PR is best-effort reporting, never a reason to fail a run,
+    // and all three call sites are load-bearing. On the live-session path this
+    // runs inside `handle.exitCode.then(...)` *before* setStatus, so an
+    // escaping throw — a metadata write hitting ENOSPC/EACCES, or a
+    // user-supplied getBranchName — would strand the issue as "running" and
+    // reject the whole wave's Promise.all of post-checks. From
+    // `refreshMetadata` it runs in `prepareIssues`, before a single session is
+    // launched, where the same throw would take down a wave that had not yet
+    // started.
+    try {
+      this.recordPrFromLogUnguarded(issue, logFile);
+    } catch (err) {
+      this.deps.logger.warn(
+        `Issue #${issue.number}: could not ${context} ` +
+          `(${err instanceof Error ? err.message : String(err)}); ` +
+          `leaving what is already recorded in place`,
+      );
+    }
+  }
+
+  private recordPrFromLogUnguarded(issue: Issue, logFile: string): void {
     let logContent: string;
     try {
       logContent = this.deps.readFile(logFile);
@@ -483,6 +497,7 @@ export class Orchestrator {
       this.deps.metadataStore.update(issue.ref, {
         prUrl: pr.url,
         prNumber: pr.number,
+        prVerifiedAt: new Date().toISOString(),
       });
       this.deps.logger.info(`Issue #${issue.number} created PR: ${pr.url}`);
       return;
@@ -512,12 +527,28 @@ export class Orchestrator {
    * output, a deleted PR — counts as unverified. Failing closed is the point:
    * the store is what `mergePrs` acts on.
    */
+  /**
+   * Bound for the synchronous shell-outs the post-check path makes.
+   *
+   * `deps.runCommand` is `execSync`, so an unbounded `gh`/`git` blocks the
+   * event loop — and with it every other session's StallMonitor and log-size
+   * polling. Neither of these calls is covered by a stall monitor, so a `gh`
+   * that hangs on network backoff or an unanswerable auth prompt would deadlock
+   * the whole run. Same reasoning, and the same source, as `runModeNodes`.
+   * A stall timeout of 0 means unbounded there, and means unbounded here.
+   */
+  private commandTimeoutFor(issue: Issue): number | undefined {
+    const effective = issue.stallTimeout ?? this.config.stallTimeout;
+    return effective > 0 ? effective * 1000 : undefined;
+  }
+
   private verifyPrIdentity(issue: Issue, prNumber: number, repo: string): boolean {
     const branch = this.config.hooks.getBranchName(issue);
     let raw: string;
     try {
       raw = this.deps.runCommand(
         `gh pr view ${prNumber} --repo ${shellQuote(repo)} --json state,headRefName`,
+        { timeout: this.commandTimeoutFor(issue) },
       );
     } catch {
       return false;
@@ -560,6 +591,7 @@ export class Orchestrator {
       // worktree path bare — same wart, worth fixing there separately.
       raw = this.deps.runCommand(
         `git -C ${shellQuote(worktreePath)} rev-list --count origin/${shellQuote(baseBranch)}..HEAD`,
+        { timeout: this.commandTimeoutFor(issue) },
       );
     } catch (err) {
       this.deps.logger.warn(

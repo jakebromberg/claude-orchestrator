@@ -156,7 +156,13 @@ export interface OrchestratorHooks {
      * Optional: the base branch an issue's PR targets — its repo's own default
      * branch (iOS `master`, others `main`). Used by the merge step's intra-wave
      * rebase and conflict-resolution prompt so a cross-repo PR rebases onto the
-     * right ref. When absent, the merge falls back to `"main"`.
+     * right ref, and by the engine's commit check. When absent, both fall back
+     * to `"main"` — which silently no-ops the commit check on any repo whose
+     * default branch is something else, so provide it for those.
+     *
+     * Return a **bare** branch name (`master`), never a remote-tracking ref
+     * (`origin/master`): every consumer prepends `origin/` itself, and a
+     * prefixed value yields `origin/origin/master`, which always fails.
      */
     getBaseBranch?(issue: Issue): string;
     interpolatePrompt(issue: Issue, extraVars?: Record<string, string>): Promise<string>;
@@ -236,6 +242,15 @@ export interface Logger {
 export interface IssueMetadata {
     prUrl?: string;
     prNumber?: number;
+    /**
+     * When `prUrl` was last proven to be this run's own open PR.
+     *
+     * Provenance, not decoration: a `prUrl` written by an engine older than that
+     * check was scraped from log text and never verified, and the never-clear
+     * policy would otherwise preserve it forever. Its absence marks a URL that
+     * must be re-proven before anything acts on it.
+     */
+    prVerifiedAt?: string;
     exitCode?: number;
     startedAt?: string;
     finishedAt?: string;
