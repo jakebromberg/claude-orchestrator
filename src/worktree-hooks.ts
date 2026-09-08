@@ -25,7 +25,11 @@ import type { Issue, OrchestratorHooks } from "./types.js";
 /** The subset of hooks this helper provides. Spread into a config's overrides. */
 export type WorktreeHooks = Pick<
   OrchestratorHooks,
-  "getWorktreePath" | "getBranchName" | "setUpWorktree" | "removeWorktree"
+  | "getWorktreePath"
+  | "getBranchName"
+  | "getBaseBranch"
+  | "setUpWorktree"
+  | "removeWorktree"
 >;
 
 export interface DeriveWorktreeHooksOptions {
@@ -144,6 +148,21 @@ export function deriveWorktreeHooks(
     },
 
     getBranchName,
+
+    /**
+     * The issue repo's base branch, as a **bare** name (`master`, not
+     * `origin/master`).
+     *
+     * `baseBranchOf` deliberately returns the remote-tracking start point that
+     * `worktree add` forks from, but every `getBaseBranch` consumer prepends
+     * `origin/` itself — so the prefix is stripped here. Without this hook the
+     * engine's commit check fell back to `"main"` and silently no-opped on
+     * every repo whose default branch is something else.
+     */
+    getBaseBranch(issue: Issue): string {
+      const ref = baseBranchOf(repoDirOf(issue));
+      return ref.startsWith("origin/") ? ref.slice("origin/".length) : ref;
+    },
 
     async setUpWorktree(issue: Issue): Promise<void> {
       const repoDir = repoDirOf(issue);

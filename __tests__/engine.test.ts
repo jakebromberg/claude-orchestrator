@@ -99,7 +99,7 @@ function makeVerifyStub(
     ghThrows?: boolean;
   } = {},
 ) {
-  return vi.fn((cmd: string) => {
+  return vi.fn((cmd: string, _options?: { timeout?: number }) => {
     if (cmd.startsWith("gh pr view")) {
       if (overrides.ghThrows) throw new Error("no pull requests found");
       return JSON.stringify({
@@ -1507,6 +1507,7 @@ describe("Orchestrator", () => {
       });
       expect(runCommand).toHaveBeenCalledWith(
         "gh pr view 152 --repo 'WXYC/wxyc-dj-ios' --json state,headRefName",
+        expect.anything(),
       );
     });
 
@@ -1539,6 +1540,7 @@ describe("Orchestrator", () => {
       deps.metadataStore.set(issue.ref, {
         prUrl: "https://github.com/WXYC/wxyc-dj-ios/pull/152",
         prNumber: 152,
+        prVerifiedAt: "2026-09-01T00:00:00.000Z",
       });
 
       await orchestrator.runWave(1);
@@ -1585,6 +1587,7 @@ describe("Orchestrator", () => {
       deps.metadataStore.set(issue.ref, {
         prUrl: "https://github.com/WXYC/wxyc-dj-ios/pull/152",
         prNumber: 152,
+        prVerifiedAt: "2026-09-01T00:00:00.000Z",
       });
 
       await orchestrator.runWave(1);
@@ -1617,6 +1620,148 @@ describe("Orchestrator", () => {
       expect(deps.logger.warn).toHaveBeenCalledWith(
         expect.stringContaining("could not refresh PR metadata"),
       );
+    });
+  });
+
+  describe("post-check robustness and bounded gh calls", () => {
+    // Review follow-ups to the PR-identity work: the consolidation dropped the
+    // exception guard on the live-session path, and the two shell-outs it added
+    // were unbounded.
+
+    async function runToCleanExit(
+      runCommand: Deps["runCommand"],
+      depsOverrides: Partial<Deps> = {},
+      hooks?: Partial<OrchestratorHooks>,
+    ) {
+      const issue = makeIssue({ number: 1, wave: 1 });
+      const { orchestrator, deps } = makeOrchestrator([issue], hooks, {
+        readFile: vi.fn(() => "Work complete."),
+        runCommand,
+        ...depsOverrides,
+      });
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+      runner.resolvers.get(1000)!(0);
+      await promise;
+      return deps;
+    }
+
+    it("does not strand a session when recording its PR throws", async () => {
+      // A throw from metadataStore.update (ENOSPC/EACCES) or a user-supplied
+      // getBranchName escaped inside handle.exitCode.then(...), leaving the
+      // issue "running" forever and rejecting the whole wave's post-checks.
+      const metadataStore = new InMemoryMetadataStore();
+      let armed = false;
+      const realUpdate = metadataStore.update.bind(metadataStore);
+      metadataStore.update = vi.fn((ref: string, partial: Record<string, unknown>) => {
+        if (armed && "prUrl" in partial) throw new Error("EACCES: metadata write failed");
+        return realUpdate(ref, partial);
+      }) as typeof metadataStore.update;
+      armed = true;
+
+      const deps = await runToCleanExit(
+        makeVerifyStub({ commits: "2" }),
+        { metadataStore, readFile: vi.fn(() => "https://github.com/o/r/pull/7") },
+      );
+
+      expect(deps.statusStore.get("1")).not.toBe("running");
+    });
+
+    /** Same as runToCleanExit, but with a stall timeout the issue can inherit. */
+    async function runBounded(runCommand: Deps["runCommand"], depsOverrides: Partial<Deps> = {}) {
+      const issue = makeIssue({ number: 1, wave: 1, stallTimeout: 30 });
+      const { orchestrator, deps } = makeOrchestrator([issue], undefined, {
+        readFile: vi.fn(() => "Work complete."),
+        runCommand,
+        ...depsOverrides,
+      });
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+      runner.resolvers.get(1000)!(0);
+      await promise;
+      return deps;
+    }
+
+    it("bounds the gh identity check so a hung gh cannot deadlock the wave", async () => {
+      // execSync with no timeout blocks every other session's StallMonitor.
+      // runModeNodes already bounds its command for exactly this reason.
+      const runCommand = makeVerifyStub({ commits: "2" });
+      await runBounded(runCommand, {
+        readFile: vi.fn(() => "https://github.com/o/r/pull/7"),
+      });
+
+      const ghCall = runCommand.mock.calls.find(([cmd]) =>
+        String(cmd).startsWith("gh pr view"),
+      );
+      expect(ghCall).toBeDefined();
+      expect(ghCall![1]).toMatchObject({ timeout: 30_000 });
+    });
+
+    it("bounds the commit count too", async () => {
+      const runCommand = makeVerifyStub({ commits: "2" });
+      await runBounded(runCommand);
+
+      const revListCall = runCommand.mock.calls.find(([cmd]) =>
+        String(cmd).includes("rev-list --count"),
+      );
+      expect(revListCall).toBeDefined();
+      expect(revListCall![1]).toMatchObject({ timeout: 30_000 });
+    });
+
+    it("leaves both unbounded when the stall timeout is 0", async () => {
+      // 0 means "no stall monitor" everywhere else in the engine; it must keep
+      // meaning "no bound" here rather than silently becoming a 0ms timeout.
+      const runCommand = makeVerifyStub({ commits: "2" });
+      await runToCleanExit(runCommand, {
+        readFile: vi.fn(() => "https://github.com/o/r/pull/7"),
+      });
+
+      for (const fragment of ["gh pr view", "rev-list --count"]) {
+        const call = runCommand.mock.calls.find(([cmd]) => String(cmd).includes(fragment));
+        expect(call, fragment).toBeDefined();
+        expect(call![1]?.timeout, fragment).toBeUndefined();
+      }
+    });
+  });
+
+  describe("PR provenance stamp", () => {
+    // `mergePrs` refuses a prUrl with no stamp, because metadata written before
+    // the identity check existed was scraped from log text and never proven.
+    // The engine's job is to leave the stamp when — and only when — it proved
+    // the PR itself; it deliberately still never clears anything.
+
+    it("stamps a PR it verified", async () => {
+      const issue = makeIssue({ number: 1, wave: 1 });
+      const { orchestrator, deps } = makeOrchestrator([issue], undefined, {
+        readFile: vi.fn(() => "https://github.com/o/r/pull/7"),
+        runCommand: makeVerifyStub({ commits: "2" }),
+      });
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+      runner.resolvers.get(1000)!(0);
+      await promise;
+
+      const meta = deps.metadataStore.get("1");
+      expect(meta.prUrl).toBe("https://github.com/o/r/pull/7");
+      expect(meta.prVerifiedAt).toEqual(expect.any(String));
+    });
+
+    it("leaves no stamp when nothing verified", async () => {
+      const issue = makeIssue({ number: 1, wave: 1 });
+      const { orchestrator, deps } = makeOrchestrator([issue], undefined, {
+        readFile: vi.fn(() => "https://github.com/o/r/pull/7"),
+        runCommand: makeVerifyStub({ state: "MERGED", commits: "2" }),
+      });
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+      runner.resolvers.get(1000)!(0);
+      await promise;
+
+      expect(deps.metadataStore.get("1").prVerifiedAt).toBeUndefined();
     });
   });
 
@@ -1663,6 +1808,7 @@ describe("Orchestrator", () => {
 
       expect(runCommand).toHaveBeenCalledWith(
         `git -C '/worktrees/test-issue' rev-list --count origin/'master'..HEAD`,
+        expect.anything(),
       );
     });
 
@@ -2084,6 +2230,7 @@ describe("Orchestrator", () => {
       deps.metadataStore.set("1", {
         prUrl: "https://github.com/org/repo/pull/10",
         prNumber: 10,
+        prVerifiedAt: "2026-09-01T00:00:00.000Z",
       });
 
       await orchestrator.runWave(1);
@@ -2105,6 +2252,7 @@ describe("Orchestrator", () => {
       deps.metadataStore.set("1", {
         prUrl: "https://github.com/org/repo/pull/10",
         prNumber: 10,
+        prVerifiedAt: "2026-09-01T00:00:00.000Z",
       });
 
       // Should not throw
@@ -2125,6 +2273,7 @@ describe("Orchestrator", () => {
       deps.metadataStore.set("1", {
         prUrl: "https://github.com/org/repo/pull/10",
         prNumber: 10,
+        prVerifiedAt: "2026-09-01T00:00:00.000Z",
       });
 
       await orchestrator.runWave(1);
@@ -2204,10 +2353,12 @@ describe("Orchestrator", () => {
       deps.metadataStore.set("1", {
         prUrl: "https://github.com/org/repo/pull/10",
         prNumber: 10,
+        prVerifiedAt: "2026-09-01T00:00:00.000Z",
       });
       deps.metadataStore.set("2", {
         prUrl: "https://github.com/org/repo/pull/11",
         prNumber: 11,
+        prVerifiedAt: "2026-09-01T00:00:00.000Z",
       });
 
       const orchestrator = new Orchestrator(config, deps, {
@@ -2285,10 +2436,12 @@ describe("Orchestrator", () => {
       deps.metadataStore.set("1", {
         prUrl: "https://github.com/org/repo/pull/10",
         prNumber: 10,
+        prVerifiedAt: "2026-09-01T00:00:00.000Z",
       });
       deps.metadataStore.set("2", {
         prUrl: "https://github.com/org/repo/pull/11",
         prNumber: 11,
+        prVerifiedAt: "2026-09-01T00:00:00.000Z",
       });
 
       const orchestrator = new Orchestrator(config, deps, {
@@ -2330,8 +2483,8 @@ describe("Orchestrator", () => {
         ),
       });
       const deps = makeDeps({ readFile, runCommand });
-      deps.metadataStore.set("1", { prUrl: "https://github.com/org/repo/pull/10", prNumber: 10 });
-      deps.metadataStore.set("2", { prUrl: "https://github.com/org/repo/pull/11", prNumber: 11 });
+      deps.metadataStore.set("1", { prUrl: "https://github.com/org/repo/pull/10", prNumber: 10, prVerifiedAt: "2026-09-01T00:00:00.000Z" });
+      deps.metadataStore.set("2", { prUrl: "https://github.com/org/repo/pull/11", prNumber: 11, prVerifiedAt: "2026-09-01T00:00:00.000Z" });
 
       const orchestrator = new Orchestrator(config, deps, { mergePolicy: "after-wave" });
       const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
@@ -2365,6 +2518,7 @@ describe("Orchestrator", () => {
       deps.metadataStore.set("1", {
         prUrl: "https://github.com/org/repo/pull/10",
         prNumber: 10,
+        prVerifiedAt: "2026-09-01T00:00:00.000Z",
       });
 
       const orchestrator = new Orchestrator(config, deps, {

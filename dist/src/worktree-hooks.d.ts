@@ -1,6 +1,6 @@
 import type { Issue, OrchestratorHooks } from "./types.js";
 /** The subset of hooks this helper provides. Spread into a config's overrides. */
-export type WorktreeHooks = Pick<OrchestratorHooks, "getWorktreePath" | "getBranchName" | "setUpWorktree" | "removeWorktree">;
+export type WorktreeHooks = Pick<OrchestratorHooks, "getWorktreePath" | "getBranchName" | "getBaseBranch" | "setUpWorktree" | "removeWorktree">;
 export interface DeriveWorktreeHooksOptions {
     /**
      * Org directory holding all repo checkouts as siblings.

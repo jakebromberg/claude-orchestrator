@@ -26,6 +26,9 @@ function makeMergeDeps(overrides: Partial<MergeDeps> = {}): MergeDeps {
     getMetadata: vi.fn(() => ({
       prUrl: "https://github.com/org/repo/pull/1",
       prNumber: 1,
+      // Normal metadata carries the engine's proof that this PR is the issue's
+      // own; see the unverified-metadata tests for the legacy shape.
+      prVerifiedAt: "2026-09-01T00:00:00.000Z",
     })),
     runCommand: vi.fn(() => ""),
     logger: {
@@ -38,6 +41,56 @@ function makeMergeDeps(overrides: Partial<MergeDeps> = {}): MergeDeps {
     ...overrides,
   };
 }
+
+describe("mergePrs — unverified metadata", () => {
+  // A prUrl recorded before the engine verified PR identity was scraped out of
+  // log text. The real one on disk for WXYC/wxyc-dj-ios#145 points at
+  // WXYC/wxyc-shared#358 — merged two weeks earlier, in a different repo. The
+  // engine never clears such metadata (its log may be truncated or gone), so
+  // this is the last line before `gh pr merge` acts on it.
+
+  it("refuses a prUrl that carries no verification stamp", async () => {
+    const issue = makeIssue({ number: 1 });
+    const deps = makeMergeDeps({
+      getMetadata: vi.fn(() => ({
+        prUrl: "https://github.com/WXYC/wxyc-shared/pull/358",
+        prNumber: 358,
+      })),
+    });
+
+    const results = await mergePrs([issue], deps);
+
+    expect(results.get("1")).toBe("skipped");
+    expect(deps.runCommand).not.toHaveBeenCalledWith(
+      expect.stringContaining("gh pr merge"),
+    );
+  });
+
+  it("says why, naming the URL it refused", async () => {
+    const issue = makeIssue({ number: 1 });
+    const deps = makeMergeDeps({
+      getMetadata: vi.fn(() => ({
+        prUrl: "https://github.com/WXYC/wxyc-shared/pull/358",
+        prNumber: 358,
+      })),
+    });
+
+    await mergePrs([issue], deps);
+
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("https://github.com/WXYC/wxyc-shared/pull/358"),
+    );
+  });
+
+  it("merges once the stamp is present", async () => {
+    const issue = makeIssue({ number: 1 });
+    const deps = makeMergeDeps();
+
+    const results = await mergePrs([issue], deps);
+
+    expect(results.get("1")).toBe("merged");
+  });
+});
 
 describe("mergePrs", () => {
   it("merges PR for succeeded issue with PR URL", async () => {
@@ -110,6 +163,7 @@ describe("mergePrs", () => {
       getMetadata: vi.fn((n: string) => ({
         prUrl: `https://github.com/org/repo/pull/${n}`,
         prNumber: Number(n),
+        prVerifiedAt: "2026-09-01T00:00:00.000Z",
       })),
       runCommand: vi.fn((cmd: string) => {
         const match = cmd.match(/pull\/(\d+)/);
@@ -135,8 +189,8 @@ describe("mergePrs", () => {
       3: "succeeded",
     };
     const metadataMap: Record<number, IssueMetadata> = {
-      1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1 },
-      2: { prUrl: "https://github.com/org/repo/pull/2", prNumber: 2 },
+      1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1, prVerifiedAt: "2026-09-01T00:00:00.000Z" },
+      2: { prUrl: "https://github.com/org/repo/pull/2", prNumber: 2, prVerifiedAt: "2026-09-01T00:00:00.000Z" },
       3: {},
     };
     const deps = makeMergeDeps({
@@ -268,8 +322,8 @@ describe("mergePrs", () => {
         makeIssue({ number: 2, wave: 1 }),
       ];
       const metadataMap: Record<number, IssueMetadata> = {
-        1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1 },
-        2: { prUrl: "https://github.com/org/repo/pull/2", prNumber: 2 },
+        1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1, prVerifiedAt: "2026-09-01T00:00:00.000Z" },
+        2: { prUrl: "https://github.com/org/repo/pull/2", prNumber: 2, prVerifiedAt: "2026-09-01T00:00:00.000Z" },
       };
       const worktreeMap: Record<number, string> = {
         1: "/worktrees/issue-1",
@@ -310,9 +364,9 @@ describe("mergePrs", () => {
         makeIssue({ number: 3, wave: 1 }),
       ];
       const metadataMap: Record<number, IssueMetadata> = {
-        1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1 },
-        2: { prUrl: "https://github.com/org/repo/pull/2", prNumber: 2 },
-        3: { prUrl: "https://github.com/org/repo/pull/3", prNumber: 3 },
+        1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1, prVerifiedAt: "2026-09-01T00:00:00.000Z" },
+        2: { prUrl: "https://github.com/org/repo/pull/2", prNumber: 2, prVerifiedAt: "2026-09-01T00:00:00.000Z" },
+        3: { prUrl: "https://github.com/org/repo/pull/3", prNumber: 3, prVerifiedAt: "2026-09-01T00:00:00.000Z" },
       };
       const worktreeMap: Record<number, string> = {
         1: "/worktrees/issue-1",
@@ -349,8 +403,8 @@ describe("mergePrs", () => {
         makeIssue({ number: 2, wave: 1 }),
       ];
       const metadataMap: Record<number, IssueMetadata> = {
-        1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1 },
-        2: { prUrl: "https://github.com/org/repo/pull/2", prNumber: 2 },
+        1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1, prVerifiedAt: "2026-09-01T00:00:00.000Z" },
+        2: { prUrl: "https://github.com/org/repo/pull/2", prNumber: 2, prVerifiedAt: "2026-09-01T00:00:00.000Z" },
       };
       const commands: string[] = [];
       const deps = makeMergeDeps({
@@ -382,7 +436,7 @@ describe("mergePrs", () => {
       ];
       const statusMap: Record<number, Status> = { 1: "succeeded", 2: status };
       const metadataMap: Record<number, IssueMetadata> = {
-        1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1 },
+        1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1, prVerifiedAt: "2026-09-01T00:00:00.000Z" },
         2: { prUrl, prNumber: prUrl ? 2 : undefined },
       };
       const commands: string[] = [];
@@ -423,8 +477,8 @@ describe("mergePrs", () => {
         makeIssue({ number: 2, wave: 1 }),
       ];
       const metadataMap: Record<number, IssueMetadata> = {
-        1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1 },
-        2: { prUrl: "https://github.com/org/repo/pull/2", prNumber: 2 },
+        1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1, prVerifiedAt: "2026-09-01T00:00:00.000Z" },
+        2: { prUrl: "https://github.com/org/repo/pull/2", prNumber: 2, prVerifiedAt: "2026-09-01T00:00:00.000Z" },
       };
       const worktreeMap: Record<number, string> = {
         1: "/worktrees/issue-1",
@@ -458,8 +512,8 @@ describe("mergePrs", () => {
         makeIssue({ number: 2, wave: 1 }),
       ];
       const metadataMap: Record<number, IssueMetadata> = {
-        1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1 },
-        2: { prUrl: "https://github.com/org/repo/pull/2", prNumber: 2 },
+        1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1, prVerifiedAt: "2026-09-01T00:00:00.000Z" },
+        2: { prUrl: "https://github.com/org/repo/pull/2", prNumber: 2, prVerifiedAt: "2026-09-01T00:00:00.000Z" },
       };
       const commands: string[] = [];
       const deps = makeMergeDeps({
@@ -484,9 +538,9 @@ describe("mergePrs", () => {
         makeIssue({ number: 3, wave: 1 }),
       ];
       const metadataMap: Record<number, IssueMetadata> = {
-        1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1 },
-        2: { prUrl: "https://github.com/org/repo/pull/2", prNumber: 2 },
-        3: { prUrl: "https://github.com/org/repo/pull/3", prNumber: 3 },
+        1: { prUrl: "https://github.com/org/repo/pull/1", prNumber: 1, prVerifiedAt: "2026-09-01T00:00:00.000Z" },
+        2: { prUrl: "https://github.com/org/repo/pull/2", prNumber: 2, prVerifiedAt: "2026-09-01T00:00:00.000Z" },
+        3: { prUrl: "https://github.com/org/repo/pull/3", prNumber: 3, prVerifiedAt: "2026-09-01T00:00:00.000Z" },
       };
       const commands: string[] = [];
       const deps = makeMergeDeps({

@@ -148,6 +148,23 @@ export async function mergePrs(
       continue;
     }
 
+    // Refuse a URL nothing ever proved belongs to this issue. Metadata written
+    // before the engine verified PR identity was scraped from log text, and a
+    // real one on disk points at a PR merged weeks earlier in a different repo.
+    // The engine deliberately never clears such metadata — the log it would
+    // re-derive from may be truncated or gone — so the guard lives here, at the
+    // only point where being wrong costs someone else's branch a merge.
+    if (!metadata.prVerifiedAt) {
+      deps.logger.warn(
+        `#${issue.number}: skipped (${metadata.prUrl} was recorded without ` +
+          `verification, by an engine older than the PR identity check — ` +
+          `re-run the issue to re-derive it, or merge it by hand after ` +
+          `confirming it is this issue's PR)`,
+      );
+      results.set(issue.ref, "skipped");
+      continue;
+    }
+
     const adminFlag = options?.admin ? " --admin" : "";
     const mergeCmd = `gh pr merge ${metadata.prUrl} --rebase${adminFlag}`;
 
