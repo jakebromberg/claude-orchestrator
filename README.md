@@ -58,6 +58,14 @@ Anything other than `"ANTHROPIC_API_KEY"` (in practice `"none"`) means the sessi
 
 Amazon Bedrock and Google Vertex backends are not supported: their `CLAUDE_CODE_USE_*` selectors are stripped along with the other `CLAUDE*` variables.
 
+## Memory pressure
+
+`src/memory-pressure.ts` reads the macOS memory-pressure level (`sysctl kern.memorystatus_vm_pressure_level`) and owns the one threshold table later consumers share. It is exported but not yet wired into the engine. Environment variables:
+
+- `CO_LEASE_SLOTS` — heavy-command slot ceiling at `normal` pressure (positive integer, default `4`). An invalid value keeps the default and is reported once on stderr.
+- `CO_PRESSURE_OVERRIDE` — set to exactly `critical-as-warning` to make this process (and what it starts) read `critical` as `warning`. Any other value is ignored with a warning.
+- `CO_LEASE_DIR` — lease directory (default `${XDG_STATE_HOME:-$HOME/.local/state}/claude-orchestrator/lease`); the sampler persists its last raw reading to `level.json` there, only if the directory already exists.
+
 ## Quick Start
 
 ### 1. Create a YAML config

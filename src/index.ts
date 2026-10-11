@@ -63,6 +63,18 @@ export {
   API_CREDENTIAL_ENV_VARS,
   USE_API_KEY_ENV_VAR,
 } from "./claude-env.js";
+export {
+  applyPressureOverride,
+  cachedPressureSampler,
+  defaultPressureSampler,
+  heavyCapacity,
+  leaseDirectory,
+  pressurePolicyFromEnv,
+  readMemoryPressure,
+  sessionCapacity,
+  stopAtCritical,
+} from "./memory-pressure.js";
+export type { PressureLevel, PressurePolicy, PressureSampler } from "./memory-pressure.js";
 export { createMain } from "./create-main.js";
 export type { ConfigFactory, MainOptions } from "./create-main.js";
 

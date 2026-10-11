@@ -25,6 +25,7 @@ src/
 ├── run-history.ts        # Run record persistence
 ├── dependency-files.ts   # Dependency file detection
 ├── report.ts             # Post-run report generation
+├── memory-pressure.ts    # Memory-pressure level reader, heavy/session capacity tables, stop rule, cached sampler
 ├── claude-env.ts         # claudeSessionEnv() — child env for spawned `claude` sessions (auth/billing)
 ├── real-process-runner.ts # Real child_process spawner
 ├── create-main.ts        # Generic entry point factory (sync or async ConfigFactory)
