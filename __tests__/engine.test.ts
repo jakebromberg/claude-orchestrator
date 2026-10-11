@@ -952,6 +952,50 @@ describe("Orchestrator", () => {
       expect(deps.statusStore.get("3")).toBe("succeeded");
     });
 
+    it("holds the slot through the check-failure retry", async () => {
+      const issues = [
+        makeIssue({ number: 1, wave: 1 }),
+        makeIssue({ number: 2, wave: 1 }),
+        makeIssue({ number: 3, wave: 1 }),
+      ];
+      let issue1Checks = 0;
+      const config = makeConfig(issues, {
+        postSessionCheck: vi.fn(async (issue: { number: number }) => {
+          if (issue.number === 1 && ++issue1Checks === 1) {
+            return { passed: false, output: "boom", summary: "failed" };
+          }
+          return { passed: true };
+        }),
+      });
+      config.retryOnCheckFailure = { maxRetries: 1, enabled: true };
+      const deps = makeDeps();
+      const orchestrator = new Orchestrator(config, deps, { maxParallel: 2 });
+
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(2));
+
+      // Issue 1's session exits and its check fails, so it retries (pid 1002)
+      runner.resolvers.get(1000)!(0);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(3));
+
+      // Issue 1 is still in its pipeline, so issue 3 must not launch
+      await new Promise((r) => setTimeout(r, 50));
+      expect(runner.spawned.length).toBe(3);
+
+      // The retry settles, freeing the slot for issue 3
+      runner.resolvers.get(1002)!(0);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(4));
+
+      runner.resolvers.get(1001)!(0);
+      runner.resolvers.get(1003)!(0);
+      await promise;
+
+      expect(deps.statusStore.get("1")).toBe("succeeded");
+      expect(deps.statusStore.get("3")).toBe("succeeded");
+    });
+
     it("defaults to 4 when maxParallel not specified", async () => {
       const issues = Array.from({ length: 5 }, (_, i) =>
         makeIssue({ number: i + 1, wave: 1, slug: `issue-${i + 1}` }),
@@ -1917,8 +1961,7 @@ describe("Orchestrator", () => {
     it("reduces parallelism to 1 after 0-byte retry failure", async () => {
       // 5 issues, maxParallel=2. Issues 1+2 spawn in parallel.
       // Issue 1: 0-byte on both original and retry -> triggers fallback.
-      // When issue 1 original exits, pool frees a slot and issue 3 spawns.
-      // The retry runs inside the postCheck (not tracked by pool).
+      // Issue 1's retry runs inside its pool slot, so issue 3 waits for it.
       // After fallback triggers, issues 4 and 5 should run one at a time.
       const issues = [
         makeIssue({ number: 1, wave: 1, slug: "a" }),
@@ -1940,21 +1983,20 @@ describe("Orchestrator", () => {
       // Issues 1 (pid=1000) and 2 (pid=1001) spawn in parallel
       await vi.waitFor(() => expect(runner.spawned.length).toBe(2));
 
-      // Issue 1 original: 0-byte, exit 1
-      // This triggers: postCheck (spawns retry pid=1002), then pool frees
-      // slot -> issue 3 spawns (pid=1003).
+      // Issue 1 original: 0-byte, exit 1 -> its retry (pid=1002) spawns
+      // inside issue 1's slot, so issue 3 must keep waiting.
       runner.resolvers.get(1000)!(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(3));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(runner.spawned.length).toBe(3);
 
-      // Retry (pid=1002) and issue 3 (pid=1003) spawn
+      // Issue 1 retry: still 0-byte, exit 1 -> triggers setMaxParallel(1) and
+      // frees issue 1's slot, so issue 3 (pid=1003) spawns
+      runner.resolvers.get(1002)!(1);
       await vi.waitFor(() => expect(runner.spawned.length).toBe(4));
 
-      // Issue 1 retry: still 0-byte, exit 1 -> triggers setMaxParallel(1)
-      runner.resolvers.get(1002)!(1);
-
-      // Issue 2 completes successfully
+      // Issues 2 and 3 complete successfully — pool now has 0 active
       runner.resolvers.get(1001)!(0);
-
-      // Issue 3 completes successfully — pool now has 0 active
       runner.resolvers.get(1003)!(0);
 
       // Issue 4 (pid=1004) should spawn (maxParallel=1, 0 active -> has slot)

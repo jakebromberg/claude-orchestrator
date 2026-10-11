@@ -615,7 +615,7 @@ export class Orchestrator {
                 await this.recordCleanExit(issue, "", logFile);
             });
             postCheckPromises.push(postCheck);
-            pool.add(handle);
+            pool.track(handle, postCheck);
         }
         await pool.waitAll();
         await Promise.all(postCheckPromises);

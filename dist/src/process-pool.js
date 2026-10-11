@@ -9,20 +9,34 @@ export class ProcessPool {
     setMaxParallel(n) {
         this.maxParallel = Math.max(1, n);
     }
+    /** Hold a slot until the process exits. */
     add(handle) {
         this.active.push(handle);
-        handle.exitCode.then((code) => {
-            this.completed.push({
-                pid: handle.pid,
-                issueNumber: handle.issueNumber,
-                exitCode: code,
-            });
-            this.active = this.active.filter((h) => h.pid !== handle.pid);
-            // Wake up any waiters
-            const waiter = this.waiters.shift();
-            if (waiter)
-                waiter();
+        handle.exitCode.then((code) => this.release(handle, code));
+    }
+    /**
+     * Hold a slot until `settled` fulfils or rejects, so the slot spans an
+     * issue's whole pipeline (session, post-session check, retries) rather than
+     * just the first session. The recorded exit code is still the handle's.
+     */
+    track(handle, settled) {
+        this.active.push(handle);
+        settled
+            .catch(() => { })
+            .then(() => handle.exitCode)
+            .then((code) => this.release(handle, code));
+    }
+    release(handle, exitCode) {
+        this.completed.push({
+            pid: handle.pid,
+            issueNumber: handle.issueNumber,
+            exitCode,
         });
+        this.active = this.active.filter((h) => h.pid !== handle.pid);
+        // Wake up any waiters
+        const waiter = this.waiters.shift();
+        if (waiter)
+            waiter();
     }
     get activeCount() {
         return this.active.length;

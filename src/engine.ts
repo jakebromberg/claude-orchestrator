@@ -771,7 +771,7 @@ export class Orchestrator {
       });
       postCheckPromises.push(postCheck);
 
-      pool.add(handle);
+      pool.track(handle, postCheck);
     }
 
     await pool.waitAll();
