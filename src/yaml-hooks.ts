@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync, execSync, spawn } from "node:child_process";
 import { existsSync as fsExistsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,42 @@ import { perIssueSpawnArgs } from "./model-effort.js";
 import { shellQuote } from "./shell-quote.js";
 import { claudeExecOptions } from "./claude-env.js";
 
+const OUTPUT_TAIL_BYTES = 64 * 1024;
+
+/**
+ * Runs `cmd` under `/bin/sh -c` without blocking the event loop, keeping only
+ * the last 64 KiB of combined stdout/stderr. Resolves with that tail on exit 0;
+ * rejects with an Error carrying the exit code (or signal) and the tail.
+ */
+export function runShellAsync(
+  cmd: string,
+  cwd: string,
+  env?: Record<string, string>,
+  onSpawn?: (pid: number) => void,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("/bin/sh", ["-c", cmd], {
+      cwd,
+      env: env ? { ...process.env, ...env } : process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (child.pid !== undefined) onSpawn?.(child.pid);
+    let tail = Buffer.alloc(0);
+    const collect = (chunk: Buffer) => {
+      tail = Buffer.concat([tail, chunk]).subarray(-OUTPUT_TAIL_BYTES);
+    };
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
+    child.on("error", reject);
+    child.on("close", (code, signal) => {
+      const output = tail.toString("utf-8");
+      if (code === 0) return resolve(output);
+      const how = signal ? `signal ${signal}` : `exit code ${code}`;
+      reject(new Error(`Command failed with ${how}\n${output}`));
+    });
+  });
+}
+
 /** I/O dependencies injectable for testing. */
 export interface DeriveHooksDeps {
   readFile?: (path: string) => string;
@@ -26,8 +62,19 @@ export interface DeriveHooksDeps {
    * verbatim for both, so the merge-conflict session will authenticate with
    * whatever environment the override passes. Apply `claudeSessionEnv()`
    * yourself in the override if you want sessions on the Claude Code login.
+   *
+   * May return synchronously or a Promise; both callers `await` the result,
+   * and a throw or rejection counts as failure. The check's default is
+   * {@link runShellAsync}, which keeps the event loop free; `env` overrides
+   * the child's environment and `onSpawn` receives the child's PID (the
+   * default runner honors both).
    */
-  runCommand?: (cmd: string, cwd: string) => string;
+  runCommand?: (
+    cmd: string,
+    cwd: string,
+    env?: Record<string, string>,
+    onSpawn?: (pid: number) => void,
+  ) => string | Promise<string>;
   /**
    * Used by collision detection to run git commands with an argument array
    * (avoids shell quoting entirely). Defaults to `execFileSync`.
@@ -266,8 +313,7 @@ export function deriveHooks(
       const sequentialEntries = settings.sequentialPaths;
       const baseBranch = settings.baseBranch;
 
-      const run = runCommand ?? ((cmd: string, dir: string) =>
-        execSync(cmd, { cwd: dir, encoding: "utf-8" }));
+      const run = runCommand ?? runShellAsync;
 
       // 1. Run configured commands first; first failure short-circuits.
       if (cmdConfig) {
@@ -276,7 +322,7 @@ export function deriveHooks(
           : worktreePath;
         for (const cmd of cmdConfig.commands) {
           try {
-            run(cmd, execDir);
+            await run(cmd, execDir);
           } catch (err) {
             return {
               passed: false,
@@ -388,7 +434,7 @@ export function deriveHooks(
       ].join(" ");
 
       try {
-        resolveRunCommand(cmd, worktreePath);
+        await resolveRunCommand(cmd, worktreePath);
         return { resolved: true };
       } catch (err) {
         const details = err instanceof Error ? err.message : String(err);

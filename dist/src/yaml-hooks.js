@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync, execSync, spawn } from "node:child_process";
 import { existsSync as fsExistsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,37 @@ import { resolveRepoSettings } from "./repo-settings.js";
 import { perIssueSpawnArgs } from "./model-effort.js";
 import { shellQuote } from "./shell-quote.js";
 import { claudeExecOptions } from "./claude-env.js";
+const OUTPUT_TAIL_BYTES = 64 * 1024;
+/**
+ * Runs `cmd` under `/bin/sh -c` without blocking the event loop, keeping only
+ * the last 64 KiB of combined stdout/stderr. Resolves with that tail on exit 0;
+ * rejects with an Error carrying the exit code (or signal) and the tail.
+ */
+export function runShellAsync(cmd, cwd, env, onSpawn) {
+    return new Promise((resolve, reject) => {
+        const child = spawn("/bin/sh", ["-c", cmd], {
+            cwd,
+            env: env ? { ...process.env, ...env } : process.env,
+            stdio: ["ignore", "pipe", "pipe"],
+        });
+        if (child.pid !== undefined)
+            onSpawn?.(child.pid);
+        let tail = Buffer.alloc(0);
+        const collect = (chunk) => {
+            tail = Buffer.concat([tail, chunk]).subarray(-OUTPUT_TAIL_BYTES);
+        };
+        child.stdout.on("data", collect);
+        child.stderr.on("data", collect);
+        child.on("error", reject);
+        child.on("close", (code, signal) => {
+            const output = tail.toString("utf-8");
+            if (code === 0)
+                return resolve(output);
+            const how = signal ? `signal ${signal}` : `exit code ${code}`;
+            reject(new Error(`Command failed with ${how}\n${output}`));
+        });
+    });
+}
 function defaultClaimHelperPath() {
     const here = fileURLToPath(import.meta.url);
     return path.join(path.dirname(here), "cli-claim.js");
@@ -171,7 +202,7 @@ export function deriveHooks(yaml, deps = {}) {
             const cmdConfig = settings.postSessionCheck;
             const sequentialEntries = settings.sequentialPaths;
             const baseBranch = settings.baseBranch;
-            const run = runCommand ?? ((cmd, dir) => execSync(cmd, { cwd: dir, encoding: "utf-8" }));
+            const run = runCommand ?? runShellAsync;
             // 1. Run configured commands first; first failure short-circuits.
             if (cmdConfig) {
                 const execDir = cmdConfig.cwd
@@ -179,7 +210,7 @@ export function deriveHooks(yaml, deps = {}) {
                     : worktreePath;
                 for (const cmd of cmdConfig.commands) {
                     try {
-                        run(cmd, execDir);
+                        await run(cmd, execDir);
                     }
                     catch (err) {
                         return {
@@ -271,7 +302,7 @@ export function deriveHooks(yaml, deps = {}) {
                 "--verbose",
             ].join(" ");
             try {
-                resolveRunCommand(cmd, worktreePath);
+                await resolveRunCommand(cmd, worktreePath);
                 return { resolved: true };
             }
             catch (err) {
