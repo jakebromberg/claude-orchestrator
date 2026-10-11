@@ -64,7 +64,7 @@ Amazon Bedrock and Google Vertex backends are not supported: their `CLAUDE_CODE_
 
 - `CO_LEASE_SLOTS` — heavy-command slot ceiling at `normal` pressure (positive integer, default `4`). An invalid value keeps the default and is reported once on stderr.
 - `CO_PRESSURE_OVERRIDE` — set to exactly `critical-as-warning` to make this process (and what it starts) read `critical` as `warning`. Any other value is ignored with a warning.
-- `CO_LEASE_DIR` — lease directory (default `${XDG_STATE_HOME:-$HOME/.local/state}/claude-orchestrator/lease`); the sampler persists its last raw reading to `level.json` there, only if the directory already exists.
+- `CO_LEASE_DIR` — lease directory (default `${XDG_STATE_HOME:-$HOME/.local/state}/claude-orchestrator/lease`); the sampler persists its last raw reading to `level.json` there, only if the directory already exists. A relative `XDG_STATE_HOME` is ignored; without an absolute `HOME`, the account's home directory from the user database is used, and with neither the sampler throws rather than resolve a path against the working directory.
 
 ## Quick Start
 
