@@ -180,6 +180,10 @@ describe("leaseDirectory", () => {
   it.each(["", "rel"])("throws instead of resolving against the cwd when the account home is %j", (home) => {
     expect(() => leaseDirectory({}, () => home)).toThrow(/lease directory/);
   });
+
+  it.each(["rel/lease", ".", "./lease"])("throws instead of resolving against the cwd when CO_LEASE_DIR is %j", (dir) => {
+    expect(() => leaseDirectory({ CO_LEASE_DIR: dir, HOME: "/h" }, accountHome)).toThrow(/CO_LEASE_DIR/);
+  });
 });
 
 describe("defaultPressureSampler", () => {
