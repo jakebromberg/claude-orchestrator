@@ -1,0 +1,44 @@
+/** `unknown` means this platform has no signal; a failed darwin read is `null`, never `unknown`. */
+export type PressureLevel = "normal" | "warning" | "critical" | "unknown";
+export interface PressurePolicy {
+    heavyCeiling: number;
+    heavyWarning: number;
+}
+/** A cached sampler; `fresh()` bypasses and refreshes the cache. */
+export interface PressureSampler {
+    (): PressureLevel;
+    fresh(): PressureLevel;
+}
+/**
+ * Reads the macOS pressure level. `null` means the darwin read failed, timed
+ * out or returned an unrecognised value; `"unknown"` means no signal here.
+ */
+export declare function readMemoryPressure(deps?: {
+    platform?: NodeJS.Platform;
+    sysctl?: (name: string) => string;
+}): PressureLevel | null;
+/** Heavy-command slots at a level; `critical` is always 0. */
+export declare function heavyCapacity(level: PressureLevel, policy: PressurePolicy): number;
+/** Concurrent engine sessions at a level. */
+export declare function sessionCapacity(level: PressureLevel, maxParallel: number): number;
+/** The stop rule: critical with nothing running that could relieve it by finishing. */
+export declare function stopAtCritical(level: PressureLevel, running: number): boolean;
+/** `CO_LEASE_SLOTS` overrides the heavy ceiling; an invalid value keeps the default and is reported. */
+export declare function pressurePolicyFromEnv(env?: NodeJS.ProcessEnv, warn?: (msg: string) => void): PressurePolicy;
+/** Wraps `read` in a TTL cache (default 10 s). */
+export declare function cachedPressureSampler(read: () => PressureLevel, ttlMs?: number, now?: () => number): PressureSampler;
+/** Maps `critical` to `warning` only for `CO_PRESSURE_OVERRIDE=critical-as-warning`; other values are ignored with a warning. */
+export declare function applyPressureOverride(level: PressureLevel, env?: NodeJS.ProcessEnv, warn?: (msg: string) => void): PressureLevel;
+/** The lease directory, shared with the lease itself so the path is resolved in one place. */
+export declare function leaseDirectory(env?: NodeJS.ProcessEnv): string;
+/**
+ * The one production sampler: cached sysctl reading, override applied. A failed
+ * darwin read falls back to the last good reading under 60 s old (in-process,
+ * else `<lease dir>/level.json`), and otherwise reads `critical`, so a sustained
+ * failure can only stop work. `deps` exists for tests.
+ */
+export declare function defaultPressureSampler(env?: NodeJS.ProcessEnv, deps?: {
+    read?: () => PressureLevel | null;
+    now?: () => number;
+    log?: (msg: string) => void;
+}): PressureSampler;
