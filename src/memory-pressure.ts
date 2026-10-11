@@ -131,18 +131,22 @@ export function applyPressureOverride(
 
 /**
  * The lease directory, shared with the lease itself so the path is resolved in
- * one place: `CO_LEASE_DIR` as given, else `$XDG_STATE_HOME/claude-orchestrator/lease`,
+ * one place: `CO_LEASE_DIR` when absolute, else `$XDG_STATE_HOME/claude-orchestrator/lease`,
  * else `<home>/.local/state/claude-orchestrator/lease`. A relative `XDG_STATE_HOME`
  * is ignored, as the XDG spec requires. `<home>` is `HOME` when absolute, else the
  * account's home from the user database (`accountHome`), so a process started
- * without `HOME` still shares the machine-wide directory. Throws when no absolute
- * home exists rather than resolve a path against the cwd.
+ * without `HOME` still shares the machine-wide directory. Throws on a relative
+ * `CO_LEASE_DIR`, or when no absolute home exists, rather than resolve a path
+ * against the cwd.
  */
 export function leaseDirectory(
   env: NodeJS.ProcessEnv = process.env,
   accountHome: () => string = () => userInfo().homedir,
 ): string {
-  if (env.CO_LEASE_DIR) return env.CO_LEASE_DIR;
+  if (env.CO_LEASE_DIR) {
+    if (!isAbsolute(env.CO_LEASE_DIR)) throw new Error(`CO_LEASE_DIR must be an absolute path, got ${JSON.stringify(env.CO_LEASE_DIR)}`);
+    return env.CO_LEASE_DIR;
+  }
   const xdg = env.XDG_STATE_HOME;
   if (xdg && isAbsolute(xdg)) return join(xdg, "claude-orchestrator", "lease");
   const home = env.HOME && isAbsolute(env.HOME) ? env.HOME : accountHome();
