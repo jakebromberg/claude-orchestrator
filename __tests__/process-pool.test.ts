@@ -189,4 +189,37 @@ describe("ProcessPool", () => {
       expect(resolved).toBe(true);
     });
   });
+
+  describe("track", () => {
+    it("holds the slot after the session exits until settled resolves", async () => {
+      const pool = new ProcessPool(1);
+      const h = runner.spawn("cmd", [], { cwd: "/a", logFile: "/a.log" });
+      let finish!: () => void;
+      pool.track(h, new Promise<void>((r) => { finish = r; }));
+
+      runner.resolvers.get(h.pid)!(0);
+      await h.exitCode;
+      await Promise.resolve();
+      expect(pool.isFull).toBe(true);
+      expect(pool.activePids).toEqual([h.pid]);
+
+      finish();
+      const results = await pool.waitAll();
+      expect(pool.activeCount).toBe(0);
+      expect(results).toEqual([{ pid: h.pid, issueNumber: h.issueNumber, exitCode: 0 }]);
+    });
+
+    it("frees the slot and wakes a waiter when settled rejects", async () => {
+      const pool = new ProcessPool(1);
+      const h = runner.spawn("cmd", [], { cwd: "/a", logFile: "/a.log" });
+      let fail!: (e: Error) => void;
+      pool.track(h, new Promise<void>((_, rej) => { fail = rej; }));
+
+      const slot = pool.waitForSlot();
+      runner.resolvers.get(h.pid)!(1);
+      fail(new Error("pipeline blew up"));
+      await slot;
+      expect(pool.activeCount).toBe(0);
+    });
+  });
 });
