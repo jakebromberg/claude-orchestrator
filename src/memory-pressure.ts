@@ -6,7 +6,8 @@
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { userInfo } from "node:os";
+import { isAbsolute, join } from "node:path";
 
 /** `unknown` means this platform has no signal; a failed darwin read is `null`, never `unknown`. */
 export type PressureLevel = "normal" | "warning" | "critical" | "unknown";
@@ -90,7 +91,13 @@ export function pressurePolicyFromEnv(
   return { ...DEFAULT_POLICY };
 }
 
-/** Wraps `read` in a TTL cache (default 10 s). */
+/** True when a reading taken at `at` is no older than `maxAgeMs` at `now`; a reading from the future (a clock step back) is not fresh. */
+function isFresh(at: number, now: number, maxAgeMs: number): boolean {
+  const age = now - at;
+  return Number.isFinite(age) && age >= 0 && age < maxAgeMs;
+}
+
+/** Wraps `read` in a TTL cache (default 10 s). A cached level from the future (the clock stepped back) has expired. */
 export function cachedPressureSampler(
   read: () => PressureLevel,
   ttlMs: number = SAMPLE_TTL_MS,
@@ -103,7 +110,7 @@ export function cachedPressureSampler(
     return level;
   };
   const sampler = (): PressureLevel =>
-    cached && now() - cached.at < ttlMs ? cached.level : fresh();
+    cached && isFresh(cached.at, now(), ttlMs) ? cached.level : fresh();
   return Object.assign(sampler, { fresh });
 }
 
@@ -122,18 +129,33 @@ export function applyPressureOverride(
   return level === "critical" ? "warning" : level;
 }
 
-/** The lease directory, shared with the lease itself so the path is resolved in one place. */
-export function leaseDirectory(env: NodeJS.ProcessEnv = process.env): string {
+/**
+ * The lease directory, shared with the lease itself so the path is resolved in
+ * one place: `CO_LEASE_DIR` as given, else `$XDG_STATE_HOME/claude-orchestrator/lease`,
+ * else `<home>/.local/state/claude-orchestrator/lease`. A relative `XDG_STATE_HOME`
+ * is ignored, as the XDG spec requires. `<home>` is `HOME` when absolute, else the
+ * account's home from the user database (`accountHome`), so a process started
+ * without `HOME` still shares the machine-wide directory. Throws when no absolute
+ * home exists rather than resolve a path against the cwd.
+ */
+export function leaseDirectory(
+  env: NodeJS.ProcessEnv = process.env,
+  accountHome: () => string = () => userInfo().homedir,
+): string {
   if (env.CO_LEASE_DIR) return env.CO_LEASE_DIR;
-  const state = env.XDG_STATE_HOME || join(env.HOME ?? "", ".local", "state");
-  return join(state, "claude-orchestrator", "lease");
+  const xdg = env.XDG_STATE_HOME;
+  if (xdg && isAbsolute(xdg)) return join(xdg, "claude-orchestrator", "lease");
+  const home = env.HOME && isAbsolute(env.HOME) ? env.HOME : accountHome();
+  if (!isAbsolute(home)) throw new Error("cannot resolve the lease directory: no absolute XDG_STATE_HOME or HOME");
+  return join(home, ".local", "state", "claude-orchestrator", "lease");
 }
 
 /**
  * The one production sampler: cached sysctl reading, override applied. A failed
  * darwin read falls back to the last good reading under 60 s old (in-process,
  * else `<lease dir>/level.json`), and otherwise reads `critical`, so a sustained
- * failure can only stop work. `deps` exists for tests.
+ * failure can only stop work. A reading from the future is never fresh. Throws
+ * when `leaseDirectory(env)` does. `deps` exists for tests.
  */
 export function defaultPressureSampler(
   env: NodeJS.ProcessEnv = process.env,
@@ -164,8 +186,8 @@ export function defaultPressureSampler(
   const persisted = (): { level: PressureLevel; at: number } | undefined => {
     try {
       const parsed = JSON.parse(readFileSync(file, "utf8"));
-      return Object.values(LEVELS_BY_VALUE).includes(parsed.level)
-        ? { level: parsed.level, at: Number(parsed.at) }
+      return Object.values(LEVELS_BY_VALUE).includes(parsed.level) && typeof parsed.at === "number"
+        ? { level: parsed.level, at: parsed.at }
         : undefined;
     } catch {
       return undefined;
@@ -181,7 +203,7 @@ export function defaultPressureSampler(
       return level;
     }
     log("memory-pressure read failed; using the last good reading, else critical");
-    const candidate = [lastGood, persisted()].find((r) => r && at - r.at < FALLBACK_MAX_AGE_MS);
+    const candidate = [lastGood, persisted()].find((r) => r && isFresh(r.at, at, FALLBACK_MAX_AGE_MS));
     return candidate?.level ?? "critical";
   };
 

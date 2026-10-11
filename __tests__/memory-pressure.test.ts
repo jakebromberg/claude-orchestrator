@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -124,6 +124,19 @@ describe("cachedPressureSampler", () => {
     s();
     expect(read).toHaveBeenCalledTimes(2);
   });
+
+  it("treats a cached level from the future (a backward clock step) as expired", () => {
+    let t = 3_600_000;
+    const levels: PressureLevel[] = ["normal", "critical"];
+    const read = vi.fn(() => levels.shift()!);
+    const s = cachedPressureSampler(read, undefined, () => t);
+    expect(s()).toBe("normal");
+    t = 0;
+    expect(s()).toBe("critical");
+    t = 9_999;
+    expect(s()).toBe("critical");
+    expect(read).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("applyPressureOverride", () => {
@@ -148,12 +161,24 @@ describe("applyPressureOverride", () => {
 });
 
 describe("leaseDirectory", () => {
+  const accountHome = () => "/u";
+
   it.each([
     [{ CO_LEASE_DIR: "/a", XDG_STATE_HOME: "/x", HOME: "/h" }, "/a"],
     [{ XDG_STATE_HOME: "/x", HOME: "/h" }, "/x/claude-orchestrator/lease"],
     [{ HOME: "/h" }, "/h/.local/state/claude-orchestrator/lease"],
+    [{ XDG_STATE_HOME: "", HOME: "/h" }, "/h/.local/state/claude-orchestrator/lease"],
+    [{ XDG_STATE_HOME: "rel", HOME: "/h" }, "/h/.local/state/claude-orchestrator/lease"],
+    [{}, "/u/.local/state/claude-orchestrator/lease"],
+    [{ HOME: "" }, "/u/.local/state/claude-orchestrator/lease"],
+    [{ HOME: "rel" }, "/u/.local/state/claude-orchestrator/lease"],
+    [{ XDG_STATE_HOME: "rel" }, "/u/.local/state/claude-orchestrator/lease"],
   ])("resolves %j to %s", (env, expected) => {
-    expect(leaseDirectory(env)).toBe(expected);
+    expect(leaseDirectory(env, accountHome)).toBe(expected);
+  });
+
+  it.each(["", "rel"])("throws instead of resolving against the cwd when the account home is %j", (home) => {
+    expect(() => leaseDirectory({}, () => home)).toThrow(/lease directory/);
   });
 });
 
@@ -175,10 +200,23 @@ describe("defaultPressureSampler", () => {
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  it("returns the reading and persists the raw level atomically", () => {
+  it("returns the reading and persists the raw level", () => {
     reading = "warning";
     expect(make()()).toBe("warning");
     expect(persisted()).toEqual({ level: "warning", at: t });
+    expect(readdirSync(dir)).toEqual(["level.json"]);
+  });
+
+  it("replaces level.json by renaming a temp file onto it, never by writing it in place", () => {
+    const s = make();
+    s();
+    const before = statSync(join(dir, "level.json")).ino;
+    reading = "warning";
+    t += 1;
+    s.fresh();
+    expect(persisted()).toEqual({ level: "warning", at: t });
+    // A write in place keeps the inode; only a rename onto the path gives it a new one.
+    expect(statSync(join(dir, "level.json")).ino).not.toBe(before);
     expect(readdirSync(dir)).toEqual(["level.json"]);
   });
 
@@ -204,35 +242,50 @@ describe("defaultPressureSampler", () => {
       return s.fresh();
     };
 
-    it("uses a fresh in-process reading", () => {
+    // Each row sets both sources explicitly: the in-process reading is "normal" and
+    // level.json holds "warning", so the result names the source that served it. An
+    // age is how long before the failed read a reading was taken; a negative age is a
+    // reading from the future (a backward clock step, or a skewed or hand-edited file).
+    it.each([
+      ["a fresh in-process reading", "normal", 59_000, undefined],
+      ["a stale in-process reading", "critical", 60_000, undefined],
+      ["an in-process reading from the future", "critical", -1, undefined],
+      ["a fresh level.json", "warning", undefined, 59_000],
+      ["a level.json from this instant", "warning", undefined, 0],
+      ["a stale level.json", "critical", undefined, 60_000],
+      ["a level.json from the future", "critical", undefined, -1],
+      ["no reading at all", "critical", undefined, undefined],
+      ["a fresh in-process reading ahead of a fresh level.json", "normal", 1_000, 1_000],
+      ["a stale in-process reading, then a fresh level.json", "warning", 60_000, 1_000],
+    ] as const)("%s -> %s", (_n, expected, inProcessAge, persistedAge) => {
       const s = make();
-      s();
-      t += 59_000;
-      expect(fail(s)).toBe("normal");
-      expect(log).toHaveBeenCalledTimes(1);
+      const failAt = t;
+      if (inProcessAge !== undefined) {
+        t = failAt - inProcessAge;
+        s();
+        rmSync(join(dir, "level.json"));
+      }
+      if (persistedAge !== undefined) {
+        writeFileSync(join(dir, "level.json"), JSON.stringify({ level: "warning", at: failAt - persistedAge }));
+      }
+      t = failAt;
+      expect(fail(s)).toBe(expected);
+    });
+
+    it("logs the fallback once", () => {
+      const s = make();
+      fail(s);
       fail(s);
       expect(log).toHaveBeenCalledTimes(1);
-    });
-
-    it("reads critical once the in-process reading is stale", () => {
-      const s = make();
-      s();
-      t += 60_000;
-      expect(fail(s)).toBe("critical");
-    });
-
-    it.each([
-      ["fresh", 59_000, "warning"],
-      ["stale", 60_000, "critical"],
-    ])("a %s persisted level.json -> %s", (_n, age, expected) => {
-      writeFileSync(join(dir, "level.json"), JSON.stringify({ level: "warning", at: t - age }));
-      expect(fail(make())).toBe(expected);
     });
 
     it.each([
       ["missing file", undefined],
       ["corrupt file", "{not json"],
       ["bad level", JSON.stringify({ level: "bogus", at: 1_000_000 })],
+      ["missing at", JSON.stringify({ level: "warning" })],
+      ["string at", JSON.stringify({ level: "warning", at: "1000000" })],
+      ["far-future at", JSON.stringify({ level: "warning", at: 9e15 })],
     ])("%s -> critical", (_n, content) => {
       if (content !== undefined) writeFileSync(join(dir, "level.json"), content);
       expect(fail(make())).toBe("critical");
