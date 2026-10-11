@@ -1,3 +1,4 @@
+import net from "node:net";
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { refOf, normalizeDep } from "../src/ref.js";
 import { createDashboardServer } from "../src/dashboard.js";
@@ -47,10 +48,17 @@ function makeDeps(overrides: Partial<DashboardDeps> = {}): DashboardDeps {
   };
 }
 
-// Use a random port for each test to avoid conflicts
-let nextPort = 19100;
-function getPort(): number {
-  return nextPort++;
+// Ask the OS for a free port so concurrent runs (peer worktrees, parallel
+// test files) can't collide on a fixed range.
+function getPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const { port } = probe.address() as net.AddressInfo;
+      probe.close(() => resolve(port));
+    });
+  });
 }
 
 describe("dashboard server", () => {
@@ -64,7 +72,7 @@ describe("dashboard server", () => {
   });
 
   it("serves HTML on GET /", async () => {
-    const port = getPort();
+    const port = await getPort();
     handle = await createDashboardServer(makeDeps(), { port });
 
     const res = await fetch(`http://127.0.0.1:${port}/`);
@@ -80,7 +88,7 @@ describe("dashboard server", () => {
     const deps = makeDeps();
     deps.statusStore.set("1", "running");
     deps.statusStore.set("2", "pending");
-    const port = getPort();
+    const port = await getPort();
     handle = await createDashboardServer(deps, { port });
 
     const res = await fetch(`http://127.0.0.1:${port}/api/status`);
@@ -93,7 +101,7 @@ describe("dashboard server", () => {
   });
 
   it("returns config on GET /api/config", async () => {
-    const port = getPort();
+    const port = await getPort();
     handle = await createDashboardServer(makeDeps(), { port });
 
     const res = await fetch(`http://127.0.0.1:${port}/api/config`);
@@ -107,7 +115,7 @@ describe("dashboard server", () => {
 
   it("returns log tail on GET /api/logs/:issue", async () => {
     const readLogTail = vi.fn().mockReturnValue("test output line");
-    const port = getPort();
+    const port = await getPort();
     handle = await createDashboardServer(makeDeps({ readLogTail }), { port });
 
     const res = await fetch(`http://127.0.0.1:${port}/api/logs/1`);
@@ -122,7 +130,7 @@ describe("dashboard server", () => {
     const issues: Issue[] = [
       makeIssue({ number: 924, slug: "lml", repo: "WXYC/lml" }),
     ];
-    const port = getPort();
+    const port = await getPort();
     handle = await createDashboardServer(
       makeDeps({ readLogTail, config: { ...makeDeps().config, issues } }),
       { port },
@@ -137,7 +145,7 @@ describe("dashboard server", () => {
 
   it("returns fallback when log read fails", async () => {
     const readLogTail = vi.fn().mockImplementation(() => { throw new Error("ENOENT"); });
-    const port = getPort();
+    const port = await getPort();
     handle = await createDashboardServer(makeDeps({ readLogTail }), { port });
 
     const res = await fetch(`http://127.0.0.1:${port}/api/logs/99`);
@@ -148,7 +156,7 @@ describe("dashboard server", () => {
   it("returns metadata on GET /api/metadata/:issue", async () => {
     const deps = makeDeps();
     deps.metadataStore.set("1", { prUrl: "https://github.com/test/pr/1", exitCode: 0 });
-    const port = getPort();
+    const port = await getPort();
     handle = await createDashboardServer(deps, { port });
 
     const res = await fetch(`http://127.0.0.1:${port}/api/metadata/1`);
@@ -163,7 +171,7 @@ describe("dashboard server", () => {
     });
     // Metadata is stored under the composite ref, not the bare number.
     deps.metadataStore.set("WXYC/lml#924", { prUrl: "https://github.com/WXYC/lml/pull/1", exitCode: 0 });
-    const port = getPort();
+    const port = await getPort();
     handle = await createDashboardServer(deps, { port });
 
     const res = await fetch(`http://127.0.0.1:${port}/api/metadata/924`);
@@ -172,7 +180,7 @@ describe("dashboard server", () => {
   });
 
   it("returns 404 for unknown routes", async () => {
-    const port = getPort();
+    const port = await getPort();
     handle = await createDashboardServer(makeDeps(), { port });
 
     const res = await fetch(`http://127.0.0.1:${port}/api/unknown`);
@@ -183,7 +191,7 @@ describe("dashboard server", () => {
   });
 
   it("establishes SSE connection on GET /api/events", async () => {
-    const port = getPort();
+    const port = await getPort();
     handle = await createDashboardServer(makeDeps(), { port });
 
     const res = await fetch(`http://127.0.0.1:${port}/api/events`);
@@ -199,7 +207,7 @@ describe("dashboard server", () => {
   it("emits SSE events when status changes", async () => {
     const deps = makeDeps();
     deps.statusStore.set("1", "pending");
-    const port = getPort();
+    const port = await getPort();
     handle = await createDashboardServer(deps, { port });
 
     // Connect to SSE
