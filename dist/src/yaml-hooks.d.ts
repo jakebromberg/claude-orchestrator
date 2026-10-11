@@ -1,5 +1,11 @@
 import type { OrchestratorHooks } from "./types.js";
 import type { YamlConfig } from "./yaml-types.js";
+/**
+ * Runs `cmd` under `/bin/sh -c` without blocking the event loop, keeping only
+ * the last 64 KiB of combined stdout/stderr. Resolves with that tail on exit 0;
+ * rejects with an Error carrying the exit code (or signal) and the tail.
+ */
+export declare function runShellAsync(cmd: string, cwd: string, env?: Record<string, string>, onSpawn?: (pid: number) => void): Promise<string>;
 /** I/O dependencies injectable for testing. */
 export interface DeriveHooksDeps {
     readFile?: (path: string) => string;
@@ -13,8 +19,14 @@ export interface DeriveHooksDeps {
      * verbatim for both, so the merge-conflict session will authenticate with
      * whatever environment the override passes. Apply `claudeSessionEnv()`
      * yourself in the override if you want sessions on the Claude Code login.
+     *
+     * May return synchronously or a Promise; both callers `await` the result,
+     * and a throw or rejection counts as failure. The check's default is
+     * {@link runShellAsync}, which keeps the event loop free; `env` overrides
+     * the child's environment and `onSpawn` receives the child's PID (the
+     * default runner honors both).
      */
-    runCommand?: (cmd: string, cwd: string) => string;
+    runCommand?: (cmd: string, cwd: string, env?: Record<string, string>, onSpawn?: (pid: number) => void) => string | Promise<string>;
     /**
      * Used by collision detection to run git commands with an argument array
      * (avoids shell quoting entirely). Defaults to `execFileSync`.

@@ -1,8 +1,10 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { refOf, normalizeDep } from "../src/ref.js";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { deriveHooks } from "../src/yaml-hooks.js";
+import { deriveHooks, runShellAsync } from "../src/yaml-hooks.js";
 import type { YamlConfig } from "../src/yaml-types.js";
 import type { Issue, Status } from "../src/types.js";
 
@@ -762,6 +764,70 @@ describe("deriveHooks", () => {
     });
   });
 
+  describe("async check runner", () => {
+    let dir: string;
+    beforeEach(() => {
+      dir = mkdtempSync(path.join(tmpdir(), "co-check-"));
+    });
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    const check = (cmd: string) =>
+      deriveHooks(makeYaml({ postSessionCheck: { commands: [cmd] } }))
+        .postSessionCheck!(makeIssue(), dir);
+
+    it("awaits an async injected runner and short-circuits on rejection", async () => {
+      const runCommand = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("boom"))
+        .mockResolvedValue("");
+      const hooks = deriveHooks(
+        makeYaml({ postSessionCheck: { commands: ["a", "b"] } }),
+        { runCommand },
+      );
+      const result = await hooks.postSessionCheck!(makeIssue(), dir);
+      expect(result).toMatchObject({ passed: false, summary: "Command failed: a\nboom" });
+      expect(runCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it("default runner reports the child's PID via onSpawn and honors env", async () => {
+      const onSpawn = vi.fn();
+      const out = await runShellAsync("echo $CO_X", dir, { CO_X: "hi" }, onSpawn);
+      expect(out.trim()).toBe("hi");
+      expect(onSpawn).toHaveBeenCalledWith(expect.any(Number));
+    });
+
+    it("default runner fails with the exit code", async () => {
+      const result = await check("exit 3");
+      expect(result.passed).toBe(false);
+      expect(result.summary).toContain("Command failed: exit 3");
+      expect(result.output).toContain("3");
+    });
+
+    it("default runner passes on >1 MiB of output exiting 0", async () => {
+      const result = await check("yes | head -c 2000000");
+      expect(result.passed).toBe(true);
+    });
+
+    it("default runner keeps only the last 64 KiB on failure", async () => {
+      const result = await check("yes | head -c 2000000; echo END; exit 4");
+      expect(result.passed).toBe(false);
+      expect(result.output).toContain("END");
+      expect(result.output).toContain("4");
+      expect(result.output!.length).toBeLessThan(70 * 1024);
+    });
+
+    it("default runner runs under sh in the given cwd and does not block the event loop", async () => {
+      let ticks = 0;
+      const timer = setInterval(() => ticks++, 10);
+      const result = await check("sleep 0.3; pwd");
+      clearInterval(timer);
+      expect(result.passed).toBe(true);
+      expect(ticks).toBeGreaterThan(5);
+    });
+  });
+
   describe("onMergeConflict hook", () => {
     it("is not attached when mergeConflictRetry is not configured", () => {
       const hooks = deriveHooks(makeYaml());
@@ -818,6 +884,15 @@ describe("deriveHooks", () => {
       await hooks.onMergeConflict!(issue, [], "main");
 
       expect(commands[0].cwd).toBe("/tmp/worktrees/my-feat");
+    });
+
+    it("returns resolved:false when an async runner rejects", async () => {
+      const hooks = deriveHooks(
+        makeYaml({ mergeConflictRetry: { enabled: true } }),
+        { runCommand: vi.fn().mockRejectedValue(new Error("nope")) },
+      );
+      const result = await hooks.onMergeConflict!(makeIssue(), [], "main");
+      expect(result).toMatchObject({ resolved: false, details: "nope" });
     });
 
     it("returns resolved:true when claude exits 0", async () => {

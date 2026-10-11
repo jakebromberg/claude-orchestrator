@@ -31,7 +31,7 @@ Each run prints the mode it's using, naming any credential it dropped:
 ### What the scrub does and doesn't cover
 
 - It applies to the session **and everything the session runs** — a command the agent executes through its Bash tool sees the scrubbed environment too.
-- `postSessionCheck` is the deliberate exception: it runs *your* commands (tests, lint, typecheck), which may legitimately need an API key, so it keeps the full environment. If your test suite is credential-dependent, note that the agent running it in-session and the orchestrator running it afterwards will see different environments.
+- `postSessionCheck` is the deliberate exception: it runs *your* commands (tests, lint, typecheck), which may legitimately need an API key, so it keeps the full environment. Commands run asynchronously under `/bin/sh -c` (only the last 64 KiB of output is kept, and a non-zero exit fails the check with that tail), so a slow check does not freeze the engine; an injected `runCommand` may return a string or a Promise. If your test suite is credential-dependent, note that the agent running it in-session and the orchestrator running it afterwards will see different environments.
 - `ANTHROPIC_CUSTOM_HEADERS` is not scrubbed — it also carries ordinary headers a proxy may require. If you use it to pass a credential, opt in explicitly so the billing mode is accurate.
 
 ### Opting in to API billing
