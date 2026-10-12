@@ -121,6 +121,22 @@ describe("leaseEventSink", () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
+  it("writes its default rotation warning to stderr as 'lease: ...', with no '[lease] ' prefix", () => {
+    writeFileSync(join(dir, "events.jsonl"), `${JSON.stringify({ pad: "x".repeat(200) })}\n`);
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      const rename = () => {
+        throw new Error("EXDEV");
+      };
+      leaseEventSink(dir, { now: () => TS, maxBytes: 100, rename })(RELEASE);
+      const written = stderr.mock.calls.map(([c]) => String(c));
+      expect(written).toHaveLength(1);
+      expect(written[0]).toMatch(/^lease: cannot rotate /);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
   it("stays quiet when another process rotated first (ENOENT), keeping its one warning for a real failure", () => {
     writeFileSync(join(dir, "events.jsonl"), `${JSON.stringify({ pad: "x".repeat(200) })}\n`);
     const warn = vi.fn();

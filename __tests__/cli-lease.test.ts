@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  cliLeaseOptions,
+  cliLeaseDeps,
   parseLeaseArgs,
   runLeased,
   runStatus,
@@ -478,19 +478,25 @@ describe("package bin", () => {
   });
 });
 
-describe("cliLeaseOptions", () => {
+describe("cliLeaseDeps (the wiring main uses)", () => {
   it("routes the lease's fail-open warning through err, not stderr", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "cli-lease-"));
     const stderr = vi.spyOn(process.stderr, "write");
     try {
       writeFileSync(join(tmp, "blocker"), "");
+      vi.stubEnv("CO_LEASE_DIR", join(tmp, "blocker", "lease"));
+      vi.stubEnv("CO_LEASE_SLOTS", "many");
       const lines: string[] = [];
-      const opts = cliLeaseOptions({ CO_LEASE_DIR: join(tmp, "blocker", "lease") }, (l) => lines.push(l));
+      const opts = cliLeaseDeps((l) => lines.push(l)).leaseOptions();
       ((await acquireLease(opts, { command: "npm test", cwd: "/w" })) as LeaseHandle).release();
-      expect(lines).toEqual(["lease: unavailable (io-error); running unleased"]);
+      expect(lines).toEqual([
+        'memory-pressure: ignoring invalid CO_LEASE_SLOTS="many"; keeping 4',
+        "lease: unavailable (io-error); running unleased",
+      ]);
       expect(stderr).not.toHaveBeenCalled();
     } finally {
       stderr.mockRestore();
+      vi.unstubAllEnvs();
       rmSync(tmp, { recursive: true, force: true });
     }
   });

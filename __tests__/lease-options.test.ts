@@ -15,10 +15,11 @@ vi.mock("../src/memory-pressure.js", async (importOriginal) => {
 const { defaultLeaseOptions } = await import("../src/lease.js");
 
 describe("defaultLeaseOptions sampler wiring", () => {
-  it("hands the sampler it builds the caller's warn as its log", () => {
+  it("hands the sampler it builds a log that reaches the caller's warn", () => {
     const warn = vi.fn();
     defaultLeaseOptions({ CO_LEASE_DIR: "/lease" }, { warn });
-    expect(built.deps.at(-1)?.log).toBe(warn);
+    built.deps.at(-1)?.log?.("x");
+    expect(warn).toHaveBeenCalledWith("memory-pressure: x");
   });
 
   it("builds no sampler when the caller supplies one", () => {

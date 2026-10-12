@@ -224,6 +224,23 @@ describe("defaultPressureSampler", () => {
     expect(readdirSync(dir)).toEqual(["level.json"]);
   });
 
+  it("routes an invalid CO_PRESSURE_OVERRIDE warning to the injected log, never to stderr, and tells each writer once", () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      const bad = { ...env, CO_PRESSURE_OVERRIDE: "nope" };
+      const first = vi.fn();
+      const second = vi.fn();
+      defaultPressureSampler(bad, { read: () => reading, now: () => t, log: first })();
+      defaultPressureSampler(bad, { read: () => reading, now: () => t, log: second })();
+      expect(first).toHaveBeenCalledTimes(1);
+      expect(first).toHaveBeenCalledWith(expect.stringContaining("CO_PRESSURE_OVERRIDE"));
+      expect(second).toHaveBeenCalledTimes(1);
+      expect(stderr).not.toHaveBeenCalled();
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
   it("persists the raw level, not the overridden one", () => {
     reading = "critical";
     const s = make({ ...env, CO_PRESSURE_OVERRIDE: "critical-as-warning" });
