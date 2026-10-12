@@ -58,7 +58,9 @@ export interface LeaseCliDeps {
   out(text: string): void;
   err(line: string): void;
   now(): number;
-  signals: { on(sig: NodeJS.Signals, fn: () => void): unknown; off(sig: NodeJS.Signals, fn: () => void): unknown };
+  /** `process` in production: `kill(pid, sig)` on its own `pid` re-raises a signal that arrives while waiting. */
+  signals: { on(sig: NodeJS.Signals, fn: () => void): unknown; off(sig: NodeJS.Signals, fn: () => void): unknown;
+    kill(pid: number, sig: NodeJS.Signals): unknown; pid: number };
 }
 
 const seconds = (ms: number): number => Math.round(ms / 1000);
@@ -129,12 +131,39 @@ export function runStatus(d: LeaseCliDeps): number {
 export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number> {
   const opts = optionsOrReport(d);
   if (!opts) return EX_CONFIG;
-  const fromEnv = parseSeconds(d.env.CO_LEASE_MAX_WAIT);
-  if (d.env.CO_LEASE_MAX_WAIT !== undefined && fromEnv === undefined) {
-    d.err(`lease: ignoring invalid CO_LEASE_MAX_WAIT=${JSON.stringify(d.env.CO_LEASE_MAX_WAIT)}; using ${DEFAULT_MAX_WAIT_SEC}s`);
+  const envWait = d.env.CO_LEASE_MAX_WAIT || undefined;
+  const fromEnv = parseSeconds(envWait);
+  if (envWait !== undefined && fromEnv === undefined && args.maxWaitSec === undefined) {
+    d.err(`lease: ignoring invalid CO_LEASE_MAX_WAIT=${JSON.stringify(envWait)}; using ${DEFAULT_MAX_WAIT_SEC}s`);
   }
   const maxWaitMs = (args.maxWaitSec ?? fromEnv ?? DEFAULT_MAX_WAIT_SEC) * 1000;
   const [file, fileArgs] = args.shell !== undefined ? ["/bin/sh", ["-c", args.shell]] : [args.argv![0]!, args.argv!.slice(1)];
+
+  // Installed before acquiring: a signal's default action would otherwise kill the wrapper between the holder file's
+  // write and the spawn, leaving a slot that no child holds. A handler can only run while waiting (nothing is held, so
+  // the signal is re-raised to kill the wrapper as before) or once the child exists, never in between.
+  let child: LeaseChild | undefined;
+  let signalled: number | undefined;
+  let grace: NodeJS.Timeout | undefined;
+  let finish = (_code: number): void => {};
+  const handlers = FORWARDED.map((sig) => {
+    const forward = (): void => {
+      if (child === undefined) {
+        unhook();
+        d.signals.kill(d.signals.pid, sig);
+        return;
+      }
+      signalled ??= constants.signals[sig];
+      child.kill(sig);
+      grace ??= setTimeout(() => {
+        child!.kill("SIGKILL");
+        finish(128 + signalled!);
+      }, GRACE_MS);
+    };
+    d.signals.on(sig, forward);
+    return [sig, forward] as const;
+  });
+  const unhook = (): void => handlers.forEach(([sig, forward]) => d.signals.off(sig, forward));
 
   let lastProgress = d.now();
   const start = lastProgress;
@@ -147,6 +176,7 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
     },
   });
   if (!("leased" in got)) {
+    unhook();
     const s = d.leaseStatus(opts);
     const holders = s.live.map((h) => `${h.pid} ${h.command}`).join(", ") || "none";
     d.err(`lease: no slot after ${seconds(got.waitedMs)}s (pressure=${got.level}, capacity ${s.capacity}, ${s.live.length} live: ${holders}); rerun the command — this is not a test failure`);
@@ -158,32 +188,27 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
   }
 
   return new Promise<number>((resolve) => {
-    // Same env merge as `runShellAsync`: `childEnv()` is only the holder-id delta.
-    const child = d.spawn(file, fileArgs, { env: { ...d.env, ...got.childEnv() } });
-    let signalled: number | undefined;
-    let grace: NodeJS.Timeout | undefined;
-    const handlers = FORWARDED.map((sig) => {
-      const forward = (): void => {
-        signalled ??= constants.signals[sig];
-        child.kill(sig);
-        grace ??= setTimeout(() => {
-          child.kill("SIGKILL");
-          finish(128 + signalled!);
-        }, GRACE_MS);
-      };
-      d.signals.on(sig, forward);
-      return [sig, forward] as const;
-    });
-    const finish = (code: number): void => {
+    let settled = false;
+    finish = (code) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(grace);
-      for (const [sig, forward] of handlers) d.signals.off(sig, forward);
+      unhook();
       got.release({ exitCode: code });
       resolve(code);
     };
-    child.once("error", (e) => {
+    const cannotRun = (e: NodeJS.ErrnoException): void => {
       d.err(`lease: cannot run ${file}: ${e.message}`);
-      finish(e.code === "ENOENT" ? 127 : 126);
-    });
+      finish(e.code === "ENOENT" || file === "" ? 127 : 126);
+    };
+    try {
+      // Same env merge as `runShellAsync`: `childEnv()` is only the holder-id delta.
+      child = d.spawn(file, fileArgs, { env: { ...d.env, ...got.childEnv() } });
+    } catch (e) {
+      // Node throws, rather than emitting 'error', for an empty program name and most errnos (ENOEXEC, ENOTDIR, ELOOP).
+      return cannotRun(e as NodeJS.ErrnoException);
+    }
+    child.once("error", cannotRun);
     child.once("close", (code, signal) => {
       const exit = signalled !== undefined ? 128 + signalled : (code ?? 128 + (constants.signals[signal!] ?? 0));
       if (args.shell !== undefined && exit === 127) {

@@ -46,9 +46,12 @@ export interface LeaseCliDeps {
     out(text: string): void;
     err(line: string): void;
     now(): number;
+    /** `process` in production: `kill(pid, sig)` on its own `pid` re-raises a signal that arrives while waiting. */
     signals: {
         on(sig: NodeJS.Signals, fn: () => void): unknown;
         off(sig: NodeJS.Signals, fn: () => void): unknown;
+        kill(pid: number, sig: NodeJS.Signals): unknown;
+        pid: number;
     };
 }
 export declare function parseLeaseArgs(argv: string[]): LeaseArgs;
