@@ -5,8 +5,8 @@
  * output. The hook never rewrites the command and never fails a call.
  *
  * The matcher is a regex over raw text with no shell parsing: a pattern is
- * tried at the start of the command and after `&&`, `||`, `;`, `|` or a
- * newline, past an optional prefix (`NAME=value`, `env`, `timeout <n>`, `nice`,
+ * tried at the start of the command and after `&&`, `||`, `;`, `|`, a single
+ * `&`, `(`, a newline, or `then`/`do`/`else`/`time`/`!`/`{`, past an optional prefix (`NAME=value`, `env`, `timeout <n>`, `nice`,
  * a path). A segment that calls this CLI is skipped; with `--shell` or `--` the
  * rest of the text is the CLI's own argument and is skipped too.
  */
@@ -37,14 +37,15 @@ const DEFAULT_PATTERNS: readonly (readonly [word: string, pattern: string])[] = 
   ["deno", "deno test"],
   ["make", "make"],
   ["scripts/test", "scripts/test[\\w-]*\\.sh"],
-  ["git", "git push"], // pre-push hooks
+  ["git", "git(?: -[Cc] (?:'[^']*'|\\S+))* push"], // pre-push hooks
 ];
 
-const SEGMENT_START = "(?:^|&&|\\|\\||;|\\||\\n)\\s*";
+const SEPARATORS = /[;|\n(]|(?<![<>])&(?!>)/; // `&&` and `||` split as two; `2>&1` and `&>` do not
+const LEADING = "\\s*(?:(?:then|do|else|time|!|\\{)\\s+)*";
 const ARG = "(?:\"[^\"]*\"|'[^']*'|\\S+)";
 const PREFIX = `(?:[A-Za-z_]\\w*=(?:"[^"]*"|'[^']*'|\\S*)\\s+|env\\s+|timeout\\s+\\d+[smhd]?\\s+|nice\\s+)*(?:\\S*/)?`;
-const CLI = "(?:node\\s+(?:\"(?:[^\"]*/)?cli-lease\\.js\"|'(?:[^']*/)?cli-lease\\.js'|(?:\\S*/)?cli-lease\\.js)|(?:\\S*/)?claude-orchestrator-lease)";
-const WRAPPING_CLI = new RegExp(`${SEGMENT_START}${PREFIX}${CLI}(?:\\s+--(?:max-wait|label)\\s+${ARG})*\\s+--(?:shell)?(?=\\s|$)`);
+const CLI = "(?:node\\s+(?:\"(?:[^\"]*/)?cli-lease\\.js\"|'(?:[^']*/)?cli-lease\\.js'|(?:\\S*/)?cli-lease\\.js)|claude-orchestrator-lease[\"']?)";
+const WRAPPING_CLI = new RegExp(`^${LEADING}${PREFIX}${CLI}(?:\\s+--(?:max-wait|label)\\s+${ARG})*\\s+--(?:shell)?(?=\\s|$)`);
 
 const isRegex = (source: string): boolean => {
   try {
@@ -55,12 +56,19 @@ const isRegex = (source: string): boolean => {
   }
 };
 
-/** Whether any segment of `command` matches a default or `extraPatterns` heavy pattern. Extras that are not valid regexes are ignored. */
+/**
+ * Whether any segment of `command` matches a default or `extraPatterns` heavy pattern. Extras that are not valid
+ * regexes are ignored; every pattern is followed by an end boundary (not `\w`, `.`, `/` or `-`). The text is split into
+ * segments once, so matching is linear; a segment that wraps this CLI ends the scan.
+ */
 export function isHeavyCommand(command: string, extraPatterns: readonly string[] = []): boolean {
   const patterns = [...DEFAULT_PATTERNS.map(([, p]) => p), ...extraPatterns.filter(isRegex)];
-  const heavy = new RegExp(`${SEGMENT_START}${PREFIX}(?:${patterns.map((p) => `(?:${p})`).join("|")})(?![\\w-])`);
-  const wrapped = WRAPPING_CLI.exec(command);
-  return heavy.test(wrapped ? command.slice(0, wrapped.index) : command);
+  const heavy = new RegExp(`^${LEADING}${PREFIX}(?:${patterns.map((p) => `(?:${p})`).join("|")})(?![\\w./-])`);
+  for (const segment of command.replace(/\\\n/g, " ").split(SEPARATORS)) {
+    if (heavy.test(segment)) return true;
+    if (WRAPPING_CLI.test(segment)) return false;
+  }
+  return false;
 }
 
 /** `CO_LEASE_PATTERNS_FILE`: a JSON array of extra patterns. A missing or malformed file adds none. */

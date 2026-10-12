@@ -5,12 +5,16 @@
  * output. The hook never rewrites the command and never fails a call.
  *
  * The matcher is a regex over raw text with no shell parsing: a pattern is
- * tried at the start of the command and after `&&`, `||`, `;`, `|` or a
- * newline, past an optional prefix (`NAME=value`, `env`, `timeout <n>`, `nice`,
+ * tried at the start of the command and after `&&`, `||`, `;`, `|`, a single
+ * `&`, `(`, a newline, or `then`/`do`/`else`/`time`/`!`/`{`, past an optional prefix (`NAME=value`, `env`, `timeout <n>`, `nice`,
  * a path). A segment that calls this CLI is skipped; with `--shell` or `--` the
  * rest of the text is the CLI's own argument and is skipped too.
  */
-/** Whether any segment of `command` matches a default or `extraPatterns` heavy pattern. Extras that are not valid regexes are ignored. */
+/**
+ * Whether any segment of `command` matches a default or `extraPatterns` heavy pattern. Extras that are not valid
+ * regexes are ignored; every pattern is followed by an end boundary (not `\w`, `.`, `/` or `-`). The text is split into
+ * segments once, so matching is linear; a segment that wraps this CLI ends the scan.
+ */
 export declare function isHeavyCommand(command: string, extraPatterns?: readonly string[]): boolean;
 /**
  * Whether a hook's stdin is a heavy `PreToolUse` `Bash` call with the gate (`CO_LEASE_HOOK=on`) open.

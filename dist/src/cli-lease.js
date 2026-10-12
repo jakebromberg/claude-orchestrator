@@ -239,7 +239,7 @@ async function main(argv) {
         args = parseLeaseArgs(argv);
     }
     catch (err) {
-        process.stderr.write(`lease: ${err.message}\nusage: claude-orchestrator-lease [--max-wait <sec>] [--label <text>] (-- <cmd> [args...] | --shell '<command line>') | status\n`);
+        process.stderr.write(`lease: ${err.message}\nusage: claude-orchestrator-lease [--max-wait <sec>] [--label <text>] (-- <cmd> [args...] | --shell '<command line>') | status | hook [--print-settings-entry]\n`);
         return EX_USAGE;
     }
     const deps = cliLeaseDeps((line) => {
