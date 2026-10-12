@@ -19,6 +19,7 @@ import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { constants } from "node:os";
 import { fileURLToPath } from "node:url";
+import type { PressureSampler } from "./memory-pressure.js";
 import { acquireLease, defaultLeaseOptions, leaseStatus, type LeaseOptions, type LeaseStatus } from "./lease.js";
 
 const DEFAULT_MAX_WAIT_SEC = 100;
@@ -232,13 +233,14 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
 // ---------------------------------------------------------------------------
 
 /** The deps `main` runs with: every lease, sink, policy and sampler diagnostic goes through `err`. */
-export function cliLeaseDeps(err: (line: string) => void): LeaseCliDeps {
+export function cliLeaseDeps(err: (line: string) => void, base: { env?: NodeJS.ProcessEnv; level?: PressureSampler } = {}): LeaseCliDeps {
+  const { env = process.env, level } = base;
   return {
-    leaseOptions: () => defaultLeaseOptions(process.env, { warn: err }),
+    leaseOptions: () => defaultLeaseOptions(env, { warn: err, level }),
     acquire: acquireLease,
     leaseStatus,
     spawn: (file, fileArgs, opts) => spawn(file, fileArgs, { stdio: "inherit", env: opts.env }),
-    env: process.env,
+    env,
     cwd: process.cwd(),
     out: (text) => process.stdout.write(text),
     err,

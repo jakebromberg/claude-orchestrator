@@ -319,6 +319,8 @@ export function leaseStatus(opts) {
  * Production wiring: the real lease directory, the engine's own sampler and policy, and the `events.jsonl` sink. Creates nothing on disk.
  * `overrides.level` replaces the sampler (none is built), and `overrides.warn` is the one writer for the lease, the sink,
  * the policy and the sampler it builds; without it each keeps its stderr default.
+ * The writer is wrapped once so it cannot change what the lease does: a writer that throws is silenced (the line is dropped and nothing reports it), so pass a bound function,
+ * and the returned `warn` is that wrapper, not the caller's function.
  */
 export function defaultLeaseOptions(env = process.env, overrides = {}) {
     // One non-throwing writer for every consumer; policy and sampler lines get a `memory-pressure:` tag since the writer is not stderr's tagged default.

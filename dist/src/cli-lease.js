@@ -203,13 +203,14 @@ export async function runLeased(args, d) {
 // CLI entry point — only runs when invoked directly.
 // ---------------------------------------------------------------------------
 /** The deps `main` runs with: every lease, sink, policy and sampler diagnostic goes through `err`. */
-export function cliLeaseDeps(err) {
+export function cliLeaseDeps(err, base = {}) {
+    const { env = process.env, level } = base;
     return {
-        leaseOptions: () => defaultLeaseOptions(process.env, { warn: err }),
+        leaseOptions: () => defaultLeaseOptions(env, { warn: err, level }),
         acquire: acquireLease,
         leaseStatus,
         spawn: (file, fileArgs, opts) => spawn(file, fileArgs, { stdio: "inherit", env: opts.env }),
-        env: process.env,
+        env,
         cwd: process.cwd(),
         out: (text) => process.stdout.write(text),
         err,
