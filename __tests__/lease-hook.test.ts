@@ -28,6 +28,12 @@ const HEAVY = [
   "git -C /path/to/wt push -u origin HEAD", "git -c core.hooksPath=x push", "git -C '/a b' -c k=v push",
   // Pattern words and paths.
   "make test", "make", "scripts/test-all.sh", `cat x \\\n && npm test`,
+  // Quote-aware prefixes: a quoted or `$(…)` assignment value, and a quoted command word or git directory.
+  "FOO=$(pwd) npm test", 'DATABASE_URL="$(cat .env.test)" npm test', "A=$(echo a b) B='c d' env X=`pwd` npm test", "'npm' test", '"./node_modules/.bin/vitest" run',
+  ...[30, 300].map((n) => `${'NAME="x" '.repeat(n)}npm test`),
+  'git -C "/a b" push', "git -c 'k=a b' push",
+  // A separator inside the CLI's text is not a split, but one after it is.
+  `echo 'a && b' && npm test`, `echo "$(ls; pwd)" ; npm test`, `claude-orchestrator-lease --label 'a; b' status && npm test`,
 ];
 
 const NOT_HEAVY = [
@@ -52,6 +58,13 @@ const NOT_HEAVY = [
   "./make/foo.sh", "tools/jest/run.sh", "vitest.config.ts", "./make/claude-orchestrator-lease status",
   `node ${CLI} status && ls`,
   `ls && node ${CLI} --shell 'npm test'`,
+  // A separator or `$(…)` inside the CLI's own quoted path or option must not hide it; quoted bins and spaced paths too.
+  `node "$(git rev-parse --show-toplevel)/dist/src/cli-lease.js" --shell 'npm ci && npm test'`,
+  `claude-orchestrator-lease --label 'lint & npm test' --shell 'make'`,
+  `claude-orchestrator-lease --label 'a; npm test | c (d)' --shell 'make'`,
+  `'claude-orchestrator-lease' --shell 'npm ci && npm test'`,
+  `node "/opt/my co/dist/src/cli-lease.js" --shell 'npm ci && npm test'`,
+  `FOO=$(pwd) node ${CLI} --shell 'npm test'`,
   "",
 ];
 
@@ -64,7 +77,19 @@ describe("isHeavyCommand", () => {
     expect(isHeavyCommand(command)).toBe(false);
   });
 
-  it.each(["a;", "a && "])("classifies 80 KB of %j in linear time", (unit) => {
+  it.each([
+    [30, "npm test", true],
+    [300, "npm test", true],
+    [30, "ls", false],
+    [300, "ls", false],
+  ])("classifies %i quoted assignments before %j in well under 50 ms", (n, tail, expected) => {
+    const text = `${'NAME="x" '.repeat(n)}${tail}`;
+    const start = performance.now();
+    expect(isHeavyCommand(text)).toBe(expected);
+    expect(performance.now() - start).toBeLessThan(50);
+  });
+
+  it.each(["a;", "a && ", "a(", "a $(", "'"])("classifies 80 KB of %j in under 200 ms", (unit) => {
     const text = unit.repeat(80_000 / unit.length);
     const start = performance.now();
     expect(isHeavyCommand(text)).toBe(false);
