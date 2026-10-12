@@ -520,7 +520,10 @@ describe("lease", () => {
       // The sampler, with its invalid override, still answers, and the lease still fails open.
       const real = defaultLeaseOptions({ CO_LEASE_DIR: dir, CO_PRESSURE_OVERRIDE: "nope" }, { warn: w });
       expect(() => real.level()).not.toThrow();
-      ((await acquireLease({ ...o, dir: unwritableLeaseDir(tmp) }, meta)) as LeaseHandle).release();
+      const h = (await acquireLease({ ...o, dir: unwritableLeaseDir(tmp) }, meta)) as LeaseHandle;
+      expect(h.leased).toBe(false);
+      expect(w).toHaveBeenCalledWith(expect.stringMatching(/^lease: unavailable \(io-error\)/));
+      h.release();
     });
 
     it("tags the policy's and sampler's lines with 'memory-pressure:' so each is identifiable", () => {
@@ -534,7 +537,9 @@ describe("lease", () => {
     it("prints no default line that starts with '[lease] lease:'", async () => {
       const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
       const o = defaultLeaseOptions({ CO_LEASE_DIR: dir, CO_LEASE_SLOTS: "many" }, { level: sampler });
-      ((await acquireLease({ ...o, dir: unwritableLeaseDir(tmp) }, meta)) as LeaseHandle).release();
+      const h = (await acquireLease({ ...o, dir: unwritableLeaseDir(tmp) }, meta)) as LeaseHandle;
+      expect(h.leased).toBe(false);
+      h.release();
       const lines = stderr.mock.calls.map(([c]) => String(c));
       expect(lines.length).toBeGreaterThan(0);
       expect(lines.filter((l) => l.startsWith("[lease] lease:"))).toEqual([]);
@@ -661,11 +666,13 @@ describe("lease", () => {
     it("evaluates stopWhen on a poll that hit an I/O error, with no live holders", async () => {
       level = "critical";
       const seen: number[] = [];
-      const r = await acquireLease(opts({ dir: unwritableLeaseDir(tmp) }), meta, {
+      const dir = unwritableLeaseDir(tmp);
+      const r = await acquireLease(opts({ dir }), meta, {
         stopWhen: (s) => (seen.push(s.live.length), s.live.length === 0),
       });
       expect(r).toMatchObject({ refused: "stopped" });
       expect(seen).toEqual([0, 0]);
+      expect(existsSync(dir)).toBe(false);
     });
   });
 

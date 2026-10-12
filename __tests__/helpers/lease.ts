@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** The parent env with every `CO_LEASE_*` / `CO_PRESSURE_*` scrubbed, then the isolation settings applied. */
@@ -11,11 +11,11 @@ export function isolatedLeaseEnv(leaseDir: string, extra: NodeJS.ProcessEnv = {}
 
 /**
  * A lease directory that cannot be created, to force an I/O error: a plain file named `blocker` sits where the parent
- * directory would be, so `mkdir` fails with ENOTDIR. Safe to call twice with the same `tmp`.
+ * directory would be, so `mkdir` fails with ENOTDIR. Safe to call twice with the same `tmp`; throws EISDIR if `blocker` is a directory.
  */
 export function unwritableLeaseDir(tmp: string): string {
   const blocker = join(tmp, "blocker");
-  if (!existsSync(blocker)) writeFileSync(blocker, "");
+  writeFileSync(blocker, "", { flag: "a" });
   return join(blocker, "lease");
 }
 
