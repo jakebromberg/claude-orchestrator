@@ -82,6 +82,9 @@ function create(lockFile: string, token: string): boolean {
   return true;
 }
 
+/** The mutex's freshness rule: `mtimeMs` (floored to whole milliseconds) is within `windowMs` of `now`, before or after. */
+export const isWithinWindow = (mtimeMs: number, now: number, windowMs: number): boolean => Math.abs(now - Math.floor(mtimeMs)) <= windowMs;
+
 /**
  * The lock file's own `lstat` (a symlink is not followed) when it is stale,
  * `false` while it is fresh, and `undefined` when it is gone (`ENOENT`); any
@@ -90,7 +93,7 @@ function create(lockFile: string, token: string): boolean {
 function staleStats(lockFile: string, staleAfterMs: number, now: () => number): Stats | false | undefined {
   const stats = lstatSync(lockFile, { throwIfNoEntry: false });
   if (!stats) return undefined;
-  return Math.abs(now() - Math.floor(stats.mtimeMs)) <= staleAfterMs ? false : stats;
+  return isWithinWindow(stats.mtimeMs, now(), staleAfterMs) ? false : stats;
 }
 
 /** True when the lock is gone (reaped by us, or released) and a create is worth retrying. */

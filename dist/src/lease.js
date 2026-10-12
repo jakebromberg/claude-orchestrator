@@ -2,17 +2,19 @@
  * Machine-wide lease for heavy commands (full test suites, `tsc`, `npm ci`).
  * Holders are files in `<dir>/holders/`; a request is admitted while the live
  * holder count is under `heavyCapacity(level, policy)`. Liveness is a live
- * wrapper PID or a live child PID, so a crashed or killed holder cannot leak a
- * slot. The lease fails open on I/O errors and a long-busy mutex,
+ * heartbeat (the holder file's mtime, refreshed every 30 s) or a live child PID,
+ * so a crashed or killed holder cannot leak a slot. The lease fails open on I/O errors and a long-busy mutex,
  * except at `critical`, where nothing new starts. It never spins.
  */
 import { randomBytes } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tryLockOnce } from "./file-lock.js";
+import { isWithinWindow, tryLockOnce } from "./file-lock.js";
 import { defaultPressureSampler, heavyCapacity, leaseDirectory, pressureOverrideInEffect, pressurePolicyFromEnv, } from "./memory-pressure.js";
 const MUTEX_STALE_MS = 10_000;
 const ORPHAN_MAX_MS = 2 * 60 * 60_000;
+const HEARTBEAT_MS = 30_000;
+const HEARTBEAT_STALE_MS = 90_000;
 const FAIL_OPEN_MS = 30_000;
 const POLL_MS = 3_000;
 const COMMAND_MAX = 200;
@@ -27,18 +29,21 @@ function pidAlive(pid) {
     }
 }
 /**
- * The single liveness rule; the heartbeat (#112) and CO-5's detached holders
- * (#105) extend it. Until the heartbeat lands, a recycled wrapper PID can pin a
- * slot. `null` is a file that is not a holder record.
+ * The single liveness rule; CO-5's detached holders (#105) extend it. A holder is live while its heartbeat is
+ * fresh: `mtimeMs` within 90 s of `nowMs`, in either direction (the mutex's rule, so a small backward clock
+ * step cannot reap a live holder, while a heartbeat dated further ahead is stale). Otherwise it is live only
+ * while its child PID is alive and within the 2 h orphan bound, and else reaped as `stale-heartbeat`. The
+ * wrapper PID is never consulted, so a recycled one cannot pin a slot. A detached holder has no wrapper to
+ * beat, so #105 will exempt it from the heartbeat rule by holder kind. `null` is a file that is not a holder record.
  */
-function verdict(rec, nowMs, alive) {
+function verdict(rec, mtimeMs, nowMs, alive) {
     if (!rec)
         return "corrupt";
-    if (alive(rec.pid))
+    if (isWithinWindow(mtimeMs, nowMs, HEARTBEAT_STALE_MS))
         return "live";
     if (rec.childPid && alive(rec.childPid))
         return Math.abs(nowMs - rec.startedAt) > ORPHAN_MAX_MS ? "orphan-bound" : "live";
-    return "dead";
+    return "stale-heartbeat";
 }
 /** `read()`, or `undefined` when the path is gone. Any other error is an I/O error and throws. */
 function unlessGone(read) {
@@ -74,7 +79,10 @@ function scanHolders(opts) {
         if (text === undefined)
             continue;
         const rec = parseHolder(text);
-        const v = verdict(rec, nowMs, isAlive);
+        const mtimeMs = unlessGone(() => statSync(join(dir, name)).mtimeMs);
+        if (mtimeMs === undefined)
+            continue;
+        const v = verdict(rec, mtimeMs, nowMs, isAlive);
         if (v === "live")
             found.live.push({ ...rec, ageSec: Math.round((nowMs - rec.startedAt) / 1000) });
         else
@@ -106,6 +114,17 @@ function createHolder(opts, meta, command, admission) {
     };
     write();
     let released = false;
+    // Unref'd, so it never keeps the process alive; a file reaped since the last beat is not recreated.
+    const beat = setInterval(() => {
+        try {
+            const at = now() / 1000;
+            utimesSync(file, at, at);
+        }
+        catch {
+            // Reaped or unwritable; the next beat or release settles it.
+        }
+    }, HEARTBEAT_MS);
+    beat.unref();
     return {
         id,
         leased: true,
@@ -126,6 +145,7 @@ function createHolder(opts, meta, command, admission) {
             if (released)
                 return;
             released = true;
+            clearInterval(beat);
             try {
                 unlinkSync(file);
             }

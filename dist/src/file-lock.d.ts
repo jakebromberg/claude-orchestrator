@@ -17,3 +17,5 @@ export interface FileLock {
  * `null` while another holder has it. Throws on any other I/O error.
  */
 export declare function tryLockOnce(lockFile: string, { staleAfterMs, now }: TryLockOptions): FileLock | null;
+/** The mutex's freshness rule: `mtimeMs` (floored to whole milliseconds) is within `windowMs` of `now`, before or after. */
+export declare const isWithinWindow: (mtimeMs: number, now: number, windowMs: number) => boolean;

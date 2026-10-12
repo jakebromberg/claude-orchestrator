@@ -1,5 +1,5 @@
 import { type PressureLevel, type PressurePolicy, type PressureSampler } from "./memory-pressure.js";
-type ReapReason = "dead" | "orphan-bound" | "corrupt";
+type ReapReason = "stale-heartbeat" | "orphan-bound" | "corrupt";
 export type LeaseEvent = {
     type: "acquire";
     id: string;

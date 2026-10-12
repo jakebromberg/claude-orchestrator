@@ -70,6 +70,8 @@ function create(lockFile, token) {
     closeSync(fd);
     return true;
 }
+/** The mutex's freshness rule: `mtimeMs` (floored to whole milliseconds) is within `windowMs` of `now`, before or after. */
+export const isWithinWindow = (mtimeMs, now, windowMs) => Math.abs(now - Math.floor(mtimeMs)) <= windowMs;
 /**
  * The lock file's own `lstat` (a symlink is not followed) when it is stale,
  * `false` while it is fresh, and `undefined` when it is gone (`ENOENT`); any
@@ -79,7 +81,7 @@ function staleStats(lockFile, staleAfterMs, now) {
     const stats = lstatSync(lockFile, { throwIfNoEntry: false });
     if (!stats)
         return undefined;
-    return Math.abs(now() - Math.floor(stats.mtimeMs)) <= staleAfterMs ? false : stats;
+    return isWithinWindow(stats.mtimeMs, now(), staleAfterMs) ? false : stats;
 }
 /** True when the lock is gone (reaped by us, or released) and a create is worth retrying. */
 function reapIfStale(lockFile, staleAfterMs, now) {
