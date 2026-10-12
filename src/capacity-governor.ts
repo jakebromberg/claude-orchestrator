@@ -6,7 +6,7 @@ import type { Logger } from "./types.js";
 const HYSTERESIS_MS = 60_000;
 
 export interface CapacityGovernor {
-  /** Launch capacity as of the last `tick`: how many pipelines may hold a pool slot (see {@link sessionCapacity}). */
+  /** Launch capacity as of the last `tick`: how many pipelines the pool admits into a slot (see {@link sessionCapacity}). A pipeline already holding a slot keeps it when this drops. */
   capacity(): number;
   /** Re-read the sampler and update `capacity()`. */
   tick(): void;
