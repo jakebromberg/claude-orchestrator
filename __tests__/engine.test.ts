@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { refOf, normalizeDep } from "../src/ref.js";
 import { Orchestrator, cleanUpMergedIssues } from "../src/engine.js";
 import { InMemoryStatusStore, InMemoryMetadataStore } from "../src/status.js";
+import { deriveHooks } from "../src/yaml-hooks.js";
 import type {
   Issue,
   OrchestratorConfig,
@@ -994,6 +995,71 @@ describe("Orchestrator", () => {
 
       expect(deps.statusStore.get("1")).toBe("succeeded");
       expect(deps.statusStore.get("3")).toBe("succeeded");
+    });
+
+    it("handles another session's exit while a slow check runs, and holds the check's slot", async () => {
+      const issues = [1, 2, 3, 4].map((n) =>
+        makeIssue({ number: n, wave: 1, slug: `issue-${n}` }),
+      );
+      // The derived check over a slow async runner: issue 1's command stays
+      // pending until released; every other command passes at once.
+      let releaseSlowCheck!: () => void;
+      const slowCommand = new Promise<string>((r) => {
+        releaseSlowCheck = () => r("");
+      });
+      const runCommand = vi.fn((_cmd: string, cwd: string) =>
+        cwd.endsWith("issue-1") ? slowCommand : Promise.resolve(""),
+      );
+      const { postSessionCheck } = deriveHooks(
+        {
+          name: "Test Orchestrator",
+          configDir: "/tmp/test-config",
+          worktreeDir: "/tmp/test-worktrees",
+          projectRoot: "/tmp/test-project",
+          stallTimeout: 0,
+          issues: [],
+          postSessionCheck: { commands: ["npm test"] },
+        },
+        { runCommand },
+      );
+      const config = makeConfig(issues, { postSessionCheck });
+      const deps = makeDeps();
+      const orchestrator = new Orchestrator(config, deps, { maxParallel: 2 });
+
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(2));
+
+      // Issue 1's session exits and its check starts, but does not finish.
+      runner.resolvers.get(1000)!(0);
+      await vi.waitFor(() =>
+        expect(runCommand).toHaveBeenCalledWith("npm test", "/worktrees/issue-1"),
+      );
+
+      // The pending check holds issue 1's slot: no new session launches.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(runner.spawned.length).toBe(2);
+
+      // Issue 2's exit is handled (check run, status recorded) meanwhile.
+      runner.resolvers.get(1001)!(0);
+      await vi.waitFor(() => expect(deps.statusStore.get("2")).toBe("succeeded"));
+      expect(deps.statusStore.get("1")).toBe("running");
+
+      // Issue 2's freed slot takes issue 3; issue 1's slot is still held.
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(3));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(runner.spawned.length).toBe(3);
+
+      // The check finishes, freeing issue 1's slot for issue 4.
+      releaseSlowCheck();
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(4));
+      runner.resolvers.get(1002)!(0);
+      runner.resolvers.get(1003)!(0);
+      await promise;
+
+      for (const n of ["1", "2", "3", "4"]) {
+        expect(deps.statusStore.get(n)).toBe("succeeded");
+      }
     });
 
     it("defaults to 4 when maxParallel not specified", async () => {
