@@ -137,15 +137,14 @@ export async function runLeased(args, d) {
         return [sig, forward];
     });
     const unhook = () => handlers.forEach(([sig, forward]) => d.signals.off(sig, forward));
-    let lastProgress = d.now();
-    const start = lastProgress;
+    let lastProgress = 0;
     const got = await d.acquire(opts, { command: args.shell ?? args.argv.join(" "), label: args.label, cwd: d.cwd }, {
         maxWaitMs,
         onWait: (s) => {
-            if (d.now() - lastProgress < PROGRESS_MS)
+            if (s.waitedMs - lastProgress < PROGRESS_MS)
                 return;
-            lastProgress = d.now();
-            d.err(`lease: waiting ${seconds(lastProgress - start)}s for a slot (pressure=${s.level}, ${s.live.length}/${s.capacity} live)`);
+            lastProgress = s.waitedMs;
+            d.err(`lease: waiting ${seconds(s.waitedMs)}s for a slot (pressure=${s.level}, ${s.live.length}/${s.capacity} live)`);
         },
     });
     if (!("leased" in got)) {
@@ -217,7 +216,6 @@ export function cliLeaseDeps(err, base = {}) {
         cwd: process.cwd(),
         out: (text) => process.stdout.write(text),
         err,
-        now: Date.now,
         signals: process,
     };
 }

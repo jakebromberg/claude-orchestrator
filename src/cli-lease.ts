@@ -63,7 +63,6 @@ export interface LeaseCliDeps {
   cwd: string;
   out(text: string): void;
   err(line: string): void;
-  now(): number;
   /** `process` in production: `kill(pid, sig)` on its own `pid` re-raises a signal that arrives while waiting. */
   signals: { on(sig: NodeJS.Signals, fn: () => void): unknown; off(sig: NodeJS.Signals, fn: () => void): unknown;
     kill(pid: number, sig: NodeJS.Signals): unknown; pid: number };
@@ -169,14 +168,13 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
   });
   const unhook = (): void => handlers.forEach(([sig, forward]) => d.signals.off(sig, forward));
 
-  let lastProgress = d.now();
-  const start = lastProgress;
+  let lastProgress = 0;
   const got = await d.acquire(opts, { command: args.shell ?? args.argv!.join(" "), label: args.label, cwd: d.cwd }, {
     maxWaitMs,
     onWait: (s) => {
-      if (d.now() - lastProgress < PROGRESS_MS) return;
-      lastProgress = d.now();
-      d.err(`lease: waiting ${seconds(lastProgress - start)}s for a slot (pressure=${s.level}, ${s.live.length}/${s.capacity} live)`);
+      if (s.waitedMs - lastProgress < PROGRESS_MS) return;
+      lastProgress = s.waitedMs;
+      d.err(`lease: waiting ${seconds(s.waitedMs)}s for a slot (pressure=${s.level}, ${s.live.length}/${s.capacity} live)`);
     },
   });
   if (!("leased" in got)) {
@@ -246,7 +244,6 @@ export function cliLeaseDeps(err: (line: string) => void, base: { env?: NodeJS.P
     cwd: process.cwd(),
     out: (text) => process.stdout.write(text),
     err,
-    now: Date.now,
     signals: process,
   };
 }

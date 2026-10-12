@@ -94,9 +94,8 @@ function acquireCheckLease(
     { command, label: `post-check ${issue.ref}`, cwd },
     {
       onWait: (s) => {
-        const at = performance.now();
-        if (lastLogged !== undefined && at - lastLogged < WAIT_LOG_INTERVAL_MS) return;
-        lastLogged = at;
+        if (lastLogged !== undefined && s.waitedMs - lastLogged < WAIT_LOG_INTERVAL_MS) return;
+        lastLogged = s.waitedMs;
         // A throwing writer must never change what the check does.
         try {
           (lease.warn ?? defaultWarn)(
