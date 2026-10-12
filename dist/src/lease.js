@@ -10,7 +10,8 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isWithinWindow, tryLockOnce } from "./file-lock.js";
-import { defaultPressureSampler, heavyCapacity, leaseDirectory, pressureOverrideInEffect, pressurePolicyFromEnv, } from "./memory-pressure.js";
+import { leaseEventSink } from "./lease-events.js";
+import { defaultPressureSampler, heavyCapacity, leaseDirectory, pressurePolicyFromEnv, } from "./memory-pressure.js";
 const MUTEX_STALE_MS = 10_000;
 const ORPHAN_MAX_MS = 2 * 60 * 60_000;
 const HEARTBEAT_MS = 30_000;
@@ -106,7 +107,7 @@ function createHolder(opts, meta, command, admission) {
     const id = `${process.pid}-${randomBytes(4).toString("hex")}`;
     const file = join(holdersDir(opts.dir), `${id}.json`);
     const rec = { id, pid: process.pid, command, cwd: meta.cwd, startedAt: now(), level: admission.level };
-    if (opts.override && admission.level === "warning")
+    if (admission.override)
         rec.override = true;
     const write = () => {
         writeFileSync(`${file}.tmp`, JSON.stringify(rec), { mode: 0o600 });
@@ -156,7 +157,7 @@ function createHolder(opts, meta, command, admission) {
             catch {
                 // Already reaped.
             }
-            emit(opts, { type: "release", id, exitCode: outcome?.exitCode });
+            emit(opts, { type: "release", id, heldMs: now() - rec.startedAt, exitCode: outcome?.exitCode });
         },
     };
 }
@@ -184,6 +185,7 @@ function ensureOwnDirs(dir) {
  */
 function attempt(opts, meta, waitedMs) {
     const level = opts.level();
+    const overridden = opts.level.overridden?.() === true;
     const capacity = heavyCapacity(level, opts.policy);
     const command = recordedCommand(meta);
     const reaped = [];
@@ -203,7 +205,7 @@ function attempt(opts, meta, waitedMs) {
                 rmSync(join(holdersDir(opts.dir), `${d.id}.json`), { force: true });
                 reaped.push(d);
             }
-            const admission = { waitedMs, level, live: live.length + 1, capacity };
+            const admission = { waitedMs, level, live: live.length + 1, capacity, ...(overridden && { override: true }) };
             if (live.length < capacity)
                 r = { kind: "admitted", handle: createHolder(opts, meta, command, admission) };
             else
@@ -213,8 +215,8 @@ function attempt(opts, meta, waitedMs) {
             lock.release();
         }
     }
-    catch {
-        r = { kind: "error", level, capacity };
+    catch (error) {
+        r = { kind: "error", level, capacity, error };
     }
     for (const { id, reason } of reaped) {
         if (reason === "orphan-bound")
@@ -243,9 +245,10 @@ function guarded(opts, callback, arg) {
 }
 const warn = (opts, msg) => guarded(opts, opts.warn ?? defaultWarn, msg);
 const emit = (opts, e) => guarded(opts, opts.onEvent, e);
-function failOpen(opts, level, capacity, waitedMs, reason) {
+function failOpen(opts, level, capacity, waitedMs, reason, error) {
     warn(opts, `lease unavailable (${reason}); running unleased`);
-    emit(opts, { type: "fail-open", reason, waitedMs });
+    const { code, message } = (error ?? {});
+    emit(opts, { type: "fail-open", reason, waitedMs, code, message });
     return { id: null, leased: false, admission: { waitedMs, level, live: 0, capacity }, childEnv: () => ({}), setChildPid() { }, release() { } };
 }
 /** A single non-blocking attempt: a handle, or `null` when not admitted this poll. */
@@ -253,7 +256,7 @@ export function tryAcquireLease(opts, meta) {
     const r = attempt(opts, meta, 0);
     if (r.kind === "admitted")
         return r.handle;
-    return r.kind === "error" && r.level !== "critical" ? failOpen(opts, r.level, r.capacity, 0, "io-error") : null;
+    return r.kind === "error" && r.level !== "critical" ? failOpen(opts, r.level, r.capacity, 0, "io-error", r.error) : null;
 }
 /** Live holders, or none when the directory cannot be read. */
 function statusOf(opts, level) {
@@ -282,13 +285,13 @@ export async function acquireLease(opts, meta, wait = {}) {
         busySince = r.kind === "busy" ? (busySince ?? now()) : undefined;
         if (r.level !== "critical") {
             if (r.kind === "error")
-                return failOpen(opts, r.level, r.capacity, waitedMs, "io-error");
+                return failOpen(opts, r.level, r.capacity, waitedMs, "io-error", r.error);
             if (busySince !== undefined && now() - busySince >= FAIL_OPEN_MS)
                 return failOpen(opts, r.level, r.capacity, waitedMs, "mutex-busy");
         }
         const status = r.kind === "error" ? { level: r.level, capacity: r.capacity, live: [] } : statusOf(opts, r.level);
         const refuse = (refused, level, live) => {
-            emit(opts, { type: "timeout", refused, waitedMs });
+            emit(opts, { type: "timeout", refused, waitedMs, level: refused === "stopped" ? level : undefined });
             return { refused, waitedMs, level, live };
         };
         if (wait.stopWhen?.(status)) {
@@ -307,14 +310,15 @@ export async function acquireLease(opts, meta, wait = {}) {
 export function leaseStatus(opts) {
     return statusOf(opts, opts.level());
 }
-/** Production wiring: the real lease directory and the engine's own sampler and policy. Creates nothing on disk. */
+/** Production wiring: the real lease directory, the engine's own sampler and policy, and the `events.jsonl` sink. Creates nothing on disk. */
 export function defaultLeaseOptions(env = process.env) {
+    const dir = leaseDirectory(env);
     return {
-        dir: leaseDirectory(env),
+        dir,
         level: defaultPressureSampler(env),
         policy: pressurePolicyFromEnv(env),
         inheritedHolderId: env.CO_LEASE_HOLDER || undefined,
-        override: pressureOverrideInEffect(env),
+        onEvent: leaseEventSink(dir),
     };
 }
 //# sourceMappingURL=lease.js.map

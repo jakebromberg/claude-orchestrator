@@ -10,11 +10,11 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isWithinWindow, tryLockOnce } from "./file-lock.js";
+import { leaseEventSink } from "./lease-events.js";
 import {
   defaultPressureSampler,
   heavyCapacity,
   leaseDirectory,
-  pressureOverrideInEffect,
   pressurePolicyFromEnv,
   type PressureLevel,
   type PressurePolicy,
@@ -32,11 +32,13 @@ const COMMAND_MAX = 200;
 type ReapReason = "stale-heartbeat" | "orphan-bound" | "corrupt";
 
 export type LeaseEvent =
-  | { type: "acquire"; id: string; waitedMs: number; level: PressureLevel; live: number; capacity: number }
-  | { type: "release"; id: string; exitCode?: number }
+  | { type: "acquire"; id: string; waitedMs: number; level: PressureLevel; live: number; capacity: number; override?: true }
+  | { type: "release"; id: string; heldMs: number; exitCode?: number }
   | { type: "reap"; id: string; reason: ReapReason }
-  | { type: "timeout"; refused: "max-wait" | "stopped"; waitedMs: number }
-  | { type: "fail-open"; reason: "mutex-busy" | "io-error"; waitedMs: number };
+  /** `level` is the confirmed level of a `stopped` refusal. */
+  | { type: "timeout"; refused: "max-wait" | "stopped"; waitedMs: number; level?: PressureLevel }
+  /** `code` and `message` describe the I/O error; a busy mutex has neither. */
+  | { type: "fail-open"; reason: "mutex-busy" | "io-error"; waitedMs: number; code?: string; message?: string };
 
 export interface LeaseOptions {
   dir: string;
@@ -52,8 +54,6 @@ export interface LeaseOptions {
   pollMs?: number;
   /** The `CO_LEASE_HOLDER` id this process inherited; a live one admits a nested acquire at once. */
   inheritedHolderId?: string;
-  /** True when `CO_PRESSURE_OVERRIDE=critical-as-warning` is in effect; a `warning` level is then recorded as override-produced. */
-  override?: boolean;
   /** A throw is warned about once per callback and never changes what the lease does. */
   onEvent?(e: LeaseEvent): void;
   warn?(msg: string): void;
@@ -98,7 +98,7 @@ export interface LeaseHandle {
   id: string | null;
   leased: boolean;
   /** `live` counts this holder. */
-  admission: { waitedMs: number; level: PressureLevel; live: number; capacity: number };
+  admission: { waitedMs: number; level: PressureLevel; live: number; capacity: number; override?: true };
   /** Env for the child command; the holder id is never put in `process.env`. */
   childEnv(): Record<string, string>;
   /**
@@ -119,7 +119,8 @@ export interface LeaseRefusal {
 
 type Attempt =
   | { kind: "admitted"; handle: LeaseHandle }
-  | { kind: "full" | "busy" | "error"; level: PressureLevel; capacity: number };
+  | { kind: "full" | "busy"; level: PressureLevel; capacity: number }
+  | { kind: "error"; level: PressureLevel; capacity: number; error: unknown };
 
 const holdersDir = (dir: string): string => join(dir, "holders");
 
@@ -206,7 +207,7 @@ function createHolder(opts: LeaseOptions, meta: HolderMeta, command: string, adm
   const id = `${process.pid}-${randomBytes(4).toString("hex")}`;
   const file = join(holdersDir(opts.dir), `${id}.json`);
   const rec: HolderRecord = { id, pid: process.pid, command, cwd: meta.cwd, startedAt: now(), level: admission.level };
-  if (opts.override && admission.level === "warning") rec.override = true;
+  if (admission.override) rec.override = true;
   const write = (): void => {
     writeFileSync(`${file}.tmp`, JSON.stringify(rec), { mode: 0o600 });
     renameSync(`${file}.tmp`, file);
@@ -249,7 +250,7 @@ function createHolder(opts: LeaseOptions, meta: HolderMeta, command: string, adm
       } catch {
         // Already reaped.
       }
-      emit(opts, { type: "release", id, exitCode: outcome?.exitCode });
+      emit(opts, { type: "release", id, heldMs: now() - rec.startedAt, exitCode: outcome?.exitCode });
     },
   };
 }
@@ -278,6 +279,7 @@ function ensureOwnDirs(dir: string): void {
  */
 function attempt(opts: LeaseOptions, meta: HolderMeta, waitedMs: number): Attempt {
   const level = opts.level();
+  const overridden = opts.level.overridden?.() === true;
   const capacity = heavyCapacity(level, opts.policy);
   const command = recordedCommand(meta);
   const reaped: { id: string; reason: ReapReason }[] = [];
@@ -296,14 +298,14 @@ function attempt(opts: LeaseOptions, meta: HolderMeta, waitedMs: number): Attemp
         rmSync(join(holdersDir(opts.dir), `${d.id}.json`), { force: true });
         reaped.push(d);
       }
-      const admission = { waitedMs, level, live: live.length + 1, capacity };
+      const admission = { waitedMs, level, live: live.length + 1, capacity, ...(overridden && { override: true as const }) };
       if (live.length < capacity) r = { kind: "admitted", handle: createHolder(opts, meta, command, admission) };
       else r = { kind: "full", level, capacity };
     } finally {
       lock.release();
     }
-  } catch {
-    r = { kind: "error", level, capacity };
+  } catch (error) {
+    r = { kind: "error", level, capacity, error };
   }
   for (const { id, reason } of reaped) {
     if (reason === "orphan-bound") warn(opts, `lease: reaping holder ${id}: its child outlived the 2 h orphan bound`);
@@ -333,9 +335,10 @@ function guarded<T>(opts: LeaseOptions, callback: ((arg: T) => void) | undefined
 const warn = (opts: LeaseOptions, msg: string): void => guarded(opts, opts.warn ?? defaultWarn, msg);
 const emit = (opts: LeaseOptions, e: LeaseEvent): void => guarded(opts, opts.onEvent, e);
 
-function failOpen(opts: LeaseOptions, level: PressureLevel, capacity: number, waitedMs: number, reason: "mutex-busy" | "io-error"): LeaseHandle {
+function failOpen(opts: LeaseOptions, level: PressureLevel, capacity: number, waitedMs: number, reason: "mutex-busy" | "io-error", error?: unknown): LeaseHandle {
   warn(opts, `lease unavailable (${reason}); running unleased`);
-  emit(opts, { type: "fail-open", reason, waitedMs });
+  const { code, message } = (error ?? {}) as { code?: string; message?: string };
+  emit(opts, { type: "fail-open", reason, waitedMs, code, message });
   return { id: null, leased: false, admission: { waitedMs, level, live: 0, capacity }, childEnv: () => ({}), setChildPid() {}, release() {} };
 }
 
@@ -343,7 +346,7 @@ function failOpen(opts: LeaseOptions, level: PressureLevel, capacity: number, wa
 export function tryAcquireLease(opts: LeaseOptions, meta: HolderMeta): LeaseHandle | null {
   const r = attempt(opts, meta, 0);
   if (r.kind === "admitted") return r.handle;
-  return r.kind === "error" && r.level !== "critical" ? failOpen(opts, r.level, r.capacity, 0, "io-error") : null;
+  return r.kind === "error" && r.level !== "critical" ? failOpen(opts, r.level, r.capacity, 0, "io-error", r.error) : null;
 }
 
 /** Live holders, or none when the directory cannot be read. */
@@ -375,12 +378,12 @@ export async function acquireLease(
     if (r.kind === "admitted") return r.handle;
     busySince = r.kind === "busy" ? (busySince ?? now()) : undefined;
     if (r.level !== "critical") {
-      if (r.kind === "error") return failOpen(opts, r.level, r.capacity, waitedMs, "io-error");
+      if (r.kind === "error") return failOpen(opts, r.level, r.capacity, waitedMs, "io-error", r.error);
       if (busySince !== undefined && now() - busySince >= FAIL_OPEN_MS) return failOpen(opts, r.level, r.capacity, waitedMs, "mutex-busy");
     }
     const status = r.kind === "error" ? { level: r.level, capacity: r.capacity, live: [] } : statusOf(opts, r.level);
     const refuse = (refused: LeaseRefusal["refused"], level: PressureLevel, live: number): LeaseRefusal => {
-      emit(opts, { type: "timeout", refused, waitedMs });
+      emit(opts, { type: "timeout", refused, waitedMs, level: refused === "stopped" ? level : undefined });
       return { refused, waitedMs, level, live };
     };
     if (wait.stopWhen?.(status)) {
@@ -399,13 +402,14 @@ export function leaseStatus(opts: LeaseOptions): LeaseStatus {
   return statusOf(opts, opts.level());
 }
 
-/** Production wiring: the real lease directory and the engine's own sampler and policy. Creates nothing on disk. */
+/** Production wiring: the real lease directory, the engine's own sampler and policy, and the `events.jsonl` sink. Creates nothing on disk. */
 export function defaultLeaseOptions(env: NodeJS.ProcessEnv = process.env): LeaseOptions {
+  const dir = leaseDirectory(env);
   return {
-    dir: leaseDirectory(env),
+    dir,
     level: defaultPressureSampler(env),
     policy: pressurePolicyFromEnv(env),
     inheritedHolderId: env.CO_LEASE_HOLDER || undefined,
-    override: pressureOverrideInEffect(env),
+    onEvent: leaseEventSink(dir),
   };
 }

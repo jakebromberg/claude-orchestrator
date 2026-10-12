@@ -95,7 +95,7 @@ describe("lease", () => {
       a.release({ exitCode: 0 });
       const c = tryAcquireLease(opts(), meta);
       expect(c?.leased).toBe(true);
-      expect(events.filter((e) => e.type === "release")).toEqual([{ type: "release", id: a.id, exitCode: 0 }]);
+      expect(events.filter((e) => e.type === "release")).toEqual([{ type: "release", id: a.id, heldMs: 0, exitCode: 0 }]);
       b.release();
       c!.release();
     });
@@ -471,8 +471,10 @@ describe("lease", () => {
 
     it("wires the environment into defaultLeaseOptions", () => {
       const o = defaultLeaseOptions({ CO_LEASE_DIR: dir, CO_LEASE_SLOTS: "3", CO_LEASE_HOLDER: "1-ab", CO_PRESSURE_OVERRIDE: "critical-as-warning" });
-      expect(o).toMatchObject({ dir, policy: { heavyCeiling: 3 }, inheritedHolderId: "1-ab", override: true });
-      expect(defaultLeaseOptions({ CO_LEASE_DIR: dir })).toMatchObject({ inheritedHolderId: undefined, override: false });
+      expect(o).toMatchObject({ dir, policy: { heavyCeiling: 3 }, inheritedHolderId: "1-ab" });
+      expect(typeof o.onEvent).toBe("function");
+      expect(typeof o.level.overridden).toBe("function");
+      expect(defaultLeaseOptions({ CO_LEASE_DIR: dir })).toMatchObject({ inheritedHolderId: undefined });
     });
   });
 
@@ -608,12 +610,36 @@ describe("lease", () => {
   describe("pressure override", () => {
     it.each([
       [true, "warning", true],
-      [true, "normal", undefined],
       [false, "warning", undefined],
-    ] as const)("override=%s at %s records override=%s", (override, lvl, expected) => {
+      [undefined, "warning", undefined],
+    ] as const)("sampler overridden()=%s at %s records override=%s in the holder file and the acquire event", (overridden, lvl, expected) => {
       level = lvl;
-      const h = tryAcquireLease(opts({ override }), meta)!;
+      const sampler = Object.assign(() => level, { fresh: () => level, ...(overridden === undefined ? {} : { overridden: () => overridden }) });
+      const h = tryAcquireLease(opts({ level: sampler }), meta)!;
       expect(readHolder(h).override).toBe(expected);
+      expect(h.admission.override).toBe(expected);
+      expect("override" in events.find((e) => e.type === "acquire")!).toBe(expected === true);
+    });
+  });
+
+  describe("widened events", () => {
+    it("records the held time on release", () => {
+      const h = tryAcquireLease(opts(), meta)!;
+      clock += 12_345;
+      h.release({ exitCode: 1 });
+      expect(events.find((e) => e.type === "release")).toEqual({ type: "release", id: h.id, heldMs: 12_345, exitCode: 1 });
+    });
+
+    it("records the level of a stopped refusal", async () => {
+      level = "critical";
+      await acquireLease(opts(), meta, { stopWhen: (s) => s.level === "critical" });
+      expect(events).toContainEqual({ type: "timeout", refused: "stopped", waitedMs: 0, level: "critical" });
+    });
+
+    it("records the error code and message of an I/O fail-open, none for a busy mutex", () => {
+      writeFileSync(join(tmp, "blocker"), "");
+      tryAcquireLease(opts({ dir: join(tmp, "blocker", "lease") }), meta);
+      expect(events).toContainEqual(expect.objectContaining({ type: "fail-open", reason: "io-error", code: "ENOTDIR", message: expect.any(String) }));
     });
   });
 

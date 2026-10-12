@@ -8,6 +8,8 @@ export interface PressurePolicy {
 export interface PressureSampler {
     (): PressureLevel;
     fresh(): PressureLevel;
+    /** True when the last level returned was mapped from `critical` by `CO_PRESSURE_OVERRIDE`; absent means never. */
+    overridden?(): boolean;
 }
 /**
  * Reads the macOS pressure level. `null` means the darwin read failed, timed

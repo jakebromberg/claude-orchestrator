@@ -28,6 +28,7 @@ src/
 ├── memory-pressure.ts    # Memory-pressure level reader, heavy/session capacity tables, stop rule, cached sampler
 ├── capacity-governor.ts  # createCapacityGovernor() — pressure readings → session capacity, 60 s hysteresis, transition logging
 ├── lease.ts              # Machine-wide heavy-command lease: holder files, 30 s mtime heartbeat (90 s staleness) + child-PID liveness, admission, fail-open (acquireLease, leaseStatus)
+├── lease-events.ts       # leaseEventSink(): JSONL sink for the lease's onEvent seam — <lease dir>/events.jsonl, 5 MB rotation to events.jsonl.1, write failures swallowed
 ├── file-lock.ts          # tryLockOnce(): non-blocking O_EXCL mutex with mtime staleness (isWithinWindow is the shared freshness rule), token-checked release, turn-taking reapers (the lease's mutex)
 ├── claude-env.ts         # claudeSessionEnv() — child env for spawned `claude` sessions (auth/billing)
 ├── real-process-runner.ts # Real child_process spawner

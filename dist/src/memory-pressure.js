@@ -177,11 +177,15 @@ export function defaultPressureSampler(env = process.env, deps = {}) {
         const candidate = [lastGood, persisted()].find((r) => r && isFresh(r.at, at, FALLBACK_MAX_AGE_MS));
         return candidate?.level ?? "critical";
     };
-    return cachedPressureSampler(() => {
-        const level = applyPressureOverride(raw(), env);
-        if (pressureOverrideInEffect(env))
+    let overridden = false;
+    const sampler = cachedPressureSampler(() => {
+        const reading = raw();
+        const level = applyPressureOverride(reading, env);
+        overridden = level !== reading;
+        if (overridden)
             log(`CO_PRESSURE_OVERRIDE=${OVERRIDE_VALUE} in effect: critical reads as warning`);
         return level;
     }, SAMPLE_TTL_MS, now);
+    return Object.assign(sampler, { overridden: () => overridden });
 }
 //# sourceMappingURL=memory-pressure.js.map

@@ -7,22 +7,31 @@ export type LeaseEvent = {
     level: PressureLevel;
     live: number;
     capacity: number;
+    override?: true;
 } | {
     type: "release";
     id: string;
+    heldMs: number;
     exitCode?: number;
 } | {
     type: "reap";
     id: string;
     reason: ReapReason;
-} | {
+}
+/** `level` is the confirmed level of a `stopped` refusal. */
+ | {
     type: "timeout";
     refused: "max-wait" | "stopped";
     waitedMs: number;
-} | {
+    level?: PressureLevel;
+}
+/** `code` and `message` describe the I/O error; a busy mutex has neither. */
+ | {
     type: "fail-open";
     reason: "mutex-busy" | "io-error";
     waitedMs: number;
+    code?: string;
+    message?: string;
 };
 export interface LeaseOptions {
     dir: string;
@@ -38,8 +47,6 @@ export interface LeaseOptions {
     pollMs?: number;
     /** The `CO_LEASE_HOLDER` id this process inherited; a live one admits a nested acquire at once. */
     inheritedHolderId?: string;
-    /** True when `CO_PRESSURE_OVERRIDE=critical-as-warning` is in effect; a `warning` level is then recorded as override-produced. */
-    override?: boolean;
     /** A throw is warned about once per callback and never changes what the lease does. */
     onEvent?(e: LeaseEvent): void;
     warn?(msg: string): void;
@@ -84,6 +91,7 @@ export interface LeaseHandle {
         level: PressureLevel;
         live: number;
         capacity: number;
+        override?: true;
     };
     /** Env for the child command; the holder id is never put in `process.env`. */
     childEnv(): Record<string, string>;
@@ -117,6 +125,6 @@ export declare function acquireLease(opts: LeaseOptions, meta: HolderMeta, wait?
 }): Promise<LeaseHandle | LeaseRefusal>;
 /** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. */
 export declare function leaseStatus(opts: LeaseOptions): LeaseStatus;
-/** Production wiring: the real lease directory and the engine's own sampler and policy. Creates nothing on disk. */
+/** Production wiring: the real lease directory, the engine's own sampler and policy, and the `events.jsonl` sink. Creates nothing on disk. */
 export declare function defaultLeaseOptions(env?: NodeJS.ProcessEnv): LeaseOptions;
 export {};
