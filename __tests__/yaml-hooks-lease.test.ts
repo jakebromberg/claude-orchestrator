@@ -1,8 +1,9 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { deriveHooks } from "../src/yaml-hooks.js";
+import * as leaseModule from "../src/lease.js";
 import { leaseStatus, tryAcquireLease, type LeaseEvent, type LeaseOptions } from "../src/lease.js";
 import type { PressureLevel } from "../src/memory-pressure.js";
 import { scriptedPressureSampler } from "../src/testing.js";
@@ -51,6 +52,7 @@ describe("leased postSessionCheck", () => {
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -98,15 +100,23 @@ describe("leased postSessionCheck", () => {
   });
 
   it("does no lease I/O and calls the runner with exactly (cmd, cwd) without ctx.lease", async () => {
-    const dir = join(tmp, "never-created");
+    // Sentinels: any default that resolves the lease directory or $HOME from the environment lands under tmp.
+    const sentinel = join(tmp, "never-created");
+    vi.stubEnv("CO_LEASE_DIR", sentinel);
+    vi.stubEnv("XDG_STATE_HOME", sentinel);
+    vi.stubEnv("HOME", sentinel);
+    const acquire = vi.spyOn(leaseModule, "acquireLease");
+    const tryAcquire = vi.spyOn(leaseModule, "tryAcquireLease");
+    const status = vi.spyOn(leaseModule, "leaseStatus");
+    const defaults = vi.spyOn(leaseModule, "defaultLeaseOptions");
     const runCommand = vi.fn(async () => "");
     const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands: ["npm test"] } }), { runCommand });
     await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { runningSessions: () => 0 });
     await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo");
 
     expect(runCommand.mock.calls).toEqual([["npm test", "/tmp/worktrees/foo"], ["npm test", "/tmp/worktrees/foo"]]);
-    expect(existsSync(dir)).toBe(false);
-    expect(events).toEqual([]);
+    for (const spy of [acquire, tryAcquire, status, defaults]) expect(spy).not.toHaveBeenCalled();
+    expect(existsSync(sentinel)).toBe(false);
   });
 
   it("ignores an inherited holder id: the check takes its own slot instead of riding the inherited one", async () => {
@@ -214,6 +224,60 @@ describe("leased postSessionCheck", () => {
         expect(result.summary).toContain("0056");
       });
     });
+  });
+
+  it("runs every command unleased, with no holder env, when the lease directory is unusable at normal pressure", async () => {
+    writeFileSync(join(tmp, "blocker"), "");
+    const broken = leaseOptions({ dir: join(tmp, "blocker", "lease") });
+    const envs: Array<Record<string, string> | undefined> = [];
+    const runCommand = vi.fn(async (_c: string, _d: string, env?: Record<string, string>) => { envs.push(env); return ""; });
+    const hooks = deriveHooks(makeYaml(), { runCommand });
+    const result = await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: broken });
+
+    expect(result).toEqual({ passed: true });
+    expect(runCommand).toHaveBeenCalledTimes(2);
+    expect(envs).toEqual([{}, {}]);
+    expect(envs.every((e) => !e || !("CO_LEASE_HOLDER" in e))).toBe(true);
+    expect(events.map((e) => e.type)).toEqual(["fail-open"]);
+  });
+
+  it("kills the child and releases the holder when onSpawn throws through the default runner", async () => {
+    const real = leaseModule.acquireLease;
+    let pid: number | undefined;
+    vi.spyOn(leaseModule, "acquireLease").mockImplementation(async (...args) => {
+      const got = await real(...args);
+      if ("refused" in got) return got;
+      const setChildPid = got.setChildPid;
+      return { ...got, setChildPid: (p: number) => { pid = p; setChildPid(p); throw new Error("onSpawn boom"); } };
+    });
+    const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands: ["exec sleep 10"] } }));
+    try {
+      const result = await hooks.postSessionCheck!(issue, tmp, { lease: leaseOptions() });
+
+      expect(result).toMatchObject({ passed: false });
+      expect(result.summary).toContain("onSpawn boom");
+      expect(pid).toBeDefined();
+      expect(() => process.kill(pid!, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+      expect(events.map((e) => e.type)).toEqual(["acquire", "release"]);
+      expect(leaseStatus(leaseOptions()).live).toEqual([]);
+    } finally {
+      if (pid !== undefined && pid !== process.pid) { try { process.kill(pid, "SIGKILL"); } catch {} }
+    }
+  });
+
+  it("is unaffected by a throwing warning writer while it waits", async () => {
+    const full = tryAcquireLease(leaseOptions(), { command: "other", cwd: "/" })!;
+    full.setChildPid(process.pid);
+    clock.onSleep = () => { if (clock.sleeps.length === 2) full.release(); };
+    const runCommand = vi.fn(async () => "");
+    const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands: ["npm test"] } }), { runCommand });
+    const result = await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", {
+      lease: leaseOptions({ warn: () => { throw new Error("writer boom"); } }),
+    });
+
+    expect(result).toEqual({ passed: true });
+    expect(clock.sleeps.length).toBe(2);
+    expect(runCommand).toHaveBeenCalledTimes(1);
   });
 
   describe("waiting line", () => {

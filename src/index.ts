@@ -1,7 +1,7 @@
 // Core types
 export type {
   Status, IssueSpec, Issue, RawOrchestratorConfig, OrchestratorConfig,
-  MergePolicy, RunOptions, PostCheckResult, OrchestratorHooks,
+  MergePolicy, RunOptions, PostCheckResult, OrchestratorHooks, PostSessionCheckContext,
   ParsedMode, ParsedArgs, StatusStore, ProcessHandle, ProcessRunner,
   Logger, IssueMetadata, FailureReason, StopStage, MetadataStore, Deps, RunRecord, IssueCommentsConfig, LabelSyncConfig, RetryOnCheckFailureConfig,
 } from "./types.js";
