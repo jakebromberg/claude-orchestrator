@@ -71,7 +71,7 @@ function unlessGone(read) {
     }
 }
 /** A PID that `kill(pid, 0)` checks as one process: `0` and negatives address a group, or every process, and `process.kill` rejects 2^31 and above. */
-const isPid = (n) => Number.isInteger(n) && n > 0 && n < 2 ** 31;
+export const isPid = (n) => Number.isInteger(n) && n > 0 && n < 2 ** 31;
 function parseHolder(text) {
     try {
         const rec = JSON.parse(text);

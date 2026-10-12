@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { leaseStatus, tryAcquireLease, releaseHolder, type LeaseEvent, type LeaseOptions } from "../src/lease.js";
+import { defaultLeaseOptions, leaseStatus, tryAcquireLease, releaseHolder, type LeaseEvent, type LeaseOptions } from "../src/lease.js";
 import { isHeavyCommand, isHeavyHookCall, runHook, settingsEntries } from "../src/lease-hook.js";
 import { isolatedLeaseEnv, scriptedLease, unwritableLeaseDir, type FakeLeaseClock, type ScriptedLease } from "./helpers/lease.js";
 
@@ -99,6 +99,11 @@ const NOT_HEAVY = [
   // The forward scan runs only after `)`, `}` or a backtick: a quote closed by a stripped tail is not reopened.
   `FOO="a;b" echo "x npm test`,
 ];
+
+vi.mock("../src/lease.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lease.js")>();
+  return { ...actual, defaultLeaseOptions: vi.fn(actual.defaultLeaseOptions) };
+});
 
 describe("isHeavyCommand", () => {
   it.each(HEAVY)("matches %j", (command) => {
@@ -506,6 +511,24 @@ describe("hook events", () => {
       expect(code).toBe(0);
       expect(out === "" || JSON.parse(out).hookSpecificOutput !== undefined).toBe(true);
       expect(stderr).not.toHaveBeenCalled();
+    });
+
+    it("parses stdin once", async () => {
+      const stdin = pre();
+      const parse = vi.spyOn(JSON, "parse");
+      await run(stdin);
+      expect(parse.mock.calls.filter(([text]) => text === stdin)).toHaveLength(1);
+    });
+
+    it.each(["PreToolUse", "PostToolUse", "PostToolUseFailure"])("builds the lease options once on %s", async (event) => {
+      vi.mocked(defaultLeaseOptions).mockClear();
+      await run(call(event));
+      expect(defaultLeaseOptions).toHaveBeenCalledTimes(1);
+    });
+
+    // The lease refuses a PID of 2^31, so the hook treats the session as unusable and stays inert.
+    it("does not deny run_in_background with a session PID the lease would refuse", async () => {
+      expect(await run(pre({ run_in_background: true }), { CO_LEASE_SESSION_PID: "2147483648" })).toEqual({ code: 0, out: "" });
     });
 
     // A hook that cannot lease stays inert, background calls included.

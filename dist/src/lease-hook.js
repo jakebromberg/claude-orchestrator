@@ -17,7 +17,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acquireLease, defaultLeaseOptions, DETACHED_TTL_MAX_MS, leaseStatus, releaseHolder } from "./lease.js";
+import { acquireLease, defaultLeaseOptions, DETACHED_TTL_MAX_MS, isPid, leaseStatus, releaseHolder } from "./lease.js";
 import { formatAdmitted, formatNoSlot } from "./lease-messages.js";
 import { shellQuote } from "./shell-quote.js";
 /**
@@ -194,19 +194,22 @@ export function isHeavyHookCall(stdin, env) {
     if (env.CO_LEASE_HOOK !== "on")
         return false;
     try {
-        const input = JSON.parse(stdin);
-        const command = input.tool_input?.command;
-        return input.hook_event_name === "PreToolUse" && input.tool_name === "Bash" && typeof command === "string" && isHeavyCommand(command, extraPatterns(env));
+        return isHeavyInput(JSON.parse(stdin), env);
     }
     catch {
         return false;
     }
 }
+const isHeavyInput = (input, env) => {
+    const command = input.tool_input?.command;
+    return input.hook_event_name === "PreToolUse" && input.tool_name === "Bash" && typeof command === "string" && isHeavyCommand(command, extraPatterns(env));
+};
 const WAIT_MS = 450_000;
 const GRACE_MS = 60_000;
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 /** 10 min: with the 60 s grace, the longest TTL the lease's cap (`DETACHED_TTL_MAX_MS`) lets a writer set. */
 const MAX_CALL_TIMEOUT_MS = DETACHED_TTL_MAX_MS - GRACE_MS;
+/** Shorter than the lease's holder id bound (160): the `hook-` prefix keeps `hook-<id>` inside it. */
 const TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DENY_BACKGROUND = "lease: run heavy commands in the foreground so the lease can track them";
 const positive = (n) => typeof n === "number" && Number.isFinite(n) && n > 0;
@@ -230,16 +233,16 @@ async function handleEvent(stdin, io) {
         return;
     const event = input.hook_event_name;
     const id = `hook-${toolUseId}`;
+    const opts = { ...defaultLeaseOptions(env, { warn: () => { } }), ...io.lease };
     if (event === "PostToolUse" || event === "PostToolUseFailure") {
-        releaseHolder({ ...defaultLeaseOptions(env, { warn: () => { } }), ...io.lease }, id);
+        releaseHolder(opts, id);
         return;
     }
-    if (!isHeavyHookCall(stdin, env))
+    if (!isHeavyInput(input, env))
         return;
     const sessionPid = Number(env.CO_LEASE_SESSION_PID);
-    if (!Number.isInteger(sessionPid) || sessionPid <= 0)
+    if (!isPid(sessionPid))
         return;
-    const opts = { ...defaultLeaseOptions(env, { warn: () => { } }), ...io.lease };
     // A hook with no session PID or no usable options stays inert, background calls included. A lease directory that
     // fails only at acquire (unwritable, a symlink) still denies them, while a foreground call there fails open.
     if (input.tool_input?.run_in_background === true)

@@ -181,7 +181,7 @@ function unlessGone<T>(read: () => T): T | undefined {
 }
 
 /** A PID that `kill(pid, 0)` checks as one process: `0` and negatives address a group, or every process, and `process.kill` rejects 2^31 and above. */
-const isPid = (n: unknown): boolean => Number.isInteger(n) && (n as number) > 0 && (n as number) < 2 ** 31;
+export const isPid = (n: unknown): boolean => Number.isInteger(n) && (n as number) > 0 && (n as number) < 2 ** 31;
 
 function parseHolder(text: string): HolderRecord | null {
   try {

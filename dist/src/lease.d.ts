@@ -128,6 +128,8 @@ export interface LeaseRefusal {
     level: PressureLevel;
     live: number;
 }
+/** A PID that `kill(pid, 0)` checks as one process: `0` and negatives address a group, or every process, and `process.kill` rejects 2^31 and above. */
+export declare const isPid: (n: unknown) => boolean;
 /** The lease's directory rule, given `lstat` stats: a real directory (not a symlink) this user owns. A platform without uids (Windows) skips the ownership check. */
 export declare function isOwnDir(st: Stats): boolean;
 /** The one default diagnostics writer, shared with the event sink. Messages carry their own `lease:` prefix. */
