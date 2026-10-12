@@ -26,6 +26,8 @@ src/
 ├── dependency-files.ts   # Dependency file detection
 ├── report.ts             # Post-run report generation
 ├── memory-pressure.ts    # Memory-pressure level reader, heavy/session capacity tables, stop rule, cached sampler
+├── lease.ts              # Machine-wide heavy-command lease: holder files, PID/child liveness, admission, fail-open
+├── file-lock.ts          # tryLockOnce(): non-blocking O_EXCL mutex with mtime staleness (the lease's mutex)
 ├── claude-env.ts         # claudeSessionEnv() — child env for spawned `claude` sessions (auth/billing)
 ├── real-process-runner.ts # Real child_process spawner
 ├── create-main.ts        # Generic entry point factory (sync or async ConfigFactory)

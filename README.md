@@ -66,6 +66,13 @@ Amazon Bedrock and Google Vertex backends are not supported: their `CLAUDE_CODE_
 - `CO_PRESSURE_OVERRIDE` — set to exactly `critical-as-warning` to make this process (and what it starts) read `critical` as `warning`. Any other value is ignored with a warning.
 - `CO_LEASE_DIR` — lease directory, which must be absolute (default `${XDG_STATE_HOME:-$HOME/.local/state}/claude-orchestrator/lease`); the sampler persists its last raw reading to `level.json` there, only if the directory already exists. A relative `XDG_STATE_HOME` is ignored; without an absolute `HOME`, the account's home directory from the user database is used, and with neither the sampler throws rather than resolve a path against the working directory.
 
+### Heavy-command lease
+
+`src/lease.ts` is a machine-wide, file-based lease for heavy commands (`acquireLease`, `tryAcquireLease`, `leaseStatus`, `defaultLeaseOptions`). A request is admitted while the number of live holders is below `heavyCapacity(level, policy)`; otherwise it polls every 3 s ± 1 s and never spins. A holder is live while its wrapper PID is alive, or its recorded child PID is alive and younger than 2 h. The lease fails open (an unleased handle and one warning) on a directory I/O error or a mutex busy for 30 s, except at `critical`, where that counts as no free slot. The directory is created with mode 0700 at the first acquire, never by `defaultLeaseOptions()`; recorded commands have `NAME=value` assignments redacted and are truncated to 200 characters.
+
+- `CO_LEASE_DIR` — see above.
+- `CO_LEASE_HOLDER` — the holder id of an admitted lease, passed only in the child's env (`handle.childEnv()`), never set in the holder's own `process.env`. A nested acquire in that child (`defaultLeaseOptions()` reads it as `inheritedHolderId`) is admitted at once while the holder is live.
+
 ## Quick Start
 
 ### 1. Create a YAML config
