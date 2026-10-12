@@ -31,6 +31,7 @@ export { authBanner, claudeExecOptions, claudeSessionEnv, usesApiKeyBilling, API
 export { applyPressureOverride, cachedPressureSampler, defaultPressureSampler, heavyCapacity, leaseDirectory, pressurePolicyFromEnv, readMemoryPressure, sessionCapacity, stopAtCritical, } from "./memory-pressure.js";
 export { acquireLease, tryAcquireLease, leaseStatus, defaultLeaseOptions } from "./lease.js";
 export { leaseEventSink } from "./lease-events.js";
+export { isHeavyCommand } from "./lease-hook.js";
 export { createMain } from "./create-main.js";
 // YAML config
 export { loadYamlConfig, resolveYamlPaths } from "./yaml-loader.js";
