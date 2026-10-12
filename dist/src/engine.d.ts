@@ -122,6 +122,14 @@ export declare class Orchestrator {
     private markStopped;
     /** True (and the issue is failed and stopped) when the check did not run for memory pressure; such a result is never retried. */
     private checkStopped;
+    /**
+     * The one place a `claude` session is spawned for an issue: tags the handle
+     * with the issue number and, unless `monitor` is false, attaches the stall
+     * monitor. `exitCode` resolves after the monitor has stopped. Per-session
+     * accounting and post-exit reads of the session log belong here, so every
+     * spawn site picks them up together.
+     */
+    private spawnSession;
     /** True (and the issue is failed and stopped) when a fresh reading says a retry may not start. */
     private retryRefused;
     /** The run's one governor, read afresh as each wave starts launching. */

@@ -524,6 +524,35 @@ export class Orchestrator {
         await this.markStopped(issue, "post-check", "failed");
         return true;
     }
+    /**
+     * The one place a `claude` session is spawned for an issue: tags the handle
+     * with the issue number and, unless `monitor` is false, attaches the stall
+     * monitor. `exitCode` resolves after the monitor has stopped. Per-session
+     * accounting and post-exit reads of the session log belong here, so every
+     * spawn site picks them up together.
+     */
+    spawnSession(issue, args, cwd, logFile, stderrFile, { monitor = true, retry = false } = {}) {
+        const handle = this.deps.processRunner.spawn("claude", args, { cwd, logFile, stderrFile });
+        handle.issueNumber = issue.number;
+        const stallTimeout = issue.stallTimeout ?? this.config.stallTimeout;
+        const stallMonitor = monitor && stallTimeout > 0
+            ? new StallMonitor({
+                stallTimeout: stallTimeout * 1000,
+                checkInterval: STALL_CHECK_INTERVAL_MS,
+                getLogSize: () => this.deps.getLogFileSize(logFile),
+                onStall: () => {
+                    this.deps.logger.warn(`Issue #${issue.number}${retry ? " retry" : ""} stalled (no output for ${stallTimeout}s), killing process`);
+                    this.deps.processRunner.kill(handle.pid);
+                },
+            })
+            : null;
+        stallMonitor?.start();
+        const exitCode = handle.exitCode.then((code) => {
+            stallMonitor?.stop();
+            return code;
+        });
+        return { handle, exitCode };
+    }
     /** True (and the issue is failed and stopped) when a fresh reading says a retry may not start. */
     async retryRefused(issue) {
         if (this.deps.memoryPressure?.fresh() !== "critical")
@@ -605,24 +634,8 @@ export class Orchestrator {
             const launchTime = new Date().toISOString();
             this.deps.metadataStore.update(issue.ref, { startedAt: launchTime, ...NO_STOP });
             const stderrFile = `${this.config.configDir}/logs/issue-${encodeRefForFilename(issue.ref)}.stderr.log`;
-            const handle = this.deps.processRunner.spawn("claude", args, { cwd: worktreePath, logFile, stderrFile });
-            handle.issueNumber = issue.number;
-            let monitor = null;
-            const effectiveStallTimeout = issue.stallTimeout ?? this.config.stallTimeout;
-            if (effectiveStallTimeout > 0) {
-                monitor = new StallMonitor({
-                    stallTimeout: effectiveStallTimeout * 1000,
-                    checkInterval: STALL_CHECK_INTERVAL_MS,
-                    getLogSize: () => this.deps.getLogFileSize(logFile),
-                    onStall: () => {
-                        this.deps.logger.warn(`Issue #${issue.number} stalled (no output for ${effectiveStallTimeout}s), killing process`);
-                        this.deps.processRunner.kill(handle.pid);
-                    },
-                });
-                monitor.start();
-            }
-            const postCheck = handle.exitCode.then(async (exitCode) => {
-                monitor?.stop();
+            const { handle, exitCode: sessionExit } = this.spawnSession(issue, args, worktreePath, logFile, stderrFile);
+            const postCheck = sessionExit.then(async (exitCode) => {
                 const finishTime = new Date().toISOString();
                 this.deps.metadataStore.update(issue.ref, {
                     exitCode,
@@ -645,24 +658,8 @@ export class Orchestrator {
                         this.deps.logger.warn(`Issue #${issue.number} produced 0-byte log (exit ${exitCode}), retrying once...`);
                         this.deps.truncateFile(logFile);
                         this.deps.truncateFile(stderrFile);
-                        const retryHandle = this.deps.processRunner.spawn("claude", args, { cwd: worktreePath, logFile, stderrFile });
-                        retryHandle.issueNumber = issue.number;
-                        let retryMonitor = null;
-                        const retryStallTimeout = issue.stallTimeout ?? this.config.stallTimeout;
-                        if (retryStallTimeout > 0) {
-                            retryMonitor = new StallMonitor({
-                                stallTimeout: retryStallTimeout * 1000,
-                                checkInterval: STALL_CHECK_INTERVAL_MS,
-                                getLogSize: () => this.deps.getLogFileSize(logFile),
-                                onStall: () => {
-                                    this.deps.logger.warn(`Issue #${issue.number} retry stalled (no output for ${retryStallTimeout}s), killing process`);
-                                    this.deps.processRunner.kill(retryHandle.pid);
-                                },
-                            });
-                            retryMonitor.start();
-                        }
-                        const retryExitCode = await retryHandle.exitCode;
-                        retryMonitor?.stop();
+                        const { exitCode: retryExit } = this.spawnSession(issue, args, worktreePath, logFile, stderrFile, { retry: true });
+                        const retryExitCode = await retryExit;
                         this.deps.metadataStore.update(issue.ref, {
                             exitCode: retryExitCode,
                             finishedAt: new Date().toISOString(),
@@ -748,8 +745,7 @@ export class Orchestrator {
                 "--output-format", "stream-json",
                 "--verbose",
             ];
-            const retryHandle = this.deps.processRunner.spawn("claude", retryArgs, { cwd: worktreePath, logFile, stderrFile });
-            const retryExitCode = await retryHandle.exitCode;
+            const retryExitCode = await this.spawnSession(issue, retryArgs, worktreePath, logFile, stderrFile, { monitor: false }).exitCode;
             this.deps.metadataStore.update(issue.ref, {
                 exitCode: retryExitCode,
                 finishedAt: new Date().toISOString(),
