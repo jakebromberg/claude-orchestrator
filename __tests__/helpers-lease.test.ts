@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os, { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-import { leaseDirectory } from "../src/memory-pressure.js";
+import { defaultPressureSampler, leaseDirectory } from "../src/memory-pressure.js";
 import { fakeLeaseClock, installIsolatedHome, unwritableLeaseDir } from "./helpers/lease.js";
 
 describe("fakeLeaseClock().sleep", () => {
@@ -58,16 +58,16 @@ describe("installIsolatedHome", () => {
 
   it("removes CO_LEASE_* and CO_PRESSURE_* from process.env and restores them on dispose", () => {
     const outer = installIsolatedHome();
-    process.env.CO_LEASE_DIR = "/elsewhere";
-    process.env.CO_PRESSURE_OVERRIDE = "critical-as-warning";
-    const isolated = installIsolatedHome();
     try {
-      expect(process.env.CO_LEASE_DIR).toBeUndefined();
-      expect(process.env.CO_PRESSURE_OVERRIDE).toBeUndefined();
-    } finally {
-      isolated.dispose();
-    }
-    try {
+      process.env.CO_LEASE_DIR = "/elsewhere";
+      process.env.CO_PRESSURE_OVERRIDE = "critical-as-warning";
+      const isolated = installIsolatedHome();
+      try {
+        expect(process.env.CO_LEASE_DIR).toBeUndefined();
+        expect(process.env.CO_PRESSURE_OVERRIDE).toBeUndefined();
+      } finally {
+        isolated.dispose();
+      }
       expect(process.env.CO_LEASE_DIR).toBe("/elsewhere");
       expect(process.env.CO_PRESSURE_OVERRIDE).toBe("critical-as-warning");
     } finally {
@@ -75,6 +75,13 @@ describe("installIsolatedHome", () => {
       delete process.env.CO_PRESSURE_OVERRIDE;
       outer.dispose();
     }
+  });
+
+  // The guard's afterEach throws for this write; `fails` flips that into a pass, and fails if the guard stops throwing.
+  // Writes only when the default lease directory is under the guard's temp home, so it can never touch a real directory.
+  it.fails("the guard fails a test that writes under the default lease directory", () => {
+    if (!/\/co-home-[^/]+\//.test(leaseDirectory({}))) throw new Error("guard not installed; refusing to write");
+    defaultPressureSampler({}, { read: () => "normal", now: () => 1 })();
   });
 
   it("retire removes the temp home but keeps the redirects", () => {
