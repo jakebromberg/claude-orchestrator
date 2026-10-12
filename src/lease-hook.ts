@@ -18,8 +18,8 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { formatAdmitted, formatNoSlot } from "./cli-lease.js";
 import { acquireLease, defaultLeaseOptions, leaseStatus, releaseHolder, type LeaseOptions } from "./lease.js";
+import { formatAdmitted, formatNoSlot } from "./lease-messages.js";
 import { shellQuote } from "./shell-quote.js";
 
 /** `[word, pattern]`: `word` appears in every command `pattern` matches; the printed shell pre-filter greps for it. */

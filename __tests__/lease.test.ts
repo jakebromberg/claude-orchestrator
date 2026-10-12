@@ -433,6 +433,14 @@ describe("lease", () => {
         expect(events).toEqual([]);
       });
 
+      it.each(["../victim", "a/b", "a.b", ""])("treats the id %j as naming no holder, and removes nothing outside holders/", (id) => {
+        tryAcquireLease(opts(), meta)!.release();
+        writeFileSync(join(dir, "victim.json"), "{}");
+        expect(releaseHolder(opts(), id)).toBe(false);
+        expect(existsSync(join(dir, "victim.json"))).toBe(true);
+        expect(events.filter((e) => e.type === "release")).toHaveLength(1);
+      });
+
       it("removes a holder file that is not a valid record, with heldMs 0", () => {
         tryAcquireLease(opts(), meta)!.release();
         writeFileSync(holderFile("hook-bad"), "{not json");

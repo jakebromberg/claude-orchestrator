@@ -327,9 +327,12 @@ export async function acquireLease(opts, meta, wait = {}) {
 }
 /**
  * Releases a detached holder by id from any process; idempotent. Returns whether a holder file was removed, and emits
- * one `release` event with `heldMs` (0 when the file is not a valid record) only then.
+ * one `release` event with `heldMs` (0 when the file is not a valid record) only then. An id with a character outside
+ * `[A-Za-z0-9_-]` names no holder, so it can never reach a path outside `holders/`.
  */
 export function releaseHolder(opts, id) {
+    if (!/^[\w-]+$/.test(id))
+        return false;
     const file = join(holdersDir(opts.dir), `${id}.json`);
     const text = unlessGone(() => readFileSync(file, "utf8"));
     if (text === undefined || unlessGone(() => (unlinkSync(file), true)) === undefined)

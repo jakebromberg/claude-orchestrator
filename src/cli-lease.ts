@@ -21,8 +21,11 @@ import { realpathSync } from "node:fs";
 import { constants } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { PressureSampler } from "./memory-pressure.js";
-import { acquireLease, defaultLeaseOptions, leaseStatus, type LeaseHandle, type LeaseOptions, type LeaseRefusal, type LeaseStatus } from "./lease.js";
+import { acquireLease, defaultLeaseOptions, leaseStatus, type LeaseOptions, type LeaseStatus } from "./lease.js";
+import { formatAdmitted, formatNoSlot, seconds } from "./lease-messages.js";
 import { runHook } from "./lease-hook.js";
+
+export { formatAdmitted, formatNoSlot };
 
 const DEFAULT_MAX_WAIT_SEC = 100;
 const GRACE_MS = 10_000;
@@ -64,19 +67,6 @@ export interface LeaseCliDeps {
   /** `process` in production: `kill(pid, sig)` on its own `pid` re-raises a signal that arrives while waiting. */
   signals: { on(sig: NodeJS.Signals, fn: () => void): unknown; off(sig: NodeJS.Signals, fn: () => void): unknown;
     kill(pid: number, sig: NodeJS.Signals): unknown; pid: number };
-}
-
-const seconds = (ms: number): number => Math.round(ms / 1000);
-
-/** The admitted line; the hook prints the same text as `additionalContext`. */
-export function formatAdmitted(a: LeaseHandle["admission"]): string {
-  return `lease: admitted after ${seconds(a.waitedMs)}s (pressure=${a.level}, ${a.live}/${a.capacity} live)`;
-}
-
-/** The no-slot line. ship-dag's give-up rule matches its `lease: no slot after` prefix; the hook denies with it too. */
-export function formatNoSlot(refusal: LeaseRefusal, status: LeaseStatus): string {
-  const holders = status.live.map((h) => `${h.pid} ${h.command}`).join(", ") || "none";
-  return `lease: no slot after ${seconds(refusal.waitedMs)}s (pressure=${refusal.level}, capacity ${status.capacity}, ${status.live.length} live: ${holders}); rerun the command — this is not a test failure`;
 }
 
 function parseSeconds(text: string | undefined): number | undefined {

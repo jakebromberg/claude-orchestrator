@@ -64,6 +64,12 @@ describe("lease hook mode (integration)", () => {
     expect(await run("node", [distCli, "hook"], { ...env, CO_LEASE_DIR: "relative/dir" }, hookInput("npm test"))).toEqual({ code: 0, stdout: "", stderr: "" });
   });
 
+  it("imports the package index without running the CLI's startup check, even when argv[1] is not a file", async () => {
+    const index = fileURLToPath(new URL("../../dist/src/index.js", import.meta.url));
+    const loaded = await run("node", ["--input-type=module", "-e", `await import(${JSON.stringify(index)}); console.log("loaded")`, "not-a-file"], env);
+    expect(loaded).toEqual({ code: 0, stdout: "loaded\n", stderr: "" });
+  });
+
   it("prints entries that point at the printing build, not CO_HOME", async () => {
     const printed = await run("node", [distCli, "hook", "--print-settings-entry"], { ...env, CO_HOME: "/elsewhere/claude-orchestrator" });
     expect(printed.code).toBe(0);
