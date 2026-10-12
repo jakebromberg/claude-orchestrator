@@ -66,7 +66,8 @@ export interface LeaseOptions {
 
 /**
  * What a holder file records about the request; `label` replaces `command` when given. `detached` records a holder
- * for a process that is not this one (hook mode): `id` is used as given, `sessionPid` is the liveness PID, and no
+ * for a process that is not this one (hook mode): `id` is used as the holder id and must match `[A-Za-z0-9_-]+`
+ * (acquiring throws a `TypeError` otherwise), `sessionPid` is the liveness PID, and no
  * heartbeat runs. `expiresAt` is read when the holder is written, so it may be a getter that counts from admission.
  */
 export interface HolderMeta {
@@ -370,12 +371,12 @@ function failOpen(opts: LeaseOptions, level: PressureLevel, capacity: number, wa
   return { id: null, leased: false, admission: { waitedMs, level, live: 0, capacity }, childEnv: () => ({}), setChildPid() {}, release() {} };
 }
 
-/** A single non-blocking attempt: a handle, or `null` when not admitted this poll. */
 /** Throws on a detached id that could name a path outside `holders/`: a caller's bug, not an I/O error to fail open on. */
 function checkDetachedId(meta: HolderMeta): void {
   if (meta.detached && !HOLDER_ID.test(meta.detached.id)) throw new TypeError(`lease: detached holder id ${JSON.stringify(meta.detached.id)} is not [A-Za-z0-9_-]+`);
 }
 
+/** A single non-blocking attempt: a handle, or `null` when not admitted this poll. Throws a `TypeError` on a detached id outside `[A-Za-z0-9_-]`. */
 export function tryAcquireLease(opts: LeaseOptions, meta: HolderMeta): LeaseHandle | null {
   checkDetachedId(meta);
   const r = attempt(opts, meta, 0);

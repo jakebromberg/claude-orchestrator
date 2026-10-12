@@ -273,12 +273,12 @@ function failOpen(opts, level, capacity, waitedMs, reason, error) {
     emit(opts, { type: "fail-open", reason, waitedMs, ...(code !== undefined && { code }), ...(message !== undefined && { message }) });
     return { id: null, leased: false, admission: { waitedMs, level, live: 0, capacity }, childEnv: () => ({}), setChildPid() { }, release() { } };
 }
-/** A single non-blocking attempt: a handle, or `null` when not admitted this poll. */
 /** Throws on a detached id that could name a path outside `holders/`: a caller's bug, not an I/O error to fail open on. */
 function checkDetachedId(meta) {
     if (meta.detached && !HOLDER_ID.test(meta.detached.id))
         throw new TypeError(`lease: detached holder id ${JSON.stringify(meta.detached.id)} is not [A-Za-z0-9_-]+`);
 }
+/** A single non-blocking attempt: a handle, or `null` when not admitted this poll. Throws a `TypeError` on a detached id outside `[A-Za-z0-9_-]`. */
 export function tryAcquireLease(opts, meta) {
     checkDetachedId(meta);
     const r = attempt(opts, meta, 0);

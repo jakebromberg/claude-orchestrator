@@ -56,7 +56,8 @@ export interface LeaseOptions {
 }
 /**
  * What a holder file records about the request; `label` replaces `command` when given. `detached` records a holder
- * for a process that is not this one (hook mode): `id` is used as given, `sessionPid` is the liveness PID, and no
+ * for a process that is not this one (hook mode): `id` is used as the holder id and must match `[A-Za-z0-9_-]+`
+ * (acquiring throws a `TypeError` otherwise), `sessionPid` is the liveness PID, and no
  * heartbeat runs. `expiresAt` is read when the holder is written, so it may be a getter that counts from admission.
  */
 export interface HolderMeta {
@@ -129,6 +130,7 @@ export interface LeaseRefusal {
 export declare function isOwnDir(st: Stats): boolean;
 /** The one default diagnostics writer, shared with the event sink. Messages carry their own `lease:` prefix. */
 export declare function defaultWarn(msg: string): void;
+/** A single non-blocking attempt: a handle, or `null` when not admitted this poll. Throws a `TypeError` on a detached id outside `[A-Za-z0-9_-]`. */
 export declare function tryAcquireLease(opts: LeaseOptions, meta: HolderMeta): LeaseHandle | null;
 /**
  * Polls (3 s ± 1 s, never spinning) until admitted. `stopWhen` is checked on
