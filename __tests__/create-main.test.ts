@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,8 +6,44 @@ import {
   buildDetachSpawnCommand,
   buildGhIssueCreateCommand,
   buildNotificationScript,
+  createMain,
   findScriptPackageRoot,
 } from "../src/create-main.js";
+import type { OrchestratorConfig, OrchestratorHooks } from "../src/types.js";
+
+describe("createMain memory-pressure sampler", () => {
+  // Under a root that cannot be created, so a mode that got past startup fails loudly rather than writing.
+  const configDir = "/nonexistent-claude-orchestrator-test/config";
+  const printSummary = vi.fn();
+  const config: OrchestratorConfig = {
+    name: "t", configDir, worktreeDir: `${configDir}/w`, projectRoot: configDir, stallTimeout: 0, issues: [],
+    hooks: { printSummary } as unknown as OrchestratorHooks,
+  };
+  const exited = (code: number) => Object.assign(new Error(`process.exit(${code})`), { exitCode: code });
+  let sighup: Function[] = [];
+
+  afterEach(() => {
+    for (const l of process.listeners("SIGHUP")) if (!sighup.includes(l)) process.removeListener("SIGHUP", l);
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  function run(...flags: string[]) {
+    sighup = process.listeners("SIGHUP");
+    vi.stubEnv("CO_LEASE_DIR", "relative/lease");
+    vi.spyOn(process, "exit").mockImplementation(((code: number) => { throw exited(code); }) as never);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    return createMain({ configs: { t: () => config }, argv: ["t", ...flags], projectRoot: configDir });
+  }
+
+  it.each(["--status", "--plan"])("does not read pressure, so a relative CO_LEASE_DIR cannot break %s", async (flag) => {
+    await expect(run(flag)).rejects.toMatchObject({ exitCode: 0 });
+  });
+
+  it("fails a run on a relative CO_LEASE_DIR before dispatching anything", async () => {
+    await expect(run()).rejects.toThrow("CO_LEASE_DIR must be an absolute path");
+  });
+});
 
 describe("buildGhIssueCreateCommand", () => {
   it("produces a well-formed gh issue create command", () => {

@@ -32,6 +32,8 @@ export class Orchestrator {
     maxParallel;
     mergePolicy;
     adaptive;
+    /** Run-scoped, so the 60 s hysteresis spans wave boundaries; created by the first launch. */
+    governor;
     constructor(config, deps, options) {
         this.config = config;
         this.deps = deps;
@@ -515,6 +517,13 @@ export class Orchestrator {
         if (status)
             await this.setStatus(issue, status);
     }
+    /** True (and the issue is failed and stopped) when the check did not run for memory pressure; such a result is never retried. */
+    async checkStopped(issue, result) {
+        if (!result.stopped)
+            return false;
+        await this.markStopped(issue, "post-check", "failed");
+        return true;
+    }
     /** True (and the issue is failed and stopped) when a fresh reading says a retry may not start. */
     async retryRefused(issue) {
         if (this.deps.memoryPressure?.fresh() !== "critical")
@@ -523,36 +532,48 @@ export class Orchestrator {
         await this.markStopped(issue, "retry", "failed");
         return true;
     }
+    /** The run's one governor, read afresh as each wave starts launching. */
+    capacityGovernor(sampler) {
+        if (this.governor)
+            this.governor.tick();
+        else
+            this.governor = createCapacityGovernor({
+                sampler,
+                maxParallel: this.maxParallel,
+                adaptive: this.adaptive,
+                logger: this.deps.logger,
+            });
+        return this.governor;
+    }
     async launchAndWait(ready) {
         const sampler = this.deps.memoryPressure;
-        const governor = sampler && createCapacityGovernor({
-            sampler,
-            maxParallel: this.maxParallel,
-            adaptive: this.adaptive,
-            logger: this.deps.logger,
-        });
+        const governor = sampler && this.capacityGovernor(sampler);
         const pool = new ProcessPool(this.maxParallel, {
             capacity: governor?.capacity,
             // A cached critical reading alone never ends the wave; a fresh one must agree.
             shouldStop: sampler && ((active) => stopAtCritical(sampler(), active) && stopAtCritical(sampler.fresh(), active)),
         });
+        // Unref'd: running sessions keep the process alive. launchSessions refs it while
+        // a launch waits, when the tick may be the only thing left that can wake it.
         const timer = governor && setInterval(() => {
             governor.tick();
             pool.recheck();
-        }, PRESSURE_CHECK_INTERVAL_MS);
-        timer?.unref();
+        }, PRESSURE_CHECK_INTERVAL_MS).unref();
         try {
-            await this.launchSessions(ready, pool);
+            await this.launchSessions(ready, pool, timer);
         }
         finally {
             clearInterval(timer);
         }
     }
-    async launchSessions(ready, pool) {
+    async launchSessions(ready, pool, pressureTimer) {
         let fallbackTriggered = false;
         const postCheckPromises = [];
         for (const [index, { issue, prompt, sessionId }] of ready.entries()) {
-            if (await pool.waitForSlot() === "stop") {
+            pressureTimer?.ref();
+            const slot = await pool.waitForSlot();
+            pressureTimer?.unref();
+            if (slot === "stop") {
                 const unstarted = ready.slice(index).map((r) => r.issue);
                 for (const i of unstarted)
                     await this.markStopped(i, "launch");
@@ -702,10 +723,8 @@ export class Orchestrator {
     async handleCheckResultWithRetry(issue, checkResult, originalPrompt, worktreePath, logFile, stderrFile) {
         if (checkResult.passed)
             return true;
-        if (checkResult.stopped) {
-            await this.markStopped(issue, "post-check", "failed");
+        if (await this.checkStopped(issue, checkResult))
             return false;
-        }
         const retryConfig = this.config.retryOnCheckFailure;
         if (!retryConfig?.enabled) {
             await this.setStatus(issue, "failed");
@@ -749,6 +768,8 @@ export class Orchestrator {
                 this.deps.logger.info(`Issue #${issue.number} passed checks after retry ${attempt}`);
                 return true;
             }
+            if (await this.checkStopped(issue, checkResult))
+                return false;
         }
         // All retries exhausted
         await this.setStatus(issue, "failed");

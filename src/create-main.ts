@@ -6,7 +6,7 @@ import { Orchestrator, cleanUpMergedIssues } from "./engine.js";
 import { FileStatusStore, FileMetadataStore } from "./status.js";
 import { consoleLogger } from "./log.js";
 import { randomUUID } from "node:crypto";
-import type { Deps, OrchestratorConfig, Status } from "./types.js";
+import type { Deps, OrchestratorConfig, ParsedMode, Status } from "./types.js";
 import { writeRunRecord } from "./run-history.js";
 import { createRealProcessRunner } from "./real-process-runner.js";
 import { startWatch } from "./watch.js";
@@ -89,7 +89,10 @@ export interface MainOptions {
   projectRoot?: string;
 }
 
-function createRealDeps(config: OrchestratorConfig): Deps {
+/** Modes that launch sessions. Only these read memory pressure, so a lease-directory misconfiguration cannot break the read-only ones. */
+const DISPATCH_MODES: ReadonlySet<ParsedMode> = new Set(["run-all", "run-specific", "retry-failed"]);
+
+function createRealDeps(config: OrchestratorConfig, mode: ParsedMode): Deps {
   return {
     statusStore: new FileStatusStore(config.configDir),
     metadataStore: new FileMetadataStore(config.configDir),
@@ -117,7 +120,7 @@ function createRealDeps(config: OrchestratorConfig): Deps {
     truncateFile: (filePath: string) => {
       try { fs.truncateSync(filePath, 0); } catch {}
     },
-    memoryPressure: defaultPressureSampler(),
+    ...(DISPATCH_MODES.has(mode) ? { memoryPressure: defaultPressureSampler() } : {}),
   };
 }
 
@@ -140,7 +143,7 @@ export async function createMain(options: MainOptions): Promise<void> {
 
   const config = await Promise.resolve(configs[configName](projectRoot));
   const args = parseArgs(restArgv);
-  const deps = createRealDeps(config);
+  const deps = createRealDeps(config, args.mode);
   const orchestrator = new Orchestrator(config, deps, {
     maxParallel: args.maxParallel,
     mergePolicy: args.mergeAfterWave ? "after-wave" : "none",

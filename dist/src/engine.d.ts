@@ -6,6 +6,8 @@ export declare class Orchestrator {
     private maxParallel;
     private mergePolicy;
     private adaptive;
+    /** Run-scoped, so the 60 s hysteresis spans wave boundaries; created by the first launch. */
+    private governor?;
     constructor(config: OrchestratorConfig, deps: Deps, options?: RunOptions);
     checkPrerequisites(): void;
     resetStaleStatuses(): Promise<void>;
@@ -118,8 +120,12 @@ export declare class Orchestrator {
      * stays `pending`; one already running is marked `failed`.
      */
     private markStopped;
+    /** True (and the issue is failed and stopped) when the check did not run for memory pressure; such a result is never retried. */
+    private checkStopped;
     /** True (and the issue is failed and stopped) when a fresh reading says a retry may not start. */
     private retryRefused;
+    /** The run's one governor, read afresh as each wave starts launching. */
+    private capacityGovernor;
     private launchAndWait;
     private launchSessions;
     private isZeroByteLog;
