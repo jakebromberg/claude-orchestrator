@@ -1,9 +1,10 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  cliLeaseOptions,
   parseLeaseArgs,
   runLeased,
   runStatus,
@@ -475,5 +476,23 @@ describe("package bin", () => {
     const pkg = read("package.json");
     expect(pkg.bin["claude-orchestrator-lease"]).toBe("dist/src/cli-lease.js");
     expect(read("package-lock.json").packages[""].bin).toEqual(pkg.bin);
+  });
+});
+
+describe("cliLeaseOptions", () => {
+  it("routes the lease's fail-open warning through err, not stderr", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "cli-lease-"));
+    const stderr = vi.spyOn(process.stderr, "write");
+    try {
+      writeFileSync(join(tmp, "blocker"), "");
+      const lines: string[] = [];
+      const opts = cliLeaseOptions({ CO_LEASE_DIR: join(tmp, "blocker", "lease") }, (l) => lines.push(l));
+      ((await acquireLease(opts, { command: "npm test", cwd: "/w" })) as LeaseHandle).release();
+      expect(lines).toEqual(["lease: unavailable (io-error); running unleased"]);
+      expect(stderr).not.toHaveBeenCalled();
+    } finally {
+      stderr.mockRestore();
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

@@ -4,7 +4,7 @@
  */
 import { appendFileSync, closeSync, constants, fstatSync, lstatSync, openSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { isOwnDir, type LeaseEvent } from "./lease.js";
+import { defaultWarn, isOwnDir, type LeaseEvent } from "./lease.js";
 
 const MAX_BYTES = 5 * 1024 * 1024;
 // A planted symlink is not followed and a planted FIFO is not waited on.
@@ -23,7 +23,7 @@ export function leaseEventSink(
   dir: string,
   deps: { now?: () => number; maxBytes?: number; warn?: (msg: string) => void; rename?: (from: string, to: string) => void } = {},
 ): (e: LeaseEvent) => void {
-  const { now = Date.now, maxBytes = MAX_BYTES, warn = (msg: string) => process.stderr.write(`[lease] ${msg}\n`), rename = renameSync } = deps;
+  const { now = Date.now, maxBytes = MAX_BYTES, warn = defaultWarn, rename = renameSync } = deps;
   const file = join(dir, "events.jsonl");
   let warned = false;
   return (e) => {

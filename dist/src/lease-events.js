@@ -4,7 +4,7 @@
  */
 import { appendFileSync, closeSync, constants, fstatSync, lstatSync, openSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { isOwnDir } from "./lease.js";
+import { defaultWarn, isOwnDir } from "./lease.js";
 const MAX_BYTES = 5 * 1024 * 1024;
 // A planted symlink is not followed and a planted FIFO is not waited on.
 const OPEN_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK;
@@ -18,7 +18,7 @@ const OPEN_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT |
  * and must never fail an acquire or a release. Two processes rotating at once can drop one generation of lines.
  */
 export function leaseEventSink(dir, deps = {}) {
-    const { now = Date.now, maxBytes = MAX_BYTES, warn = (msg) => process.stderr.write(`[lease] ${msg}\n`), rename = renameSync } = deps;
+    const { now = Date.now, maxBytes = MAX_BYTES, warn = defaultWarn, rename = renameSync } = deps;
     const file = join(dir, "events.jsonl");
     let warned = false;
     return (e) => {
