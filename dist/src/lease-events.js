@@ -13,11 +13,12 @@ const OPEN_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT |
  * at its first acquire), so a read-only mode creates nothing and a directory the lease refused gets no write. Only a
  * regular `events.jsonl` is appended to, and a new one has mode 0600. Past `maxBytes` (default 5 MB) the file is
  * renamed to a single `events.jsonl.1`, replacing any previous one; when that rename fails, the event is still
- * appended and `warn` (default: stderr) is called once per sink. A write failure is swallowed: the log is a diagnostic
+ * appended and `warn` (default: stderr) is called once per sink. A rename that finds the file gone (another process
+ * rotated first) is the expected race and is not reported. A write failure is swallowed: the log is a diagnostic
  * and must never fail an acquire or a release. Two processes rotating at once can drop one generation of lines.
  */
 export function leaseEventSink(dir, deps = {}) {
-    const { now = Date.now, maxBytes = MAX_BYTES, warn = (msg) => process.stderr.write(`[lease] ${msg}\n`) } = deps;
+    const { now = Date.now, maxBytes = MAX_BYTES, warn = (msg) => process.stderr.write(`[lease] ${msg}\n`), rename = renameSync } = deps;
     const file = join(dir, "events.jsonl");
     let warned = false;
     return (e) => {
@@ -26,10 +27,11 @@ export function leaseEventSink(dir, deps = {}) {
                 return;
             if ((lstatSync(file, { throwIfNoEntry: false })?.size ?? 0) > maxBytes) {
                 try {
-                    renameSync(file, `${file}.1`);
+                    rename(file, `${file}.1`);
                 }
                 catch (err) {
-                    if (!warned) {
+                    // ENOENT: another process rotated first, which is the expected race, not a failure.
+                    if (!warned && err.code !== "ENOENT") {
                         warned = true;
                         warn(`lease: cannot rotate ${file}; appending past ${maxBytes} bytes: ${String(err)}`);
                     }
