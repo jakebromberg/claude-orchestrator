@@ -1,4 +1,4 @@
-export type { Status, IssueSpec, Issue, RawOrchestratorConfig, OrchestratorConfig, MergePolicy, RunOptions, PostCheckResult, OrchestratorHooks, ParsedMode, ParsedArgs, StatusStore, ProcessHandle, ProcessRunner, Logger, IssueMetadata, FailureReason, StopStage, MetadataStore, Deps, RunRecord, IssueCommentsConfig, LabelSyncConfig, RetryOnCheckFailureConfig, } from "./types.js";
+export type { Status, IssueSpec, Issue, RawOrchestratorConfig, OrchestratorConfig, MergePolicy, RunOptions, PostCheckResult, OrchestratorHooks, PostSessionCheckContext, ParsedMode, ParsedArgs, StatusStore, ProcessHandle, ProcessRunner, Logger, IssueMetadata, FailureReason, StopStage, MetadataStore, Deps, RunRecord, IssueCommentsConfig, LabelSyncConfig, RetryOnCheckFailureConfig, } from "./types.js";
 export { Orchestrator, cleanUpMergedIssues } from "./engine.js";
 export { validateConfig } from "./schema.js";
 export type { ValidateConfigOptions } from "./schema.js";
