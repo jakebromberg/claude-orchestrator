@@ -50,7 +50,7 @@ export function createCapacityGovernor(opts: {
     capacity = sessionCapacity(level, maxParallel);
     const label = level === "unknown" ? "normal" : level;
     if (label !== shown) {
-      logger.info(`Memory pressure ${shown} -> ${label}: session capacity ${capacity}`);
+      logger.info(`Memory pressure ${shown} -> ${label}: launch capacity ${capacity}`);
       shown = label;
     }
   };
