@@ -6,7 +6,7 @@ export { createSilentLogger } from "./log.js";
  * held), or a function read on every call. `fresh()` reads like the sampler unless `options.fresh` models a stale
  * cache; `overridden()` exists only when `options.overridden` is set.
  */
-export declare function scriptedPressureSampler(levels: PressureLevel | PressureLevel[] | (() => PressureLevel), options?: {
+export declare function scriptedPressureSampler(levels: PressureLevel | readonly PressureLevel[] | (() => PressureLevel), options?: {
     fresh?: () => PressureLevel;
     overridden?: boolean;
 }): PressureSampler;
