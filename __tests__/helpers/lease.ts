@@ -1,9 +1,22 @@
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 /** The parent env with every `CO_LEASE_*` / `CO_PRESSURE_*` scrubbed, then the isolation settings applied. */
 export function isolatedLeaseEnv(leaseDir: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([k]) => !k.startsWith("CO_LEASE_") && !k.startsWith("CO_PRESSURE_")),
   );
   return { ...env, CO_LEASE_DIR: leaseDir, CO_LEASE_SLOTS: "1", CO_PRESSURE_OVERRIDE: "critical-as-warning", ...extra };
+}
+
+/**
+ * A lease directory that cannot be created, to force an I/O error: a plain file named `blocker` sits where the parent
+ * directory would be, so `mkdir` fails with ENOTDIR. Safe to call twice with the same `tmp`.
+ */
+export function unwritableLeaseDir(tmp: string): string {
+  const blocker = join(tmp, "blocker");
+  if (!existsSync(blocker)) writeFileSync(blocker, "");
+  return join(blocker, "lease");
 }
 
 // Captured at load: `vi.useFakeTimers()` replaces the global `setImmediate`, which would stall the yield below.

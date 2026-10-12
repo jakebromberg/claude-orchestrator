@@ -16,7 +16,7 @@ import {
 import * as barrel from "../src/index.js";
 import type { PressureLevel } from "../src/memory-pressure.js";
 import { scriptedPressureSampler } from "../src/testing.js";
-import { fakeLeaseClock, type FakeLeaseClock } from "./helpers/lease.js";
+import { fakeLeaseClock, unwritableLeaseDir, type FakeLeaseClock } from "./helpers/lease.js";
 
 const meta: HolderMeta = { command: "npm test", cwd: "/work" };
 const HEARTBEAT_STALE_MS = 90_000;
@@ -400,8 +400,7 @@ describe("lease", () => {
     });
 
     it("fails open on an unwritable directory, but counts it as no free slot at critical", () => {
-      writeFileSync(join(tmp, "blocker"), "");
-      const unwritable = { dir: join(tmp, "blocker", "lease") };
+      const unwritable = { dir: unwritableLeaseDir(tmp) };
       const h = tryAcquireLease(opts(unwritable), meta)!;
       expect(h).toMatchObject({ leased: false, id: null });
       expect(h.childEnv()).toEqual({});
@@ -411,8 +410,7 @@ describe("lease", () => {
     });
 
     it("acquireLease fails open at once on an unwritable directory below critical", async () => {
-      writeFileSync(join(tmp, "blocker"), "");
-      expect(await acquireLease(opts({ dir: join(tmp, "blocker", "lease") }), meta)).toMatchObject({ leased: false });
+      expect(await acquireLease(opts({ dir: unwritableLeaseDir(tmp) }), meta)).toMatchObject({ leased: false });
     });
   });
 
@@ -472,7 +470,7 @@ describe("lease", () => {
   });
 
   describe("defaultLeaseOptions overrides", () => {
-    const sampler = Object.assign(() => "normal" as const, { fresh: () => "normal" as const, overridden: () => false });
+    const sampler = scriptedPressureSampler("normal", { overridden: false });
 
     it("uses the caller's sampler instead of building a second one", () => {
       expect(defaultLeaseOptions({ CO_LEASE_DIR: dir }, { level: sampler }).level).toBe(sampler);
@@ -499,8 +497,7 @@ describe("lease", () => {
       plantHolder("4242-ab01", { childPid: 900, startedAt: fake.ms - 3 * 3_600_000 });
       tryAcquireLease(o, meta)!.release();
       expect(w).toHaveBeenCalledWith(expect.stringMatching(/^lease: reaping holder 4242-ab01/));
-      writeFileSync(join(tmp, "blocker"), "");
-      ((await acquireLease({ ...o, dir: join(tmp, "blocker", "lease") }, meta)) as LeaseHandle).release();
+      ((await acquireLease({ ...o, dir: unwritableLeaseDir(tmp) }, meta)) as LeaseHandle).release();
       expect(w).toHaveBeenCalledWith(expect.stringMatching(/^lease: unavailable \(io-error\)/));
       expect(stderr).not.toHaveBeenCalled();
     });
@@ -523,8 +520,7 @@ describe("lease", () => {
       // The sampler, with its invalid override, still answers, and the lease still fails open.
       const real = defaultLeaseOptions({ CO_LEASE_DIR: dir, CO_PRESSURE_OVERRIDE: "nope" }, { warn: w });
       expect(() => real.level()).not.toThrow();
-      writeFileSync(join(tmp, "blocker"), "");
-      ((await acquireLease({ ...o, dir: join(tmp, "blocker", "lease") }, meta)) as LeaseHandle).release();
+      ((await acquireLease({ ...o, dir: unwritableLeaseDir(tmp) }, meta)) as LeaseHandle).release();
     });
 
     it("tags the policy's and sampler's lines with 'memory-pressure:' so each is identifiable", () => {
@@ -538,8 +534,7 @@ describe("lease", () => {
     it("prints no default line that starts with '[lease] lease:'", async () => {
       const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
       const o = defaultLeaseOptions({ CO_LEASE_DIR: dir, CO_LEASE_SLOTS: "many" }, { level: sampler });
-      writeFileSync(join(tmp, "blocker"), "");
-      ((await acquireLease({ ...o, dir: join(tmp, "blocker", "lease") }, meta)) as LeaseHandle).release();
+      ((await acquireLease({ ...o, dir: unwritableLeaseDir(tmp) }, meta)) as LeaseHandle).release();
       const lines = stderr.mock.calls.map(([c]) => String(c));
       expect(lines.length).toBeGreaterThan(0);
       expect(lines.filter((l) => l.startsWith("[lease] lease:"))).toEqual([]);
@@ -664,10 +659,9 @@ describe("lease", () => {
     });
 
     it("evaluates stopWhen on a poll that hit an I/O error, with no live holders", async () => {
-      writeFileSync(join(tmp, "blocker"), "");
       level = "critical";
       const seen: number[] = [];
-      const r = await acquireLease(opts({ dir: join(tmp, "blocker", "lease") }), meta, {
+      const r = await acquireLease(opts({ dir: unwritableLeaseDir(tmp) }), meta, {
         stopWhen: (s) => (seen.push(s.live.length), s.live.length === 0),
       });
       expect(r).toMatchObject({ refused: "stopped" });
@@ -714,8 +708,7 @@ describe("lease", () => {
     });
 
     it("records the error code and message of an I/O fail-open, none for a busy mutex", async () => {
-      writeFileSync(join(tmp, "blocker"), "");
-      tryAcquireLease(opts({ dir: join(tmp, "blocker", "lease") }), meta);
+      tryAcquireLease(opts({ dir: unwritableLeaseDir(tmp) }), meta);
       busyMutex();
       fake.onSleep = () => utimesSync(join(dir, ".mutex"), fake.ms / 1000, fake.ms / 1000);
       await acquireLease(opts(), meta);

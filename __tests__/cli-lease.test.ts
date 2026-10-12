@@ -22,6 +22,7 @@ import {
   type LeaseStatus,
 } from "../src/lease.js";
 import { scriptedPressureSampler } from "../src/testing.js";
+import { unwritableLeaseDir } from "./helpers/lease.js";
 
 describe("parseLeaseArgs", () => {
   it.each<[string, string[], unknown]>([
@@ -484,8 +485,7 @@ describe("cliLeaseDeps (the wiring main uses)", () => {
     const tmp = mkdtempSync(join(tmpdir(), "cli-lease-"));
     const stderr = vi.spyOn(process.stderr, "write");
     try {
-      writeFileSync(join(tmp, "blocker"), "");
-      const env = { CO_LEASE_DIR: join(tmp, "blocker", "lease"), CO_LEASE_SLOTS: "many", HOME: tmp };
+      const env = { CO_LEASE_DIR: unwritableLeaseDir(tmp), CO_LEASE_SLOTS: "many", HOME: tmp };
       const lines: string[] = [];
       const opts = cliLeaseDeps((l) => lines.push(l), { env, level: scriptedPressureSampler("normal") }).leaseOptions();
       ((await acquireLease(opts, { command: "npm test", cwd: "/w" })) as LeaseHandle).release();
