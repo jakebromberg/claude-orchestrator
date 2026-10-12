@@ -126,7 +126,7 @@ export declare class Orchestrator {
     private markStopped;
     /**
      * True (and the issue is failed and stopped) when the session's own terminal
-     * `result` record ends with the line `orchestrator-stop: lease-wait`: the agent
+     * `result` record contains the exact line `orchestrator-stop: lease-wait`: the agent
      * gave up after repeated lease denials, which no commit or green check undoes.
      * `log` is the transcript read right after a clean exit; the last non-hook
      * `result` record is the session's (a check-failure retry appends to the same

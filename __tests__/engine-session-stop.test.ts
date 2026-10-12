@@ -10,6 +10,7 @@ const STOP = "orchestrator-stop: lease-wait";
 const record = (fields: Record<string, unknown>) => JSON.stringify({ type: "result", subtype: "success", ...fields });
 /** A session's terminal `result` record whose text is `text`. */
 const result = (text: string) => record({ result: text });
+const init = (sid: string) => JSON.stringify({ type: "system", subtype: "init", session_id: sid });
 const transcript = (...lines: string[]) => lines.join("\n") + "\n";
 
 function setUp(opts: { logSize?: number; retries?: number; check?: OrchestratorHooks["postSessionCheck"] } = {}) {
@@ -148,6 +149,27 @@ describe("a session that declares a lease-wait stop", () => {
   });
 });
 
+describe("transcripts that declare a stop", () => {
+  it.each([
+    ["the session's record followed by a hook-tagged result record", transcript(result(STOP), record({ hook_event_name: "Stop", result: "x" }))],
+    ["the session's record followed by a hook_event-tagged system-style result", transcript(result(STOP), record({ hook_event: "Stop", result: "x" }))],
+    ["an appended log whose last run declares it", transcript(init("a"), result("old"), init("b"), result(STOP))],
+    ["CRLF line endings", transcript(result(`gave up\r\n${STOP}\r\n`))],
+    ["a partial last line after the session's record", transcript(result(STOP)) + '{"type":"result","resu'],
+  ])("stops for %s", async (_name, log) => {
+    const check = vi.fn(async () => ({ passed: true }));
+    const t = setUp({ check });
+    t.state.log = log;
+    const wave = t.orchestrator.runWave(1);
+    await t.flush();
+    t.exit(1000, 0);
+    await wave;
+
+    failedAsLeaseWait(t);
+    expect(check).not.toHaveBeenCalled();
+  });
+});
+
 describe("transcripts that do not declare a stop", () => {
   it.each([
     ["an earlier non-final result record", transcript(result(STOP), result("done"))],
@@ -156,6 +178,8 @@ describe("transcripts that do not declare a stop", () => {
     ["a line that is not the whole line", transcript(result(`I will print ${STOP} when done`))],
     ["different case", transcript(result("Orchestrator-Stop: lease-wait"))],
     ["no space after the colon", transcript(result("orchestrator-stop:lease-wait"))],
+    ["a stop from an earlier run followed by a new run with no result", transcript(init("a"), result(STOP), init("b"), JSON.stringify({ type: "assistant" }))],
+    ["a non-string result that must not fall back to an earlier record", transcript(result(STOP), record({ result: null }))],
     ["an unparseable transcript", "not json\n"],
     ["an empty transcript", ""],
   ])("treats %s as an ordinary exit", async (_name, log) => {
@@ -188,7 +212,7 @@ describe("transcripts that do not declare a stop", () => {
     expect(warnings).toHaveLength(1);
   });
 
-  it("does not read the transcript for a stop when the session exited non-zero", async () => {
+  it("does not honour the stop when the session exited non-zero", async () => {
     const t = setUp({ check: vi.fn(async () => ({ passed: true })) });
     t.state.log = transcript(result(STOP));
     const wave = t.orchestrator.runWave(1);
