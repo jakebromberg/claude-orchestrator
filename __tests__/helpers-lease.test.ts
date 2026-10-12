@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync
 import os, { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { defaultPressureSampler, leaseDirectory } from "../src/memory-pressure.js";
-import { fakeLeaseClock, installIsolatedHome, unwritableLeaseDir } from "./helpers/lease.js";
+import { fakeLeaseClock, installIsolatedHome, scriptedLease, unwritableLeaseDir } from "./helpers/lease.js";
 
 describe("fakeLeaseClock().sleep", () => {
   afterEach(() => vi.useRealTimers());
@@ -137,5 +137,41 @@ describe("installIsolatedHome", () => {
     } finally {
       isolated.dispose();
     }
+  });
+});
+
+describe("scriptedLease", () => {
+  it("builds options on the fake clock, with liveness over `alive` and events and warnings collected", async () => {
+    const lease = scriptedLease("/unused", { level: "warning", alive: [11] });
+    const o = lease.opts();
+    expect(o.dir).toBe("/unused");
+    expect(o.policy).toEqual({ heavyCeiling: 1, heavyWarning: 1 });
+    expect(o.level?.()).toBe("warning");
+    expect(o.now?.()).toBe(lease.clock.ms);
+    await o.sleep?.(5);
+    expect(lease.clock.sleeps).toEqual([5]);
+    expect([o.isAlive?.(11), o.isAlive?.(12)]).toEqual([true, false]);
+    lease.alive.add(12);
+    expect(o.isAlive?.(12)).toBe(true);
+    o.onEvent?.({ type: "fail-open", reason: "x" } as never);
+    o.warn?.("w");
+    expect(lease.events).toHaveLength(1);
+    expect(lease.warnings).toEqual(["w"]);
+  });
+
+  it("treats this process as alive by default, reads a level function on every call, and takes the stale-cache reading for fresh()", () => {
+    let level: "normal" | "critical" = "normal";
+    const lease = scriptedLease("/unused", { level: () => level, fresh: () => "warning" });
+    const sampler = lease.opts().level!;
+    expect(lease.opts().isAlive?.(process.pid)).toBe(true);
+    expect(sampler()).toBe("normal");
+    level = "critical";
+    expect([sampler(), sampler.fresh()]).toEqual(["critical", "warning"]);
+  });
+
+  it("applies per-call overrides, and an explicit undefined drops the scripted field", () => {
+    const lease = scriptedLease("/unused");
+    expect(lease.opts({ policy: { heavyCeiling: 3, heavyWarning: 2 } }).policy).toEqual({ heavyCeiling: 3, heavyWarning: 2 });
+    expect(lease.opts({ level: undefined }).level).toBeUndefined();
   });
 });

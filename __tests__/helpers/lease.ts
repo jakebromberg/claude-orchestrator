@@ -2,6 +2,9 @@ import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, wr
 import os, { tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
+import type { LeaseEvent, LeaseOptions } from "../../src/lease.js";
+import type { PressureLevel } from "../../src/memory-pressure.js";
+import { scriptedPressureSampler } from "../../src/testing.js";
 
 /** The parent env with every `CO_LEASE_*` / `CO_PRESSURE_*` scrubbed, then the isolation settings applied. */
 export function isolatedLeaseEnv(leaseDir: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
@@ -55,6 +58,51 @@ export function fakeLeaseClock(): FakeLeaseClock {
     },
   };
   return clock;
+}
+
+export interface ScriptedLease {
+  /** A fresh `LeaseOptions` on the scripted pieces below; `over` wins, and an explicit `undefined` drops a field (for the real default). */
+  opts(over?: Partial<LeaseOptions>): LeaseOptions;
+  clock: FakeLeaseClock;
+  /** PIDs `isAlive` reports live; read on every call, so adding or deleting takes effect at once. */
+  alive: Set<number>;
+  /** Every `onEvent` argument, in order. */
+  events: LeaseEvent[];
+  /** Every `warn` argument, in order. */
+  warnings: string[];
+}
+
+/**
+ * The one way a lease test builds `LeaseOptions`: `dir`, a scripted sampler (default `normal`; `fresh` models a stale
+ * cache), a one-slot policy unless `policy` says otherwise, the fake clock's `now`/`sleep`, `isAlive` over `alive`
+ * (default: this process), and `onEvent`/`warn` collectors. Forgetting one of these falls back to `Date.now` or a real
+ * `process.kill(pid, 0)`, which is what this builder exists to prevent. The caller supplies `dir`, always a temp directory.
+ */
+export function scriptedLease(
+  dir: string,
+  init: { level?: PressureLevel | (() => PressureLevel); fresh?: () => PressureLevel; policy?: LeaseOptions["policy"]; alive?: number[] } = {},
+): ScriptedLease {
+  const clock = fakeLeaseClock();
+  const alive = new Set(init.alive ?? [process.pid]);
+  const events: LeaseEvent[] = [];
+  const warnings: string[] = [];
+  return {
+    clock,
+    alive,
+    events,
+    warnings,
+    opts: (over = {}) => ({
+      dir,
+      level: scriptedPressureSampler(init.level ?? "normal", init.fresh ? { fresh: init.fresh } : {}),
+      policy: init.policy ?? { heavyCeiling: 1, heavyWarning: 1 },
+      isAlive: (pid) => alive.has(pid),
+      now: clock.now,
+      sleep: clock.sleep,
+      onEvent: (e) => void events.push(e),
+      warn: (m) => void warnings.push(m),
+      ...over,
+    }),
+  };
 }
 
 export interface IsolatedHome {

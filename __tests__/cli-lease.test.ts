@@ -24,7 +24,7 @@ import {
   type LeaseStatus,
 } from "../src/lease.js";
 import { scriptedPressureSampler } from "../src/testing.js";
-import { unwritableLeaseDir } from "./helpers/lease.js";
+import { scriptedLease, unwritableLeaseDir } from "./helpers/lease.js";
 
 describe("lease messages", () => {
   const holder = (pid: number, command: string): HolderInfo => ({ id: `${pid}-ab`, pid, command, cwd: "/", startedAt: 0, level: "warning", ageSec: 1 });
@@ -399,11 +399,7 @@ describe("runLeased", () => {
     afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
     const realLease = (): Partial<LeaseCliDeps> => {
-      const opts: LeaseOptions = {
-        dir,
-        level: scriptedPressureSampler("normal"),
-        policy: { heavyCeiling: 1, heavyWarning: 1 },
-      };
+      const opts = scriptedLease(dir).opts();
       return {
         leaseOptions: () => opts,
         acquire: acquireLease,
