@@ -4,20 +4,18 @@
  * command is heavy. Part 1 takes no slot: it decides and exits 0 with no
  * output. The hook never rewrites the command and never fails a call.
  *
- * The matcher is a lexical scan, not a shell parser (no expansion, aliases or functions); it errs toward heavy, except
- * for this CLI. One pass splits the text into segments at top-level `&&`, `||`, `;`, `|`, a single `&`, a newline and
- * a subshell `(`; nothing inside `'…'`, `"…"`, `$(…)`, backticks, a heredoc body or a `#` comment splits, and nothing
- * in a heredoc body or comment opens a quote. Text that ends inside a quote, `$(` or backtick is also rescanned raw
- * (split at every separator). Each segment's leading words are stripped one token at a time (`NAME=value`, `env`,
- * `timeout <n>`, `nice [-n <n>]`, `if`/`elif`/`while`/`until`/`then`/`do`/`else`/`time`/`!`/`{`), and the command word
- * is compared with its quotes and path removed. `$(…)` and backtick bodies and the `sh`/`bash`/`zsh -c` argument are
- * classified the same way, three levels deep. A segment that calls this CLI is skipped; with `--shell` or `--` the
- * rest of the text is the CLI's own argument and is skipped too.
+ * The matcher has two rules and errs toward heavy: a miss runs a heavy command unleased, a false match costs only a
+ * wait. (1) Text that contains `cli-lease.js` or `claude-orchestrator-lease` anywhere is not heavy, so the hook never
+ * takes the slot the CLI then waits for; the trade is that a command which only mentions the CLI runs unleased.
+ * (2) Otherwise the text is split raw at `&&`, `||`, `;`, `|`, a single `&`, newlines, `(`, `)`, backticks, `{` and
+ * `}`, with no quote, heredoc or comment tracking. A segment is heavy when, after its leading words are stripped,
+ * its command word (quotes and path removed) and the rest match an anchored pattern. With the default patterns,
+ * everything is linear. It is not a shell parser: no expansion, aliases or functions.
  */
 /**
- * Whether any segment of `command` matches a default or `extraPatterns` heavy pattern. Extras that are not valid
- * regexes are ignored; every pattern is followed by an end boundary (not `\w`, `.`, `/` or `-`). A segment that wraps
- * this CLI with `--shell` or `--` ends the scan.
+ * Whether `command` is heavy: it does not mention this CLI (`cli-lease.js` or `claude-orchestrator-lease`), and a
+ * segment of its raw split matches a default or `extraPatterns` pattern. Extras that are not valid regexes are
+ * ignored; every pattern is anchored at the command word and followed by an end boundary (not `\w`, `.`, `/` or `-`).
  */
 export declare function isHeavyCommand(command: string, extraPatterns?: readonly string[]): boolean;
 /**
