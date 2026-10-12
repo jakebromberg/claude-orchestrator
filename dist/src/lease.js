@@ -82,14 +82,16 @@ function scanHolders(opts) {
     }
     return found;
 }
-// Any shell word that starts `NAME=` or `NAME+=`, wherever it is. Its value runs through quoted parts (an unterminated
-// quote runs to the end), backslash escapes and `$( … )` to the end of the word. A word that opens a quote and then
-// has `NAME=` is redacted through the matching closing quote, so a nested command may lose its tail; it may over-redact.
-const QUOTED_ASSIGNMENT = /(?<=^|[\s;&|()<>{}`])(["'])([A-Za-z_]\w*\+?=)(?:(?!\1)[^\\]|\\[\s\S])*/g;
-const ASSIGNMENT = /(?<=^|[\s;&|()<>{}`])([A-Za-z_]\w*\+?=)(?:[^\s;&|()<>`'"\\$]|\$(?:\([^)]*\)?)?|\\[\s\S]?|'[^']*'?|"(?:[^"\\]|\\[\s\S])*"?|`[^`]*`?)*/g;
-/** Redacts the value of every `NAME=value` word, then truncates. */
+// Paste-safety for `status` output and the event log, not a security boundary: the lease does no shell parsing. Nothing
+// after the first `=` or `://` is recorded, whatever the quoting, so `NAME=value` credentials and `user:token@` URLs are
+// cut off. Secrets with neither marker before them (`-p pass`, `Authorization:` headers) are not; such callers pass a label.
+const CUT = /=|:\/\//;
+/** The caller's label verbatim, else the command up to its first `=` or `://` plus `…`; then truncated. */
 function recordedCommand({ command, label }) {
-    return (label ?? command.replace(QUOTED_ASSIGNMENT, "$1$2…").replace(ASSIGNMENT, "$1…")).slice(0, COMMAND_MAX);
+    if (label !== undefined)
+        return label.slice(0, COMMAND_MAX);
+    const cut = CUT.exec(command);
+    return (cut ? `${command.slice(0, cut.index + cut[0].length)}…` : command).slice(0, COMMAND_MAX);
 }
 function createHolder(opts, meta, command, admission) {
     const now = opts.now ?? Date.now;
