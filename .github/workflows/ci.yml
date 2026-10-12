@@ -33,4 +33,7 @@ jobs:
         run: npm run build
 
       - name: Check dist is up to date
-        run: git diff --exit-code -- dist
+        # --intent-to-add makes new, uncommitted build outputs show up in the diff too.
+        run: |
+          git add --intent-to-add dist
+          git diff --exit-code -- dist || { echo "::error::dist/ is out of date. Run npm run build and commit dist/, including new files."; exit 1; }
