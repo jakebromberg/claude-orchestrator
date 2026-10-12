@@ -12,6 +12,8 @@ import { resolveRepoSettings } from "./repo-settings.js";
 import { perIssueSpawnArgs } from "./model-effort.js";
 import { shellQuote } from "./shell-quote.js";
 import { claudeExecOptions } from "./claude-env.js";
+import { acquireLease, type LeaseHandle, type LeaseOptions, type LeaseRefusal } from "./lease.js";
+import { stopAtCritical } from "./memory-pressure.js";
 
 const OUTPUT_TAIL_BYTES = 64 * 1024;
 
@@ -70,6 +72,38 @@ export function runShellAsync(
       }
     }
   });
+}
+
+const WAIT_LOG_INTERVAL_MS = 60_000;
+
+/**
+ * One lease slot for a whole post-session check, labelled with the issue so the holder file does not show its first
+ * command. Waits with no cap; at `critical` it ends in a refusal once no live holder and no engine session is left to
+ * relieve the pressure. The engine never inherits a holder id, so `inheritedHolderId` is dropped.
+ */
+function acquireCheckLease(
+  lease: LeaseOptions,
+  issue: Issue,
+  cwd: string,
+  command: string,
+  runningSessions: () => number = () => 0,
+): Promise<LeaseHandle | LeaseRefusal> {
+  let lastLogged: number | undefined;
+  return acquireLease(
+    { ...lease, inheritedHolderId: undefined },
+    { command, label: `post-check ${issue.ref}`, cwd },
+    {
+      onWait: (s) => {
+        const at = performance.now();
+        if (lastLogged !== undefined && at - lastLogged < WAIT_LOG_INTERVAL_MS) return;
+        lastLogged = at;
+        (lease.warn ?? console.warn)(
+          `Issue #${issue.number} post-check waiting for a lease slot (${s.level}, ${s.live.length}/${s.capacity} slots held)`,
+        );
+      },
+      stopWhen: (s) => stopAtCritical(s.level, s.live.length + runningSessions()),
+    },
+  );
 }
 
 /** I/O dependencies injectable for testing. */
@@ -326,6 +360,7 @@ export function deriveHooks(
     hooks.postSessionCheck = async (
       issue: Issue,
       worktreePath: string,
+      ctx?: { lease?: LeaseOptions; runningSessions?(): number },
     ): Promise<PostCheckResult> => {
       // Resolve this issue's repo's effective check profile: its commands, its
       // collision domains, and — critically — its base branch (iOS `master`,
@@ -338,21 +373,34 @@ export function deriveHooks(
 
       const run = runCommand ?? runShellAsync;
 
-      // 1. Run configured commands first; first failure short-circuits.
+      // 1. Run configured commands first; first failure short-circuits. With a
+      // lease, the whole loop holds one slot; a refusal skips the loop but not
+      // the collision scan below, which only reads git.
+      let stopped: LeaseRefusal | undefined;
       if (cmdConfig) {
         const execDir = cmdConfig.cwd
           ? path.join(worktreePath, cmdConfig.cwd)
           : worktreePath;
-        for (const cmd of cmdConfig.commands) {
-          try {
-            await run(cmd, execDir);
-          } catch (err) {
-            return {
-              passed: false,
-              summary: `Command failed: ${cmd}\n${(err as Error).message}`,
-              output: (err as Error).message,
-            };
+        let slot: LeaseHandle | undefined;
+        if (ctx?.lease) {
+          const got = await acquireCheckLease(ctx.lease, issue, execDir, cmdConfig.commands[0] ?? "", ctx.runningSessions);
+          if ("refused" in got) stopped = got;
+          else slot = got;
+        }
+        try {
+          for (const cmd of stopped ? [] : cmdConfig.commands) {
+            try {
+              await (slot ? run(cmd, execDir, slot.childEnv(), slot.setChildPid) : run(cmd, execDir));
+            } catch (err) {
+              return {
+                passed: false,
+                summary: `Command failed: ${cmd}\n${(err as Error).message}`,
+                output: (err as Error).message,
+              };
+            }
           }
+        } finally {
+          slot?.release();
         }
       }
 
@@ -399,6 +447,13 @@ export function deriveHooks(
         }
       }
 
+      if (stopped) {
+        return {
+          passed: false,
+          stopped: "memory-critical",
+          summary: `Post-session check not run: memory pressure is ${stopped.level} and nothing is left to relieve it`,
+        };
+      }
       return { passed: true };
     };
   }

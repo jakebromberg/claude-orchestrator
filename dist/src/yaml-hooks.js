@@ -10,6 +10,8 @@ import { resolveRepoSettings } from "./repo-settings.js";
 import { perIssueSpawnArgs } from "./model-effort.js";
 import { shellQuote } from "./shell-quote.js";
 import { claudeExecOptions } from "./claude-env.js";
+import { acquireLease } from "./lease.js";
+import { stopAtCritical } from "./memory-pressure.js";
 const OUTPUT_TAIL_BYTES = 64 * 1024;
 /**
  * The last `max` bytes of `buf`, moved forward past any UTF-8 continuation
@@ -64,6 +66,25 @@ export function runShellAsync(cmd, cwd, env, onSpawn) {
                 child.kill();
             }
         }
+    });
+}
+const WAIT_LOG_INTERVAL_MS = 60_000;
+/**
+ * One lease slot for a whole post-session check, labelled with the issue so the holder file does not show its first
+ * command. Waits with no cap; at `critical` it ends in a refusal once no live holder and no engine session is left to
+ * relieve the pressure. The engine never inherits a holder id, so `inheritedHolderId` is dropped.
+ */
+function acquireCheckLease(lease, issue, cwd, command, runningSessions = () => 0) {
+    let lastLogged;
+    return acquireLease({ ...lease, inheritedHolderId: undefined }, { command, label: `post-check ${issue.ref}`, cwd }, {
+        onWait: (s) => {
+            const at = performance.now();
+            if (lastLogged !== undefined && at - lastLogged < WAIT_LOG_INTERVAL_MS)
+                return;
+            lastLogged = at;
+            (lease.warn ?? console.warn)(`Issue #${issue.number} post-check waiting for a lease slot (${s.level}, ${s.live.length}/${s.capacity} slots held)`);
+        },
+        stopWhen: (s) => stopAtCritical(s.level, s.live.length + runningSessions()),
     });
 }
 function defaultClaimHelperPath() {
@@ -218,7 +239,7 @@ export function deriveHooks(yaml, deps = {}) {
     if (yaml.postSessionCheck ||
         (yaml.sequentialPaths?.length ?? 0) > 0 ||
         anyRepoHasCheck) {
-        hooks.postSessionCheck = async (issue, worktreePath) => {
+        hooks.postSessionCheck = async (issue, worktreePath, ctx) => {
             // Resolve this issue's repo's effective check profile: its commands, its
             // collision domains, and — critically — its base branch (iOS `master`,
             // not `main`) so the diffs below target the right ref.
@@ -228,22 +249,38 @@ export function deriveHooks(yaml, deps = {}) {
             const sequentialEntries = settings.sequentialPaths;
             const baseBranch = settings.baseBranch;
             const run = runCommand ?? runShellAsync;
-            // 1. Run configured commands first; first failure short-circuits.
+            // 1. Run configured commands first; first failure short-circuits. With a
+            // lease, the whole loop holds one slot; a refusal skips the loop but not
+            // the collision scan below, which only reads git.
+            let stopped;
             if (cmdConfig) {
                 const execDir = cmdConfig.cwd
                     ? path.join(worktreePath, cmdConfig.cwd)
                     : worktreePath;
-                for (const cmd of cmdConfig.commands) {
-                    try {
-                        await run(cmd, execDir);
+                let slot;
+                if (ctx?.lease) {
+                    const got = await acquireCheckLease(ctx.lease, issue, execDir, cmdConfig.commands[0] ?? "", ctx.runningSessions);
+                    if ("refused" in got)
+                        stopped = got;
+                    else
+                        slot = got;
+                }
+                try {
+                    for (const cmd of stopped ? [] : cmdConfig.commands) {
+                        try {
+                            await (slot ? run(cmd, execDir, slot.childEnv(), slot.setChildPid) : run(cmd, execDir));
+                        }
+                        catch (err) {
+                            return {
+                                passed: false,
+                                summary: `Command failed: ${cmd}\n${err.message}`,
+                                output: err.message,
+                            };
+                        }
                     }
-                    catch (err) {
-                        return {
-                            passed: false,
-                            summary: `Command failed: ${cmd}\n${err.message}`,
-                            output: err.message,
-                        };
-                    }
+                }
+                finally {
+                    slot?.release();
                 }
             }
             // 2. Sequential-file collision scan, when configured. Only same-repo
@@ -279,6 +316,13 @@ export function deriveHooks(yaml, deps = {}) {
                         output: result.output,
                     };
                 }
+            }
+            if (stopped) {
+                return {
+                    passed: false,
+                    stopped: "memory-critical",
+                    summary: `Post-session check not run: memory pressure is ${stopped.level} and nothing is left to relieve it`,
+                };
             }
             return { passed: true };
         };

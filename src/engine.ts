@@ -55,6 +55,8 @@ export class Orchestrator {
   private adaptive: boolean;
   /** Run-scoped, so the 60 s hysteresis spans wave boundaries; created by the first launch. */
   private governor?: CapacityGovernor;
+  /** `claude` sessions currently running; `spawnSession` is the only writer. */
+  private liveSessions = 0;
 
   constructor(config: OrchestratorConfig, deps: Deps, options?: RunOptions) {
     this.config = config;
@@ -689,7 +691,16 @@ export class Orchestrator {
     // A rejection reaches the caller through `handle.exitCode` itself and
     // leaves the monitor running, as before; this branch only swallows its
     // own copy so it is not reported as unhandled.
-    handle.exitCode.then(() => stallMonitor?.stop(), () => {});
+    this.liveSessions++;
+    handle.exitCode.then(
+      () => {
+        this.liveSessions--;
+        stallMonitor?.stop();
+      },
+      () => {
+        this.liveSessions--;
+      },
+    );
     return handle;
   }
 
@@ -893,6 +904,7 @@ export class Orchestrator {
     try {
       const result = await this.config.hooks.postSessionCheck(
         issue, worktreePath,
+        { lease: this.deps.lease, runningSessions: () => this.liveSessions },
       );
       if (!result.passed) {
         this.deps.logger.error(

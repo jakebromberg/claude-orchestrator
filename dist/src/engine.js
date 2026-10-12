@@ -34,6 +34,8 @@ export class Orchestrator {
     adaptive;
     /** Run-scoped, so the 60 s hysteresis spans wave boundaries; created by the first launch. */
     governor;
+    /** `claude` sessions currently running; `spawnSession` is the only writer. */
+    liveSessions = 0;
     constructor(config, deps, options) {
         this.config = config;
         this.deps = deps;
@@ -562,7 +564,13 @@ export class Orchestrator {
         // A rejection reaches the caller through `handle.exitCode` itself and
         // leaves the monitor running, as before; this branch only swallows its
         // own copy so it is not reported as unhandled.
-        handle.exitCode.then(() => stallMonitor?.stop(), () => { });
+        this.liveSessions++;
+        handle.exitCode.then(() => {
+            this.liveSessions--;
+            stallMonitor?.stop();
+        }, () => {
+            this.liveSessions--;
+        });
         return handle;
     }
     /** True (and the issue is failed and stopped) when a fresh reading says a retry may not start. */
@@ -717,7 +725,7 @@ export class Orchestrator {
             return { passed: true };
         this.deps.metadataStore.update(issue.ref, NO_STOP);
         try {
-            const result = await this.config.hooks.postSessionCheck(issue, worktreePath);
+            const result = await this.config.hooks.postSessionCheck(issue, worktreePath, { lease: this.deps.lease, runningSessions: () => this.liveSessions });
             if (!result.passed) {
                 this.deps.logger.error(`Issue #${issue.number} post-check failed: ${result.summary ?? "unknown reason"}`);
             }
