@@ -15,7 +15,7 @@
  * Pure helpers (`parseLeaseArgs`, `runLeased`, `runStatus`) take every external
  * interaction through `LeaseCliDeps`; the file's bottom wires real I/O.
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { constants } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -24,6 +24,7 @@ import { formatAdmitted, formatNoSlot, seconds } from "./lease-messages.js";
 import { runHook } from "./lease-hook.js";
 export { formatAdmitted, formatNoSlot };
 const DEFAULT_MAX_WAIT_SEC = 100;
+const ANCESTOR_DEPTH = 32;
 const GRACE_MS = 10_000;
 const PROGRESS_MS = 60_000;
 const FORWARDED = ["SIGINT", "SIGTERM", "SIGHUP"];
@@ -90,6 +91,29 @@ function optionsOrReport(d) {
         return undefined;
     }
 }
+/** The id of a live hook holder (`expiresAt` set) whose session PID is one of this CLI's ancestors; `undefined` when none or the ancestors are unreadable. */
+function ancestorHookSlot(opts, d) {
+    try {
+        const up = new Set(d.ancestors());
+        return up.size === 0 ? undefined : d.leaseStatus(opts).live.find((h) => h.expiresAt !== undefined && up.has(h.pid))?.id;
+    }
+    catch {
+        return undefined;
+    }
+}
+/** Walks `ps -o ppid=` up from `process.ppid`, at most `ANCESTOR_DEPTH` levels; any failure ends the walk with what it has found (`[]` if the first call fails). */
+function psAncestors() {
+    const found = [];
+    try {
+        for (let pid = process.ppid; found.length < ANCESTOR_DEPTH && Number.isInteger(pid) && pid > 1; pid = Number(execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", timeout: 2_000 }).trim())) {
+            found.push(pid);
+        }
+    }
+    catch {
+        // A failed lookup means no borrow, never an error.
+    }
+    return found;
+}
 /** Prints the holders as JSON; returns the exit code. */
 export function runStatus(d) {
     const opts = optionsOrReport(d);
@@ -137,8 +161,10 @@ export async function runLeased(args, d) {
         return [sig, forward];
     });
     const unhook = () => handlers.forEach(([sig, forward]) => d.signals.off(sig, forward));
+    // A hook slot the session already holds is borrowed through `inheritedHolderId`, never waited for a second time.
+    const hookSlot = opts.inheritedHolderId ? undefined : ancestorHookSlot(opts, d);
     let lastProgress = 0;
-    const got = await d.acquire(opts, { command: args.shell ?? args.argv.join(" "), label: args.label, cwd: d.cwd }, {
+    const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command: args.shell ?? args.argv.join(" "), label: args.label, cwd: d.cwd }, {
         maxWaitMs,
         onWait: (s) => {
             if (s.waitedMs - lastProgress < PROGRESS_MS)
@@ -152,7 +178,9 @@ export async function runLeased(args, d) {
         d.err(formatNoSlot(got, d.leaseStatus(opts)));
         return EX_TEMPFAIL;
     }
-    if (got.leased)
+    if (hookSlot && got.leased && got.id === hookSlot)
+        d.err(`lease: running inside this session's hook slot (${hookSlot})`);
+    else if (got.leased)
         d.err(formatAdmitted(got.admission));
     return new Promise((resolve) => {
         let settled = false;
@@ -211,6 +239,7 @@ export function cliLeaseDeps(err, base = {}) {
         leaseOptions: () => defaultLeaseOptions(env, { warn: err, level }),
         acquire: acquireLease,
         leaseStatus,
+        ancestors: psAncestors,
         spawn: (file, fileArgs, opts) => spawn(file, fileArgs, { stdio: "inherit", env: opts.env }),
         env,
         cwd: process.cwd(),

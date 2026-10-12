@@ -112,6 +112,7 @@ describe("runLeased", () => {
       return outcome;
     }) as unknown as typeof acquireLease,
     leaseStatus: () => ({ level: "warning", capacity: 1, live: [holder()] }),
+    ancestors: () => [],
     spawn: (file, args, o) => {
       spawned.push({ file, args, env: o.env });
       return child;
@@ -424,6 +425,67 @@ describe("runLeased", () => {
       child.emit("close", 0, null);
       await done;
       expect(seen).toBe(recorded);
+    });
+  });
+
+  describe("borrowing the session's hook slot", () => {
+    const SESSION = 4242;
+    let dir: string;
+    let lease: ReturnType<typeof scriptedLease>;
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), "cli-lease-hook-"));
+      lease = scriptedLease(dir, { alive: [process.pid, SESSION] });
+    });
+    afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+    /** Plants a hook holder (detached, `expiresAt` set) owned by `pid`, then forgets the events planting it emitted. */
+    const plantHook = async (pid: number, detached = true) => {
+      const opts = lease.opts();
+      const meta = { command: "npm test", cwd: "/w", ...(detached && { detached: { id: "hook-toolu_1", sessionPid: pid, expiresAt: lease.clock.ms + 60_000 } }) };
+      await acquireLease(opts, meta);
+      lease.events.length = 0;
+    };
+    const runWith = async (over: Partial<LeaseCliDeps>, opts: Partial<LeaseOptions> = {}) => {
+      const done = run({}, { leaseOptions: () => lease.opts(opts), acquire: acquireLease, leaseStatus, ...over });
+      await vi.waitFor(() => expect(spawned).toHaveLength(1));
+      child.emit("close", 0, null);
+      return done;
+    };
+
+    it("borrows a hook holder whose session PID is an ancestor: says so, passes its id on, and emits no acquire or release", async () => {
+      await plantHook(SESSION);
+      expect(await runWith({ ancestors: () => [77, SESSION, 1] })).toBe(0);
+      expect(err).toEqual(["lease: running inside this session's hook slot (hook-toolu_1)"]);
+      expect(spawned[0]!.env.CO_LEASE_HOLDER).toBe("hook-toolu_1");
+      expect(lease.events).toEqual([]);
+    });
+
+    it.each<[string, () => number[]]>([
+      ["a holder whose session PID is not an ancestor", () => [77, 1]],
+      ["an ancestor lookup that returns nothing", () => []],
+      ["an ancestor lookup that throws", () => { throw new Error("ps failed"); }],
+    ])("acquires normally past %s", async (_name, ancestors) => {
+      await plantHook(SESSION);
+      lease.alive.add(SESSION);
+      const done = runWith({ ancestors }, { policy: { heavyCeiling: 2, heavyWarning: 2 } });
+      expect(await done).toBe(0);
+      expect(err[0]).toMatch(/^lease: admitted after /);
+      expect(spawned[0]!.env.CO_LEASE_HOLDER).not.toBe("hook-toolu_1");
+      expect(lease.events.map((e) => e.type)).toEqual(["acquire", "release"]);
+    });
+
+    it("does not borrow a holder without expiresAt, even when its PID is an ancestor", async () => {
+      await plantHook(process.pid, false);
+      expect(await runWith({ ancestors: () => [process.pid] }, { policy: { heavyCeiling: 2, heavyWarning: 2 } })).toBe(0);
+      expect(err[0]).toMatch(/^lease: admitted after /);
+    });
+
+    it("does not look up ancestors when CO_LEASE_HOLDER names a live holder", async () => {
+      await plantHook(SESSION);
+      const ancestors = vi.fn(() => [SESSION]);
+      expect(await runWith({ ancestors }, { inheritedHolderId: "hook-toolu_1" })).toBe(0);
+      expect(ancestors).not.toHaveBeenCalled();
+      expect(lease.events).toEqual([]);
     });
   });
 

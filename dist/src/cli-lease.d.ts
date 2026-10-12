@@ -42,6 +42,8 @@ export interface LeaseCliDeps {
     leaseOptions(): LeaseOptions;
     acquire: typeof acquireLease;
     leaseStatus(opts: LeaseOptions): LeaseStatus;
+    /** PIDs of this process's ancestors, nearest first; `[]` when they cannot be read. */
+    ancestors(): number[];
     spawn(file: string, args: string[], opts: {
         env: NodeJS.ProcessEnv;
     }): LeaseChild;
