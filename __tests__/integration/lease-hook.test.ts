@@ -45,7 +45,7 @@ describe("lease hook mode (integration)", () => {
   afterEach(() => rmSync(leaseDir, { recursive: true, force: true }));
 
   it.each<[string, string]>([
-    ["a heavy call", hookInput("npm test")],
+    ["a heavy call with no tool_use_id", hookInput("npm test")],
     ["a light call", hookInput("ls")],
     ["a non-Bash tool", hookInput("npm test", { tool_name: "Edit" })],
     ["malformed input", "{not json"],

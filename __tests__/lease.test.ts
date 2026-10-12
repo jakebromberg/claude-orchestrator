@@ -393,7 +393,8 @@ describe("lease", () => {
       ["a live session 1 ms before expiresAt", true, 1, "live", 0],
       ["a live session past expiresAt", true, -1, "expired", 0],
       ["a live session exactly 660 s before expiresAt", true, 660_000, "live", 0],
-      ["a live session with expiresAt 1 ms past the 660 s bound", true, 660_001, "expired", 0],
+      ["a live session 750 s before expiresAt (the 660 s cap plus 90 s for a backward clock step)", true, 750_000, "live", 0],
+      ["a live session with expiresAt 1 ms past the 750 s bound", true, 750_001, "expired", 0],
     ])("%s", (_name, sessionAlive, expiresIn, expected, beatAgo) => {
       if (sessionAlive) alive.add(SESSION);
       plantHolder("hook-x", { pid: SESSION, expiresAt: fake.ms + expiresIn }, beatAgo);
@@ -414,6 +415,13 @@ describe("lease", () => {
       alive.add(SESSION);
       tryAcquireLease(opts(one), detached())!;
       expect(tryAcquireLease(opts(one), meta)).toBeNull();
+    });
+
+    it.each(["../escaped", "a/b", "a.b", ""])("refuses the detached id %j before taking a slot or writing anything", async (id) => {
+      expect(() => tryAcquireLease(opts(), detached({ id }))).toThrow(TypeError);
+      await expect(acquireLease(opts(), detached({ id }))).rejects.toThrow(TypeError);
+      expect(existsSync(dir)).toBe(false);
+      expect(events).toEqual([]);
     });
 
     describe("releaseHolder", () => {
@@ -441,11 +449,26 @@ describe("lease", () => {
         expect(events.filter((e) => e.type === "release")).toHaveLength(1);
       });
 
-      it("removes a holder file that is not a valid record, with heldMs 0", () => {
-        tryAcquireLease(opts(), meta)!.release();
-        writeFileSync(holderFile("hook-bad"), "{not json");
-        expect(releaseHolder(opts(), "hook-bad")).toBe(true);
-        expect(events).toContainEqual({ type: "release", id: "hook-bad", heldMs: 0 });
+      // A wrapper's own heartbeating holder, or a file the reaper owns, is never released by id.
+      it.each<[string, () => string]>([
+        ["a wrapper holder", () => tryAcquireLease(opts(), meta)!.id!],
+        ["a file that is not a valid record", () => (tryAcquireLease(opts(), meta)!.release(), writeFileSync(holderFile("hook-bad"), "{not json"), "hook-bad")],
+      ])("leaves %s alone: returns false and emits nothing", (_name, plant) => {
+        const id = plant();
+        events.length = 0;
+        expect(releaseHolder(opts(), id)).toBe(false);
+        expect(existsSync(holderFile(id))).toBe(true);
+        expect(events).toEqual([]);
+      });
+
+      it("does not follow a holders directory that is a symlink", () => {
+        const elsewhere = join(tmp, "elsewhere");
+        mkdirSync(elsewhere, { mode: 0o700 });
+        writeFileSync(join(elsewhere, "hook-x.json"), JSON.stringify({ id: "hook-x", pid: SESSION, command: "npm test", cwd: "/", startedAt: fake.ms, expiresAt: fake.ms + 60_000, level: "normal" }));
+        mkdirSync(dir, { mode: 0o700 });
+        symlinkSync(elsewhere, join(dir, "holders"));
+        expect(releaseHolder(opts(), "hook-x")).toBe(false);
+        expect(existsSync(join(elsewhere, "hook-x.json"))).toBe(true);
       });
     });
   });

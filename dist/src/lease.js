@@ -20,8 +20,10 @@ const HEARTBEAT_STALE_MS = 90_000;
 const FAIL_OPEN_MS = 30_000;
 const POLL_MS = 3_000;
 const COMMAND_MAX = 200;
-/** The largest Bash call timeout (10 min) plus the 60 s grace: a detached `expiresAt` further ahead than this is not believed. */
-const DETACHED_MAX_MS = 660_000;
+/** The longest a detached holder may be set to live: the largest Bash call timeout (10 min) plus hook mode's 60 s grace. */
+export const DETACHED_TTL_MAX_MS = 660_000;
+/** A detached holder's id, and the only ids `releaseHolder` accepts, so neither can name a path outside `holders/`. */
+const HOLDER_ID = /^[\w-]+$/;
 const holdersDir = (dir) => join(dir, "holders");
 function pidAlive(pid) {
     try {
@@ -34,8 +36,9 @@ function pidAlive(pid) {
 }
 /**
  * The single liveness rule. A detached holder (`expiresAt` set) is judged first and never by its heartbeat: it is
- * `expired` once `nowMs >= expiresAt` or when `expiresAt` is more than 660 s ahead (one-sided, so a forward clock
- * step frees the slot early and a backward one keeps it, still bounded by the session PID), else live while its
+ * `expired` once `nowMs >= expiresAt` (so a forward clock step frees the slot early), or when `expiresAt` is more
+ * than 660 s plus the 90 s heartbeat window ahead (so a backward step of up to 90 s never reaps a holder written
+ * within the 660 s cap, and a larger one frees it early), else live while its
  * session PID (`pid`) is alive, and `dead-session` when not. Any other holder is live while its heartbeat is
  * fresh: `mtimeMs` within 90 s of `nowMs`, in either direction (the mutex's rule, so a small backward clock
  * step cannot reap a live holder, while a heartbeat dated further ahead is stale). Otherwise it is live only
@@ -46,7 +49,7 @@ function verdict(rec, mtimeMs, nowMs, alive) {
     if (!rec)
         return "corrupt";
     if (rec.expiresAt !== undefined) {
-        if (nowMs >= rec.expiresAt || rec.expiresAt - nowMs > DETACHED_MAX_MS)
+        if (nowMs >= rec.expiresAt || rec.expiresAt - nowMs > DETACHED_TTL_MAX_MS + HEARTBEAT_STALE_MS)
             return "expired";
         return alive(rec.pid) ? "live" : "dead-session";
     }
@@ -271,7 +274,13 @@ function failOpen(opts, level, capacity, waitedMs, reason, error) {
     return { id: null, leased: false, admission: { waitedMs, level, live: 0, capacity }, childEnv: () => ({}), setChildPid() { }, release() { } };
 }
 /** A single non-blocking attempt: a handle, or `null` when not admitted this poll. */
+/** Throws on a detached id that could name a path outside `holders/`: a caller's bug, not an I/O error to fail open on. */
+function checkDetachedId(meta) {
+    if (meta.detached && !HOLDER_ID.test(meta.detached.id))
+        throw new TypeError(`lease: detached holder id ${JSON.stringify(meta.detached.id)} is not [A-Za-z0-9_-]+`);
+}
 export function tryAcquireLease(opts, meta) {
+    checkDetachedId(meta);
     const r = attempt(opts, meta, 0);
     if (r.kind === "admitted")
         return r.handle;
@@ -293,6 +302,7 @@ function statusOf(opts, level) {
  * is returned, so one stale cached sample cannot end a wave.
  */
 export async function acquireLease(opts, meta, wait = {}) {
+    checkDetachedId(meta);
     const { now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), pollMs = POLL_MS } = opts;
     const start = now();
     let busySince;
@@ -327,18 +337,24 @@ export async function acquireLease(opts, meta, wait = {}) {
 }
 /**
  * Releases a detached holder by id from any process; idempotent. Returns whether a holder file was removed, and emits
- * one `release` event with `heldMs` (0 when the file is not a valid record) only then. An id with a character outside
- * `[A-Za-z0-9_-]` names no holder, so it can never reach a path outside `holders/`.
+ * one `release` event with `heldMs` only then. It removes only a valid detached record (one with `expiresAt`): a
+ * wrapper's own holder and a corrupt file are left to their owner and the reaper. An id with a character outside
+ * `[A-Za-z0-9_-]` names no holder, and a holders directory that breaks the lease's directory rule (a symlink, or
+ * another user's) is not read, so neither can reach a file outside `holders/`.
  */
 export function releaseHolder(opts, id) {
-    if (!/^[\w-]+$/.test(id))
+    if (!HOLDER_ID.test(id))
         return false;
-    const file = join(holdersDir(opts.dir), `${id}.json`);
+    const dir = holdersDir(opts.dir);
+    const st = unlessGone(() => lstatSync(dir));
+    if (!st || !isOwnDir(st))
+        return false;
+    const file = join(dir, `${id}.json`);
     const text = unlessGone(() => readFileSync(file, "utf8"));
-    if (text === undefined || unlessGone(() => (unlinkSync(file), true)) === undefined)
+    const rec = text === undefined ? null : parseHolder(text);
+    if (rec?.expiresAt === undefined || unlessGone(() => (unlinkSync(file), true)) === undefined)
         return false;
-    const startedAt = parseHolder(text)?.startedAt;
-    emit(opts, { type: "release", id, heldMs: startedAt === undefined ? 0 : (opts.now ?? Date.now)() - startedAt });
+    emit(opts, { type: "release", id, heldMs: (opts.now ?? Date.now)() - rec.startedAt });
     return true;
 }
 /** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. */

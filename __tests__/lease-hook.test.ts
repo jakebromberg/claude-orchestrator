@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { tryAcquireLease, releaseHolder, type LeaseEvent, type LeaseOptions } from "../src/lease.js";
+import { leaseStatus, tryAcquireLease, releaseHolder, type LeaseEvent, type LeaseOptions } from "../src/lease.js";
 import { isHeavyCommand, isHeavyHookCall, runHook, settingsEntries } from "../src/lease-hook.js";
 import { scriptedPressureSampler } from "../src/testing.js";
 import { fakeLeaseClock, isolatedLeaseEnv, unwritableLeaseDir, type FakeLeaseClock } from "./helpers/lease.js";
@@ -281,6 +281,13 @@ describe("hook events", () => {
       expect(record("hook-toolu_1").expiresAt).toBe(start + expected + 60_000);
     });
 
+    it("keeps a holder at the 600 s cap live through a backward clock step of up to 90 s", async () => {
+      await run(pre({ timeout: 600_000 }));
+      fake.ms -= 90_000;
+      const opts = { dir, level: scriptedPressureSampler("normal"), policy: { heavyCeiling: 1, heavyWarning: 1 }, isAlive: (pid: number) => alive.has(pid), now: fake.now };
+      expect(leaseStatus(opts).live.map((h) => h.id)).toEqual(["hook-toolu_1"]);
+    });
+
     it("counts expiresAt from admission, so a long wait does not eat the call's time", async () => {
       fillSlot();
       fake.onSleep = () => {
@@ -383,12 +390,20 @@ describe("hook events", () => {
       expect(stderr).not.toHaveBeenCalled();
     });
 
-    it("prints nothing to stderr for a bad CO_LEASE_SLOTS and CO_PRESSURE_OVERRIDE and an unwritable directory", async () => {
+    it.each(["PreToolUse", "PostToolUse", "PostToolUseFailure"])("prints nothing to stderr on %s for a bad CO_LEASE_SLOTS and CO_PRESSURE_OVERRIDE and an unwritable directory", async (event) => {
       const stderr = vi.spyOn(process.stderr, "write");
-      const { code, out } = await run(pre(), { CO_LEASE_SLOTS: "many", CO_PRESSURE_OVERRIDE: "bogus", CO_LEASE_DIR: unwritableLeaseDir(tmp) }, { level: undefined });
+      const { code, out } = await run(call(event), { CO_LEASE_SLOTS: "many", CO_PRESSURE_OVERRIDE: "bogus", CO_LEASE_DIR: unwritableLeaseDir(tmp) }, { level: undefined });
       expect(code).toBe(0);
       expect(out === "" || JSON.parse(out).hookSpecificOutput !== undefined).toBe(true);
       expect(stderr).not.toHaveBeenCalled();
+    });
+
+    // A hook that cannot lease stays inert, background calls included.
+    it.each<[string, NodeJS.ProcessEnv]>([
+      ["a relative CO_LEASE_DIR", { CO_LEASE_DIR: "relative/dir" }],
+      ["no CO_LEASE_SESSION_PID", { CO_LEASE_SESSION_PID: undefined }],
+    ])("does not deny run_in_background with %s", async (_name, envOver) => {
+      expect(await run(pre({ run_in_background: true }), envOver)).toEqual({ code: 0, out: "" });
     });
   });
 });
