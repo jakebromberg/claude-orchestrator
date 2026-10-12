@@ -29,6 +29,10 @@ export interface LeaseOptions {
     level: PressureSampler;
     policy: PressurePolicy;
     isAlive?(pid: number): boolean;
+    /**
+     * Wall-clock epoch milliseconds (default `Date.now`). It dates heartbeats, which are compared with mtimes the kernel
+     * sets on writes, so any other clock (monotonic, scripted, offset) makes live holders read as stale and reaped.
+     */
     now?(): number;
     sleep?(ms: number): Promise<void>;
     pollMs?: number;
@@ -65,6 +69,11 @@ export interface LeaseStatus {
     capacity: number;
     live: HolderInfo[];
 }
+/**
+ * A holder stays live only while this process's event loop runs its 30 s heartbeat, or while a child PID recorded
+ * through `setChildPid` is alive. A caller that blocks the event loop for 90 s (`execSync`, `spawnSync`) without
+ * recording a child is reaped while its command still runs, and stays out of the count until it releases.
+ */
 export interface LeaseHandle {
     /** `null` for an unleased (fail-open) handle. */
     id: string | null;
@@ -78,6 +87,11 @@ export interface LeaseHandle {
     };
     /** Env for the child command; the holder id is never put in `process.env`. */
     childEnv(): Record<string, string>;
+    /**
+     * Records the heavy command's PID right after an async spawn, so the holder stays live while that process runs,
+     * even when this one is blocked or killed (up to the 2 h orphan bound). Ignored after release, for a value that is
+     * not a positive integer, and once the holder has been reaped: a reaped holder's file is not recreated.
+     */
     setChildPid(pid: number): void;
     release(outcome?: {
         exitCode?: number;
