@@ -98,7 +98,7 @@ claude-orchestrator-lease status
 - The command's exit code is passed through. A command that cannot be started exits 127 when it is not found and 126 otherwise (for example, a script with no `#!` line), with the slot released. `SIGINT`, `SIGTERM` and `SIGHUP` are forwarded to the child; if it is still alive 10 s later it gets `SIGKILL`, the slot is released, and the wrapper exits 128+n. A signal that arrives while the wrapper is still waiting for a slot kills it, with nothing held. The child's PID is recorded in the holder, so a wrapper killed with `SIGKILL` keeps its slot while the child lives.
 - **Exit 75**: no slot within the wait cap (`--max-wait <sec>`, else `CO_LEASE_MAX_WAIT`, else 100 s, under the Bash tool's 120 s timeout). The message lists who holds the slots; rerun the command, this is not a test failure. While waiting, one progress line is printed per minute. `--max-wait 0` does not wait.
 - **Exit 78**: the lease is misconfigured (for example a relative `CO_LEASE_DIR`); the command is not run. Usage errors exit 64. If the lease directory is unusable the command runs unleased after one warning.
-- `status` prints `{ level, capacity, live: [{ pid, command, ageSec }] }` as JSON (`override: true` on a holder admitted under `CO_PRESSURE_OVERRIDE`) and creates nothing on disk.
+- `status` prints `{ level, capacity, live: [{ pid, command, ageSec }] }` as JSON (`override: true` on a holder admitted while `CO_PRESSURE_OVERRIDE` actually turned a `critical` reading into `warning`). It never creates the lease directory; in an existing one, reading the pressure level refreshes `level.json`.
 
 ## Quick Start
 

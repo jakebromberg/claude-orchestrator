@@ -143,13 +143,18 @@ describe("claude-orchestrator-lease (integration)", () => {
     childPids.push(first.pid!);
     childPids.push((await until(() => holderWithChild(leaseDir), "the first holder to record its child PID")).childPid);
 
-    const waiter = spawn("node", [cliPath, "--max-wait", "30", "--", "node", "-e", "process.exit(0)"], { env, stdio: ["ignore", "ignore", "pipe"] });
+    // An invalid CO_LEASE_MAX_WAIT (and no --max-wait) makes the CLI print one line just before it installs the
+    // forwarders and starts waiting; that line is the readiness signal. The wait falls back to the 100 s default.
+    const waiter = spawn("node", [cliPath, "--", "node", "-e", "process.exit(0)"], {
+      env: { ...env, CO_LEASE_MAX_WAIT: "not-a-number" },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
     childPids.push(waiter.pid!);
     let stderr = "";
     waiter.stderr!.on("data", (b: Buffer) => (stderr += b.toString()));
     const exited = new Promise<NodeJS.Signals | null>((resolve) => waiter.once("exit", (_code, signal) => resolve(signal)));
-    // The sampler's override notice is printed at the first attempt, after the forwarders are installed.
-    await until(() => (stderr.includes("CO_PRESSURE_OVERRIDE") ? true : undefined), "the waiter to make its first attempt");
+    await until(() => (stderr.includes("CO_LEASE_MAX_WAIT") ? true : undefined), "the waiter to start waiting");
+    await new Promise((r) => setTimeout(r, 300));
     waiter.kill("SIGTERM");
     expect(await exited).toBe("SIGTERM");
     expect(holderFiles(leaseDir)).toHaveLength(1);
