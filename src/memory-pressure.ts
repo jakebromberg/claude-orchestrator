@@ -92,7 +92,7 @@ export function pressurePolicyFromEnv(
 }
 
 /** True when a reading taken at `at` is no older than `maxAgeMs` at `now`; a reading from the future (a clock step back) is not fresh. */
-function isFresh(at: number, now: number, maxAgeMs: number): boolean {
+export function isFresh(at: number, now: number, maxAgeMs: number): boolean {
   const age = now - at;
   return Number.isFinite(age) && age >= 0 && age < maxAgeMs;
 }

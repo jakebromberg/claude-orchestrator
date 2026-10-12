@@ -27,6 +27,7 @@ src/
 ├── report.ts             # Post-run report generation
 ├── memory-pressure.ts    # Memory-pressure level reader, heavy/session capacity tables, stop rule, cached sampler
 ├── capacity-governor.ts  # createCapacityGovernor() — pressure readings → session capacity, 60 s hysteresis, transition logging
+├── file-lock.ts          # tryLockOnce(): non-blocking O_EXCL mutex with mtime staleness, token-checked release, turn-taking reapers (the lease's mutex)
 ├── claude-env.ts         # claudeSessionEnv() — child env for spawned `claude` sessions (auth/billing)
 ├── real-process-runner.ts # Real child_process spawner
 ├── create-main.ts        # Generic entry point factory (sync or async ConfigFactory)
