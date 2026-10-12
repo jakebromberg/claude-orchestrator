@@ -22,11 +22,18 @@ import { acquireLease, defaultLeaseOptions, DETACHED_TTL_MAX_MS, leaseStatus, re
 import { formatAdmitted, formatNoSlot } from "./lease-messages.js";
 import { shellQuote } from "./shell-quote.js";
 
+/**
+ * npm/npx options before the subcommand: `--prefix`, `--workspace`, `-w` and `--package` take a value (which does not start
+ * with `-`), any other option stands alone or is `--name=value`. The two alternatives start with different characters or
+ * differ in the value's first character, so a failed match cannot backtrack exponentially.
+ */
+const NODE_OPTIONS = "(?: (?:(?:--prefix|--workspace|-w|--package) (?:'[^']*'|\"[^\"]*\"|[^\\s'\"-]\\S*)|-[\\w-]+(?:=\\S*)?))*";
+
 /** `[word, pattern]`: `word` appears in every command `pattern` matches; the printed shell pre-filter greps for it. */
 const DEFAULT_PATTERNS: readonly (readonly [word: string, pattern: string])[] = [
-  ["npm", "npm (?:ci|install|i|test|t)"],
-  ["npm", "npm run (?:test|build|typecheck|lint|ci)[\\w:-]*"],
-  ["npx", "npx (?:vitest|jest|tsc|playwright)"],
+  ["npm", `npm${NODE_OPTIONS} (?:ci|install|i|test|t)`],
+  ["npm", `npm${NODE_OPTIONS} run (?:test|build|typecheck|lint|ci)[\\w:-]*`],
+  ["npx", `npx${NODE_OPTIONS} (?:vitest|jest|tsc|playwright)`],
   ["vitest", "vitest"],
   ["jest", "jest"],
   ["tsc", "tsc"],
@@ -34,17 +41,19 @@ const DEFAULT_PATTERNS: readonly (readonly [word: string, pattern: string])[] = 
   ["pytest", "pytest"],
   ["uv", "uv run (?:\\S+ )*(?:pytest|mypy)"],
   ["mypy", "mypy"],
+  ["python", "python3? -m (?:pytest|mypy)"],
+  ["pip", "pip3? install"],
   ["uv", "uv (?:sync|pip install)"],
-  ["xcodebuild", "xcodebuild"],
+  ["xcodebuild", "(?:xcrun )?xcodebuild"],
   ["swift", "(?:xcrun )?swift (?:build|test)"],
-  ["cargo", "cargo (?:build|test)"],
+  ["cargo", "cargo (?:build|test|check|clippy)"],
   ["gradlew", "gradlew"],
   ["go", "go (?:build|test|vet)"],
   ["deno", "deno test"],
   ["make", "make"],
   ["scripts/test", "scripts/test[\\w-]*\\.sh"],
   // Pre-push hooks. The option-value alternatives start with different characters, so a failed match cannot backtrack exponentially.
-  ["git", "git(?: -[Cc] (?:'[^']*'|\"[^\"]*\"|[^\\s'\"]\\S*))* push"],
+  ["git", "git(?: -[Cc] (?:'[^']*'|\"[^\"]*\"|[^\\s'\"](?:[^\\s'\"]|'[^']*'|\"[^\"]*\")*))* push"],
 ];
 
 const CLI = /cli-lease\.js|claude-orchestrator-lease/;
@@ -53,8 +62,12 @@ const CLI = /cli-lease\.js|claude-orchestrator-lease/;
  * and the `&` of a redirect (`2>&1`) only adds a light one.
  */
 const SEPARATOR = /([;&|\n()`{}])/;
-/** Leading words after which the command still follows; `nice` and `timeout` also drop their arguments. */
-const PREFIX_WORDS = new Set(["if", "elif", "while", "until", "then", "do", "else", "time", "!", "env", "nice", "timeout"]);
+/** Leading words after which the command still follows. */
+const PREFIX_WORDS = new Set(["if", "elif", "while", "until", "then", "do", "else", "!", "nohup", "exec", "command"]);
+/** Wrappers that skip option tokens before the operand (`timeout` also a duration); the pattern is the options that take a separate argument. */
+const WRAPPERS = new Map([["time", /^$/], ["env", /^-[uC]$/], ["nice", /^-n$/], ["timeout", /^-[ks]$/]]);
+/** Whether a token holds an odd number of `"` or `'` (an apostrophe inside a word, as in `Let's`, is not a quote). */
+const oddQuote = (token: string): boolean => token.split('"').length % 2 === 0 || token.replace(/[A-Za-z]'[A-Za-z]/g, "").split("'").length % 2 === 0;
 
 const isRegex = (source: string): boolean => {
   try {
@@ -83,14 +96,16 @@ export function isHeavyCommand(command: string, extraPatterns: readonly string[]
  * command word that fails is stripped too when it looks like the tail of a word split at a separator inside it: glued
  * to the `)`, `}` or backtick before the segment (`PYTHONPATH=$(pwd)/src pytest`), or holding an odd number of a quote
  * character (`FOO="a;b" npm test`). The heuristic can also make prose heavy (`"fix(ci): make …"`), which costs only a
- * wait; a tail of more than one word (`MSG="a $(date) b c" npm test`) still hides the command.
+ * wait. A tail of more than one word (`MSG="a $(date) b c" npm test`) is skipped by scanning once to the token that closes it.
  */
 function isHeavySegment(segment: string, heavy: RegExp, after = ""): boolean {
-  const glued = /[)}`]/.test(after) && /^\S/.test(segment);
-  const oddQuote = (token: string): boolean => token.split('"').length % 2 === 0 || token.split("'").length % 2 === 0;
+  const follows = /[)}`]/.test(after);
+  // A tail that is only punctuation (`): make …`, `), make …`) is prose, not the rest of a word.
+  const glued = follows && /^\S/.test(segment) && !/^[,.;:!?]+\s/.test(segment);
   const tokens = segment.split(/\s+/);
   const word = (i: number): string => tokens[i]?.replace(/^['"]+/, "") ?? "";
   let stripped = false;
+  let scanned = false;
   for (let i = 0; i < tokens.length; i++) {
     const w = word(i);
     if (!w) continue;
@@ -101,25 +116,41 @@ function isHeavySegment(segment: string, heavy: RegExp, after = ""): boolean {
       if (quote && !w.includes(quote, assignment[0].length)) while (++i < tokens.length && !tokens[i]!.includes(quote));
       continue;
     }
-    if (PREFIX_WORDS.has(w)) {
-      if (w === "nice" && word(i + 1) === "-n") i += 2;
-      if (w === "timeout") i += word(i + 1) === "-s" ? 3 : 1;
+    if (PREFIX_WORDS.has(w)) continue;
+    const wrapper = WRAPPERS.get(w);
+    if (wrapper) {
+      let j = i + 1;
+      while (word(j).startsWith("-")) j += wrapper.test(word(j)) ? 2 : 1;
+      i = w === "timeout" ? j : j - 1; // `timeout` also takes a duration
       continue;
     }
     const name = w.replace(/['"]/g, "");
-    if (/^(?:ba|z)?sh$/.test(name.slice(name.lastIndexOf("/") + 1)) && /^-[a-z]*c$/.test(word(i + 1))) {
-      i++;
-      continue;
+    if (/^(?:ba|z)?sh$/.test(name.slice(name.lastIndexOf("/") + 1))) {
+      // Option tokens up to the flag that ends in `c`; `-o` and `-euo` take an argument (`-o pipefail`).
+      let j = i + 1;
+      while (word(j).startsWith("-") && !/^-[a-z]*c$/.test(word(j))) j += /^-[a-z]*o$/.test(word(j)) ? 2 : 1;
+      if (/^-[a-z]*c$/.test(word(j))) {
+        i = j;
+        continue;
+      }
     }
-    const text = [name, ...tokens.slice(i + 1)].join(" ");
+    // A token that is wholly quoted (`npm "test"`) is tested without its quotes.
+    const text = [name, ...tokens.slice(i + 1).map((t) => t.replace(/^(["'])(\S*)\1$/, "$2"))].join(" ");
     // From the command word's start, then after each `/` in it (`./scripts/test.sh`, `.venv/bin/pytest`).
     for (let k = 0; k >= 0; k = name.indexOf("/", k) + 1 || -1) {
       heavy.lastIndex = k;
       if (heavy.test(text)) return true;
     }
-    // At most one tail per segment, so each segment is tested at most twice and the work stays linear.
+    // At most one strip and one scan per segment, so each segment is tested at most three times and the work stays linear.
     if (!stripped && ((i === 0 && glued) || oddQuote(tokens[i]!))) {
       stripped = true;
+      continue;
+    }
+    // A word that still fails (after a strip, or in a segment that follows `)`, `}` or a backtick) may be inside a
+    // multi-word value: resume after the first token with an odd quote count, which closes it.
+    if (!scanned && (stripped || follows)) {
+      scanned = true;
+      while (i < tokens.length && !oddQuote(tokens[i]!)) i++;
       continue;
     }
     return false;

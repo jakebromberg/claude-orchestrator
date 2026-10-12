@@ -43,6 +43,19 @@ const HEAVY = [
   "# don't skip\nnpm test", "cat > f <<EOF\nDon't\nEOF\nmake", "ls # it's here\nnpm test",
   "cat > a.txt <<END-OF-FILE\nhello\nEND-OF-FILE\nnpm test", "cat <<E\"O\"F\nit's\nEOF\nnpm test", "x=$(( 1 << n ))\nnpm test",
   "cat <<-EOF\n\tit's\n\tEOF\nnpm test", "sh <<'EOF'\nnpm test\nEOF", "bash -s <<'EOF'\nmake\nEOF",
+  // Launcher forms of the default tools, and npm/npx options before the subcommand.
+  "python -m pytest", "python3 -m pytest", ".venv/bin/python -m pytest -q", "python -m mypy src", "pip install -r requirements.txt", "./.venv/bin/pip install -q -r requirements-dev.txt",
+  "npm --prefix app test", "npm -w packages/a test", "npm --workspace=a run build", "npm --silent --prefix 'my app' ci", "npx --yes vitest run", "npx -y tsc --noEmit", 'npm "test"',
+  "xcrun xcodebuild test -scheme X", "cargo check", "cargo clippy",
+  // Wrappers and their options.
+  "nohup npm test > log 2>&1 &", "exec npm test", "command npm test", "nohup nice -n 5 make",
+  "bash -euo pipefail -c 'npm test'", "bash -e -c 'make'", "bash --login -c 'npm test'", "bash -o pipefail -lc 'npm test'",
+  "timeout -k 5 600 npm test", "timeout --signal=KILL 600 npm test", "nice -10 npm test", "nice -n10 npm test", "env -u FOO npm test", "time -p npm test",
+  "git -c core.sshCommand='ssh -i key' push", 'git -c "core.sshCommand=ssh -i key" -C /a push',
+  // A quoted value of several words, split by a separator inside it.
+  'GIT_SSH_COMMAND="ssh -i ${HOME}/.ssh/id_ed25519 -o IdentitiesOnly=yes" git push origin HEAD', 'NODE_OPTIONS="--require ${PWD}/setup.js --max-old-space-size=4096" npm test',
+  'JAVA_OPTS="-Dfoo=${HOME}/x -Xmx2g" ./gradlew test', 'CFLAGS="-I$(brew --prefix)/include -O2" make', 'PYTEST_ADDOPTS="--basetemp=$(mktemp -d) -p no:cacheprovider" pytest',
+  'MSG="a $(date) b c" npm test', "A=${B}/x npm test \"it's\"",
   // Heavy words in data: a false match costs only a wait.
   "cat <<'EOF'\nnpm test\nEOF", 'echo "a \\" ; npm test"', "ls # a; npm test",
 ];
@@ -56,6 +69,13 @@ const NOT_HEAVY = [
   "echo $(date)/x", "X=$(pwd)/src ls", 'FOO="a;b" ls', "cd $(pwd) && ls",
   // Only `)`, `}` and a backtick glue a tail: a word after `|` or a newline is a command word.
   "ps aux|grep make", `git commit -m "$(cat <<'EOF'\nBump vitest to 3.2\nEOF\n)"`,
+  // Light forms that look like the heavy ones above.
+  "echo npm test", "pip list", "pip3 list", "python script.py", "python -m http.server", "cargo fmt", "nohup ls", "exec ls", "command -v npm", "npm --prefix app run dev", "npx -y cowsay hi",
+  "bash -euo pipefail script.sh", "bash -e -c 'ls'", "timeout -k 5 600 sleep 1", "nice -10 ls", "env -u FOO ls", "time -p ls", "git -c core.sshCommand='ssh -i key' pull",
+  'MSG="a $(date) b c" ls', 'JAVA_OPTS="-Dfoo=${HOME}/x -Xmx2g" ls',
+  // Prose that the tail heuristic made heavy: punctuation after `)` and contractions are not tails.
+  'git commit -m "fix(ci): make tests deterministic"', 'git commit -m "feat(api): make it fast"', 'git commit -m "Update README (typos), make examples consistent"',
+  "cat <<'EOF'\nLet's make it\nEOF", "cat <<'EOF'\nDon't make it\nEOF",
   // The CLI rule: any text that mentions the CLI takes no slot, whatever surrounds it.
   `node ${CLI} --shell 'npm ci && npm test'`,
   `claude-orchestrator-lease --shell 'npm ci && npm test'`,
@@ -84,18 +104,61 @@ describe("isHeavyCommand", () => {
     expect(isHeavyCommand(command)).toBe(false);
   });
 
+  // `text(kb)` is about `kb` KB of the same adversarial shape.
+  const rep = (unit: string, kb: number): string => unit.repeat(Math.ceil((kb * 1000) / unit.length));
+  const bestOf = (text: string, runs = 5): number => {
+    let best = Infinity;
+    for (let n = 0; n < runs; n++) {
+      const start = performance.now();
+      isHeavyCommand(text);
+      best = Math.min(best, performance.now() - start);
+    }
+    return best;
+  };
+
+  it.each<[string, (kb: number) => string, boolean]>([
+    ["a;", (kb) => rep("a;", kb), false],
+    ["a && ", (kb) => rep("a && ", kb), false],
+    ["a(", (kb) => rep("a(", kb), false],
+    ["'", (kb) => rep("'", kb), false],
+    ["odd-quoted words", (kb) => rep("a' ", kb), false],
+    ["odd-quoted words after )", (kb) => `a) ${rep("b' ", kb)}`, false],
+    ["unquoted words after )", (kb) => `a) ${rep("b ", kb)}`, false],
+    ["glued tails", (kb) => rep("a)b' ", kb), false],
+    ["glued tails ending in a heavy command", (kb) => `${rep("a)b' ", kb)}\nnpm test`, true],
+    ["a multi-word tail before npm test", (kb) => `X="a $(b) ${rep("c ", kb)}d" npm test`, true],
+    ["bash options before -c", (kb) => `bash ${rep("-e ", kb)}-c 'npm test'`, true],
+    ["bash options with no -c", (kb) => `bash ${rep("-o pipefail ", kb)}x`, false],
+    ["timeout options", (kb) => `timeout ${rep("-k 5 ", kb)}600 npm test`, true],
+    ["nice options", (kb) => `nice ${rep("-10 ", kb)}ls`, false],
+    ["env options", (kb) => `env ${rep("-u A ", kb)}npm test`, true],
+    ["npm valued options", (kb) => `npm ${rep("--prefix a ", kb)}test`, true],
+    ["npm valued options with no subcommand", (kb) => `npm ${rep("-w ", kb)}x`, false],
+    ["npm quoted options", (kb) => `npm ${rep("-w 'a b' ", kb)}dev`, false],
+    ["npm odd-quoted options", (kb) => `npm ${rep("-w ' ", kb)}x`, false],
+    ["npx flags", (kb) => `npx ${rep("-y ", kb)}vitest`, true],
+    ["quoted tokens after npm", (kb) => `npm ${rep('"a" ', kb)}`, false],
+    ["quoted git options", (kb) => `git${rep(" -c 'x'", kb)} pull`, false],
+    ["quoted spans in a git option value", (kb) => `git -c a${rep("'x y'b", kb)} push`, true],
+  ])("classifies 80 KB of %s in well under a second, and in time that grows linearly", (_name, text, expected) => {
+    // A loose absolute budget, so a loaded machine running the whole suite in parallel stays green: the linear
+    // matcher takes a few ms here, while the quadratic and exponential versions it replaced take seconds to minutes.
+    const start = performance.now();
+    expect(isHeavyCommand(text(80))).toBe(expected);
+    expect(performance.now() - start).toBeLessThan(1000);
+    // Four times the text takes about four times as long when linear and sixteen times as long when quadratic. A
+    // loaded machine can skew one measurement, so the ratio passes if any of three best-of-seven attempts does; a
+    // super-linear slowdown fails all of them.
+    const ratios = [0, 1, 2].map(() => bestOf(text(80), 7) / Math.max(bestOf(text(20), 7), 0.05));
+    expect(Math.min(...ratios)).toBeLessThan(8);
+  });
+
   it.each([
-    ["80 KB of a;", "a;".repeat(40_000), false],
-    ["80 KB of a && ", "a && ".repeat(16_000), false],
-    ["80 KB of a(", "a(".repeat(40_000), false],
-    ["80 KB of '", "'".repeat(80_000), false],
-    ["80 KB of odd-quoted words", `a' `.repeat(26_000), false],
     ["300 quoted assignments before npm test", `${'NAME="x" '.repeat(300)}npm test`, true],
     ["300 quoted assignments before ls", `${'NAME="x" '.repeat(300)}ls`, false],
     ["28 quoted git options before pull", `git${" -c 'x'".repeat(28)} pull`, false],
+    ["28 quoted npm options before dev", `npm${" -w 'x'".repeat(28)} dev`, false],
   ])("classifies %s in well under a second", (_name, text, expected) => {
-    // A generous wall-clock budget, so a loaded machine running the whole suite in parallel stays green: the linear
-    // matcher takes a few ms here, while the quadratic and exponential versions it replaced take seconds to minutes.
     const start = performance.now();
     expect(isHeavyCommand(text)).toBe(expected);
     expect(performance.now() - start).toBeLessThan(1000);
