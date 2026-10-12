@@ -21,6 +21,8 @@ export interface PressurePolicy {
 export interface PressureSampler {
   (): PressureLevel;
   fresh(): PressureLevel;
+  /** True when the last level returned was mapped from `critical` by `CO_PRESSURE_OVERRIDE`; absent means never. */
+  overridden?(): boolean;
 }
 
 const SYSCTL_NAME = "kern.memorystatus_vm_pressure_level";
@@ -216,9 +218,13 @@ export function defaultPressureSampler(
     return candidate?.level ?? "critical";
   };
 
-  return cachedPressureSampler(() => {
-    const level = applyPressureOverride(raw(), env);
-    if (pressureOverrideInEffect(env)) log(`CO_PRESSURE_OVERRIDE=${OVERRIDE_VALUE} in effect: critical reads as warning`);
+  let overridden = false;
+  const sampler = cachedPressureSampler(() => {
+    const reading = raw();
+    const level = applyPressureOverride(reading, env);
+    overridden = level !== reading;
+    if (overridden) log(`CO_PRESSURE_OVERRIDE=${OVERRIDE_VALUE} in effect: critical reads as warning`);
     return level;
   }, SAMPLE_TTL_MS, now);
+  return Object.assign(sampler, { overridden: () => overridden });
 }

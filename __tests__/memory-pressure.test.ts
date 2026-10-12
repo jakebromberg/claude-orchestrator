@@ -234,6 +234,36 @@ describe("defaultPressureSampler", () => {
     expect(log).toHaveBeenCalledTimes(1);
   });
 
+  describe("overridden()", () => {
+    const OVERRIDE = { ...env, CO_PRESSURE_OVERRIDE: "critical-as-warning" };
+
+    it.each([
+      ["critical", OVERRIDE, "warning", true],
+      ["warning", OVERRIDE, "warning", false],
+      ["normal", OVERRIDE, "normal", false],
+      ["critical", env, "critical", false],
+    ] as const)("raw %s with %j reads %s, overridden=%s", (raw, e, level, overridden) => {
+      reading = raw;
+      const s = make(e);
+      expect(s()).toBe(level);
+      expect(s.overridden?.()).toBe(overridden);
+    });
+
+    it("follows the last reading, and logs only when a reading is mapped", () => {
+      reading = "warning";
+      const s = make(OVERRIDE);
+      s();
+      expect(log).not.toHaveBeenCalled();
+      reading = "critical";
+      s.fresh();
+      expect(s.overridden?.()).toBe(true);
+      expect(log).toHaveBeenCalledTimes(1);
+      reading = "normal";
+      s.fresh();
+      expect(s.overridden?.()).toBe(false);
+    });
+  });
+
   it("does not create a missing lease directory", () => {
     const missing = join(dir, "nope");
     make({ CO_LEASE_DIR: missing })();
