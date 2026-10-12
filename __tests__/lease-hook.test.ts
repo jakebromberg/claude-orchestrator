@@ -280,7 +280,11 @@ describe("settingsEntries", () => {
   // and, on the Post events, the tool's output too.
   const prefilter = (payload: unknown): boolean => {
     const words = /grep -qE '([^']+)'/.exec(commandOf("PreToolUse"))![1]!;
-    return spawnSync("grep", ["-qE", words], { input: JSON.stringify(payload) }).status === 0;
+    const input = JSON.stringify(payload);
+    const grep = spawnSync("grep", ["-qE", words], { input }).status === 0;
+    // The words must read the same as a JS RegExp, so no POSIX classes (`[[:alnum:]]`) or `\s`.
+    expect(new RegExp(words).test(input), `JS RegExp disagrees with grep -E on ${input}`).toBe(grep);
+    return grep;
   };
   const payloads = (command: string, output = ""): Record<string, unknown>[] =>
     ["PreToolUse", "PostToolUse", "PostToolUseFailure"].map((hook_event_name) => ({

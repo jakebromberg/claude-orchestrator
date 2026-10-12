@@ -132,7 +132,7 @@ export interface LeaseRefusal {
 export declare function isOwnDir(st: Stats): boolean;
 /** The one default diagnostics writer, shared with the event sink. Messages carry their own `lease:` prefix. */
 export declare function defaultWarn(msg: string): void;
-/** A single non-blocking attempt: a handle, or `null` when not admitted this poll. Throws a `TypeError` on a detached id outside `[A-Za-z0-9_-]`. */
+/** A single non-blocking attempt: a handle, or `null` when not admitted this poll. Throws a `TypeError` on an invalid detached id, session PID or `expiresAt`. */
 export declare function tryAcquireLease(opts: LeaseOptions, meta: HolderMeta): LeaseHandle | null;
 /**
  * Polls (3 s ± 1 s, never spinning) until admitted. `stopWhen` is checked on every poll, and a stop is confirmed with a
@@ -150,7 +150,7 @@ export declare function acquireLease(opts: LeaseOptions, meta: HolderMeta, wait?
 /**
  * Releases a detached holder by id from any process; idempotent. Returns whether a holder file was removed, and emits
  * one `release` event with `heldMs` only then. It removes only a valid detached record (one with `expiresAt`): a
- * wrapper's own holder and a corrupt file are left to their owner and the reaper. An id with a character outside
+ * wrapper's own holder and a corrupt file are left to their owner and the reaper. An id that is not 1 to 160 of
  * `[A-Za-z0-9_-]` names no holder, and a holders or lease directory that breaks the directory rule (a symlink, or
  * another user's) is not read, so neither can reach a file outside `holders/`.
  */
