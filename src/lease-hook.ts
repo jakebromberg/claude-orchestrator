@@ -165,7 +165,7 @@ export interface HookIo {
 const WAIT_MS = 450_000;
 const GRACE_MS = 60_000;
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
-/** 10 min: the lease believes no `expiresAt` further ahead than its TTL cap, which includes the grace. */
+/** 10 min: with the 60 s grace, the longest TTL the lease's cap (`DETACHED_TTL_MAX_MS`) lets a writer set. */
 const MAX_CALL_TIMEOUT_MS = DETACHED_TTL_MAX_MS - GRACE_MS;
 const TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DENY_BACKGROUND = "lease: run heavy commands in the foreground so the lease can track them";
@@ -207,7 +207,8 @@ async function handleEvent(stdin: string, io: HookIo): Promise<void> {
   const sessionPid = Number(env.CO_LEASE_SESSION_PID);
   if (!Number.isInteger(sessionPid) || sessionPid <= 0) return;
   const opts: LeaseOptions = { ...defaultLeaseOptions(env, { warn: () => {} }), ...io.lease };
-  // Only a hook that can lease denies a background call; a misconfigured one stays inert.
+  // A hook with no session PID or no usable options stays inert, background calls included. A lease directory that
+  // fails only at acquire (unwritable, a symlink) still denies them, while a foreground call there fails open.
   if (input.tool_input?.run_in_background === true) return io.out(decision({ permissionDecision: "deny", permissionDecisionReason: DENY_BACKGROUND }));
   const now = opts.now ?? Date.now;
   const timeoutMs = callTimeoutMs(input, env);
