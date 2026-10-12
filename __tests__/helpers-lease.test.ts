@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fakeLeaseClock } from "./helpers/lease.js";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fakeLeaseClock, unwritableLeaseDir } from "./helpers/lease.js";
 
 describe("fakeLeaseClock().sleep", () => {
   afterEach(() => vi.useRealTimers());
@@ -21,5 +24,18 @@ describe("fakeLeaseClock().sleep", () => {
     vi.useFakeTimers();
     const clock = fakeLeaseClock();
     await expect(clock.sleep(10)).resolves.toBeUndefined();
+  });
+});
+
+describe("unwritableLeaseDir", () => {
+  it("returns a path that cannot be created, and tolerates a second call with the same tmp", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "helpers-lease-"));
+    try {
+      const dir = unwritableLeaseDir(tmp);
+      expect(unwritableLeaseDir(tmp)).toBe(dir);
+      expect(() => mkdirSync(dir, { recursive: true })).toThrow(expect.objectContaining({ code: "ENOTDIR" }));
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

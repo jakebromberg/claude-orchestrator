@@ -64,7 +64,7 @@ src/
 
 ### Key Patterns
 
-- **Lease test fixtures**: `scriptedPressureSampler` (`src/testing.ts`) is the only way tests build a `PressureSampler`; `__tests__/helpers/lease.ts` (not a suite — vitest runs `*.test.ts` only) holds `isolatedLeaseEnv` (the integration suites' scrub of `CO_LEASE_*`/`CO_PRESSURE_*`, the guarantee that no test touches the real lease directory) and `fakeLeaseClock` (starts at real `Date.now()`, and its `sleep` yields via `setImmediate` so a runaway acquire loop fails by timeout instead of hanging).
+- **Lease test fixtures**: `scriptedPressureSampler` (`src/testing.ts`) is the only way tests build a `PressureSampler`; `__tests__/helpers/lease.ts` (not a suite — vitest runs `*.test.ts` only) holds `isolatedLeaseEnv` (the integration suites' scrub of `CO_LEASE_*`/`CO_PRESSURE_*`, the guarantee that no test touches the real lease directory) `unwritableLeaseDir(tmp)` (a lease dir whose `mkdir` fails with ENOTDIR, to force an I/O error), and `fakeLeaseClock` (starts at real `Date.now()`, and its `sleep` yields via `setImmediate` so a runaway acquire loop fails by timeout instead of hanging).
 - **Dependency injection**: `Deps` interface for all external interactions
 - **In-memory testing**: All behavioral tests use `InMemoryStatusStore`,
   `InMemoryMetadataStore`, `createSilentLogger`, and mock `ProcessRunner`

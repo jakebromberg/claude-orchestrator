@@ -12,6 +12,7 @@ vi.mock("../src/memory-pressure.js", async (importOriginal) => {
   };
 });
 
+const { scriptedPressureSampler } = await import("../src/testing.js");
 const { defaultLeaseOptions } = await import("../src/lease.js");
 
 describe("defaultLeaseOptions sampler wiring", () => {
@@ -24,7 +25,7 @@ describe("defaultLeaseOptions sampler wiring", () => {
 
   it("builds no sampler when the caller supplies one", () => {
     built.deps.length = 0;
-    const level = Object.assign(() => "normal" as const, { fresh: () => "normal" as const, overridden: () => false });
+    const level = scriptedPressureSampler("normal", { overridden: false });
     expect(defaultLeaseOptions({ CO_LEASE_DIR: "/lease" }, { level }).level).toBe(level);
     expect(built.deps).toEqual([]);
   });
