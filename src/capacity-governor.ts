@@ -26,7 +26,7 @@ export function createCapacityGovernor(opts: {
   logger: Logger;
   now?: () => number;
 }): CapacityGovernor {
-  const { sampler, maxParallel, adaptive, logger, now = Date.now } = opts;
+  const { sampler, maxParallel, adaptive, logger, now = () => performance.now() } = opts;
   let held: PressureLevel = "normal";
   let calmSince: number | undefined;
   let shown: PressureLevel = "normal";

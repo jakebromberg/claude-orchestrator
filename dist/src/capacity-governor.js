@@ -9,7 +9,7 @@ const HYSTERESIS_MS = 60_000;
  * The first reading is taken at creation; each transition is logged once.
  */
 export function createCapacityGovernor(opts) {
-    const { sampler, maxParallel, adaptive, logger, now = Date.now } = opts;
+    const { sampler, maxParallel, adaptive, logger, now = () => performance.now() } = opts;
     let held = "normal";
     let calmSince;
     let shown = "normal";
