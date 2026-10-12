@@ -485,10 +485,9 @@ describe("cliLeaseDeps (the wiring main uses)", () => {
     const stderr = vi.spyOn(process.stderr, "write");
     try {
       writeFileSync(join(tmp, "blocker"), "");
-      vi.stubEnv("CO_LEASE_DIR", join(tmp, "blocker", "lease"));
-      vi.stubEnv("CO_LEASE_SLOTS", "many");
+      const env = { CO_LEASE_DIR: join(tmp, "blocker", "lease"), CO_LEASE_SLOTS: "many", HOME: tmp };
       const lines: string[] = [];
-      const opts = cliLeaseDeps((l) => lines.push(l)).leaseOptions();
+      const opts = cliLeaseDeps((l) => lines.push(l), { env, level: scriptedPressureSampler("normal") }).leaseOptions();
       ((await acquireLease(opts, { command: "npm test", cwd: "/w" })) as LeaseHandle).release();
       expect(lines).toEqual([
         'memory-pressure: ignoring invalid CO_LEASE_SLOTS="many"; keeping 4',
@@ -497,7 +496,6 @@ describe("cliLeaseDeps (the wiring main uses)", () => {
       expect(stderr).not.toHaveBeenCalled();
     } finally {
       stderr.mockRestore();
-      vi.unstubAllEnvs();
       rmSync(tmp, { recursive: true, force: true });
     }
   });

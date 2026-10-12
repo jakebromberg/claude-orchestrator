@@ -230,8 +230,12 @@ describe("defaultPressureSampler", () => {
       const bad = { ...env, CO_PRESSURE_OVERRIDE: "nope" };
       const first = vi.fn();
       const second = vi.fn();
-      defaultPressureSampler(bad, { read: () => reading, now: () => t, log: first })();
-      defaultPressureSampler(bad, { read: () => reading, now: () => t, log: second })();
+      const a = defaultPressureSampler(bad, { read: () => reading, now: () => t, log: first });
+      const b = defaultPressureSampler(bad, { read: () => reading, now: () => t, log: second });
+      a();
+      a.fresh();
+      b();
+      b.fresh();
       expect(first).toHaveBeenCalledTimes(1);
       expect(first).toHaveBeenCalledWith(expect.stringContaining("CO_PRESSURE_OVERRIDE"));
       expect(second).toHaveBeenCalledTimes(1);
@@ -239,6 +243,14 @@ describe("defaultPressureSampler", () => {
     } finally {
       stderr.mockRestore();
     }
+  });
+
+  it("words a read failure without its own tag, so a writer's 'memory-pressure:' prefix does not stutter", () => {
+    const s = make();
+    reading = null as unknown as PressureLevel;
+    expect(s()).toBe("critical");
+    expect(log).toHaveBeenCalledWith("read failed; using the last good reading, else critical");
+    expect(log).not.toHaveBeenCalledWith(expect.stringMatching(/^memory-pressure/));
   });
 
   it("persists the raw level, not the overridden one", () => {

@@ -208,7 +208,7 @@ export function defaultPressureSampler(
       persist(lastGood);
       return level;
     }
-    log("memory-pressure read failed; using the last good reading, else critical");
+    log("read failed; using the last good reading, else critical");
     const candidate = [lastGood, persisted()].find((r) => r && isFresh(r.at, at, FALLBACK_MAX_AGE_MS));
     return candidate?.level ?? "critical";
   };

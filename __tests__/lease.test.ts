@@ -509,10 +509,20 @@ describe("lease", () => {
       const w = vi.fn(() => {
         throw new Error("sink closed");
       });
-      const o = defaultLeaseOptions({ CO_LEASE_DIR: dir, CO_LEASE_SLOTS: "many", CO_PRESSURE_OVERRIDE: "nope" }, { warn: w });
+      const o = defaultLeaseOptions({ CO_LEASE_DIR: dir, CO_LEASE_SLOTS: "many", CO_PRESSURE_OVERRIDE: "nope" }, { warn: w, level: sampler });
       expect(w).toHaveBeenCalled();
       expect(o.policy).toEqual({ heavyCeiling: 4, heavyWarning: 1 });
-      expect(() => o.level()).not.toThrow();
+      // The sink: a failed rotation makes it call the throwing writer, and the event is still appended.
+      mkdirSync(join(dir, "events.jsonl.1", "occupied"), { recursive: true });
+      writeFileSync(join(dir, "events.jsonl"), "x".repeat(6 * 1024 * 1024));
+      w.mockClear();
+      o.onEvent!({ type: "reap", id: "9-zz", reason: "corrupt" });
+      expect(w).toHaveBeenCalledWith(expect.stringMatching(/^lease: cannot rotate/));
+      expect(readFileSync(join(dir, "events.jsonl"), "utf8")).toContain('"id":"9-zz"');
+      rmSync(dir, { recursive: true, force: true });
+      // The sampler, with its invalid override, still answers, and the lease still fails open.
+      const real = defaultLeaseOptions({ CO_LEASE_DIR: dir, CO_PRESSURE_OVERRIDE: "nope" }, { warn: w });
+      expect(() => real.level()).not.toThrow();
       writeFileSync(join(tmp, "blocker"), "");
       ((await acquireLease({ ...o, dir: join(tmp, "blocker", "lease") }, meta)) as LeaseHandle).release();
     });

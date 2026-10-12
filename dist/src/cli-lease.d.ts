@@ -14,6 +14,7 @@
  * Pure helpers (`parseLeaseArgs`, `runLeased`, `runStatus`) take every external
  * interaction through `LeaseCliDeps`; the file's bottom wires real I/O.
  */
+import type { PressureSampler } from "./memory-pressure.js";
 import { acquireLease, type LeaseOptions, type LeaseStatus } from "./lease.js";
 /** Exactly one of `argv` (spawned directly) and `shell` (run under `/bin/sh -c`) is set. */
 export interface RunArgs {
@@ -60,4 +61,7 @@ export declare function runStatus(d: LeaseCliDeps): number;
 /** Waits for a slot, runs the command with it held, and returns the exit code to pass through. */
 export declare function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>;
 /** The deps `main` runs with: every lease, sink, policy and sampler diagnostic goes through `err`. */
-export declare function cliLeaseDeps(err: (line: string) => void): LeaseCliDeps;
+export declare function cliLeaseDeps(err: (line: string) => void, base?: {
+    env?: NodeJS.ProcessEnv;
+    level?: PressureSampler;
+}): LeaseCliDeps;
