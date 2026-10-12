@@ -23,6 +23,7 @@ import type {
   Logger,
   PostCheckResult,
   StopStage,
+  FailureReason,
 } from "./types.js";
 
 const STALL_CHECK_INTERVAL_MS = 10_000;
@@ -443,7 +444,7 @@ export class Orchestrator {
   private refreshMetadata(issue: Issue): void {
     const logFile = `${this.config.configDir}/logs/issue-${encodeRefForFilename(issue.ref)}.log`;
     try {
-      this.recordPrFromLog(issue, logFile);
+      this.recordPrFromLog(issue, this.readLog(logFile));
     } catch (err) {
       // This runs in `prepareIssues`, before a single session is launched, and
       // only ever *improves* the reporting of work that already succeeded. A
@@ -453,6 +454,15 @@ export class Orchestrator {
           `(${err instanceof Error ? err.message : String(err)}); ` +
           `leaving what is already recorded in place`,
       );
+    }
+  }
+
+  /** The session log's content, or `undefined` when it cannot be read (killed early, or never started). */
+  private readLog(logFile: string): string | undefined {
+    try {
+      return this.deps.readFile(logFile);
+    } catch {
+      return undefined;
     }
   }
 
@@ -473,14 +483,8 @@ export class Orchestrator {
    * A candidate that fails either is dropped with a warning rather than
    * recorded, and existing metadata is left untouched.
    */
-  private recordPrFromLog(issue: Issue, logFile: string): void {
-    let logContent: string;
-    try {
-      logContent = this.deps.readFile(logFile);
-    } catch {
-      // Log file may not exist (process killed early, or never started).
-      return;
-    }
+  private recordPrFromLog(issue: Issue, logContent: string | undefined): void {
+    if (logContent === undefined) return;
 
     // A bare-number ref carries no repo; fall back to the run-wide default, and
     // if there is none, leave the extraction unconstrained — the identity check
@@ -630,12 +634,39 @@ export class Orchestrator {
   }
 
   /**
-   * Record that memory pressure stopped `issue` at `stage`. An unstarted issue
-   * stays `pending`; one already running is marked `failed`.
+   * Record that `reason` (memory pressure unless stated) stopped `issue` at `stage`.
+   * An unstarted issue stays `pending`; one already running is marked `failed`.
    */
-  private async markStopped(issue: Issue, stage: StopStage, status?: Status): Promise<void> {
-    this.deps.metadataStore.update(issue.ref, { failureReason: "memory-critical", stopStage: stage });
+  private async markStopped(
+    issue: Issue, stage: StopStage, status?: Status, reason: FailureReason = "memory-critical",
+  ): Promise<void> {
+    this.deps.metadataStore.update(issue.ref, { failureReason: reason, stopStage: stage });
     if (status) await this.setStatus(issue, status);
+  }
+
+  /**
+   * True (and the issue is failed and stopped) when the session's own terminal
+   * `result` record ends with the line `orchestrator-stop: lease-wait`: the agent
+   * gave up after repeated lease denials, which no commit or green check undoes.
+   * `log` is the transcript read right after a clean exit; the last non-hook
+   * `result` record is the session's (a check-failure retry appends to the same
+   * file, and a hook's own `result` record may land after the real one). Any
+   * other `orchestrator-stop` reason is ignored with a warning.
+   */
+  private async sessionStopped(issue: Issue, log: string | undefined): Promise<boolean> {
+    const text = lastSessionResult(log ?? "");
+    for (const line of text.split("\n")) {
+      const reason = /^orchestrator-stop: (.+)$/.exec(line.replace(/\r$/, ""))?.[1];
+      if (reason === undefined) continue;
+      if (reason !== "lease-wait") {
+        this.deps.logger.warn(`Issue #${issue.number}: ignoring unknown orchestrator-stop reason ${JSON.stringify(reason)}`);
+        continue;
+      }
+      await this.markStopped(issue, "session", "failed", "lease-wait");
+      this.deps.logger.error(`Issue #${issue.number} stopped by its session: lease-wait`);
+      return true;
+    }
+    return false;
   }
 
   /** True (and the issue is failed and stopped) when the check did not run for memory pressure; such a result is never retried. */
@@ -654,9 +685,10 @@ export class Orchestrator {
    * Its exit reaction is attached to `handle.exitCode` before the caller can
    * attach one, so it runs first: on a normal exit, every continuation a call
    * site chains on `handle.exitCode` runs after the monitor has stopped, with
-   * no extra microtask hop. Per-session accounting (#104) and post-exit reads
-   * of the session log (#106) belong in that reaction, so every spawn site
-   * picks them up together. Accounting must also run when `exitCode` rejects
+   * no extra microtask hop. Per-session accounting (#104) belongs in that
+   * reaction, so every spawn site picks it up together; post-exit reads of the
+   * session log stay at the call sites, which await them and act on the result.
+   * Accounting must also run when `exitCode` rejects
    * (a `.finally`-style handler covering both paths), or a rejected exit
    * leaks a count.
    */
@@ -811,7 +843,8 @@ export class Orchestrator {
         });
 
         // Recover the PR this session opened (verified, not merely scraped).
-        this.recordPrFromLog(issue, logFile);
+        const log = this.readLog(logFile);
+        this.recordPrFromLog(issue, log);
 
         if (exitCode !== 0) {
           if (this.isZeroByteLog(logFile)) {
@@ -845,7 +878,8 @@ export class Orchestrator {
               ...NO_STOP,
             });
 
-            this.recordPrFromLog(issue, logFile);
+            const retryLog = this.readLog(logFile);
+            this.recordPrFromLog(issue, retryLog);
 
             if (retryExitCode !== 0) {
               if (this.isZeroByteLog(logFile) && !fallbackTriggered) {
@@ -862,6 +896,8 @@ export class Orchestrator {
               return;
             }
 
+            if (await this.sessionStopped(issue, retryLog)) return;
+
             const zeroRetryCheck = await this.runPostSessionCheck(issue, worktreePath);
             if (!await this.handleCheckResultWithRetry(issue, zeroRetryCheck, prompt, worktreePath, logFile, stderrFile)) return;
 
@@ -875,6 +911,8 @@ export class Orchestrator {
           );
           return;
         }
+
+        if (await this.sessionStopped(issue, log)) return;
 
         const checkResult = await this.runPostSessionCheck(issue, worktreePath);
         if (!await this.handleCheckResultWithRetry(issue, checkResult, prompt, worktreePath, logFile, stderrFile)) return;
@@ -980,6 +1018,8 @@ export class Orchestrator {
         return false;
       }
 
+      if (await this.sessionStopped(issue, this.readLog(logFile))) return false;
+
       checkResult = await this.runPostSessionCheck(issue, worktreePath);
       if (checkResult.passed) {
         // Checks pass — the caller still gates `succeeded` on the run having
@@ -999,6 +1039,27 @@ export class Orchestrator {
     );
     return false;
   }
+}
+
+/**
+ * The `result` text of the last `type: "result"` record in a stream-json
+ * transcript that is not tagged `hook_event_name` (a hook's output, not the
+ * session's), or "" when there is none.
+ */
+function lastSessionResult(log: string): string {
+  const lines = log.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"result"')) continue;
+    try {
+      const rec = JSON.parse(lines[i]) as { type?: unknown; hook_event_name?: unknown; result?: unknown };
+      if (rec.type === "result" && rec.hook_event_name === undefined) {
+        return typeof rec.result === "string" ? rec.result : "";
+      }
+    } catch {
+      // Not a JSON record (a partial last line, or stray output).
+    }
+  }
+  return "";
 }
 
 /**

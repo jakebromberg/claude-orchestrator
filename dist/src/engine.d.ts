@@ -61,6 +61,8 @@ export declare class Orchestrator {
      * has since merged and no longer verifies as open.
      */
     private refreshMetadata;
+    /** The session log's content, or `undefined` when it cannot be read (killed early, or never started). */
+    private readLog;
     /**
      * Scrape the session log for the PR this run opened and record it — but only
      * once it has been proven to be this run's PR.
@@ -118,10 +120,20 @@ export declare class Orchestrator {
      */
     private recordCleanExit;
     /**
-     * Record that memory pressure stopped `issue` at `stage`. An unstarted issue
-     * stays `pending`; one already running is marked `failed`.
+     * Record that `reason` (memory pressure unless stated) stopped `issue` at `stage`.
+     * An unstarted issue stays `pending`; one already running is marked `failed`.
      */
     private markStopped;
+    /**
+     * True (and the issue is failed and stopped) when the session's own terminal
+     * `result` record ends with the line `orchestrator-stop: lease-wait`: the agent
+     * gave up after repeated lease denials, which no commit or green check undoes.
+     * `log` is the transcript read right after a clean exit; the last non-hook
+     * `result` record is the session's (a check-failure retry appends to the same
+     * file, and a hook's own `result` record may land after the real one). Any
+     * other `orchestrator-stop` reason is ignored with a warning.
+     */
+    private sessionStopped;
     /** True (and the issue is failed and stopped) when the check did not run for memory pressure; such a result is never retried. */
     private checkStopped;
     /**
@@ -133,9 +145,10 @@ export declare class Orchestrator {
      * Its exit reaction is attached to `handle.exitCode` before the caller can
      * attach one, so it runs first: on a normal exit, every continuation a call
      * site chains on `handle.exitCode` runs after the monitor has stopped, with
-     * no extra microtask hop. Per-session accounting (#104) and post-exit reads
-     * of the session log (#106) belong in that reaction, so every spawn site
-     * picks them up together. Accounting must also run when `exitCode` rejects
+     * no extra microtask hop. Per-session accounting (#104) belongs in that
+     * reaction, so every spawn site picks it up together; post-exit reads of the
+     * session log stay at the call sites, which await them and act on the result.
+     * Accounting must also run when `exitCode` rejects
      * (a `.finally`-style handler covering both paths), or a rejected exit
      * leaks a count.
      */

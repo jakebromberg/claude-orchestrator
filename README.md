@@ -74,6 +74,8 @@ With a pressure sampler in `Deps` (the CLI wires `defaultLeaseOptions(process.en
 
 At `critical` nothing new starts, neither a launch nor a retry (the 0-byte retry and the check-failure retry). Waiting never relieves pressure, so no timer turns a wait into a start: once no pipeline is active and a fresh reading still says `critical`, the wave ends. Each unstarted issue stays `pending`; a retry refused at `critical` marks its issue `failed`. Every stop is recorded on the issue's metadata and on its report row as `failureReason: "memory-critical"` plus `stopStage` (`launch`, `retry`, `post-check` or `session`), so a stopped issue is not mistaken for a model failure or a held cutover gate. The marker is cleared when the issue later launches, retries or runs its check, and whenever a later dispatch takes the issue up again (an issue that already succeeded keeps its metadata). The way past the stop rule is `CO_PRESSURE_OVERRIDE=critical-as-warning`.
 
+A session can also stop itself: when its final `result` message ends with the exact line `orchestrator-stop: lease-wait` (an agent giving up after repeated lease denials), the engine skips the post-session check and any retry and marks the issue `failed` with `failureReason: "lease-wait"` and `stopStage: "session"`, even if the session left commits and the check would pass. Any other `orchestrator-stop: <reason>` is ignored with a warning.
+
 `--no-adaptive` turns off `warning` adaptation and the 60 s hysteresis only. It never bypasses the stop rule.
 
 ### Heavy-command lease
