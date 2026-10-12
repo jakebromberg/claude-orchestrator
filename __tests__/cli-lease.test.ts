@@ -357,18 +357,16 @@ describe("runLeased", () => {
       expect(await done).toBe(0);
     });
 
-    it("dies of a signal that arrives while it waits, removing the forwarders first, and runs nothing", async () => {
-      let admit!: (outcome: LeaseRefusal) => void;
+    it("re-raises a signal that arrives while it waits on its own PID, after removing the forwarders", async () => {
+      let refuse!: (outcome: LeaseRefusal) => void;
       const listening: number[][] = [];
       signals.kill.mockImplementation(() => listening.push(forwarders()));
-      const done = run({}, { acquire: (() => new Promise((r) => (admit = r))) as unknown as typeof acquireLease });
+      const done = run({}, { acquire: (() => new Promise((r) => (refuse = r))) as unknown as typeof acquireLease });
       signals.emit("SIGTERM");
       expect(signals.kill).toHaveBeenCalledExactlyOnceWith(999, "SIGTERM");
       expect(listening).toEqual([[0, 0, 0]]);
-      admit({ refused: "max-wait", waitedMs: 0, level: "warning", live: 1 });
-      await done;
-      expect(spawned).toEqual([]);
-      expect(handle.release).not.toHaveBeenCalled();
+      refuse({ refused: "max-wait", waitedMs: 0, level: "warning", live: 1 });
+      expect(await done).toBe(75);
     });
   });
 
