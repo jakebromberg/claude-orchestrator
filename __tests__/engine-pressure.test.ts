@@ -46,9 +46,11 @@ function setUp(
   level: PressureLevel,
   opts: {
     run?: RunOptions; hooks?: Partial<OrchestratorHooks>; retries?: number; logSize?: number; waves?: number[];
+    shape?: (issues: Issue[]) => void;
   } = {},
 ) {
   const issues = Array.from({ length: issueCount }, (_, i) => makeIssue(i + 1, opts.waves?.[i]));
+  opts.shape?.(issues);
   const hooks: OrchestratorHooks = {
     showHelp: vi.fn(),
     shouldSkipIssue: () => ({ skip: false }),
@@ -282,6 +284,60 @@ describe("pressure-aware launches", () => {
     await wave;
   });
 
+  const STOP = { failureReason: "memory-critical", stopStage: "launch" } as const;
+
+  it.each<{
+    name: string;
+    opts: Parameters<typeof setUp>[2];
+    run: (o: Orchestrator) => Promise<void>;
+    ends: Status;
+    held?: boolean;
+  }>([
+    {
+      name: "skipped for a failed dependency",
+      opts: { shape: (issues) => { issues[0].dependsOn = [2]; issues[0].deps = ["2"]; } },
+      run: (o) => o.runSpecific([1]),
+      ends: "skipped",
+    },
+    {
+      name: "failed in worktree set-up",
+      opts: { hooks: { setUpWorktree: async () => { throw new Error("no worktree"); } } },
+      run: (o) => o.runWave(1),
+      ends: "failed",
+    },
+    {
+      name: "held at a cutover gate",
+      opts: {
+        shape: (issues) => {
+          issues[0].mode = "gate";
+          Object.assign(issues[1], { mode: "deploy", command: "true" }); // nothing else for the run to launch
+        },
+      },
+      run: (o) => o.runAllWaves(),
+      ends: "pending",
+      held: true,
+    },
+  ])("clears a stale stop marker on an issue that ends $name", async ({ opts, run, ends, held }) => {
+    const { orchestrator, deps, status, meta, logger } = setUp(2, "normal", opts);
+    deps.statusStore.set("2", "failed");
+    deps.metadataStore.update("1", STOP);
+    await run(orchestrator);
+
+    expect(status(1)).toBe(ends);
+    expect(meta(1).failureReason).toBeUndefined();
+    expect(meta(1).stopStage).toBeUndefined();
+    const heldLines = logger.warn.mock.calls.filter(([m]) => String(m).includes("held at a cutover gate"));
+    expect(heldLines.some(([m]) => String(m).includes("Held: 1"))).toBe(Boolean(held));
+  });
+
+  it("leaves the metadata of an already-succeeded issue unchanged", async () => {
+    const { orchestrator, deps, meta } = setUp(1, "normal");
+    deps.statusStore.set("1", "succeeded");
+    deps.metadataStore.update("1", STOP);
+    await orchestrator.runWave(1);
+    expect(meta(1)).toMatchObject(STOP);
+  });
+
   it("does not report a stopped issue as held at a cutover gate", async () => {
     const { orchestrator, logger } = setUp(1, "critical");
     await orchestrator.runAllWaves();
@@ -308,6 +364,50 @@ describe("pressure-aware retries", () => {
     expect(runner.spawned.length).toBe(1);
     expect(status(1)).toBe("failed");
     expect(meta(1)).toMatchObject({ failureReason: "memory-critical", stopStage: "retry" });
+  });
+
+  it("clears a marker the failed check left behind once the retry session has run", async () => {
+    const { orchestrator, runner, deps, status, meta } = setUp(1, "normal", {
+      hooks: {
+        postSessionCheck: vi.fn(async () => {
+          deps.metadataStore.update("1", { failureReason: "memory-critical", stopStage: "post-check" });
+          return { passed: false, output: "lint", summary: "lint" };
+        }),
+      },
+      retries: 1,
+    });
+    const wave = orchestrator.runWave(1);
+    await vi.advanceTimersByTimeAsync(0);
+    runner.resolvers.get(1000)!(0);
+    await vi.advanceTimersByTimeAsync(0);
+    runner.resolvers.get(1001)!(1); // the retry itself fails, so no later check can clear the marker
+    await wave;
+
+    expect(status(1)).toBe("failed");
+    expect(meta(1).failureReason).toBeUndefined();
+    expect(meta(1).stopStage).toBeUndefined();
+  });
+
+  it("clears a stale marker before the check runs", async () => {
+    const seen: unknown[] = [];
+    const { orchestrator, runner, deps, meta } = setUp(1, "normal", {
+      hooks: {
+        postSessionCheck: vi.fn(async () => {
+          seen.push({ ...deps.metadataStore.get("1") });
+          deps.metadataStore.update("1", { failureReason: "memory-critical", stopStage: "post-check" });
+          return { passed: false, output: "lint", summary: "lint" };
+        }),
+      },
+    });
+    const wave = orchestrator.runWave(1);
+    await vi.advanceTimersByTimeAsync(0);
+    deps.metadataStore.update("1", { failureReason: "memory-critical", stopStage: "launch" }); // left by the session
+    runner.resolvers.get(1000)!(0);
+    await wave;
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ failureReason: undefined, stopStage: undefined });
+    expect(meta(1)).toMatchObject({ failureReason: "memory-critical", stopStage: "post-check" }); // the hook's own, written after the clear
   });
 
   it("still retries at warning", async () => {
