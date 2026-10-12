@@ -268,7 +268,7 @@ async function main(argv: string[]): Promise<number> {
   try {
     args = parseLeaseArgs(argv);
   } catch (err) {
-    process.stderr.write(`lease: ${(err as Error).message}\nusage: claude-orchestrator-lease [--max-wait <sec>] [--label <text>] (-- <cmd> [args...] | --shell '<command line>') | status\n`);
+    process.stderr.write(`lease: ${(err as Error).message}\nusage: claude-orchestrator-lease [--max-wait <sec>] [--label <text>] (-- <cmd> [args...] | --shell '<command line>') | status | hook [--print-settings-entry]\n`);
     return EX_USAGE;
   }
   const deps = cliLeaseDeps((line) => {

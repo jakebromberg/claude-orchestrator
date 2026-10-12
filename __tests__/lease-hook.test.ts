@@ -21,6 +21,13 @@ const HEAVY = [
   `claude-orchestrator-lease status && npm test`,
   `cat ${CLI}; npm test`,
   `./node_modules/.bin/claude-orchestrator-lease status; make`,
+  // Segment starts beyond && || ; | and newline.
+  "if x; then npm test; fi", "for f in a; do pytest; done", "if x; then a; else make; fi", "(npm test)", "{ npm test; }", "time npm test", "! npm test",
+  "echo a & npm test", "then deno test", "echo hi 2>&1 | npm test",
+  // git's global options before push.
+  "git -C /path/to/wt push -u origin HEAD", "git -c core.hooksPath=x push", "git -C '/a b' -c k=v push",
+  // Pattern words and paths.
+  "make test", "make", "scripts/test-all.sh", `cat x \\\n && npm test`,
 ];
 
 const NOT_HEAVY = [
@@ -31,6 +38,18 @@ const NOT_HEAVY = [
   `node ${QUOTED_CLI} --shell 'npm ci && npm test'`,
   `./node_modules/.bin/claude-orchestrator-lease --max-wait 30 --label 'ci run' --shell 'npm ci; npm test'`,
   `CO_X=1 node ${CLI} -- npm test`,
+  // Skip rule: continuations, quoted bins, and the prefix and `--` forms (each fails without its part).
+  `node "${CLI}" \\\n  --shell 'npm ci && npm test'`,
+  `claude-orchestrator-lease --label ci \\\n  --shell 'npm ci && npm test'`,
+  `"./node_modules/.bin/claude-orchestrator-lease" --shell 'npm ci && npm test'`,
+  `'./node_modules/.bin/claude-orchestrator-lease' --shell 'npm ci && npm test'`,
+  `"$CO_HOME/node_modules/.bin/claude-orchestrator-lease" --shell 'npm ci; npm test'`,
+  `CO_X=1 node ${CLI} --shell 'a && npm test'`,
+  `env CI=1 timeout 60 claude-orchestrator-lease --shell 'a && npm test'`,
+  `CO_X=1 node ${CLI} -- sh -c 'a; npm test'`,
+  `node ${CLI} -- sh -c 'a; npm test'`,
+  // A pattern word as a directory or file name.
+  "./make/foo.sh", "tools/jest/run.sh", "vitest.config.ts", "./make/claude-orchestrator-lease status",
   `node ${CLI} status && ls`,
   `ls && node ${CLI} --shell 'npm test'`,
   "",
@@ -43,6 +62,13 @@ describe("isHeavyCommand", () => {
 
   it.each(NOT_HEAVY)("does not match %j", (command) => {
     expect(isHeavyCommand(command)).toBe(false);
+  });
+
+  it.each(["a;", "a && "])("classifies 80 KB of %j in linear time", (unit) => {
+    const text = unit.repeat(80_000 / unit.length);
+    const start = performance.now();
+    expect(isHeavyCommand(text)).toBe(false);
+    expect(performance.now() - start).toBeLessThan(200);
   });
 
   it("adds extra patterns after the same prefix, and ignores one that is not a regex", () => {
