@@ -32,7 +32,7 @@ const HEAVY = [
   "PYTHONPATH=$(pwd)/src pytest -q", 'PYTHONPATH="$(pwd)/src" pytest -q', "PYTHONPATH=${PWD}/src pytest -q", "PYTHONPATH=${PYTHONPATH}:src pytest",
   'PATH="$(pwd)/node_modules/.bin:$PATH" npm test', 'DATABASE_URL="postgres://$(whoami)@localhost/test" npm test', 'MSG="built $(date) ok" npm test',
   'DB="ts_$(basename "$(pwd)")_test" pytest -q', "X=`pwd`/src pytest", 'FOO="a;b" npm test', "LD_LIBRARY_PATH=${HOME}/lib cargo test",
-  "env PATH=${HOME}/bin:$PATH npm test", '"$(npm bin)/vitest" run',
+  "env PATH=${HOME}/bin:$PATH npm test", '"$(npm bin)/vitest" run', "FOO='a;b' npm test", "FILTER='unit|smoke' npm test",
   // Quotes, heredocs and comments are not tracked, so an apostrophe in them hides nothing after them.
   `echo 'a && b' && npm test`, `echo "$(ls; pwd)" ; npm test`, `echo "it's\nok && npm test`,
   `git commit -m "$(cat <<'EOF'\nTighten the matcher's scan\n\nIt's "quoted" here\nEOF\n)" && git push -u origin HEAD`,
@@ -51,6 +51,8 @@ const NOT_HEAVY = [
   "./make/foo.sh", "tools/jest/run.sh", "vitest.config.ts",
   // A stripped tail leaves only what follows it.
   "echo $(date)/x", "X=$(pwd)/src ls", 'FOO="a;b" ls', "cd $(pwd) && ls",
+  // Only `)`, `}` and a backtick glue a tail: a word after `|` or a newline is a command word.
+  "ps aux|grep make", `git commit -m "$(cat <<'EOF'\nBump vitest to 3.2\nEOF\n)"`,
   // The CLI rule: any text that mentions the CLI takes no slot, whatever surrounds it.
   `node ${CLI} --shell 'npm ci && npm test'`,
   `claude-orchestrator-lease --shell 'npm ci && npm test'`,

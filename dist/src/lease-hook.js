@@ -73,9 +73,10 @@ export function isHeavyCommand(command, extraPatterns = []) {
 }
 /**
  * Strips the segment's leading words one whitespace token at a time, then tests the command word and the rest. A
- * command word that fails is stripped too when it is the tail of a word split at a separator inside it: glued to the
- * `)`, `}` or backtick before the segment (`PYTHONPATH=$(pwd)/src pytest`), or holding an odd number of a quote
- * character (`FOO="a;b" npm test`). A tail of more than one word (`MSG="a $(date) b c" npm test`) still hides the command.
+ * command word that fails is stripped too when it looks like the tail of a word split at a separator inside it: glued
+ * to the `)`, `}` or backtick before the segment (`PYTHONPATH=$(pwd)/src pytest`), or holding an odd number of a quote
+ * character (`FOO="a;b" npm test`). The heuristic can also make prose heavy (`"fix(ci): make …"`), which costs only a
+ * wait; a tail of more than one word (`MSG="a $(date) b c" npm test`) still hides the command.
  */
 function isHeavySegment(segment, heavy, after = "") {
     const glued = /[)}`]/.test(after) && /^\S/.test(segment);
