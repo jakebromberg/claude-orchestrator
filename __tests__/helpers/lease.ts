@@ -1,4 +1,6 @@
-import { writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import os, { tmpdir } from "node:os";
+import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 
 /** The parent env with every `CO_LEASE_*` / `CO_PRESSURE_*` scrubbed, then the isolation settings applied. */
@@ -53,4 +55,75 @@ export function fakeLeaseClock(): FakeLeaseClock {
     },
   };
   return clock;
+}
+
+export interface IsolatedHome {
+  /** The temp directory standing in for the account's home. */
+  home: string;
+  /** Everything under `<home>/.local/state/claude-orchestrator` except the empty `lease` directory planted there; empty when nothing wrote. */
+  stray: () => string[];
+  /** Puts the state directory back to its planted shape. */
+  reset: () => void;
+  /** Restores `HOME`, `XDG_STATE_HOME` and `os.userInfo`, and removes the temp home. */
+  dispose: () => void;
+}
+
+/**
+ * Sends default home resolution to a temp home: `HOME`, `XDG_STATE_HOME` and `os.userInfo().homedir` (which
+ * `leaseDirectory` falls back to for an env without `HOME`, and which `HOME` does not influence) all resolve inside it.
+ * The default lease directory is planted empty, because the sampler persists `level.json` only into a directory that
+ * exists: a test that resolves the default directory and writes there leaves an entry `stray()` reports, on a machine
+ * with or without a real lease directory. Installed for the whole run by `isolate-home.ts`.
+ */
+export function installIsolatedHome(): IsolatedHome {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "co-home-")));
+  const stateDir = join(home, ".local", "state", "claude-orchestrator");
+  const saved = { HOME: process.env.HOME, XDG_STATE_HOME: process.env.XDG_STATE_HOME, userInfo: os.userInfo };
+  const plant = (): void => {
+    mkdirSync(join(stateDir, "lease"), { recursive: true });
+  };
+
+  process.env.HOME = home;
+  process.env.XDG_STATE_HOME = join(home, ".local", "state");
+  const realUserInfo = saved.userInfo;
+  os.userInfo = ((options?: { encoding: "buffer" }) => ({ ...realUserInfo(options as never), homedir: home })) as typeof os.userInfo;
+  // The named `userInfo` import in `src/memory-pressure.ts` is a binding on the builtin's ESM namespace, not on `os`.
+  syncBuiltinESMExports();
+  plant();
+
+  const stray = (): string[] => {
+    const found: string[] = [];
+    const walk = (dir: string, prefix: string): void => {
+      for (const name of readdirSync(dir).sort()) {
+        const rel = prefix ? `${prefix}/${name}` : name;
+        if (rel !== "lease") found.push(rel);
+        if (statSync(join(dir, name)).isDirectory()) walk(join(dir, name), rel);
+      }
+    };
+    try {
+      if (!statSync(join(stateDir, "lease")).isDirectory()) throw new Error("not a directory");
+      walk(stateDir, "");
+    } catch {
+      found.push("lease (missing)");
+    }
+    return found;
+  };
+
+  return {
+    home,
+    stray,
+    reset: () => {
+      rmSync(stateDir, { recursive: true, force: true });
+      plant();
+    },
+    dispose: () => {
+      for (const key of ["HOME", "XDG_STATE_HOME"] as const) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+      os.userInfo = saved.userInfo;
+      syncBuiltinESMExports();
+      rmSync(home, { recursive: true, force: true });
+    },
+  };
 }

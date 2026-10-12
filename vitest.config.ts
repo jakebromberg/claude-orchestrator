@@ -4,5 +4,6 @@ export default defineConfig({
   test: {
     root: ".",
     include: ["__tests__/**/*.test.ts"],
+    setupFiles: ["__tests__/helpers/isolate-home.ts"],
   },
 });

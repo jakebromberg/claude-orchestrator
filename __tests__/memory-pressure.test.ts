@@ -264,23 +264,25 @@ describe("defaultPressureSampler", () => {
   });
 
   describe("overridden()", () => {
-    const OVERRIDE = { ...env, CO_PRESSURE_OVERRIDE: "critical-as-warning" };
+    const overrideEnv = () => ({ ...env, CO_PRESSURE_OVERRIDE: "critical-as-warning" });
 
     it.each([
-      ["critical", OVERRIDE, "warning", true],
-      ["warning", OVERRIDE, "warning", false],
-      ["normal", OVERRIDE, "normal", false],
-      ["critical", env, "critical", false],
-    ] as const)("raw %s with %j reads %s, overridden=%s", (raw, e, level, overridden) => {
+      ["critical", true, "warning", true],
+      ["warning", true, "warning", false],
+      ["normal", true, "normal", false],
+      ["critical", false, "critical", false],
+    ] as const)("raw %s with override=%s reads %s, overridden=%s", (raw, override, level, wasOverridden) => {
       reading = raw;
-      const s = make(e);
+      const s = make(override ? overrideEnv() : env);
       expect(s()).toBe(level);
-      expect(s.overridden?.()).toBe(overridden);
+      expect(s.overridden?.()).toBe(wasOverridden);
+      expect(persisted().level).toBe(raw);
+      expect(readdirSync(dir)).toEqual(["level.json"]);
     });
 
     it("follows the last reading, and logs only when a reading is mapped", () => {
       reading = "warning";
-      const s = make(OVERRIDE);
+      const s = make(overrideEnv());
       s();
       expect(log).not.toHaveBeenCalled();
       reading = "critical";
