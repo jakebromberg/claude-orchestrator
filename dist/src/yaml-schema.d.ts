@@ -112,8 +112,8 @@ export declare const YamlConfigSchema: z.ZodObject<{
             max: "max";
         }>>;
         complexity: z.ZodOptional<z.ZodEnum<{
-            mechanical: "mechanical";
             normal: "normal";
+            mechanical: "mechanical";
             complex: "complex";
         }>>;
         extraDirs: z.ZodOptional<z.ZodArray<z.ZodString>>;
