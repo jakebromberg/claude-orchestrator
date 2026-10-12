@@ -6,6 +6,9 @@ export function isolatedLeaseEnv(leaseDir: string, extra: NodeJS.ProcessEnv = {}
   return { ...env, CO_LEASE_DIR: leaseDir, CO_LEASE_SLOTS: "1", CO_PRESSURE_OVERRIDE: "critical-as-warning", ...extra };
 }
 
+// Captured at load: `vi.useFakeTimers()` replaces the global `setImmediate`, which would stall the yield below.
+const realSetImmediate = setImmediate;
+
 export interface FakeLeaseClock {
   /** The injected clock, in ms. Assign or `+=` it to move time without sleeping. */
   ms: number;
@@ -33,7 +36,7 @@ export function fakeLeaseClock(): FakeLeaseClock {
       clock.sleeps.push(ms);
       clock.ms += ms;
       clock.onSleep();
-      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => realSetImmediate(r));
     },
   };
   return clock;

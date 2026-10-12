@@ -9,12 +9,14 @@ export { createSilentLogger } from "./log.js";
  * cache; `overridden()` exists only when `options.overridden` is set.
  */
 export function scriptedPressureSampler(
-  levels: PressureLevel | PressureLevel[] | (() => PressureLevel),
+  levels: PressureLevel | readonly PressureLevel[] | (() => PressureLevel),
   options: { fresh?: () => PressureLevel; overridden?: boolean } = {},
 ): PressureSampler {
   let i = 0;
   const script = typeof levels === "string" ? [levels] : levels;
-  const read = typeof script === "function" ? script : () => script[Math.min(i++, script.length - 1)];
+  if (typeof script !== "function" && script.length === 0) throw new Error("scriptedPressureSampler needs at least one level");
+  // Always a new function: `Object.assign` below must never write onto the caller's own function.
+  const read = typeof script === "function" ? () => script() : () => script[Math.min(i++, script.length - 1)];
   const { fresh = read, overridden } = options;
   return Object.assign(read, { fresh }, overridden === undefined ? {} : { overridden: () => overridden });
 }

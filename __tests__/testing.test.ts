@@ -36,4 +36,24 @@ describe("scriptedPressureSampler", () => {
     expect("overridden" in sampler).toBe(present);
     expect(sampler.overridden?.()).toBe(value);
   });
+
+  it("builds an independent sampler from a function each time, so two samplers sharing one function do not rewrite each other", () => {
+    const read = () => "warning" as PressureLevel;
+    const plain = scriptedPressureSampler(read);
+    const withOverride = scriptedPressureSampler(read, { overridden: true });
+    expect(plain).not.toBe(read);
+    expect(withOverride).not.toBe(plain);
+    expect("overridden" in plain).toBe(false);
+    expect("overridden" in read).toBe(false);
+    expect(withOverride.overridden?.()).toBe(true);
+  });
+
+  it("accepts a readonly list", () => {
+    const sampler = scriptedPressureSampler(["normal", "critical"] as const);
+    expect([sampler(), sampler()]).toEqual(["normal", "critical"]);
+  });
+
+  it("rejects an empty list", () => {
+    expect(() => scriptedPressureSampler([])).toThrow(/at least one/);
+  });
 });
