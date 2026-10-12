@@ -38,4 +38,14 @@ describe("unwritableLeaseDir", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it("throws EISDIR instead of returning a creatable path when blocker is a directory", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "helpers-lease-"));
+    try {
+      mkdirSync(join(tmp, "blocker"));
+      expect(() => unwritableLeaseDir(tmp)).toThrow(expect.objectContaining({ code: "EISDIR" }));
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
