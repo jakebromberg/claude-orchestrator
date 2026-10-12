@@ -36,12 +36,18 @@ export class Orchestrator {
     governor;
     /** `claude` sessions currently running; `spawnSession` is the only writer. */
     liveSessions = 0;
+    /** Session ids this run launched, by issue ref; a 0-byte retry reuses its id, so one launch is one entry. */
+    launched = new Map();
     constructor(config, deps, options) {
         this.config = config;
         this.deps = deps;
         this.maxParallel = options?.maxParallel ?? 4;
         this.mergePolicy = options?.mergePolicy ?? "none";
         this.adaptive = options?.adaptive ?? true;
+    }
+    /** Rows this run launched a session for, with the `--session-id` of each launch (for the run report). */
+    launchedSessions() {
+        return this.launched;
     }
     checkPrerequisites() {
         if (!this.deps.commandExists("claude")) {
@@ -658,6 +664,7 @@ export class Orchestrator {
                 this.deps.logger.warn(`Memory pressure is critical and no session is active; not launching ${unstarted.map((i) => i.ref).join(", ")} (failureReason: memory-critical)`);
                 break;
             }
+            this.launched.set(issue.ref, [...(this.launched.get(issue.ref) ?? []), sessionId]);
             await this.setStatus(issue, "running");
             this.deps.logger.step(`Launching Claude session for issue #${issue.number}: ${issue.description}`);
             const worktreePath = this.config.hooks.getWorktreePath(issue);

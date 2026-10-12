@@ -44,6 +44,37 @@ describe("generateReport", () => {
     expect(report.issues[2]).toMatchObject({ failureReason: "lease-wait", stopStage: "session" });
   });
 
+  it("writes ran on every row and sessionIds only on launched rows", () => {
+    const issues = [makeIssue({ number: 1 }), makeIssue({ number: 2 })];
+
+    const report = generateReport(
+      "Test",
+      issues,
+      () => "succeeded" as Status,
+      () => ({}),
+      new Date("2026-01-01T00:00:00Z"),
+      new Date("2026-01-01T00:01:00Z"),
+      new Map([["1", ["sid-1"]]]),
+    );
+
+    expect(report.issues[0]).toMatchObject({ ran: true, sessionIds: ["sid-1"] });
+    expect(report.issues[1]).toMatchObject({ ran: false });
+    expect(report.issues[1]).not.toHaveProperty("sessionIds");
+  });
+
+  it("marks every row ran: false when no launches are supplied", () => {
+    const report = generateReport(
+      "Test",
+      [makeIssue({ number: 1 })],
+      () => "pending" as Status,
+      () => ({}),
+      new Date("2026-01-01T00:00:00Z"),
+      new Date("2026-01-01T00:01:00Z"),
+    );
+
+    expect(report.issues[0]).toMatchObject({ ran: false });
+  });
+
   it("includes config name and timing", () => {
     const start = new Date("2026-01-01T00:00:00Z");
     const end = new Date("2026-01-01T00:05:00Z");

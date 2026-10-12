@@ -483,7 +483,7 @@ export async function createMain(options) {
     config.hooks.printSummary(config.issues, (n) => deps.statusStore.get(n));
     // Write post-run report
     const finishedAt = new Date();
-    const report = generateReport(config.name, config.issues, (n) => deps.statusStore.get(n), (n) => deps.metadataStore.get(n), startedAt, finishedAt);
+    const report = generateReport(config.name, config.issues, (n) => deps.statusStore.get(n), (n) => deps.metadataStore.get(n), startedAt, finishedAt, orchestrator.launchedSessions());
     const reportId = startedAt.toISOString().replace(/:/g, "-");
     const jsonPath = path.join(config.configDir, "reports", `${reportId}.json`);
     const mdPath = path.join(config.configDir, "reports", `${reportId}.md`);

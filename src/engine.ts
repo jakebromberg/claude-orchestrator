@@ -58,6 +58,8 @@ export class Orchestrator {
   private governor?: CapacityGovernor;
   /** `claude` sessions currently running; `spawnSession` is the only writer. */
   private liveSessions = 0;
+  /** Session ids this run launched, by issue ref; a 0-byte retry reuses its id, so one launch is one entry. */
+  private launched = new Map<string, string[]>();
 
   constructor(config: OrchestratorConfig, deps: Deps, options?: RunOptions) {
     this.config = config;
@@ -65,6 +67,11 @@ export class Orchestrator {
     this.maxParallel = options?.maxParallel ?? 4;
     this.mergePolicy = options?.mergePolicy ?? "none";
     this.adaptive = options?.adaptive ?? true;
+  }
+
+  /** Rows this run launched a session for, with the `--session-id` of each launch (for the run report). */
+  launchedSessions(): ReadonlyMap<string, readonly string[]> {
+    return this.launched;
   }
 
   checkPrerequisites(): void {
@@ -801,6 +808,7 @@ export class Orchestrator {
         break;
       }
 
+      this.launched.set(issue.ref, [...(this.launched.get(issue.ref) ?? []), sessionId]);
       await this.setStatus(issue, "running");
       this.deps.logger.step(
         `Launching Claude session for issue #${issue.number}: ${issue.description}`,

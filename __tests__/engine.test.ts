@@ -459,6 +459,55 @@ describe("Orchestrator", () => {
     });
   });
 
+  describe("launchedSessions", () => {
+    it("records ids for the rows --retry-failed re-ran and nothing for carried-over rows", async () => {
+      const issues = [makeIssue({ number: 1, wave: 1 }), makeIssue({ number: 2, wave: 1 })];
+      const { orchestrator, deps } = makeOrchestrator(issues, undefined, {
+        generateSessionId: () => "retry-sid",
+      });
+      deps.statusStore.set("1", "failed");
+      deps.statusStore.set("2", "succeeded");
+
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.retryFailed();
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+      for (const [, resolve] of runner.resolvers) resolve(0);
+      await promise;
+
+      expect([...orchestrator.launchedSessions()]).toEqual([["1", ["retry-sid"]]]);
+    });
+
+    it("records nothing for a worktree-setup failure or a skipped row", async () => {
+      const issues = [makeIssue({ number: 1, wave: 1 }), makeIssue({ number: 2, wave: 1 })];
+      const { orchestrator } = makeOrchestrator(issues, {
+        setUpWorktree: vi.fn(async () => { throw new Error("boom"); }),
+        shouldSkipIssue: (issue: Issue) => ({ skip: issue.number === 2 }),
+      });
+
+      await orchestrator.runWave(1);
+
+      expect(orchestrator.launchedSessions().size).toBe(0);
+    });
+
+    it("keeps one id for a launch whose 0-byte retry re-spawned", async () => {
+      const getLogFileSize = vi.fn(() => 0);
+      const { orchestrator, deps } = makeOrchestrator(
+        [makeIssue({ number: 1, wave: 1 })], undefined, { getLogFileSize },
+      );
+
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+      runner.resolvers.get(1000)!(1);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(2));
+      getLogFileSize.mockReturnValue(100);
+      runner.resolvers.get(1001)!(0);
+      await promise;
+
+      expect(orchestrator.launchedSessions().get("1")).toEqual(["test-session-id"]);
+    });
+  });
+
   describe("shouldSkipIssue hook", () => {
     it("skips issue when hook returns skip: true", async () => {
       const issue = makeIssue({ number: 1, wave: 1 });

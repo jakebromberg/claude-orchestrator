@@ -551,6 +551,7 @@ export async function createMain(options: MainOptions): Promise<void> {
     (n) => deps.metadataStore.get(n),
     startedAt,
     finishedAt,
+    orchestrator.launchedSessions(),
   );
 
   const reportId = startedAt.toISOString().replace(/:/g, "-");

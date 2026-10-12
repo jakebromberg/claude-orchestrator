@@ -24,7 +24,7 @@ src/
 ├── merge.ts              # PR merge with rebase onto each PR's per-repo base branch
 ├── run-history.ts        # Run record persistence
 ├── dependency-files.ts   # Dependency file detection
-├── report.ts             # Post-run report generation
+├── report.ts             # Post-run report generation (`ran`/`sessionIds` per row, from `Orchestrator.launchedSessions()`)
 ├── memory-pressure.ts    # Memory-pressure level reader, heavy/session capacity tables, stop rule, cached sampler
 ├── capacity-governor.ts  # createCapacityGovernor() — pressure readings → launch capacity (bounds pipelines), 60 s hysteresis, transition logging
 ├── lease.ts              # Machine-wide heavy-command lease: holder files, 30 s mtime heartbeat (90 s staleness) + child-PID liveness, admission, fail-open, detached holders (`HolderMeta.detached`: session PID + `expiresAt`, no heartbeat; `dead-session`/`expired` reaps; `releaseHolder` by id; an acquire of an id whose holder is live is admitted at once with a borrowed handle; id `{1,160}`, session PID and `expiresAt` validated) (acquireLease, leaseStatus)

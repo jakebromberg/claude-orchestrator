@@ -35,6 +35,13 @@ export interface ReportData {
     /** Set when the engine stopped this issue rather than the model failing it. */
     failureReason?: FailureReason;
     stopStage?: StopStage;
+    /**
+     * Whether this invocation launched a session for the row. Absent in a report
+     * written before this field existed, so consumers can tell the two apart.
+     */
+    ran: boolean;
+    /** `--session-id` of each launch; present only when `ran`. */
+    sessionIds?: string[];
   }>;
 }
 
@@ -45,6 +52,7 @@ export function generateReport(
   getMetadata: (ref: string) => IssueMetadata,
   startedAt: Date,
   finishedAt: Date,
+  launched: ReadonlyMap<string, readonly string[]> = new Map(),
 ): ReportData {
   const durationSeconds =
     Math.round((finishedAt.getTime() - startedAt.getTime()) / 10) / 100;
@@ -56,6 +64,7 @@ export function generateReport(
     durationSeconds,
     issues: issues.map((issue) => {
       const meta = getMetadata(issue.ref);
+      const sessionIds = launched.get(issue.ref);
       return {
         ref: issue.ref,
         number: issue.number,
@@ -65,6 +74,8 @@ export function generateReport(
         ...(meta.prUrl ? { prUrl: meta.prUrl, prNumber: meta.prNumber } : {}),
         ...(meta.failureReason ? { failureReason: meta.failureReason } : {}),
         ...(meta.stopStage ? { stopStage: meta.stopStage } : {}),
+        ran: sessionIds !== undefined,
+        ...(sessionIds ? { sessionIds: [...sessionIds] } : {}),
       };
     }),
   };
