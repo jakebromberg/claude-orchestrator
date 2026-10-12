@@ -9,6 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -30,3 +31,6 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Check dist is up to date
+        run: git diff --exit-code -- dist
