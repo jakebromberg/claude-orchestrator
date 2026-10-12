@@ -26,31 +26,38 @@ import { shellQuote } from "./shell-quote.js";
  * starts with `-`, so each token has at most one reading that continues the match, and a failed match stays linear.
  */
 const NPM_OPTIONS = "(?: (?:(?:--prefix|-C|--workspace|-w|--package|-p) (?:'[^']*'|\"[^\"]*\"|[^\\s'\"-]\\S*)|-[\\w-]+(?:=\\S*)?))*";
-/** `[word, pattern]`: `word` appears in every command `pattern` matches; the printed shell pre-filter greps for it. */
+/** Between the words of a pre-filter entry: whitespace as JSON writes it (`\t`, `\n`), or a quote or continuation run. */
+const GAP = "([^[:alnum:]]|\\\\[tnr])+";
+/** What may follow a command word in the hook JSON: the pre-filter's counterpart of the matcher's `(?![\w./-])`. */
+const END = "([^[:alnum:]_./-]|$)";
+/**
+ * `[word, pattern]`: `word` is an ERE found in every command `pattern` matches; the printed shell pre-filter greps the hook
+ * JSON for it. A space in a word stands for any whitespace or quote run, since JSON writes a tab as `\t` and a continuation as `\\\n`.
+ */
 const DEFAULT_PATTERNS = [
     ["npm", `npm${NPM_OPTIONS} (?:ci|install|i|test|t)`],
     ["npm", `npm${NPM_OPTIONS} run (?:test|build|typecheck|lint|ci)[\\w:-]*`],
     ["npx", `npx${NPM_OPTIONS} (?:vitest|jest|tsc|playwright)`],
-    ["vitest", "vitest"],
-    ["jest", "jest"],
-    ["tsc", "tsc"],
-    ["node", "node --test"],
-    ["pytest", "pytest"],
-    ["uv", "uv run (?:\\S+ )*(?:pytest|mypy)"],
-    ["mypy", "mypy"],
-    ["python", "python3? -m (?:pytest|mypy|pip install)"],
-    ["pip", "pip3? install"],
-    ["uv", "uv (?:sync|pip install)"],
+    [`vitest${END}`, "vitest"],
+    [`jest${END}`, "jest"],
+    [`tsc${END}`, "tsc"],
+    [`node --test${END}`, "node --test"],
+    [`pytest${END}`, "pytest"],
+    ["uv run", "uv run (?:\\S+ )*(?:pytest|mypy)"],
+    [`mypy${END}`, "mypy"],
+    ["python3? -m (pytest|mypy|pip)", "python3? -m (?:pytest|mypy|pip install)"],
+    ["pip3? install", "pip3? install"],
+    ["uv (sync|pip)", "uv (?:sync|pip install)"],
     ["xcodebuild", "(?:xcrun )?xcodebuild"],
-    ["swift", "(?:xcrun )?swift (?:build|test)"],
-    ["cargo", "cargo (?:build|test|check|clippy)"],
-    ["gradlew", "gradlew"],
-    ["go", "go (?:build|test|vet)"],
-    ["deno", "deno test"],
-    ["make", "make"],
+    ["swift (build|test)", "(?:xcrun )?swift (?:build|test)"],
+    ["cargo (build|test|check|clippy)", "cargo (?:build|test|check|clippy)"],
+    [`gradlew${END}`, "gradlew"],
+    ["go (build|test|vet)", "go (?:build|test|vet)"],
+    ["deno test", "deno test"],
+    [`make${END}`, "make"],
     ["scripts/test", "scripts/test[\\w-]*\\.sh"],
     // Pre-push hooks. The option-value alternatives start with different characters, so a failed match cannot backtrack exponentially.
-    ["git", "git(?: -[Cc] (?:'[^']*'|\"[^\"]*\"|[^\\s'\"](?:[^\\s'\"]|'[^']*'|\"[^\"]*\")*))* push"],
+    ["git.*push", "git(?: -[Cc] (?:'[^']*'|\"[^\"]*\"|[^\\s'\"](?:[^\\s'\"]|'[^']*'|\"[^\"]*\")*))* push"],
 ];
 const CLI = /cli-lease\.js|claude-orchestrator-lease/;
 /**
@@ -95,7 +102,8 @@ export function isHeavyCommand(command, extraPatterns = []) {
  * to the `)`, `}` or backtick before the segment (`PYTHONPATH=$(pwd)/src pytest`), or holding an odd number of a quote
  * character (`FOO="a;b" npm test`). The heuristic can still make some prose heavy, which costs only a wait. In a
  * segment that follows `)`, `}` or a backtick, a tail of more than one word (`MSG="a $(date) b c" npm test`) is skipped
- * by scanning once to the token that closes it; a multi-word value split at `;`, `|` or `&` still hides the command.
+ * by scanning once to the token that closes it; a multi-word value split at `;`, `|`, `&`, a newline, `(` or `{` still
+ * hides the command, since the scan runs only after `)`, `}` or a backtick.
  */
 function isHeavySegment(segment, heavy, after = "") {
     const follows = /[)}`]/.test(after);
@@ -154,7 +162,7 @@ function isHeavySegment(segment, heavy, after = "") {
             continue;
         }
         // In a segment that follows `)`, `}` or a backtick, a word that still fails may be inside a multi-word value: resume
-        // after the first token with an odd quote count, which closes it. (After an odd-quote strip the quote is already closed.)
+        // after the first token with an odd quote count, which closes it. (Not after an odd-quote strip: a split tail's quote is already closed, and a segment led by a quoted multi-word word, `"a b" pytest`, is a command name the shell reads as one word.)
         if (!scanned && follows) {
             scanned = true;
             while (i < tokens.length && !oddQuote(tokens[i]))
@@ -269,10 +277,13 @@ function defaultCliLeasePath() {
  * the pipe because node's parent inside a pipeline is a forked subshell. `cliLeasePath` is this build's own `cli-lease.js`.
  */
 export function settingsEntries(cliLeasePath = defaultCliLeasePath()) {
-    const words = [...new Set(DEFAULT_PATTERNS.map(([word]) => word))].join("|");
+    const words = [...new Set(DEFAULT_PATTERNS.map(([word]) => word.replaceAll(" ", GAP)))].join("|");
+    const cli = shellQuote(cliLeasePath);
+    const missing = shellQuote(`claude-orchestrator-lease hook: ${cliLeasePath} is missing; print the settings entries again and install them`);
     const command = `[ "\${CO_LEASE_HOOK:-}" = on ] || exit 0; input=$(cat); ` +
         `[ -n "\${CO_LEASE_PATTERNS_FILE:-}" ] || printf '%s' "$input" | grep -qE ${shellQuote(words)} || exit 0; ` +
-        `sp=$PPID; printf '%s' "$input" | CO_LEASE_SESSION_PID=$sp exec node ${shellQuote(cliLeasePath)} hook`;
+        `[ -f ${cli} ] || { printf '%s\\n' ${missing} >&2; exit 0; }; ` +
+        `sp=$PPID; printf '%s' "$input" | CO_LEASE_SESSION_PID=$sp exec node ${cli} hook`;
     // PreToolUse waits for a slot (part 2: up to 450 s); a hook that times out lets the call through unleased.
     const entry = (timeout) => [{ matcher: "Bash", hooks: [{ type: "command", command, ...(timeout && { timeout }) }] }];
     return { hooks: { PreToolUse: entry(500), PostToolUse: entry(), PostToolUseFailure: entry() } };

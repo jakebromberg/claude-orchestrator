@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,7 +61,7 @@ const HEAVY = [
   "cat <<'EOF'\nnpm test\nEOF", 'echo "a \\" ; npm test"', "ls # a; npm test",
   // Quoted git option values that hold the other quote or nothing; a single-quoted value glued to a letter; short option aliases.
   `git -C "O'Brien" push`, `git -c "user.name=D'Angelo" push`, 'git -C "" push', `git -c 'k="v"' push`, "FOO='a;b'c npm test",
-  "npm -C app test", "npx -p vitest vitest run", "python -m pip install -r requirements.txt", "python3 -m pip install .",
+  "npm -C app test", "npx -p typescript tsc --noEmit", "python -m pip install -r requirements.txt", "python3 -m pip install .",
 ];
 
 const NOT_HEAVY = [
@@ -146,6 +147,7 @@ describe("isHeavyCommand", () => {
     // The main loop over a segment's tokens: prefix words, assignments and wrappers, each followed by the command word.
     ["prefix-word chains", (kb) => `${rep("nohup exec command ", kb)}npm test`, true],
     ["assignment chains", (kb) => `${rep("A=1 ", kb)}ls`, false],
+    ["quoted multi-word assignment values", (kb) => `${rep('A="x y" ', kb)}ls`, false],
     ["wrapper chains", (kb) => `${rep("env nice time ", kb)}ls`, false],
   ])("classifies 80 KB of %s in well under a second, and in time that grows linearly", (_name, text, expected) => {
     // A loose absolute budget, so a loaded machine running the whole suite in parallel stays green: the linear
@@ -269,15 +271,39 @@ describe("settingsEntries", () => {
   it("runs the CLI by its shell-quoted path, after the gate, the pre-filter and the PID capture", () => {
     for (const event of ["PreToolUse", "PostToolUse", "PostToolUseFailure"] as const) {
       const command = commandOf(event);
-      expect(command).toMatch(/^\[ "\$\{CO_LEASE_HOOK:-\}" = on \] \|\| exit 0; input=\$\(cat\); \[ -n "\$\{CO_LEASE_PATTERNS_FILE:-\}" \] \|\| printf '%s' "\$input" \| grep -qE '[^']+' \|\| exit 0; sp=\$PPID; /);
+      expect(command).toMatch(/^\[ "\$\{CO_LEASE_HOOK:-\}" = on \] \|\| exit 0; input=\$\(cat\); \[ -n "\$\{CO_LEASE_PATTERNS_FILE:-\}" \] \|\| printf '%s' "\$input" \| grep -qE '[^']+' \|\| exit 0; \[ -f '\/opt\/it'\\''s here\/dist\/src\/cli-lease\.js' \] \|\| \{ [^}]+>&2; exit 0; \}; sp=\$PPID; /);
       expect(command).toMatch(/printf '%s' "\$input" \| CO_LEASE_SESSION_PID=\$sp exec node '\/opt\/it'\\''s here\/dist\/src\/cli-lease\.js' hook$/);
     }
   });
 
-  it("filters on words that every heavy example contains", () => {
+  // The pre-filter runs real `grep -E` on the whole hook JSON, so it sees the command as JSON encodes it (`\t`, `\n`, `\"`)
+  // and, on the Post events, the tool's output too.
+  const prefilter = (payload: unknown): boolean => {
     const words = /grep -qE '([^']+)'/.exec(commandOf("PreToolUse"))![1]!;
-    const prefilter = new RegExp(words);
-    for (const command of HEAVY) expect(prefilter.test(command), command).toBe(true);
+    return spawnSync("grep", ["-qE", words], { input: JSON.stringify(payload) }).status === 0;
+  };
+  const payloads = (command: string, output = ""): Record<string, unknown>[] =>
+    ["PreToolUse", "PostToolUse", "PostToolUseFailure"].map((hook_event_name) => ({
+      hook_event_name, tool_name: "Bash", tool_input: { command }, ...(hook_event_name === "PreToolUse" ? {} : { tool_response: { stdout: output } }),
+    }));
+
+  it.each([
+    ...HEAVY,
+    // Words separated by a tab or a continuation, and quoted words: JSON encodes each differently from a space.
+    "go\tbuild ./...", "node\t--test", "uv\trun\tpytest", "git\tpush", "cargo \\\n  test", 'go "test" ./...', "python3\t-m\tpytest", "pip\tinstall .",
+  ])("filters in %j, on every event", (command) => {
+    for (const payload of payloads(command)) expect(prefilter(payload), JSON.stringify(payload)).toBe(true);
+  });
+
+  it.each([
+    "git status", "git diff", "git log --oneline", "git pull", "ls node_modules", "cat tsconfig.json", "ls", "cat package.json", "cat Makefile", "ls scripts", "echo hi",
+    "go run main.go", "uv --version", "node server.js", "swift --version", "cargo fmt",
+  ])("does not filter in %j, on any event", (command) => {
+    for (const payload of payloads(command)) expect(prefilter(payload), JSON.stringify(payload)).toBe(false);
+  });
+
+  it.each(["3 days ago", "category: Google", "tsconfig.json\nvitest.config.ts"])("does not filter on a Post event whose output is %j", (output) => {
+    for (const payload of payloads("ls", output).slice(1)) expect(prefilter(payload), JSON.stringify(payload)).toBe(false);
   });
 });
 

@@ -427,11 +427,54 @@ describe("lease", () => {
       expect(tryAcquireLease(opts(one), meta)).toBeNull();
     });
 
+    it("admits a second acquire of a live detached id at once, at capacity 1, with one holder file and one acquire event", async () => {
+      alive.add(SESSION);
+      const first = tryAcquireLease(opts(one), detached())!;
+      const sleep = vi.fn(async () => {});
+      const second = await acquireLease(opts({ ...one, sleep }), detached(), { maxWaitMs: 0 });
+      expect(second).toMatchObject({ id: "hook-toolu_1", leased: true, admission: { waitedMs: 0, live: 1, capacity: 1 } });
+      expect(sleep).not.toHaveBeenCalled();
+      expect(readdirSync(join(dir, "holders"))).toEqual(["hook-toolu_1.json"]);
+      expect(events.filter((e) => e.type === "acquire")).toHaveLength(1);
+      expect(tryAcquireLease(opts(one), { ...meta, detached: { ...detached().detached!, id: "hook-other" } })).toBeNull();
+      (second as LeaseHandle).release();
+      expect(existsSync(holderFile("hook-toolu_1"))).toBe(true);
+      first.release();
+      expect(existsSync(holderFile("hook-toolu_1"))).toBe(false);
+    });
+
+    it("does not treat a dead detached holder with the requested id as admitted", () => {
+      plantHolder("hook-toolu_1", { pid: SESSION, expiresAt: fake.ms + 60_000 });
+      const h = tryAcquireLease(opts(one), detached())!;
+      expect(readHolder(h)).toMatchObject({ id: "hook-toolu_1", startedAt: fake.ms });
+      expect(events).toContainEqual({ type: "reap", id: "hook-toolu_1", reason: "dead-session" });
+    });
+
     it.each(["../escaped", "a/b", "a.b", ""])("refuses the detached id %j before taking a slot or writing anything", async (id) => {
       expect(() => tryAcquireLease(opts(), detached({ id }))).toThrow(TypeError);
       await expect(acquireLease(opts(), detached({ id }))).rejects.toThrow(TypeError);
       expect(existsSync(dir)).toBe(false);
       expect(events).toEqual([]);
+    });
+
+    it.each<[string, Partial<NonNullable<HolderMeta["detached"]>>]>([
+      ["an id of 161 characters", { id: "a".repeat(161) }],
+      ["a session PID of 0", { sessionPid: 0 }],
+      ["a negative session PID", { sessionPid: -1 }],
+      ["a fractional session PID", { sessionPid: 1.5 }],
+      ["a NaN expiresAt", { expiresAt: NaN }],
+      ["an infinite expiresAt", { expiresAt: Infinity }],
+    ])("throws a TypeError for %s, before taking a slot or writing anything", async (_name, over) => {
+      expect(() => tryAcquireLease(opts(), detached(over))).toThrow(TypeError);
+      await expect(acquireLease(opts(), detached(over))).rejects.toThrow(TypeError);
+      expect(existsSync(dir)).toBe(false);
+    });
+
+    it("accepts an id of 160 characters, and releases it", () => {
+      const id = "a".repeat(160);
+      expect(tryAcquireLease(opts(), detached({ id }))?.id).toBe(id);
+      expect(releaseHolder(opts(), id)).toBe(true);
+      expect(releaseHolder(opts(), "a".repeat(300))).toBe(false);
     });
 
     describe("releaseHolder", () => {
@@ -479,6 +522,16 @@ describe("lease", () => {
         symlinkSync(elsewhere, join(dir, "holders"));
         expect(releaseHolder(opts(), "hook-x")).toBe(false);
         expect(existsSync(join(elsewhere, "hook-x.json"))).toBe(true);
+      });
+
+      it("does not follow a lease directory that is a symlink", () => {
+        const elsewhere = join(tmp, "elsewhere");
+        mkdirSync(join(elsewhere, "holders"), { recursive: true, mode: 0o700 });
+        writeFileSync(join(elsewhere, "holders", "hook-x.json"), JSON.stringify({ id: "hook-x", pid: SESSION, command: "npm test", cwd: "/", startedAt: fake.ms, expiresAt: fake.ms + 60_000, level: "normal" }));
+        symlinkSync(elsewhere, dir);
+        expect(releaseHolder(opts(), "hook-x")).toBe(false);
+        expect(existsSync(join(elsewhere, "holders", "hook-x.json"))).toBe(true);
+        expect(events.filter((e) => e.type === "release")).toEqual([]);
       });
     });
   });

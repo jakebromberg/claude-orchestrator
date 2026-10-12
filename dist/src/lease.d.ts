@@ -56,9 +56,11 @@ export interface LeaseOptions {
 }
 /**
  * What a holder file records about the request; `label` replaces `command` when given. `detached` records a holder
- * for a process that is not this one (hook mode): `id` is used as the holder id and must match `[A-Za-z0-9_-]+`
- * (acquiring throws a `TypeError` otherwise), `sessionPid` is the liveness PID, and no
- * heartbeat runs. `expiresAt` is read when the holder is written, so it may be a getter that counts from admission.
+ * for a process that is not this one (hook mode): `id` is used as the holder id and must match `[A-Za-z0-9_-]{1,160}`,
+ * `sessionPid` is the liveness PID and must be a positive integer, and `expiresAt` must be finite (acquiring throws a
+ * `TypeError` otherwise); no heartbeat runs. `expiresAt` is read when the holder is written, so it may be a getter that
+ * counts from admission. Acquiring an `id` whose holder is already live admits at once without a second holder or count:
+ * two hook installs handling one call share one slot, and the borrowed handle's `release` does nothing.
  */
 export interface HolderMeta {
     command: string;
@@ -149,7 +151,7 @@ export declare function acquireLease(opts: LeaseOptions, meta: HolderMeta, wait?
  * Releases a detached holder by id from any process; idempotent. Returns whether a holder file was removed, and emits
  * one `release` event with `heldMs` only then. It removes only a valid detached record (one with `expiresAt`): a
  * wrapper's own holder and a corrupt file are left to their owner and the reaper. An id with a character outside
- * `[A-Za-z0-9_-]` names no holder, and a holders directory that breaks the lease's directory rule (a symlink, or
+ * `[A-Za-z0-9_-]` names no holder, and a holders or lease directory that breaks the directory rule (a symlink, or
  * another user's) is not read, so neither can reach a file outside `holders/`.
  */
 export declare function releaseHolder(opts: LeaseOptions, id: string): boolean;

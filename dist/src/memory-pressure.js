@@ -39,8 +39,9 @@ export function readMemoryPressure(deps = {}) {
         return null;
     }
 }
+/** The child's stderr is discarded: inherited, a failing `sysctl` would write to the caller's stderr past the lease's `warn` seam. */
 function defaultSysctl(name) {
-    return execFileSync("/usr/sbin/sysctl", ["-n", name], { encoding: "utf8", timeout: 2_000 });
+    return execFileSync("/usr/sbin/sysctl", ["-n", name], { encoding: "utf8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] });
 }
 /** Heavy-command slots at a level; `critical` is always 0. */
 export function heavyCapacity(level, policy) {
