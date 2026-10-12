@@ -6,7 +6,8 @@
  *
  * The matcher has two rules and errs toward heavy: a miss runs a heavy command unleased, a false match costs only a
  * wait. (1) Text that contains `cli-lease.js` or `claude-orchestrator-lease` anywhere is not heavy, so the hook never
- * takes the slot the CLI then waits for; the trade is that a command which only mentions the CLI runs unleased.
+ * takes a slot for a command whose text names the CLI; the trade is that a command which only mentions the CLI runs
+ * unleased. A CLI reached indirectly (an `npm test` script that wraps its runner) is not seen.
  * (2) Otherwise the text is split raw at `&&`, `||`, `;`, `|`, a single `&`, newlines, `(`, `)`, backticks, `{` and
  * `}`, with no quote, heredoc or comment tracking. A segment is heavy when, after its leading words are stripped,
  * its command word (quotes and path removed) and the rest match an anchored pattern. With the default patterns,
@@ -41,8 +42,11 @@ const DEFAULT_PATTERNS = [
     ["git", "git(?: -[Cc] (?:'[^']*'|\"[^\"]*\"|[^\\s'\"]\\S*))* push"],
 ];
 const CLI = /cli-lease\.js|claude-orchestrator-lease/;
-/** Every separator; `&&` and `||` leave an empty segment between, and the `&` of a redirect (`2>&1`) only adds a light one. */
-const SEPARATOR = /[;&|\n()`{}]/;
+/**
+ * Every separator, captured so each segment knows the one before it; `&&` and `||` leave an empty segment between,
+ * and the `&` of a redirect (`2>&1`) only adds a light one.
+ */
+const SEPARATOR = /([;&|\n()`{}])/;
 /** Leading words after which the command still follows; `nice` and `timeout` also drop their arguments. */
 const PREFIX_WORDS = new Set(["if", "elif", "while", "until", "then", "do", "else", "time", "!", "env", "nice", "timeout"]);
 const isRegex = (source) => {
@@ -64,12 +68,21 @@ export function isHeavyCommand(command, extraPatterns = []) {
         return false;
     const patterns = [...DEFAULT_PATTERNS.map(([, p]) => p), ...extraPatterns.filter(isRegex)];
     const heavy = new RegExp(`(?:${patterns.map((p) => `(?:${p})`).join("|")})(?![\\w./-])`, "y");
-    return command.replace(/\\\n/g, " ").split(SEPARATOR).some((segment) => isHeavySegment(segment, heavy));
+    const parts = command.replace(/\\\n/g, " ").split(SEPARATOR);
+    return parts.some((segment, i) => i % 2 === 0 && isHeavySegment(segment, heavy, parts[i - 1]));
 }
-/** Strips the segment's leading words one whitespace token at a time, then tests the command word and the rest. */
-function isHeavySegment(segment, heavy) {
+/**
+ * Strips the segment's leading words one whitespace token at a time, then tests the command word and the rest. A
+ * command word that fails is stripped too when it is the tail of a word split at a separator inside it: glued to the
+ * `)`, `}` or backtick before the segment (`PYTHONPATH=$(pwd)/src pytest`), or holding an odd number of a quote
+ * character (`FOO="a;b" npm test`). A tail of more than one word (`MSG="a $(date) b c" npm test`) still hides the command.
+ */
+function isHeavySegment(segment, heavy, after = "") {
+    const glued = /[)}`]/.test(after) && /^\S/.test(segment);
+    const oddQuote = (token) => token.split('"').length % 2 === 0 || token.split("'").length % 2 === 0;
     const tokens = segment.split(/\s+/);
     const word = (i) => tokens[i]?.replace(/^['"]+/, "") ?? "";
+    let stripped = false;
     for (let i = 0; i < tokens.length; i++) {
         const w = word(i);
         if (!w)
@@ -101,6 +114,11 @@ function isHeavySegment(segment, heavy) {
             heavy.lastIndex = k;
             if (heavy.test(text))
                 return true;
+        }
+        // At most one tail per segment, so each segment is tested at most twice and the work stays linear.
+        if (!stripped && ((i === 0 && glued) || oddQuote(tokens[i]))) {
+            stripped = true;
+            continue;
         }
         return false;
     }

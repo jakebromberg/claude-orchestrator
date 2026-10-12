@@ -28,6 +28,11 @@ const HEAVY = [
   // `$(…)` and backtick bodies are segments of their own.
   "FOO=$(pwd) npm test", 'DATABASE_URL="$(cat .env.test)" npm test', "A=$(echo a b) B='c d' env X=`pwd` npm test",
   `out=$(npm test 2>&1); echo "$out" | tail`, "echo $(npm test)", "x=`make`", "X=`date +%s` npm test",
+  // A word split by a separator inside it: its tail, glued to `)`, `}` or a backtick or holding an odd quote, is stripped too.
+  "PYTHONPATH=$(pwd)/src pytest -q", 'PYTHONPATH="$(pwd)/src" pytest -q', "PYTHONPATH=${PWD}/src pytest -q", "PYTHONPATH=${PYTHONPATH}:src pytest",
+  'PATH="$(pwd)/node_modules/.bin:$PATH" npm test', 'DATABASE_URL="postgres://$(whoami)@localhost/test" npm test', 'MSG="built $(date) ok" npm test',
+  'DB="ts_$(basename "$(pwd)")_test" pytest -q', "X=`pwd`/src pytest", 'FOO="a;b" npm test', "LD_LIBRARY_PATH=${HOME}/lib cargo test",
+  "env PATH=${HOME}/bin:$PATH npm test", '"$(npm bin)/vitest" run',
   // Quotes, heredocs and comments are not tracked, so an apostrophe in them hides nothing after them.
   `echo 'a && b' && npm test`, `echo "$(ls; pwd)" ; npm test`, `echo "it's\nok && npm test`,
   `git commit -m "$(cat <<'EOF'\nTighten the matcher's scan\n\nIt's "quoted" here\nEOF\n)" && git push -u origin HEAD`,
@@ -44,6 +49,8 @@ const NOT_HEAVY = [
   "npm run dev", "npm view left-pad", "npm testing", "node server.js", "makefile", "ls scripts/test.sh", 'echo "$(ls)"', "cat <<'EOF'\nhello\nEOF", "",
   // A pattern word as a directory or file name.
   "./make/foo.sh", "tools/jest/run.sh", "vitest.config.ts",
+  // A stripped tail leaves only what follows it.
+  "echo $(date)/x", "X=$(pwd)/src ls", 'FOO="a;b" ls', "cd $(pwd) && ls",
   // The CLI rule: any text that mentions the CLI takes no slot, whatever surrounds it.
   `node ${CLI} --shell 'npm ci && npm test'`,
   `claude-orchestrator-lease --shell 'npm ci && npm test'`,
@@ -77,6 +84,7 @@ describe("isHeavyCommand", () => {
     ["80 KB of a && ", "a && ".repeat(16_000), false],
     ["80 KB of a(", "a(".repeat(40_000), false],
     ["80 KB of '", "'".repeat(80_000), false],
+    ["80 KB of odd-quoted words", `a' `.repeat(26_000), false],
     ["300 quoted assignments before npm test", `${'NAME="x" '.repeat(300)}npm test`, true],
     ["300 quoted assignments before ls", `${'NAME="x" '.repeat(300)}ls`, false],
     ["28 quoted git options before pull", `git${" -c 'x'".repeat(28)} pull`, false],
