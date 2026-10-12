@@ -494,9 +494,9 @@ describe("lease", () => {
       expect(w).toHaveBeenCalledWith(expect.stringMatching(/CO_LEASE_SLOTS/));
 
       // An orphan-bound reap, then an I/O fail-open.
-      const o = { ...defaultLeaseOptions({ CO_LEASE_DIR: dir }, { level: sampler, warn: w }), now: () => clock, isAlive: (pid: number) => alive.has(pid) };
+      const o = { ...defaultLeaseOptions({ CO_LEASE_DIR: dir }, { level: sampler, warn: w }), now: fake.now, isAlive: (pid: number) => alive.has(pid) };
       alive.add(900);
-      plantHolder("4242-ab01", { childPid: 900, startedAt: clock - 3 * 3_600_000 });
+      plantHolder("4242-ab01", { childPid: 900, startedAt: fake.ms - 3 * 3_600_000 });
       tryAcquireLease(o, meta)!.release();
       expect(w).toHaveBeenCalledWith(expect.stringMatching(/^lease: reaping holder 4242-ab01/));
       writeFileSync(join(tmp, "blocker"), "");
