@@ -10,7 +10,11 @@ export declare class Orchestrator {
     private governor?;
     /** `claude` sessions currently running; `spawnSession` is the only writer. */
     private liveSessions;
+    /** Session ids this run launched, by issue ref; a 0-byte retry reuses its id, so one launch is one entry. */
+    private launched;
     constructor(config: OrchestratorConfig, deps: Deps, options?: RunOptions);
+    /** Rows this run launched a session for, with the `--session-id` of each launch (for the run report). */
+    launchedSessions(): ReadonlyMap<string, readonly string[]>;
     checkPrerequisites(): void;
     resetStaleStatuses(): Promise<void>;
     handleInterrupt(): Promise<void>;
