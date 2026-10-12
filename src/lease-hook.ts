@@ -18,7 +18,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acquireLease, defaultLeaseOptions, DETACHED_TTL_MAX_MS, leaseStatus, releaseHolder, type LeaseOptions } from "./lease.js";
+import { acquireLease, defaultLeaseOptions, DETACHED_TTL_MAX_MS, isPid, leaseStatus, releaseHolder, type LeaseOptions } from "./lease.js";
 import { formatAdmitted, formatNoSlot } from "./lease-messages.js";
 import { shellQuote } from "./shell-quote.js";
 
@@ -192,13 +192,16 @@ function extraPatterns(env: NodeJS.ProcessEnv): string[] {
 export function isHeavyHookCall(stdin: string, env: NodeJS.ProcessEnv): boolean {
   if (env.CO_LEASE_HOOK !== "on") return false;
   try {
-    const input = JSON.parse(stdin) as { hook_event_name?: unknown; tool_name?: unknown; tool_input?: { command?: unknown } };
-    const command = input.tool_input?.command;
-    return input.hook_event_name === "PreToolUse" && input.tool_name === "Bash" && typeof command === "string" && isHeavyCommand(command, extraPatterns(env));
+    return isHeavyInput(JSON.parse(stdin) as HookInput, env);
   } catch {
     return false;
   }
 }
+
+const isHeavyInput = (input: HookInput, env: NodeJS.ProcessEnv): boolean => {
+  const command = input.tool_input?.command;
+  return input.hook_event_name === "PreToolUse" && input.tool_name === "Bash" && typeof command === "string" && isHeavyCommand(command, extraPatterns(env));
+};
 
 export interface HookIo {
   env: NodeJS.ProcessEnv;
@@ -213,6 +216,7 @@ const GRACE_MS = 60_000;
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 /** 10 min: with the 60 s grace, the longest TTL the lease's cap (`DETACHED_TTL_MAX_MS`) lets a writer set. */
 const MAX_CALL_TIMEOUT_MS = DETACHED_TTL_MAX_MS - GRACE_MS;
+/** Shorter than the lease's holder id bound (160): the `hook-` prefix keeps `hook-<id>` inside it. */
 const TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DENY_BACKGROUND = "lease: run heavy commands in the foreground so the lease can track them";
 
@@ -245,14 +249,14 @@ async function handleEvent(stdin: string, io: HookIo): Promise<void> {
   if (input.tool_name !== "Bash" || typeof toolUseId !== "string" || !TOOL_USE_ID.test(toolUseId)) return;
   const event = input.hook_event_name;
   const id = `hook-${toolUseId}`;
+  const opts: LeaseOptions = { ...defaultLeaseOptions(env, { warn: () => {} }), ...io.lease };
   if (event === "PostToolUse" || event === "PostToolUseFailure") {
-    releaseHolder({ ...defaultLeaseOptions(env, { warn: () => {} }), ...io.lease }, id);
+    releaseHolder(opts, id);
     return;
   }
-  if (!isHeavyHookCall(stdin, env)) return;
+  if (!isHeavyInput(input, env)) return;
   const sessionPid = Number(env.CO_LEASE_SESSION_PID);
-  if (!Number.isInteger(sessionPid) || sessionPid <= 0) return;
-  const opts: LeaseOptions = { ...defaultLeaseOptions(env, { warn: () => {} }), ...io.lease };
+  if (!isPid(sessionPid)) return;
   // A hook with no session PID or no usable options stays inert, background calls included. A lease directory that
   // fails only at acquire (unwritable, a symlink) still denies them, while a foreground call there fails open.
   if (input.tool_input?.run_in_background === true) return io.out(decision({ permissionDecision: "deny", permissionDecisionReason: DENY_BACKGROUND }));
