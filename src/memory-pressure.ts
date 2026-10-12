@@ -131,11 +131,6 @@ export function applyPressureOverride(
   return level === "critical" ? "warning" : level;
 }
 
-/** True when `CO_PRESSURE_OVERRIDE` is set to the one recognised value, `critical-as-warning`. */
-export function pressureOverrideInEffect(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.CO_PRESSURE_OVERRIDE === OVERRIDE_VALUE;
-}
-
 /**
  * The lease directory, shared with the lease itself so the path is resolved in
  * one place: `CO_LEASE_DIR` when absolute, else `$XDG_STATE_HOME/claude-orchestrator/lease`,

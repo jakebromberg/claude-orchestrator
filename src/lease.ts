@@ -7,7 +7,7 @@
  * except at `critical`, where nothing new starts. It never spins.
  */
 import { randomBytes } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { isWithinWindow, tryLockOnce } from "./file-lock.js";
 import { leaseEventSink } from "./lease-events.js";
@@ -250,7 +250,7 @@ function createHolder(opts: LeaseOptions, meta: HolderMeta, command: string, adm
       } catch {
         // Already reaped.
       }
-      emit(opts, { type: "release", id, heldMs: now() - rec.startedAt, exitCode: outcome?.exitCode });
+      emit(opts, { type: "release", id, heldMs: now() - rec.startedAt, ...(outcome?.exitCode !== undefined && { exitCode: outcome.exitCode }) });
     },
   };
 }
@@ -268,9 +268,14 @@ function ensureOwnDirs(dir: string): void {
   for (const d of [dir, holdersDir(dir)]) {
     mkdirSync(d, { recursive: true, mode: 0o700 });
     const st = lstatSync(d);
-    if (!st.isDirectory() || (process.getuid && st.uid !== process.getuid())) throw new Error(`lease: ${d} is not a directory this user owns`);
+    if (!isOwnDir(st)) throw new Error(`lease: ${d} is not a directory this user owns`);
     if (st.mode & 0o077) chmodSync(d, 0o700);
   }
+}
+
+/** The lease's directory rule, given `lstat` stats: a real directory (not a symlink) this user owns. A platform without uids (Windows) skips the ownership check. */
+export function isOwnDir(st: Stats): boolean {
+  return st.isDirectory() && !(process.getuid && st.uid !== process.getuid());
 }
 
 /**
@@ -338,7 +343,7 @@ const emit = (opts: LeaseOptions, e: LeaseEvent): void => guarded(opts, opts.onE
 function failOpen(opts: LeaseOptions, level: PressureLevel, capacity: number, waitedMs: number, reason: "mutex-busy" | "io-error", error?: unknown): LeaseHandle {
   warn(opts, `lease unavailable (${reason}); running unleased`);
   const { code, message } = (error ?? {}) as { code?: string; message?: string };
-  emit(opts, { type: "fail-open", reason, waitedMs, code, message });
+  emit(opts, { type: "fail-open", reason, waitedMs, ...(code !== undefined && { code }), ...(message !== undefined && { message }) });
   return { id: null, leased: false, admission: { waitedMs, level, live: 0, capacity }, childEnv: () => ({}), setChildPid() {}, release() {} };
 }
 
@@ -383,7 +388,7 @@ export async function acquireLease(
     }
     const status = r.kind === "error" ? { level: r.level, capacity: r.capacity, live: [] } : statusOf(opts, r.level);
     const refuse = (refused: LeaseRefusal["refused"], level: PressureLevel, live: number): LeaseRefusal => {
-      emit(opts, { type: "timeout", refused, waitedMs, level: refused === "stopped" ? level : undefined });
+      emit(opts, { type: "timeout", refused, waitedMs, ...(refused === "stopped" && { level }) });
       return { refused, waitedMs, level, live };
     };
     if (wait.stopWhen?.(status)) {

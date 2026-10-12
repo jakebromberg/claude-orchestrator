@@ -33,8 +33,6 @@ export declare function isFresh(at: number, now: number, maxAgeMs: number): bool
 export declare function cachedPressureSampler(read: () => PressureLevel, ttlMs?: number, now?: () => number): PressureSampler;
 /** Maps `critical` to `warning` only for `CO_PRESSURE_OVERRIDE=critical-as-warning`; other values are ignored with a warning. */
 export declare function applyPressureOverride(level: PressureLevel, env?: NodeJS.ProcessEnv, warn?: (msg: string) => void): PressureLevel;
-/** True when `CO_PRESSURE_OVERRIDE` is set to the one recognised value, `critical-as-warning`. */
-export declare function pressureOverrideInEffect(env?: NodeJS.ProcessEnv): boolean;
 /**
  * The lease directory, shared with the lease itself so the path is resolved in
  * one place: `CO_LEASE_DIR` when absolute, else `$XDG_STATE_HOME/claude-orchestrator/lease`,

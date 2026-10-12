@@ -157,7 +157,7 @@ function createHolder(opts, meta, command, admission) {
             catch {
                 // Already reaped.
             }
-            emit(opts, { type: "release", id, heldMs: now() - rec.startedAt, exitCode: outcome?.exitCode });
+            emit(opts, { type: "release", id, heldMs: now() - rec.startedAt, ...(outcome?.exitCode !== undefined && { exitCode: outcome.exitCode }) });
         },
     };
 }
@@ -173,11 +173,15 @@ function ensureOwnDirs(dir) {
     for (const d of [dir, holdersDir(dir)]) {
         mkdirSync(d, { recursive: true, mode: 0o700 });
         const st = lstatSync(d);
-        if (!st.isDirectory() || (process.getuid && st.uid !== process.getuid()))
+        if (!isOwnDir(st))
             throw new Error(`lease: ${d} is not a directory this user owns`);
         if (st.mode & 0o077)
             chmodSync(d, 0o700);
     }
+}
+/** The lease's directory rule, given `lstat` stats: a real directory (not a symlink) this user owns. A platform without uids (Windows) skips the ownership check. */
+export function isOwnDir(st) {
+    return st.isDirectory() && !(process.getuid && st.uid !== process.getuid());
 }
 /**
  * One admission attempt: sample the level, then count and write holders under the mutex. Caller code
@@ -248,7 +252,7 @@ const emit = (opts, e) => guarded(opts, opts.onEvent, e);
 function failOpen(opts, level, capacity, waitedMs, reason, error) {
     warn(opts, `lease unavailable (${reason}); running unleased`);
     const { code, message } = (error ?? {});
-    emit(opts, { type: "fail-open", reason, waitedMs, code, message });
+    emit(opts, { type: "fail-open", reason, waitedMs, ...(code !== undefined && { code }), ...(message !== undefined && { message }) });
     return { id: null, leased: false, admission: { waitedMs, level, live: 0, capacity }, childEnv: () => ({}), setChildPid() { }, release() { } };
 }
 /** A single non-blocking attempt: a handle, or `null` when not admitted this poll. */
@@ -291,7 +295,7 @@ export async function acquireLease(opts, meta, wait = {}) {
         }
         const status = r.kind === "error" ? { level: r.level, capacity: r.capacity, live: [] } : statusOf(opts, r.level);
         const refuse = (refused, level, live) => {
-            emit(opts, { type: "timeout", refused, waitedMs, level: refused === "stopped" ? level : undefined });
+            emit(opts, { type: "timeout", refused, waitedMs, ...(refused === "stopped" && { level }) });
             return { refused, waitedMs, level, live };
         };
         if (wait.stopWhen?.(status)) {
