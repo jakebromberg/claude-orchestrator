@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -70,6 +70,7 @@ describe("lease", () => {
     onSleep = () => {};
   });
   afterEach(() => {
+    vi.restoreAllMocks();
     rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -151,6 +152,22 @@ describe("lease", () => {
       if (name === "onEvent") expect(warnings.filter((w) => w.includes("threw"))).toHaveLength(1);
     });
 
+    it("calls back only after releasing the mutex, so a slow callback cannot let a second acquirer in", () => {
+      alive.add(900);
+      plantHolder("4242-ab03", { childPid: 900, startedAt: clock - 3 * 3_600_000 }); // orphan-bound: warns and reaps
+      const one = opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } });
+      const mutexHeld: boolean[] = [];
+      let second: LeaseHandle | null | undefined;
+      const slow = (): void => {
+        mutexHeld.push(existsSync(join(dir, ".mutex")));
+        clock += 11_000; // outlives the mutex's 10 s staleness window
+        if (second === undefined) second = tryAcquireLease(one, meta);
+      };
+      const first = tryAcquireLease({ ...one, onEvent: slow, warn: slow }, meta);
+      expect({ first: first?.leased, second, mutexHeld }).toEqual({ first: true, second: null, mutexHeld: [false, false, false] });
+      expect(leaseStatus(opts()).live).toHaveLength(1);
+    });
+
     it("measures capped waiters starving behind uncapped ones (admission is not FIFO)", () => {
       const held = [tryAcquireLease(opts(), meta)!, tryAcquireLease(opts(), meta)!];
       const cappedLevel = { level: Object.assign(() => "warning" as const, { fresh: () => "warning" as const }) };
@@ -179,6 +196,8 @@ describe("lease", () => {
       ["a dead wrapper with no child", false, undefined, 60_000, false],
       ["a live wrapper with a live child past the 2 h bound", true, true, 3 * 3_600_000, true],
       ["an orphaned live child past the 2 h bound", false, true, 3 * 3_600_000, false],
+      ["an orphaned live child dated 1 h in the future (a clock step)", false, true, -3_600_000, true],
+      ["an orphaned live child dated past the 2 h bound in the future", false, true, -3 * 3_600_000, false],
     ])("%s", (_name, wrapperAlive, childAlive, startedAgo, stillLive) => {
       if (wrapperAlive) alive.add(4242);
       if (childAlive) alive.add(900);
@@ -202,7 +221,13 @@ describe("lease", () => {
       ["JSON null", "null"],
       ["a record with no pid", JSON.stringify({ id: "4242-cccc", startedAt: 1 })],
       ["a record with no startedAt", JSON.stringify({ id: "4242-cccc", pid: 4242 })],
+      ["pid 0", JSON.stringify({ id: "4242-cccc", pid: 0, startedAt: 1 })],
+      ["pid -1", JSON.stringify({ id: "4242-cccc", pid: -1, startedAt: 1 })],
+      ["a non-integer pid", JSON.stringify({ id: "4242-cccc", pid: 4242.5, startedAt: 1 })],
+      ["childPid 0", JSON.stringify({ id: "4242-cccc", pid: 4242, childPid: 0, startedAt: 1 })],
+      ["childPid -1", JSON.stringify({ id: "4242-cccc", pid: 4242, childPid: -1, startedAt: 1 })],
     ])("reaps a holder file holding %s as corrupt", (_name, text) => {
+      alive.add(0).add(-1); // as the real kill(pid, 0) sees them: the process group, and every process
       plantHolder("4242-cccc", {});
       writeFileSync(holderFile("4242-cccc"), text);
       tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta)!;
@@ -291,10 +316,31 @@ describe("lease", () => {
   });
 
   describe("directory", () => {
-    it("creates the directory with mode 0700 at the first acquire", () => {
-      tryAcquireLease(opts(), meta);
+    it.each([
+      ["creates the directory with mode 0700 at the first acquire", undefined],
+      ["tightens an existing directory this user owns to 0700", 0o777],
+    ])("%s", (_name, mode) => {
+      if (mode) {
+        mkdirSync(join(dir, "holders"), { recursive: true });
+        chmodSync(dir, mode);
+        chmodSync(join(dir, "holders"), mode);
+      }
+      expect(tryAcquireLease(opts(), meta)?.leased).toBe(true);
       expect(statSync(dir).mode & 0o777).toBe(0o700);
       expect(statSync(join(dir, "holders")).mode & 0o777).toBe(0o700);
+    });
+
+    it.each([
+      ["the lease directory is a symlink", () => symlinkSync(join(tmp, "elsewhere"), dir)],
+      ["the holders directory is a symlink", () => (mkdirSync(dir, { mode: 0o700 }), symlinkSync(join(tmp, "elsewhere"), join(dir, "holders")))],
+      ["the lease directory is another user's", () => (mkdirSync(dir, { mode: 0o700 }), vi.spyOn(process as Required<NodeJS.Process>, "getuid").mockReturnValue(statSync(dir).uid + 1))],
+    ])("fails open when %s, writing nothing, and counts it as no free slot at critical", (_name, plant) => {
+      mkdirSync(join(tmp, "elsewhere"), { mode: 0o700 });
+      plant();
+      expect(tryAcquireLease(opts(), meta)).toMatchObject({ leased: false, id: null });
+      expect(readdirSync(join(tmp, "elsewhere"))).toEqual([]);
+      level = "critical";
+      expect(tryAcquireLease(opts(), meta)).toBeNull();
     });
 
     it("is not created by defaultLeaseOptions() or leaseStatus", () => {
@@ -326,7 +372,17 @@ describe("lease", () => {
       ["a & TOKEN=s1 b", "a & TOKEN=… b"],
       ["{ TOKEN=s1 b; }", "{ TOKEN=… b; }"],
       ["npm test --reporter=dot", "npm test --reporter=dot"],
-      ["echo A=1", "echo A=1"],
+      ["echo A=1", "echo A=…"],
+      ['TOKEN="abc"def npm test', "TOKEN=… npm test"],
+      ["PASS=a\\ b npm test", "PASS=… npm test"],
+      ['URL=postgres://u:"p w"@h npm test', "URL=… npm test"],
+      ['A="se\\"cret more" npm test', "A=… npm test"],
+      ["TOKEN=$(cat f)tail npm test", "TOKEN=… npm test"],
+      ["K='unterminated npm test", "K=…"],
+      ["export TOKEN=s3cr3t && npm test", "export TOKEN=… && npm test"],
+      ["env TOKEN=s3cr3t npm test", "env TOKEN=… npm test"],
+      ["if true; then TOKEN=s3cr3t npm test; fi", "if true; then TOKEN=… npm test; fi"],
+      ["bash -c 'TOKEN=s3cr3t npm test'", "bash -c 'TOKEN=… npm test'"],
     ])("redacts %j", (command, expected) => {
       const h = tryAcquireLease(opts(), { command, cwd: "/w" })!;
       expect(readHolder(h).command).toBe(expected);
