@@ -17,6 +17,7 @@ import * as barrel from "../src/index.js";
 import type { PressureLevel } from "../src/memory-pressure.js";
 
 const meta: HolderMeta = { command: "npm test", cwd: "/work" };
+const HEARTBEAT_STALE_MS = 90_000;
 const isHandle = (r: LeaseHandle | LeaseRefusal): r is LeaseHandle => "leased" in r;
 
 describe("lease", () => {
@@ -48,13 +49,15 @@ describe("lease", () => {
   });
   const holderFile = (id: string): string => join(dir, "holders", `${id}.json`);
   const readHolder = (h: LeaseHandle) => JSON.parse(readFileSync(holderFile(h.id!), "utf8"));
-  /** Writes a holder file for wrapper PID 4242 (alive only if the test adds it to `alive`). */
-  const writeHolder = (id: string, rec: Record<string, unknown>): void =>
+  /** Writes a holder file for wrapper PID 4242 (alive only if the test adds it to `alive`), its heartbeat `beatAgoMs` before the injected clock (stale by default). */
+  const writeHolder = (id: string, rec: Record<string, unknown>, beatAgoMs = 2 * HEARTBEAT_STALE_MS): void => {
     writeFileSync(holderFile(id), JSON.stringify({ id, pid: 4242, command: "x", cwd: "/", startedAt: clock, level: "normal", ...rec }));
+    utimesSync(holderFile(id), (clock - beatAgoMs) / 1000, (clock - beatAgoMs) / 1000);
+  };
   /** Creates the lease directory through an acquire (which reaps what it finds), then writes the holder. */
-  const plantHolder = (id: string, rec: Record<string, unknown>): void => {
+  const plantHolder = (id: string, rec: Record<string, unknown>, beatAgoMs?: number): void => {
     tryAcquireLease(opts({ policy: { heavyCeiling: 99, heavyWarning: 99 } }), meta)!.release();
-    writeHolder(id, rec);
+    writeHolder(id, rec, beatAgoMs);
   };
 
   beforeEach(() => {
@@ -70,6 +73,7 @@ describe("lease", () => {
     onSleep = () => {};
   });
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     rmSync(tmp, { recursive: true, force: true });
   });
@@ -150,7 +154,7 @@ describe("lease", () => {
     ] as const)("keeps its behaviour when %s throws", (name, callbacks) => {
       alive.add(900);
       plantHolder("4242-ab01", { childPid: 900, startedAt: clock - 3 * 3_600_000 }); // orphan-bound: warns
-      writeHolder("4242-ab02", {}); // dead
+      writeHolder("4242-ab02", {}); // stale-heartbeat
       const o = opts({ policy: { heavyCeiling: 1, heavyWarning: 1 }, ...callbacks });
       const h = tryAcquireLease(o, meta)!;
       expect(h.leased).toBe(true);
@@ -196,25 +200,84 @@ describe("lease", () => {
   });
 
   describe("liveness", () => {
-    // [description, wrapper alive?, child alive?, started ms ago, still live?]
+    // [description, heartbeat age ms, child alive? (undefined: no child), started ms ago, still live?]
     it.each([
-      ["a live wrapper with no child", true, undefined, 10_000, true],
-      ["a live wrapper whose child is dead", true, false, 60_000, true],
-      ["a dead wrapper with a live child (killed wrapper keeps its slot)", false, true, 60_000, true],
-      ["a dead wrapper with a dead child", false, false, 60_000, false],
-      ["a dead wrapper with no child", false, undefined, 60_000, false],
-      ["a live wrapper with a live child past the 2 h bound", true, true, 3 * 3_600_000, true],
-      ["an orphaned live child past the 2 h bound", false, true, 3 * 3_600_000, false],
-      ["an orphaned live child dated 1 h in the future (a clock step)", false, true, -3_600_000, true],
-      ["an orphaned live child dated past the 2 h bound in the future", false, true, -3 * 3_600_000, false],
-    ])("%s", (_name, wrapperAlive, childAlive, startedAgo, stillLive) => {
-      if (wrapperAlive) alive.add(4242);
+      ["a fresh heartbeat with no child", 10_000, undefined, 10_000, true],
+      ["a fresh heartbeat whose child is dead", 10_000, false, 60_000, true],
+      ["a fresh heartbeat with a live child past the 2 h bound (the wrapper is alive)", 10_000, true, 3 * 3_600_000, true],
+      ["a stale heartbeat with a live child (killed wrapper keeps its slot)", 120_000, true, 60_000, true],
+      ["a stale heartbeat with a dead child", 120_000, false, 60_000, false],
+      ["a stale heartbeat with no child", 120_000, undefined, 60_000, false],
+      ["a stale heartbeat with a live child past the 2 h bound", 120_000, true, 3 * 3_600_000, false],
+      ["a stale heartbeat with a live child dated 1 h in the future (a clock step)", 120_000, true, -3_600_000, true],
+      ["a stale heartbeat with a live child dated past the 2 h bound in the future", 120_000, true, -3 * 3_600_000, false],
+      ["a heartbeat exactly at the 90 s window", HEARTBEAT_STALE_MS, false, 60_000, true],
+      ["a heartbeat 1 ms past the 90 s window", HEARTBEAT_STALE_MS + 1, false, 60_000, false],
+      ["a heartbeat dated 30 s in the future (a small clock step back)", -30_000, undefined, 60_000, true],
+      ["a heartbeat dated exactly 90 s in the future", -HEARTBEAT_STALE_MS, undefined, 60_000, true],
+      ["a heartbeat dated 1 ms past the window in the future", -HEARTBEAT_STALE_MS - 1, undefined, 60_000, false],
+      ["a far-future heartbeat with a live child", -3_600_000, true, 60_000, true],
+    ])("%s", (_name, beatAgo, childAlive, startedAgo, stillLive) => {
       if (childAlive) alive.add(900);
-      plantHolder("4242-aaaa", { childPid: childAlive === undefined ? undefined : 900, startedAt: clock - startedAgo });
+      plantHolder("4242-aaaa", { childPid: childAlive === undefined ? undefined : 900, startedAt: clock - startedAgo }, beatAgo);
       const h = tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta);
       expect(h === null).toBe(stillLive);
       expect(existsSync(holderFile("4242-aaaa"))).toBe(stillLive);
       expect(leaseStatus(opts()).live.some((x) => x.id === "4242-aaaa")).toBe(stillLive);
+    });
+
+    it.each([
+      ["a stale heartbeat", 120_000, false],
+      ["a fresh heartbeat", 10_000, true],
+    ])("keeps a reused wrapper PID only while the heartbeat is fresh (%s)", (_name, beatAgo, stillLive) => {
+      alive.add(4242); // the OS gave the dead wrapper's PID to an unrelated process
+      plantHolder("4242-aaab", {}, beatAgo);
+      expect(leaseStatus(opts()).live.some((x) => x.id === "4242-aaab")).toBe(stillLive);
+    });
+
+    it("reports a stale heartbeat with no live child as a stale-heartbeat reap", () => {
+      plantHolder("4242-aaac", {});
+      tryAcquireLease(opts(), meta)!.release();
+      expect(events).toContainEqual({ type: "reap", id: "4242-aaac", reason: "stale-heartbeat" });
+    });
+
+    describe("heartbeat", () => {
+      const mtimeOf = (h: LeaseHandle): number => statSync(holderFile(h.id!)).mtimeMs;
+
+      it("refreshes the holder file's mtime every 30 s, keeping the holder live past 90 s", () => {
+        vi.useFakeTimers();
+        const h = tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta)!;
+        for (let i = 0; i < 6; i++) {
+          clock += 30_000;
+          vi.advanceTimersByTime(30_000);
+        }
+        expect(Math.abs(mtimeOf(h) - clock)).toBeLessThan(1_000);
+        expect(leaseStatus(opts()).live.map((x) => x.id)).toEqual([h.id]);
+        h.release();
+      });
+
+      it("starts an unref'd timer at admission, and release clears it so nothing rewrites the file", () => {
+        vi.useFakeTimers();
+        const setInterval = vi.spyOn(globalThis, "setInterval");
+        const h = tryAcquireLease(opts(), meta)!;
+        expect(vi.getTimerCount()).toBe(1);
+        expect((setInterval.mock.results[0]!.value as NodeJS.Timeout).hasRef()).toBe(false);
+        h.release();
+        expect(vi.getTimerCount()).toBe(0);
+        writeHolder(h.id!, {}, 120_000); // a file at the old path must stay as it was
+        const before = mtimeOf(h);
+        clock += 60_000;
+        vi.advanceTimersByTime(60_000);
+        expect(mtimeOf(h)).toBe(before);
+      });
+
+      it("tolerates a holder file reaped between beats", () => {
+        vi.useFakeTimers();
+        const h = tryAcquireLease(opts(), meta)!;
+        rmSync(holderFile(h.id!));
+        expect(() => vi.advanceTimersByTime(30_000)).not.toThrow();
+        h.release();
+      });
     });
 
     it("reaps an orphan past the bound with a warning and an event", () => {
