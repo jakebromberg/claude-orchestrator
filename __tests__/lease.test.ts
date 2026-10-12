@@ -127,6 +127,15 @@ describe("lease", () => {
       expect(leaseStatus(opts()).live).toEqual([]);
     });
 
+    it.each([0, -1, NaN, 1.5])("ignores setChildPid(%s), so its own live holder is not reaped as corrupt", (pid) => {
+      const one = opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } });
+      const h = tryAcquireLease(one, meta)!;
+      h.setChildPid(pid);
+      expect(tryAcquireLease(one, meta)).toBeNull();
+      expect(events.filter((e) => e.type === "reap")).toEqual([]);
+      h.release();
+    });
+
     it("ignores setChildPid after release, so no holder file comes back", () => {
       const h = tryAcquireLease(opts(), meta)!;
       h.release();
@@ -392,7 +401,13 @@ describe("lease", () => {
       ["export TOKEN=s3cr3t && npm test", "export TOKEN=… && npm test"],
       ["env TOKEN=s3cr3t npm test", "env TOKEN=… npm test"],
       ["if true; then TOKEN=s3cr3t npm test; fi", "if true; then TOKEN=… npm test; fi"],
-      ["bash -c 'TOKEN=s3cr3t npm test'", "bash -c 'TOKEN=… npm test'"],
+      ["bash -c 'TOKEN=s3cr3t npm test'", "bash -c 'TOKEN=…'"],
+      ['env "PASS=hunter2 two" npm test', 'env "PASS=…" npm test'],
+      ["docker run -e 'API_KEY=abc def' img", "docker run -e 'API_KEY=…' img"],
+      ['docker run -e "PGPASSWORD=ab|cd" img', 'docker run -e "PGPASSWORD=…" img'],
+      ['export "TOKEN=s3 cr3t"', 'export "TOKEN=…"'],
+      ['env "A=x \\" y" npm test', 'env "A=…" npm test'],
+      ["TOKEN+=s3cr3t npm test", "TOKEN+=… npm test"],
     ])("redacts %j", (command, expected) => {
       const h = tryAcquireLease(opts(), { command, cwd: "/w" })!;
       expect(readHolder(h).command).toBe(expected);

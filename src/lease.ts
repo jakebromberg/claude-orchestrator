@@ -168,13 +168,15 @@ function scanHolders(opts: LeaseOptions): { live: HolderInfo[]; dead: { id: stri
   return found;
 }
 
-// Any shell word that starts `NAME=` (or opens a quote, then `NAME=`), wherever it is. Its value runs through quoted
-// parts (an unterminated quote runs to the end), backslash escapes and `$( … )` to the end of the word; it may over-redact.
-const ASSIGNMENT = /(?<=^|[\s;&|()<>{}`"'])([A-Za-z_]\w*=)(?:[^\s;&|()<>`'"\\$]|\$(?:\([^)]*\)?)?|\\[\s\S]?|'[^']*'?|"(?:[^"\\]|\\[\s\S])*"?|`[^`]*`?)*/g;
+// Any shell word that starts `NAME=` or `NAME+=`, wherever it is. Its value runs through quoted parts (an unterminated
+// quote runs to the end), backslash escapes and `$( … )` to the end of the word. A word that opens a quote and then
+// has `NAME=` is redacted through the matching closing quote, so a nested command may lose its tail; it may over-redact.
+const QUOTED_ASSIGNMENT = /(?<=^|[\s;&|()<>{}`])(["'])([A-Za-z_]\w*\+?=)(?:(?!\1)[^\\]|\\[\s\S])*/g;
+const ASSIGNMENT = /(?<=^|[\s;&|()<>{}`])([A-Za-z_]\w*\+?=)(?:[^\s;&|()<>`'"\\$]|\$(?:\([^)]*\)?)?|\\[\s\S]?|'[^']*'?|"(?:[^"\\]|\\[\s\S])*"?|`[^`]*`?)*/g;
 
 /** Redacts the value of every `NAME=value` word, then truncates. */
 function recordedCommand({ command, label }: HolderMeta): string {
-  return (label ?? command.replace(ASSIGNMENT, "$1…")).slice(0, COMMAND_MAX);
+  return (label ?? command.replace(QUOTED_ASSIGNMENT, "$1$2…").replace(ASSIGNMENT, "$1…")).slice(0, COMMAND_MAX);
 }
 
 function createHolder(opts: LeaseOptions, meta: HolderMeta, command: string, admission: LeaseHandle["admission"]): LeaseHandle {
@@ -195,7 +197,7 @@ function createHolder(opts: LeaseOptions, meta: HolderMeta, command: string, adm
     admission,
     childEnv: () => ({ CO_LEASE_HOLDER: id }),
     setChildPid(pid) {
-      if (released) return;
+      if (released || !isPid(pid)) return;
       rec.childPid = pid;
       try {
         write();
