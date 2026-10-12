@@ -23,8 +23,9 @@ export function createCapacityGovernor(opts) {
                 calmSince = undefined;
             }
             else if (held !== "normal") {
-                calmSince ??= now();
-                if (now() - calmSince >= HYSTERESIS_MS)
+                const t = now();
+                calmSince ??= t;
+                if (t - calmSince >= HYSTERESIS_MS)
                     held = "normal";
             }
             if (held !== "normal")
