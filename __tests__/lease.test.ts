@@ -393,13 +393,14 @@ describe("lease", () => {
       [`env "TOKEN=abc"'hunter2' npm`, `env "TOKEN=…`],
       ["env $'TOKEN=hunter2' npm test", "env $'TOKEN=…"],
       [`docker build --build-arg="NPM_TOKEN=hunter2" .`, "docker build --build-arg=…"],
-      [`bash -lc "cd db && PGPASSWORD=\"hunter2 x\" psql"`, `bash -lc "cd db && PGPASSWORD=…`],
+      [String.raw`bash -lc "cd db && PGPASSWORD=\"hunter2 x\" psql"`, `bash -lc "cd db && PGPASSWORD=…`],
       [`"$X"=hunter2 npm test`, `"$X"=…`],
       ["X[0]=hunter2 npm test", "X[0]=…"],
       ["TOKEN\\=hunter2 npm test", "TOKEN\\=…"],
       ["npm ci\nTOKEN=hunter2 npm test", "npm ci\nTOKEN=…"],
       ["git clone https://u:hunter2@h/r", "git clone https://…"],
       ["psql postgres://u:hunter2@h/db", "psql postgres://…"],
+      ["curl https://u:hunter2@h/x?a=1", "curl https://…"],
     ])("records %j as %j", (command, expected) => {
       const recorded = recordedFor(command);
       expect(recorded).toBe(expected);
@@ -418,6 +419,17 @@ describe("lease", () => {
 
     it("records a caller-supplied label verbatim instead of the command", () => {
       expect(recordedFor("SECRET=1 npm test", "unit tests")).toBe("unit tests");
+    });
+
+    it("cuts before truncating, so a marker at the limit keeps the record at 200 characters", () => {
+      expect(recordedFor(`${"x".repeat(199)}=hunter2`)).toBe(`${"x".repeat(199)}=`);
+    });
+
+    it.each([
+      ["an empty label", "", ""],
+      ["a long label", "l".repeat(300), "l".repeat(200)],
+    ])("records %s verbatim, truncated", (_name, label, expected) => {
+      expect(recordedFor("SECRET=1 npm test", label)).toBe(expected);
     });
   });
 
