@@ -43,6 +43,10 @@ export interface LeaseOptions {
   level: PressureSampler;
   policy: PressurePolicy;
   isAlive?(pid: number): boolean;
+  /**
+   * Wall-clock epoch milliseconds (default `Date.now`). It dates heartbeats, which are compared with mtimes the kernel
+   * sets on writes, so any other clock (monotonic, scripted, offset) makes live holders read as stale and reaped.
+   */
   now?(): number;
   sleep?(ms: number): Promise<void>;
   pollMs?: number;
@@ -84,6 +88,11 @@ export interface LeaseStatus {
   live: HolderInfo[];
 }
 
+/**
+ * A holder stays live only while this process's event loop runs its 30 s heartbeat, or while a child PID recorded
+ * through `setChildPid` is alive. A caller that blocks the event loop for 90 s (`execSync`, `spawnSync`) without
+ * recording a child is reaped while its command still runs, and stays out of the count until it releases.
+ */
 export interface LeaseHandle {
   /** `null` for an unleased (fail-open) handle. */
   id: string | null;
@@ -92,6 +101,11 @@ export interface LeaseHandle {
   admission: { waitedMs: number; level: PressureLevel; live: number; capacity: number };
   /** Env for the child command; the holder id is never put in `process.env`. */
   childEnv(): Record<string, string>;
+  /**
+   * Records the heavy command's PID right after an async spawn, so the holder stays live while that process runs,
+   * even when this one is blocked or killed (up to the 2 h orphan bound). Ignored after release, for a value that is
+   * not a positive integer, and once the holder has been reaped: a reaped holder's file is not recreated.
+   */
   setChildPid(pid: number): void;
   release(outcome?: { exitCode?: number }): void;
 }
@@ -199,13 +213,15 @@ function createHolder(opts: LeaseOptions, meta: HolderMeta, command: string, adm
   };
   write();
   let released = false;
-  // Unref'd, so it never keeps the process alive; a file reaped since the last beat is not recreated.
+  // Unref'd, so it never keeps the process alive. A file found gone was reaped: its heartbeat went stale (this event
+  // loop stalled past 90 s, or the wall clock jumped) with no live child recorded. Such a holder stays out of the count
+  // for the rest of its run, so neither the beat (utimes never creates) nor setChildPid recreates the file.
   const beat = setInterval(() => {
     try {
       const at = now() / 1000;
       utimesSync(file, at, at);
     } catch {
-      // Reaped or unwritable; the next beat or release settles it.
+      // Reaped, which is final, or unwritable for now, which the next beat retries.
     }
   }, HEARTBEAT_MS);
   beat.unref();
@@ -218,7 +234,8 @@ function createHolder(opts: LeaseOptions, meta: HolderMeta, command: string, adm
       if (released || !isPid(pid)) return;
       rec.childPid = pid;
       try {
-        write();
+        // Only a file still there is replaced; a reap between this check and the rename is not detected.
+        if (unlessGone(() => statSync(file))) write();
       } catch {
         // The previous record still names this holder.
       }

@@ -19,6 +19,7 @@ import type { PressureLevel } from "../src/memory-pressure.js";
 const meta: HolderMeta = { command: "npm test", cwd: "/work" };
 const HEARTBEAT_STALE_MS = 90_000;
 const isHandle = (r: LeaseHandle | LeaseRefusal): r is LeaseHandle => "leased" in r;
+const realSetInterval = globalThis.setInterval;
 
 describe("lease", () => {
   let tmp: string;
@@ -49,10 +50,15 @@ describe("lease", () => {
   });
   const holderFile = (id: string): string => join(dir, "holders", `${id}.json`);
   const readHolder = (h: LeaseHandle) => JSON.parse(readFileSync(holderFile(h.id!), "utf8"));
-  /** Writes a holder file for wrapper PID 4242 (alive only if the test adds it to `alive`), its heartbeat `beatAgoMs` before the injected clock (stale by default). */
+  /**
+   * Writes a holder file for wrapper PID 4242 (alive only if the test adds it to `alive`), its heartbeat `beatAgoMs` before
+   * the injected clock (stale by default). The mtime sits half a millisecond into its millisecond, as real writes do, so the
+   * boundary rows pin the floor and not utimes' rounding (Node 20 and 22 truncate to whole microseconds).
+   */
   const writeHolder = (id: string, rec: Record<string, unknown>, beatAgoMs = 2 * HEARTBEAT_STALE_MS): void => {
     writeFileSync(holderFile(id), JSON.stringify({ id, pid: 4242, command: "x", cwd: "/", startedAt: clock, level: "normal", ...rec }));
-    utimesSync(holderFile(id), (clock - beatAgoMs) / 1000, (clock - beatAgoMs) / 1000);
+    const beatAt = (clock - beatAgoMs + 0.5) / 1000;
+    utimesSync(holderFile(id), beatAt, beatAt);
   };
   /** Creates the lease directory through an acquire (which reaps what it finds), then writes the holder. */
   const plantHolder = (id: string, rec: Record<string, unknown>, beatAgoMs?: number): void => {
@@ -76,6 +82,8 @@ describe("lease", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     rmSync(tmp, { recursive: true, force: true });
+    // A later test's holder must start a real heartbeat timer, not a fake left behind by a spy.
+    expect(globalThis.setInterval).toBe(realSetInterval);
   });
 
   describe("admission", () => {
@@ -243,40 +251,68 @@ describe("lease", () => {
 
     describe("heartbeat", () => {
       const mtimeOf = (h: LeaseHandle): number => statSync(holderFile(h.id!)).mtimeMs;
+      /** Advances the injected clock and the fake timers together. */
+      const tick = (ms: number): void => {
+        clock += ms;
+        vi.advanceTimersByTime(ms);
+      };
 
       it("refreshes the holder file's mtime every 30 s, keeping the holder live past 90 s", () => {
         vi.useFakeTimers();
         const h = tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta)!;
-        for (let i = 0; i < 6; i++) {
-          clock += 30_000;
-          vi.advanceTimersByTime(30_000);
-        }
-        expect(Math.abs(mtimeOf(h) - clock)).toBeLessThan(1_000);
+        const written = mtimeOf(h);
+        tick(29_999);
+        expect(mtimeOf(h)).toBe(written);
+        tick(1);
+        expect(Math.abs(mtimeOf(h) - clock)).toBeLessThan(1);
+        for (let i = 0; i < 5; i++) tick(30_000);
+        expect(Math.abs(mtimeOf(h) - clock)).toBeLessThan(1);
         expect(leaseStatus(opts()).live.map((x) => x.id)).toEqual([h.id]);
         h.release();
       });
 
-      it("starts an unref'd timer at admission, and release clears it so nothing rewrites the file", () => {
-        vi.useFakeTimers();
+      it("starts an unref'd timer at admission", () => {
+        // Under real timers on purpose: Vitest 3 re-runs every spy's restore at each later restoreAllMocks, so a spy
+        // made under fake timers would put that dead fake setInterval back for every later test in this file.
         const setInterval = vi.spyOn(globalThis, "setInterval");
         const h = tryAcquireLease(opts(), meta)!;
-        expect(vi.getTimerCount()).toBe(1);
         expect((setInterval.mock.results[0]!.value as NodeJS.Timeout).hasRef()).toBe(false);
+        h.release();
+      });
+
+      it("clears the timer at release, so nothing rewrites the file", () => {
+        vi.useFakeTimers();
+        const h = tryAcquireLease(opts(), meta)!;
+        expect(vi.getTimerCount()).toBe(1);
         h.release();
         expect(vi.getTimerCount()).toBe(0);
         writeHolder(h.id!, {}, 120_000); // a file at the old path must stay as it was
         const before = mtimeOf(h);
-        clock += 60_000;
-        vi.advanceTimersByTime(60_000);
+        tick(60_000);
         expect(mtimeOf(h)).toBe(before);
       });
 
-      it("tolerates a holder file reaped between beats", () => {
+      it("leaves a holder file reaped between beats gone", () => {
         vi.useFakeTimers();
         const h = tryAcquireLease(opts(), meta)!;
         rmSync(holderFile(h.id!));
-        expect(() => vi.advanceTimersByTime(30_000)).not.toThrow();
+        expect(() => tick(30_000)).not.toThrow();
+        expect(existsSync(holderFile(h.id!))).toBe(false);
         h.release();
+      });
+
+      it("keeps a holder reaped while it still runs out of the count, even when it then records a child", () => {
+        const one = opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } });
+        const a = tryAcquireLease(one, meta)!;
+        const stalled = (clock - (HEARTBEAT_STALE_MS + 10_000) + 0.5) / 1000; // its event loop missed every beat
+        utimesSync(holderFile(a.id!), stalled, stalled);
+        const b = tryAcquireLease(one, meta)!;
+        expect(events).toContainEqual({ type: "reap", id: a.id, reason: "stale-heartbeat" });
+        a.setChildPid(4321);
+        expect(existsSync(holderFile(a.id!))).toBe(false);
+        expect(leaseStatus(one).live.map((x) => x.id)).toEqual([b.id]);
+        a.release();
+        b.release();
       });
     });
 

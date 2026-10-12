@@ -114,14 +114,16 @@ function createHolder(opts, meta, command, admission) {
     };
     write();
     let released = false;
-    // Unref'd, so it never keeps the process alive; a file reaped since the last beat is not recreated.
+    // Unref'd, so it never keeps the process alive. A file found gone was reaped: its heartbeat went stale (this event
+    // loop stalled past 90 s, or the wall clock jumped) with no live child recorded. Such a holder stays out of the count
+    // for the rest of its run, so neither the beat (utimes never creates) nor setChildPid recreates the file.
     const beat = setInterval(() => {
         try {
             const at = now() / 1000;
             utimesSync(file, at, at);
         }
         catch {
-            // Reaped or unwritable; the next beat or release settles it.
+            // Reaped, which is final, or unwritable for now, which the next beat retries.
         }
     }, HEARTBEAT_MS);
     beat.unref();
@@ -135,7 +137,9 @@ function createHolder(opts, meta, command, admission) {
                 return;
             rec.childPid = pid;
             try {
-                write();
+                // Only a file still there is replaced; a reap between this check and the rename is not detected.
+                if (unlessGone(() => statSync(file)))
+                    write();
             }
             catch {
                 // The previous record still names this holder.
