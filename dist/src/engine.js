@@ -525,15 +525,24 @@ export class Orchestrator {
         return true;
     }
     /**
-     * The one place a `claude` session is spawned for an issue: tags the handle
-     * with the issue number and, unless `monitor` is false, attaches the stall
-     * monitor. `exitCode` resolves after the monitor has stopped. Per-session
-     * accounting and post-exit reads of the session log belong here, so every
-     * spawn site picks them up together.
+     * The one place a `claude` session is spawned for an issue. Unless `tagIssue`
+     * is false, it tags the handle with the issue number. It attaches a stall
+     * monitor only when `monitor` is true and the effective stall timeout
+     * (`issue.stallTimeout ?? config.stallTimeout`) is above 0.
+     *
+     * Its exit reaction is attached to `handle.exitCode` before the caller can
+     * attach one, so it runs first: on a normal exit, every continuation a call
+     * site chains on `handle.exitCode` runs after the monitor has stopped, with
+     * no extra microtask hop. Per-session accounting (#104) and post-exit reads
+     * of the session log (#106) belong in that reaction, so every spawn site
+     * picks them up together. Accounting must also run when `exitCode` rejects
+     * (a `.finally`-style handler covering both paths), or a rejected exit
+     * leaks a count.
      */
-    spawnSession(issue, args, cwd, logFile, stderrFile, { monitor = true, retry = false } = {}) {
+    spawnSession(issue, args, cwd, logFile, stderrFile, { monitor = true, tagIssue = true, retry = false } = {}) {
         const handle = this.deps.processRunner.spawn("claude", args, { cwd, logFile, stderrFile });
-        handle.issueNumber = issue.number;
+        if (tagIssue)
+            handle.issueNumber = issue.number;
         const stallTimeout = issue.stallTimeout ?? this.config.stallTimeout;
         const stallMonitor = monitor && stallTimeout > 0
             ? new StallMonitor({
@@ -547,11 +556,11 @@ export class Orchestrator {
             })
             : null;
         stallMonitor?.start();
-        const exitCode = handle.exitCode.then((code) => {
-            stallMonitor?.stop();
-            return code;
-        });
-        return { handle, exitCode };
+        // A rejection reaches the caller through `handle.exitCode` itself and
+        // leaves the monitor running, as before; this branch only swallows its
+        // own copy so it is not reported as unhandled.
+        handle.exitCode.then(() => stallMonitor?.stop(), () => { });
+        return handle;
     }
     /** True (and the issue is failed and stopped) when a fresh reading says a retry may not start. */
     async retryRefused(issue) {
@@ -634,8 +643,8 @@ export class Orchestrator {
             const launchTime = new Date().toISOString();
             this.deps.metadataStore.update(issue.ref, { startedAt: launchTime, ...NO_STOP });
             const stderrFile = `${this.config.configDir}/logs/issue-${encodeRefForFilename(issue.ref)}.stderr.log`;
-            const { handle, exitCode: sessionExit } = this.spawnSession(issue, args, worktreePath, logFile, stderrFile);
-            const postCheck = sessionExit.then(async (exitCode) => {
+            const handle = this.spawnSession(issue, args, worktreePath, logFile, stderrFile);
+            const postCheck = handle.exitCode.then(async (exitCode) => {
                 const finishTime = new Date().toISOString();
                 this.deps.metadataStore.update(issue.ref, {
                     exitCode,
@@ -658,8 +667,8 @@ export class Orchestrator {
                         this.deps.logger.warn(`Issue #${issue.number} produced 0-byte log (exit ${exitCode}), retrying once...`);
                         this.deps.truncateFile(logFile);
                         this.deps.truncateFile(stderrFile);
-                        const { exitCode: retryExit } = this.spawnSession(issue, args, worktreePath, logFile, stderrFile, { retry: true });
-                        const retryExitCode = await retryExit;
+                        const retryHandle = this.spawnSession(issue, args, worktreePath, logFile, stderrFile, { retry: true });
+                        const retryExitCode = await retryHandle.exitCode;
                         this.deps.metadataStore.update(issue.ref, {
                             exitCode: retryExitCode,
                             finishedAt: new Date().toISOString(),
@@ -745,7 +754,8 @@ export class Orchestrator {
                 "--output-format", "stream-json",
                 "--verbose",
             ];
-            const retryExitCode = await this.spawnSession(issue, retryArgs, worktreePath, logFile, stderrFile, { monitor: false }).exitCode;
+            const retryHandle = this.spawnSession(issue, retryArgs, worktreePath, logFile, stderrFile, { monitor: false, tagIssue: false });
+            const retryExitCode = await retryHandle.exitCode;
             this.deps.metadataStore.update(issue.ref, {
                 exitCode: retryExitCode,
                 finishedAt: new Date().toISOString(),

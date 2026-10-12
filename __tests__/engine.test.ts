@@ -2976,6 +2976,103 @@ describe("CI failure retry", () => {
   });
 });
 
+// The three spawn sites (first attempt, 0-byte retry, check-failure retry)
+// share one helper; these pin what each site does exactly as before it.
+describe("claude session spawns", () => {
+  it("tags the first attempt and the 0-byte retry with the issue number, but not the check-failure retry", async () => {
+    let checks = 0;
+    const issue = makeIssue({ number: 1, wave: 1 });
+    const config = makeConfig([issue], {
+      postSessionCheck: vi.fn(async () => ({ passed: ++checks > 1 })),
+    });
+    config.retryOnCheckFailure = { maxRetries: 1, enabled: true };
+    const deps = makeDeps({ getLogFileSize: () => 0 });
+    const spawnSpy = vi.spyOn(deps.processRunner, "spawn");
+    const orchestrator = new Orchestrator(config, deps);
+
+    const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+    const promise = orchestrator.runWave(1);
+
+    // First attempt: 0-byte log and a non-zero exit start the 0-byte retry.
+    await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+    runner.resolvers.get(1000)!(1);
+    // 0-byte retry: exits 0, its check fails, and the check-failure retry starts.
+    await vi.waitFor(() => expect(runner.spawned.length).toBe(2));
+    runner.resolvers.get(1001)!(0);
+    await vi.waitFor(() => expect(runner.spawned.length).toBe(3));
+    runner.resolvers.get(1002)!(0);
+    await promise;
+
+    // The mock runner hands back issueNumber 0; the check-failure retry handle keeps it.
+    const issueNumbers = spawnSpy.mock.results.map((r) => (r.value as ProcessHandle).issueNumber);
+    expect(issueNumbers).toEqual([1, 1, 0]);
+  });
+
+  it.each([
+    { site: "first attempt", before: [], checkFails: false, written: { exitCode: 0 } },
+    { site: "0-byte retry", before: [1], checkFails: false, written: { exitCode: 0 } },
+    { site: "check-failure retry", before: [0], checkFails: true, written: { retryCount: 1 } },
+  ])("writes the $site's exit metadata one microtask after the exit", async ({ before, checkFails, written }) => {
+    let checks = 0;
+    const issue = makeIssue({ number: 1, wave: 1 });
+    const config = makeConfig([issue], {
+      postSessionCheck: vi.fn(async () => ({ passed: !(checkFails && ++checks === 1) })),
+    });
+    config.retryOnCheckFailure = { maxRetries: 1, enabled: true };
+    const deps = makeDeps({ getLogFileSize: () => 0 });
+    const orchestrator = new Orchestrator(config, deps);
+
+    const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+    const promise = orchestrator.runWave(1);
+
+    for (const [i, code] of before.entries()) {
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(i + 1));
+      runner.resolvers.get(1000 + i)!(code);
+    }
+    await vi.waitFor(() => expect(runner.spawned.length).toBe(before.length + 1));
+    runner.resolvers.get(1000 + before.length)!(0);
+
+    // A consumer that awaits one microtask after the exit sees the write.
+    await Promise.resolve();
+    expect(deps.metadataStore.get("1")).toMatchObject(written);
+
+    await promise;
+  });
+
+  it.each([
+    { site: "first attempt", logSize: 50, firstExit: undefined, warning: "Issue #1 stalled (no output for 30s), killing process" },
+    { site: "0-byte retry", logSize: 0, firstExit: 1, warning: "Issue #1 retry stalled (no output for 30s), killing process" },
+  ])("names the $site in its stall warning", async ({ logSize, firstExit, warning }) => {
+    vi.useFakeTimers();
+    try {
+      const issue = makeIssue({ number: 1, wave: 1 });
+      const config = makeConfig([issue]);
+      config.stallTimeout = 30;
+      const deps = makeDeps({ getLogFileSize: () => logSize });
+      const orchestrator = new Orchestrator(config, deps);
+
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+      if (firstExit !== undefined) {
+        runner.resolvers.get(1000)!(firstExit);
+        await vi.waitFor(() => expect(runner.spawned.length).toBe(2));
+      }
+
+      // Past the 30s stall timeout: the running session is killed.
+      await vi.advanceTimersByTimeAsync(40_000);
+      await vi.advanceTimersByTimeAsync(0);
+      await promise;
+
+      const warnings = (deps.logger.warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+      expect(warnings.filter((w) => w.includes("stalled"))).toEqual([warning]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("mode-nodes", () => {
   it("runs a deploy command node's command instead of spawning Claude", async () => {
     const issue = makeIssue({
