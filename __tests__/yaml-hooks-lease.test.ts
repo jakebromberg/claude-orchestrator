@@ -1,0 +1,239 @@
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { deriveHooks } from "../src/yaml-hooks.js";
+import { leaseStatus, tryAcquireLease, type LeaseEvent, type LeaseOptions } from "../src/lease.js";
+import type { PressureLevel } from "../src/memory-pressure.js";
+import { scriptedPressureSampler } from "../src/testing.js";
+import type { Issue } from "../src/types.js";
+import type { YamlConfig } from "../src/yaml-types.js";
+import { fakeLeaseClock, type FakeLeaseClock } from "./helpers/lease.js";
+
+const issue = { number: 7, slug: "foo", ref: "7", wave: 1, dependsOn: [], deps: [], description: "d" } as Issue;
+
+function makeYaml(overrides: Partial<YamlConfig> = {}): YamlConfig {
+  return {
+    name: "t", configDir: "/tmp/c", worktreeDir: "/tmp/worktrees", projectRoot: "/tmp/p", stallTimeout: 300,
+    postSessionCheck: { commands: ["npm test", "npx tsc"] },
+    issues: [issue],
+    ...overrides,
+  };
+}
+
+describe("leased postSessionCheck", () => {
+  let tmp: string;
+  let clock: FakeLeaseClock;
+  let level: PressureLevel;
+  let events: LeaseEvent[];
+  let warnings: string[];
+  let live: Set<number>;
+
+  const leaseOptions = (overrides: Partial<LeaseOptions> = {}): LeaseOptions => ({
+    dir: tmp,
+    level: scriptedPressureSampler(() => level),
+    policy: { heavyCeiling: 1, heavyWarning: 1 },
+    now: clock.now,
+    sleep: clock.sleep,
+    isAlive: (pid) => live.has(pid),
+    onEvent: (e) => events.push(e),
+    warn: (m) => warnings.push(m),
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "post-check-lease-"));
+    clock = fakeLeaseClock();
+    level = "normal";
+    events = [];
+    warnings = [];
+    live = new Set([process.pid]);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("takes one slot for the whole check, labelled with the issue, and hands each command the holder env and child PID", async () => {
+    const seen: Array<{ holders: string[]; env?: Record<string, string>; onSpawn?: (pid: number) => void }> = [];
+    const runCommand = vi.fn(async (_cmd: string, _cwd: string, env?: Record<string, string>, onSpawn?: (pid: number) => void) => {
+      seen.push({ holders: leaseStatus(leaseOptions()).live.map((h) => h.command), env, onSpawn });
+      onSpawn?.(4242);
+      return "";
+    });
+    live.add(4242);
+    const hooks = deriveHooks(makeYaml(), { runCommand });
+    const result = await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions() });
+
+    expect(result).toEqual({ passed: true });
+    expect(seen.map((s) => s.holders)).toEqual([["post-check 7"], ["post-check 7"]]);
+    const id = (events[0] as Extract<LeaseEvent, { type: "acquire" }>).id;
+    expect(seen.map((s) => s.env)).toEqual([{ CO_LEASE_HOLDER: id }, { CO_LEASE_HOLDER: id }]);
+    expect(events.map((e) => e.type)).toEqual(["acquire", "release"]);
+    expect(leaseStatus(leaseOptions()).live).toEqual([]);
+  });
+
+  it("reports each child's PID to the holder, so it stays live past a stalled heartbeat", async () => {
+    let childPid: number | undefined;
+    const runCommand = vi.fn(async (_c: string, _d: string, _e?: Record<string, string>, onSpawn?: (pid: number) => void) => {
+      onSpawn?.(process.pid);
+      childPid = leaseStatus(leaseOptions()).live[0]?.childPid;
+      return "";
+    });
+    const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands: ["npm test"] } }), { runCommand });
+    await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions() });
+
+    expect(childPid).toBe(process.pid);
+  });
+
+  it("releases in finally when a command fails, and stops at the first failure", async () => {
+    const runCommand = vi.fn(async () => { throw new Error("boom"); });
+    const hooks = deriveHooks(makeYaml(), { runCommand });
+    const result = await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions() });
+
+    expect(result.passed).toBe(false);
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    expect(events.map((e) => e.type)).toEqual(["acquire", "release"]);
+    expect(leaseStatus(leaseOptions()).live).toEqual([]);
+  });
+
+  it("does no lease I/O and calls the runner with exactly (cmd, cwd) without ctx.lease", async () => {
+    const dir = join(tmp, "never-created");
+    const runCommand = vi.fn(async () => "");
+    const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands: ["npm test"] } }), { runCommand });
+    await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { runningSessions: () => 0 });
+    await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo");
+
+    expect(runCommand.mock.calls).toEqual([["npm test", "/tmp/worktrees/foo"], ["npm test", "/tmp/worktrees/foo"]]);
+    expect(existsSync(dir)).toBe(false);
+    expect(events).toEqual([]);
+  });
+
+  it("ignores an inherited holder id: the check takes its own slot instead of riding the inherited one", async () => {
+    const parent = tryAcquireLease(leaseOptions(), { command: "parent", cwd: "/" })!;
+    parent.setChildPid(process.pid);
+    clock.onSleep = () => { if (clock.sleeps.length === 2) parent.release(); };
+    const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands: ["npm test"] } }), { runCommand: vi.fn(async () => "") });
+    await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions({ inheritedHolderId: parent.id! }) });
+
+    expect(clock.sleeps.length).toBe(2);
+  });
+
+  it.each([
+    { name: "a check admitted under the per-run override", overridden: true },
+    { name: "a check admitted at a real warning", overridden: false },
+  ])("records override only for $name", async ({ overridden }) => {
+    level = "warning";
+    const runCommand = vi.fn(async () => {
+      expect(leaseStatus(leaseOptions()).live[0].override).toBe(overridden ? true : undefined);
+      return "";
+    });
+    const sampler = scriptedPressureSampler("warning", { overridden });
+    const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands: ["npm test"] } }), { runCommand });
+    await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions({ level: sampler }) });
+
+    expect(events[0]).toMatchObject({ type: "acquire", ...(overridden ? { override: true } : {}) });
+    expect("override" in events[0]).toBe(overridden);
+  });
+
+  describe("at critical", () => {
+    it("keeps waiting while an engine session runs, then stops without running any command", async () => {
+      level = "critical";
+      let running = 2;
+      clock.onSleep = () => { running = Math.max(0, running - 1); };
+      const runCommand = vi.fn(async () => "");
+      const hooks = deriveHooks(makeYaml(), { runCommand });
+      const result = await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", {
+        lease: leaseOptions(), runningSessions: () => running,
+      });
+
+      expect(clock.sleeps.length).toBe(2);
+      expect(runCommand).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ passed: false, stopped: "memory-critical" });
+      expect(events).toMatchObject([{ type: "timeout", refused: "stopped", level: "critical" }]);
+    });
+
+    it("keeps waiting while a lease holder is live, even with no engine session", async () => {
+      const holder = tryAcquireLease(leaseOptions(), { command: "other", cwd: "/" })!;
+      holder.setChildPid(process.pid);
+      level = "critical";
+      clock.onSleep = () => { if (clock.sleeps.length === 3) holder.release(); };
+      const runCommand = vi.fn(async () => "");
+      const hooks = deriveHooks(makeYaml(), { runCommand });
+      const result = await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions(), runningSessions: () => 0 });
+
+      expect(clock.sleeps.length).toBe(3);
+      expect(result.stopped).toBe("memory-critical");
+      expect(runCommand).not.toHaveBeenCalled();
+    });
+
+    it("does not stop on a stale cached reading that a fresh read contradicts", async () => {
+      const sampler = scriptedPressureSampler(["critical", "normal"], { fresh: () => "normal" });
+      const runCommand = vi.fn(async () => "");
+      const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands: ["npm test"] } }), { runCommand });
+      const result = await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", {
+        lease: leaseOptions({ level: sampler }), runningSessions: () => 0,
+      });
+
+      expect(result).toEqual({ passed: true });
+      expect(runCommand).toHaveBeenCalledTimes(1);
+    });
+
+    describe("with sequentialPaths", () => {
+      const collidingGit = (peerAdds: boolean) => vi.fn((_f: string, args: string[]) => {
+        if (args.includes("fetch")) return "";
+        if (args.includes("merge-base") && args.includes("HEAD")) return "abc123\n";
+        if (args.includes("/tmp/worktrees/foo") && args.includes("abc123..HEAD")) return "migrations/0056_a.sql\n";
+        if (args.includes("/tmp/worktrees/bar") && args.includes("abc123..HEAD")) return peerAdds ? "migrations/0056_b.sql\n" : "\n";
+        return "";
+      });
+      const yaml = () => makeYaml({
+        sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+        issues: [issue, { number: 8, slug: "bar", dependsOn: [], description: "b" }],
+      });
+
+      it("still runs the collision scan; no collision is a stopped result", async () => {
+        level = "critical";
+        const runCommand = vi.fn(async () => "");
+        const runGitCommand = collidingGit(false);
+        const hooks = deriveHooks(yaml(), { runCommand, runGitCommand, existsSync: () => true });
+        const result = await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions(), runningSessions: () => 0 });
+
+        expect(runCommand).not.toHaveBeenCalled();
+        expect(runGitCommand).toHaveBeenCalled();
+        expect(result).toMatchObject({ passed: false, stopped: "memory-critical" });
+      });
+
+      it("makes a collision an ordinary failed check, not a stopped one", async () => {
+        level = "critical";
+        const hooks = deriveHooks(yaml(), { runCommand: vi.fn(), runGitCommand: collidingGit(true), existsSync: () => true });
+        const result = await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions(), runningSessions: () => 0 });
+
+        expect(result.passed).toBe(false);
+        expect(result.stopped).toBeUndefined();
+        expect(result.summary).toContain("0056");
+      });
+    });
+  });
+
+  describe("waiting line", () => {
+    it("logs at most once a minute, throttled on the monotonic clock", async () => {
+      const full = tryAcquireLease(leaseOptions(), { command: "other", cwd: "/" })!;
+      full.setChildPid(process.pid);
+      let mono = 1_000_000;
+      vi.spyOn(performance, "now").mockImplementation(() => mono);
+      // A step of the wall clock must not release the throttle; only monotonic time does.
+      const steps = [0, 20_000, 50_000, 61_000, 70_000, 125_000, 130_000];
+      clock.onSleep = () => {
+        const i = clock.sleeps.length;
+        mono = 1_000_000 + steps[Math.min(i, steps.length - 1)];
+        if (i === steps.length - 1) full.release();
+      };
+      const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands: ["npm test"] } }), { runCommand: vi.fn(async () => "") });
+      await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions() });
+
+      const lines = warnings.filter((m) => m.startsWith("Issue #7 post-check waiting for a lease slot ("));
+      expect(lines).toHaveLength(3);
+    });
+  });
+});

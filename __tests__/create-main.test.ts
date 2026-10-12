@@ -1,9 +1,12 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
+import { consoleLogger } from "../src/log.js";
+import * as lease from "../src/lease.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
   buildDetachSpawnCommand,
+  createRealDeps,
   buildGhIssueCreateCommand,
   buildNotificationScript,
   createMain,
@@ -42,6 +45,50 @@ describe("createMain memory-pressure sampler", () => {
 
   it("fails a run on a relative CO_LEASE_DIR before dispatching anything", async () => {
     await expect(run()).rejects.toThrow("CO_LEASE_DIR must be an absolute path");
+  });
+});
+
+vi.mock("../src/lease.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lease.js")>();
+  return { ...actual, defaultLeaseOptions: vi.fn(actual.defaultLeaseOptions) };
+});
+
+describe("createRealDeps lease wiring", () => {
+  const config = { configDir: "/nonexistent-claude-orchestrator-test/config" } as OrchestratorConfig;
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    vi.mocked(lease.defaultLeaseOptions).mockClear();
+  });
+
+  it("builds the lease options once in a run mode and shares their sampler with the engine", () => {
+    vi.stubEnv("CO_LEASE_DIR", path.join(os.tmpdir(), "co-create-main-lease"));
+    const deps = createRealDeps(config, "run-all");
+
+    expect(lease.defaultLeaseOptions).toHaveBeenCalledTimes(1);
+    expect(deps.lease).toBeDefined();
+    expect(deps.memoryPressure).toBe(deps.lease!.level);
+  });
+
+  it.each(["status", "plan"] as const)("builds no lease options for the read-only %s mode", (mode) => {
+    vi.stubEnv("CO_LEASE_DIR", "relative/lease");
+    const deps = createRealDeps(config, mode);
+
+    expect(deps.lease).toBeUndefined();
+    expect(deps.memoryPressure).toBeUndefined();
+    expect(lease.defaultLeaseOptions).not.toHaveBeenCalled();
+  });
+
+  it("sends policy lines through the engine's logger, not raw stderr", () => {
+    vi.stubEnv("CO_LEASE_DIR", path.join(os.tmpdir(), "co-create-main-lease"));
+    vi.stubEnv("CO_LEASE_SLOTS", "many");
+    const warn = vi.spyOn(consoleLogger, "warn").mockImplementation(() => {});
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    createRealDeps(config, "run-all");
+
+    expect(warn).toHaveBeenCalledWith('memory-pressure: ignoring invalid CO_LEASE_SLOTS="many"; keeping 4');
+    expect(stderr.mock.calls.map(([chunk]) => String(chunk)).join("")).not.toContain("[memory-pressure]");
   });
 });
 

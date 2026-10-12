@@ -69,6 +69,12 @@ describe("claudeSessionEnv", () => {
     expect(result.HOME).toBe("/Users/test");
   });
 
+  it("strips CO_LEASE_HOLDER, so a session never inherits a lease holder id from the engine's environment", () => {
+    const result = claudeSessionEnv({ CO_LEASE_HOLDER: "holder-1", CO_LEASE_DIR: "/lease", HOME: "/Users/test" });
+    expect(result.CO_LEASE_HOLDER).toBeUndefined();
+    expect(result.CO_LEASE_DIR).toBe("/lease");
+  });
+
   it("keeps API credentials when the opt-in env var is set", () => {
     const result = claudeSessionEnv({
       ANTHROPIC_API_KEY: "secret",

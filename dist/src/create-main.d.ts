@@ -1,4 +1,4 @@
-import type { OrchestratorConfig } from "./types.js";
+import type { Deps, OrchestratorConfig, ParsedMode } from "./types.js";
 export type ConfigFactory = ((projectRoot: string) => OrchestratorConfig) | ((projectRoot: string) => Promise<OrchestratorConfig>);
 /** Exported for testing. Builds the `gh issue create` command string with shell-safe quoting. */
 export declare function buildGhIssueCreateCommand(repo: string, title: string): string;
@@ -38,4 +38,5 @@ export interface MainOptions {
     argv?: string[];
     projectRoot?: string;
 }
+export declare function createRealDeps(config: OrchestratorConfig, mode: ParsedMode): Deps;
 export declare function createMain(options: MainOptions): Promise<void>;

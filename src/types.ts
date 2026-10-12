@@ -1,4 +1,5 @@
 import type { PressureSampler } from "./memory-pressure.js";
+import type { LeaseOptions } from "./lease.js";
 export type Status =
   | "pending"
   | "running"
@@ -181,8 +182,22 @@ export interface OrchestratorHooks {
   interpolatePrompt(issue: Issue, extraVars?: Record<string, string>): Promise<string>;
   getClaudeArgs(issue: Issue): string[];
   printSummary(issues: Issue[], getStatus: (ref: string) => Status): void;
-  /** Optional hook called after Claude exits 0, before marking "succeeded". */
-  postSessionCheck?(issue: Issue, worktreePath: string): Promise<PostCheckResult>;
+  /**
+   * Optional hook called after Claude exits 0, before marking "succeeded".
+   *
+   * `ctx.lease` is set when the engine has a machine-wide heavy-command lease; a check that ignores it runs unleased.
+   * A check that uses it takes one slot with `acquireLease` before its heavy commands and releases it in `finally`. It
+   * must report each child's PID through the handle's `setChildPid` (the holder is reaped after 90 s without a
+   * heartbeat, and a check that blocks the event loop sends none) and must not block the event loop. Pass
+   * `stopWhen: (s) => stopAtCritical(s.level, s.live.length + ctx.runningSessions())` so a wait at `critical` ends
+   * once nothing is left to relieve the pressure, and return `stopped: "memory-critical"` without running the heavy
+   * commands. `ctx.runningSessions()` counts the engine's running `claude` sessions, never the check's own.
+   */
+  postSessionCheck?(
+    issue: Issue,
+    worktreePath: string,
+    ctx?: { lease?: LeaseOptions; runningSessions?(): number },
+  ): Promise<PostCheckResult>;
   /** Optional hook called when an issue's status changes. Errors are non-fatal. */
   onStatusChange?(issue: Issue, oldStatus: Status, newStatus: Status): Promise<void>;
   /**
@@ -320,6 +335,8 @@ export interface Deps {
   truncateFile(path: string): void;
   /** Memory-pressure sampler; absent reads as `"unknown"` (no adaptation, no stop). */
   memoryPressure?: PressureSampler;
+  /** Machine-wide heavy-command lease for post-session checks; absent means checks run unleased with no lease I/O. */
+  lease?: LeaseOptions;
 }
 
 export interface RunRecord {
