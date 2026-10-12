@@ -1,3 +1,4 @@
+import { type Stats } from "node:fs";
 import { type PressureLevel, type PressurePolicy, type PressureSampler } from "./memory-pressure.js";
 type ReapReason = "stale-heartbeat" | "orphan-bound" | "corrupt";
 export type LeaseEvent = {
@@ -111,6 +112,8 @@ export interface LeaseRefusal {
     level: PressureLevel;
     live: number;
 }
+/** The lease's directory rule, given `lstat` stats: a real directory (not a symlink) this user owns. A platform without uids (Windows) skips the ownership check. */
+export declare function isOwnDir(st: Stats): boolean;
 /** A single non-blocking attempt: a handle, or `null` when not admitted this poll. */
 export declare function tryAcquireLease(opts: LeaseOptions, meta: HolderMeta): LeaseHandle | null;
 /**

@@ -65,6 +65,11 @@ describe("lease", () => {
     tryAcquireLease(opts({ policy: { heavyCeiling: 99, heavyWarning: 99 } }), meta)!.release();
     writeHolder(id, rec, beatAgoMs);
   };
+  const busyMutex = (): void => {
+    tryAcquireLease(opts(), meta)!.release();
+    writeFileSync(join(dir, ".mutex"), "");
+    utimesSync(join(dir, ".mutex"), clock / 1000, clock / 1000); // fresh on the injected clock, not from its future
+  };
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "lease-"));
@@ -368,12 +373,6 @@ describe("lease", () => {
   });
 
   describe("mutex and fail-open", () => {
-    const busyMutex = (): void => {
-      tryAcquireLease(opts(), meta)!.release();
-      writeFileSync(join(dir, ".mutex"), "");
-      utimesSync(join(dir, ".mutex"), clock / 1000, clock / 1000); // fresh on the injected clock, not from its future
-    };
-
     it("treats a busy mutex as not admitted, without throwing", () => {
       busyMutex();
       expect(tryAcquireLease(opts(), meta)).toBeNull();
@@ -623,23 +622,38 @@ describe("lease", () => {
   });
 
   describe("widened events", () => {
-    it("records the held time on release", () => {
+    it("records the held time on release, and no exitCode when none is given", () => {
       const h = tryAcquireLease(opts(), meta)!;
+      const g = tryAcquireLease(opts(), meta)!;
       clock += 12_345;
       h.release({ exitCode: 1 });
-      expect(events.find((e) => e.type === "release")).toEqual({ type: "release", id: h.id, heldMs: 12_345, exitCode: 1 });
+      g.release();
+      expect(events.filter((e) => e.type === "release")).toStrictEqual([
+        { type: "release", id: h.id, heldMs: 12_345, exitCode: 1 },
+        { type: "release", id: g.id, heldMs: 12_345 },
+      ]);
     });
 
-    it("records the level of a stopped refusal", async () => {
+    it("records the level of a stopped refusal, none for a max-wait one", async () => {
       level = "critical";
       await acquireLease(opts(), meta, { stopWhen: (s) => s.level === "critical" });
-      expect(events).toContainEqual({ type: "timeout", refused: "stopped", waitedMs: 0, level: "critical" });
+      await acquireLease(opts(), meta, { maxWaitMs: 0 });
+      expect(events.filter((e) => e.type === "timeout")).toStrictEqual([
+        { type: "timeout", refused: "stopped", waitedMs: 0, level: "critical" },
+        { type: "timeout", refused: "max-wait", waitedMs: 0 },
+      ]);
     });
 
-    it("records the error code and message of an I/O fail-open, none for a busy mutex", () => {
+    it("records the error code and message of an I/O fail-open, none for a busy mutex", async () => {
       writeFileSync(join(tmp, "blocker"), "");
       tryAcquireLease(opts({ dir: join(tmp, "blocker", "lease") }), meta);
-      expect(events).toContainEqual(expect.objectContaining({ type: "fail-open", reason: "io-error", code: "ENOTDIR", message: expect.any(String) }));
+      busyMutex();
+      onSleep = () => utimesSync(join(dir, ".mutex"), clock / 1000, clock / 1000);
+      await acquireLease(opts(), meta);
+      expect(events.filter((e) => e.type === "fail-open")).toStrictEqual([
+        { type: "fail-open", reason: "io-error", waitedMs: 0, code: "ENOTDIR", message: expect.any(String) },
+        { type: "fail-open", reason: "mutex-busy", waitedMs: expect.any(Number) },
+      ]);
     });
   });
 
