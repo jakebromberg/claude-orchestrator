@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,6 +12,14 @@ export default function setup(): () => void {
   process.env[HOME_ROOT_VAR] = root;
   return () => {
     delete process.env[HOME_ROOT_VAR];
+    // A file whose tests are all skipped never runs its afterAll, so a write made while it was collected is only visible here.
+    // Every home starts with an empty `lease` directory planted under the state directory; anything else is a write.
+    const stray = readdirSync(root).filter((home) => {
+      const state = join(root, home, ".local", "state", "claude-orchestrator");
+      return existsSync(state) && readdirSync(state, { recursive: true }).some((rel) => String(rel) !== "lease");
+    });
     rmSync(root, { recursive: true, force: true });
+    // Throw only after the removal, so the root is never left behind.
+    if (stray.length > 0) throw new Error(`Default lease directory written outside a test in: ${stray.map((home) => join(root, home)).join(", ")}`);
   };
 }
