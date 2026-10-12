@@ -480,6 +480,22 @@ describe("runLeased", () => {
       expect(err[0]).toMatch(/^lease: admitted after /);
     });
 
+    it("does not look up ancestors when no hook holder is live", async () => {
+      const ancestors = vi.fn(() => [SESSION]);
+      expect(await runWith({ ancestors })).toBe(0);
+      expect(ancestors).not.toHaveBeenCalled();
+      expect(err[0]).toMatch(/^lease: admitted after /);
+    });
+
+    it("acquires normally, and says so, when the hook holder it found is gone by the time it acquires", async () => {
+      const gone = { id: "hook-gone", pid: SESSION, command: "npm test", cwd: "/w", startedAt: lease.clock.ms, expiresAt: lease.clock.ms + 60_000, level: "normal" as const, ageSec: 0 };
+      const status = (o: LeaseOptions) => ({ ...leaseStatus(o), live: [gone] });
+      expect(await runWith({ ancestors: () => [SESSION], leaseStatus: status })).toBe(0);
+      expect(err[0]).toMatch(/^lease: admitted after /);
+      expect(spawned[0]!.env.CO_LEASE_HOLDER).not.toBe("hook-gone");
+      expect(lease.events.map((e) => e.type)).toEqual(["acquire", "release"]);
+    });
+
     it("does not look up ancestors when CO_LEASE_HOLDER names a live holder", async () => {
       await plantHook(SESSION);
       const ancestors = vi.fn(() => [SESSION]);

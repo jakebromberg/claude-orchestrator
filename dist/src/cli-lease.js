@@ -94,8 +94,12 @@ function optionsOrReport(d) {
 /** The id of a live hook holder (`expiresAt` set) whose session PID is one of this CLI's ancestors; `undefined` when none or the ancestors are unreadable. */
 function ancestorHookSlot(opts, d) {
     try {
+        // Read the holders first, so a CLI start with no live hook holder spawns no `ps`.
+        const hooks = d.leaseStatus(opts).live.filter((h) => h.expiresAt !== undefined);
+        if (hooks.length === 0)
+            return undefined;
         const up = new Set(d.ancestors());
-        return up.size === 0 ? undefined : d.leaseStatus(opts).live.find((h) => h.expiresAt !== undefined && up.has(h.pid))?.id;
+        return hooks.find((h) => up.has(h.pid))?.id;
     }
     catch {
         return undefined;
@@ -105,7 +109,7 @@ function ancestorHookSlot(opts, d) {
 function psAncestors() {
     const found = [];
     try {
-        for (let pid = process.ppid; found.length < ANCESTOR_DEPTH && Number.isInteger(pid) && pid > 1; pid = Number(execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", timeout: 2_000 }).trim())) {
+        for (let pid = process.ppid; found.length < ANCESTOR_DEPTH && Number.isInteger(pid) && pid > 1; pid = Number(execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] }).trim())) {
             found.push(pid);
         }
     }
