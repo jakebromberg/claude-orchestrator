@@ -118,6 +118,43 @@ describe("claude-orchestrator-lease (integration)", () => {
     }
   });
 
+  // Node throws from spawn() for these rather than emitting 'error'. Linux's execvp runs a script with no `#!` line under
+  // /bin/sh, so only macOS's posix_spawn fails it (ENOEXEC).
+  const cannotStart: [string, number, (dir: string) => string][] = [
+    ["an empty program name", 127, () => ""],
+    ["a path through a regular file (ENOTDIR)", 126, (dir) => (fs.writeFileSync(path.join(dir, "file"), ""), path.join(dir, "file", "x"))],
+  ];
+  if (process.platform === "darwin") {
+    cannotStart.push(["an executable with no #! line (ENOEXEC)", 126, (dir) => (fs.writeFileSync(path.join(dir, "ci.sh"), "exit 0\n", { mode: 0o755 }), path.join(dir, "ci.sh"))]);
+  }
+  it.each(cannotStart)("exits %s with %i and releases the slot when spawn throws", async (_name, expected, program) => {
+    const env = isolatedEnv(leaseDir);
+    const r = await runCli(["--", program(tmpDir)], env);
+    expect(r.code).toBe(expected);
+    expect(r.stderr).toMatch(/^lease: admitted after/m);
+    expect(r.stderr).toMatch(/^lease: cannot run /m);
+    expect(holderFiles(leaseDir)).toEqual([]);
+    expect(JSON.parse((await runCli(["status"], env)).stdout).live).toEqual([]);
+  });
+
+  it("dies of a signal that arrives while it waits for a slot, and holds nothing", async () => {
+    const env = isolatedEnv(leaseDir);
+    const first = spawn("node", [cliPath, "--", "node", "-e", "setTimeout(() => {}, 60000)"], { env, stdio: "ignore" });
+    childPids.push(first.pid!);
+    childPids.push((await until(() => holderWithChild(leaseDir), "the first holder to record its child PID")).childPid);
+
+    const waiter = spawn("node", [cliPath, "--max-wait", "30", "--", "node", "-e", "process.exit(0)"], { env, stdio: ["ignore", "ignore", "pipe"] });
+    childPids.push(waiter.pid!);
+    let stderr = "";
+    waiter.stderr!.on("data", (b: Buffer) => (stderr += b.toString()));
+    const exited = new Promise<NodeJS.Signals | null>((resolve) => waiter.once("exit", (_code, signal) => resolve(signal)));
+    // The sampler's override notice is printed at the first attempt, after the forwarders are installed.
+    await until(() => (stderr.includes("CO_PRESSURE_OVERRIDE") ? true : undefined), "the waiter to make its first attempt");
+    waiter.kill("SIGTERM");
+    expect(await exited).toBe("SIGTERM");
+    expect(holderFiles(leaseDir)).toHaveLength(1);
+  }, 30_000);
+
   it("forwards SIGTERM to the child, exits 143 and releases the slot", async () => {
     const wrapper = spawn("node", [cliPath, "--", "node", "-e", "setTimeout(() => {}, 60000)"], { env: isolatedEnv(leaseDir), stdio: "ignore" });
     const exited = new Promise<number | null>((resolve) => wrapper.once("exit", (code) => resolve(code)));

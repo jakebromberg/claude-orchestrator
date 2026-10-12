@@ -66,7 +66,7 @@ describe("runLeased", () => {
   let handle: LeaseHandle & { release: ReturnType<typeof vi.fn>; setChildPid: ReturnType<typeof vi.fn> };
   let child: FakeChild;
   let spawned: { file: string; args: string[]; env: NodeJS.ProcessEnv }[];
-  let signals: EventEmitter;
+  let signals: EventEmitter & { pid: number; kill: ReturnType<typeof vi.fn> };
   let acquired: { meta: unknown; wait: { maxWaitMs?: number; onWait?(s: LeaseStatus): void } }[];
   let outcome: LeaseHandle | LeaseRefusal;
   let env: NodeJS.ProcessEnv;
@@ -104,6 +104,7 @@ describe("runLeased", () => {
 
   const run = (args: Partial<RunArgs> = {}, over: Partial<LeaseCliDeps> = {}) =>
     runLeased({ kind: "run", argv: ["npm", "test"], ...args }, deps(over));
+  const forwarders = () => (["SIGINT", "SIGTERM", "SIGHUP"] as const).map((s) => signals.listenerCount(s));
   /** Lets `runLeased` get through `await acquire` and spawn, then ends the child. */
   const finishWith = async (code: number | null, signal: NodeJS.Signals | null = null) => {
     await vi.waitFor(() => expect(spawned).toHaveLength(1));
@@ -119,7 +120,7 @@ describe("runLeased", () => {
     child = new FakeChild();
     spawned = [];
     acquired = [];
-    signals = new EventEmitter();
+    signals = Object.assign(new EventEmitter(), { pid: 999, kill: vi.fn() });
     env = { PARENT_ONLY: "1", SHELL: "/bin/zsh" };
   });
 
@@ -148,9 +149,16 @@ describe("runLeased", () => {
     expect(spawned[0]).toMatchObject({ file: "/bin/sh", args: ["-c", "status=1; exit $status"] });
   });
 
-  it("records the child PID synchronously after spawn", async () => {
-    const done = run();
-    await vi.waitFor(() => expect(spawned).toHaveLength(1));
+  it("records the child PID synchronously after spawn, before any microtask runs", async () => {
+    let recordedBeforeMicrotask: number | undefined;
+    const done = run({}, {
+      spawn: () => {
+        queueMicrotask(() => (recordedBeforeMicrotask = handle.setChildPid.mock.calls.length));
+        return child;
+      },
+    });
+    await vi.waitFor(() => expect(recordedBeforeMicrotask).toBeDefined());
+    expect(recordedBeforeMicrotask).toBe(1);
     expect(handle.setChildPid).toHaveBeenCalledExactlyOnceWith(4321);
     child.emit("close", 0, null);
     await done;
@@ -162,7 +170,8 @@ describe("runLeased", () => {
     });
     expect(await run()).toBe(1);
     expect(child.kill).toHaveBeenCalledWith("SIGKILL");
-    expect(handle.release).toHaveBeenCalled();
+    child.emit("close", null, "SIGKILL");
+    expect(handle.release).toHaveBeenCalledExactlyOnceWith({ exitCode: 1 });
     expect(err.join("\n")).toContain("disk full");
   });
 
@@ -181,14 +190,37 @@ describe("runLeased", () => {
     expect(err).not.toContain(hint);
   });
 
-  it("reports a spawn failure as 127 for a missing program and releases", async () => {
+  it.each<[string, string, number]>([
+    ["a missing program", "ENOENT", 127],
+    ["a program it may not execute", "EACCES", 126],
+  ])("reports a spawn 'error' for %s as %s -> %i, and releases once although 'close' follows", async (_name, code, exit) => {
     child.pid = undefined;
     const done = run({ argv: ["nope"] });
     await vi.waitFor(() => expect(spawned).toHaveLength(1));
-    child.emit("error", Object.assign(new Error("spawn nope ENOENT"), { code: "ENOENT" }));
-    expect(await done).toBe(127);
+    child.emit("error", Object.assign(new Error(`spawn nope ${code}`), { code }));
+    child.emit("close", -2, null);
+    expect(await done).toBe(exit);
+    expect(err).toContain(`lease: cannot run nope: spawn nope ${code}`);
     expect(handle.setChildPid).not.toHaveBeenCalled();
-    expect(handle.release).toHaveBeenCalledWith({ exitCode: 127 });
+    expect(handle.release).toHaveBeenCalledExactlyOnceWith({ exitCode: exit });
+  });
+
+  it.each<[string, string, string, number]>([
+    ["a shebang-less executable", "./ci.sh", "ENOEXEC", 126],
+    ["a path through a regular file", "/etc/passwd/x", "ENOTDIR", 126],
+    ["an empty program name", "", "ERR_INVALID_ARG_VALUE", 127],
+  ])("reports a spawn that throws for %s (program %j, %s) as %i, and releases once", async (_name, program, code, exit) => {
+    const thrown = Object.assign(new Error(`spawn ${code}`), { code });
+    const done = run({ argv: [program, "--flag"] }, {
+      spawn: () => {
+        throw thrown;
+      },
+    });
+    expect(await done).toBe(exit);
+    expect(err).toContain(`lease: cannot run ${program}: spawn ${code}`);
+    expect(handle.release).toHaveBeenCalledExactlyOnceWith({ exitCode: exit });
+    expect(handle.setChildPid).not.toHaveBeenCalled();
+    expect(forwarders()).toEqual([0, 0, 0]);
   });
 
   it("exits 128+n when the child dies of a signal on its own", async () => {
@@ -229,13 +261,17 @@ describe("runLeased", () => {
       expect(acquired[0]!.wait.maxWaitMs).toBe(expectedMs);
     });
 
-    it("ignores an invalid CO_LEASE_MAX_WAIT with a note", async () => {
-      env = { CO_LEASE_MAX_WAIT: "soon" };
-      const done = run();
+    it.each<[string, string, number | undefined, string[], number]>([
+      ["notes an invalid value it falls back from", "soon", undefined, ['lease: ignoring invalid CO_LEASE_MAX_WAIT="soon"; using 100s'], 100_000],
+      ["says nothing of an invalid value that --max-wait overrides", "soon", 2, [], 2000],
+      ["treats an empty value as unset", "", undefined, [], 100_000],
+    ])("CO_LEASE_MAX_WAIT: %s", async (_name, envValue, flag, notes, expectedMs) => {
+      env = { CO_LEASE_MAX_WAIT: envValue };
+      const done = run({ maxWaitSec: flag });
       await finishWith(0);
       await done;
-      expect(acquired[0]!.wait.maxWaitMs).toBe(100_000);
-      expect(err[0]).toBe('lease: ignoring invalid CO_LEASE_MAX_WAIT="soon"; using 100s');
+      expect(acquired[0]!.wait.maxWaitMs).toBe(expectedMs);
+      expect(err.filter((l) => l.includes("CO_LEASE_MAX_WAIT"))).toEqual(notes);
     });
 
     it("prints one progress line per minute while waiting", async () => {
@@ -285,7 +321,54 @@ describe("runLeased", () => {
       vi.advanceTimersByTime(1);
       expect(child.kill).toHaveBeenCalledWith("SIGKILL");
       expect(await done).toBe(143);
-      expect(handle.release).toHaveBeenCalledWith({ exitCode: 143 });
+      child.emit("close", null, "SIGKILL");
+      expect(handle.release).toHaveBeenCalledExactlyOnceWith({ exitCode: 143 });
+    });
+
+    it("keeps the first signal's exit code and its one grace timer when a second signal arrives", async () => {
+      const done = run();
+      await vi.waitFor(() => expect(spawned).toHaveLength(1));
+      const sigkills = () => child.kill.mock.calls.filter(([s]) => s === "SIGKILL").length;
+      signals.emit("SIGINT");
+      vi.advanceTimersByTime(5_000);
+      signals.emit("SIGTERM");
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+      vi.advanceTimersByTime(4_999);
+      expect(sigkills()).toBe(0);
+      vi.advanceTimersByTime(1);
+      expect(await done).toBe(130);
+      vi.advanceTimersByTime(20_000);
+      expect(sigkills()).toBe(1);
+      expect(handle.release).toHaveBeenCalledExactlyOnceWith({ exitCode: 130 });
+    });
+
+    it("installs the forwarders before acquiring, so no signal finds the wrapper unguarded between admission and spawn", async () => {
+      let atAcquire: number[] = [];
+      const done = run({}, {
+        acquire: (async () => {
+          atAcquire = forwarders();
+          return handle;
+        }) as unknown as typeof acquireLease,
+        spawn: () => child,
+      });
+      await vi.waitFor(() => expect(handle.setChildPid).toHaveBeenCalled());
+      expect(atAcquire).toEqual([1, 1, 1]);
+      child.emit("close", 0, null);
+      expect(await done).toBe(0);
+    });
+
+    it("dies of a signal that arrives while it waits, removing the forwarders first, and runs nothing", async () => {
+      let admit!: (outcome: LeaseRefusal) => void;
+      const listening: number[][] = [];
+      signals.kill.mockImplementation(() => listening.push(forwarders()));
+      const done = run({}, { acquire: (() => new Promise((r) => (admit = r))) as unknown as typeof acquireLease });
+      signals.emit("SIGTERM");
+      expect(signals.kill).toHaveBeenCalledExactlyOnceWith(999, "SIGTERM");
+      expect(listening).toEqual([[0, 0, 0]]);
+      admit({ refused: "max-wait", waitedMs: 0, level: "warning", live: 1 });
+      await done;
+      expect(spawned).toEqual([]);
+      expect(handle.release).not.toHaveBeenCalled();
     });
   });
 
