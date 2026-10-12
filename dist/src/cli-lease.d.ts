@@ -16,7 +16,9 @@
  * interaction through `LeaseCliDeps`; the file's bottom wires real I/O.
  */
 import type { PressureSampler } from "./memory-pressure.js";
-import { acquireLease, type LeaseHandle, type LeaseOptions, type LeaseRefusal, type LeaseStatus } from "./lease.js";
+import { acquireLease, type LeaseOptions, type LeaseStatus } from "./lease.js";
+import { formatAdmitted, formatNoSlot } from "./lease-messages.js";
+export { formatAdmitted, formatNoSlot };
 /** Exactly one of `argv` (spawned directly) and `shell` (run under `/bin/sh -c`) is set. */
 export interface RunArgs {
     kind: "run";
@@ -56,10 +58,6 @@ export interface LeaseCliDeps {
         pid: number;
     };
 }
-/** The admitted line; the hook prints the same text as `additionalContext`. */
-export declare function formatAdmitted(a: LeaseHandle["admission"]): string;
-/** The no-slot line. ship-dag's give-up rule matches its `lease: no slot after` prefix; the hook denies with it too. */
-export declare function formatNoSlot(refusal: LeaseRefusal, status: LeaseStatus): string;
 export declare function parseLeaseArgs(argv: string[]): LeaseArgs;
 /** Prints the holders as JSON; returns the exit code. */
 export declare function runStatus(d: LeaseCliDeps): number;
