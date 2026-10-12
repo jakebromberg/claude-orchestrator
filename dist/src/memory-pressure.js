@@ -1,8 +1,7 @@
 /**
  * Memory-pressure signal and the one threshold table every consumer reads
  * (the heavy-command lease, the engine's session launches, ship-dag's
- * preflight), so their thresholds cannot drift. Nothing in the engine calls
- * this yet; later slices wire it in.
+ * preflight), so their thresholds cannot drift.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";

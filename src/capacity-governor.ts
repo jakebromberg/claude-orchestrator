@@ -6,14 +6,14 @@ import type { Logger } from "./types.js";
 const HYSTERESIS_MS = 60_000;
 
 export interface CapacityGovernor {
-  /** Concurrent sessions allowed as of the last `tick`. */
+  /** Launch capacity as of the last `tick`: how many pipelines may hold a pool slot (see {@link sessionCapacity}). */
   capacity(): number;
   /** Re-read the sampler and update `capacity()`. */
   tick(): void;
 }
 
 /**
- * Turns pressure readings into a session capacity. With `adaptive`, capacity
+ * Turns pressure readings into a launch capacity. With `adaptive`, capacity
  * stays at the lower value after `warning` or `critical` until `normal` has
  * held for 60 s (a debounce, not a prediction). Without it, `warning` is
  * ignored and there is no hysteresis, but `critical` still closes capacity.

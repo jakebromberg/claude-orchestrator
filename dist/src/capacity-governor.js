@@ -2,7 +2,7 @@ import { sessionCapacity } from "./memory-pressure.js";
 /** How long `normal` must hold before capacity returns from `warning` or `critical`. */
 const HYSTERESIS_MS = 60_000;
 /**
- * Turns pressure readings into a session capacity. With `adaptive`, capacity
+ * Turns pressure readings into a launch capacity. With `adaptive`, capacity
  * stays at the lower value after `warning` or `critical` until `normal` has
  * held for 60 s (a debounce, not a prediction). Without it, `warning` is
  * ignored and there is no hysteresis, but `critical` still closes capacity.
