@@ -59,3 +59,5 @@ export declare function parseLeaseArgs(argv: string[]): LeaseArgs;
 export declare function runStatus(d: LeaseCliDeps): number;
 /** Waits for a slot, runs the command with it held, and returns the exit code to pass through. */
 export declare function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>;
+/** The CLI's lease options: every lease, sink, policy and sampler diagnostic goes through `err`. */
+export declare const cliLeaseOptions: (env: NodeJS.ProcessEnv, err: (line: string) => void) => LeaseOptions;

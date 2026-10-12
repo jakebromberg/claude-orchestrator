@@ -320,9 +320,10 @@ function attempt(opts: LeaseOptions, meta: HolderMeta, waitedMs: number): Attemp
   return r;
 }
 
-const defaultWarn = (msg: string): void => {
-  process.stderr.write(`[lease] ${msg}\n`);
-};
+/** The one default diagnostics writer, shared with the event sink. Messages carry their own `lease:` prefix. */
+export function defaultWarn(msg: string): void {
+  process.stderr.write(`${msg}\n`);
+}
 
 const failedCallbacks = new WeakSet<object>();
 
@@ -341,7 +342,7 @@ const warn = (opts: LeaseOptions, msg: string): void => guarded(opts, opts.warn 
 const emit = (opts: LeaseOptions, e: LeaseEvent): void => guarded(opts, opts.onEvent, e);
 
 function failOpen(opts: LeaseOptions, level: PressureLevel, capacity: number, waitedMs: number, reason: "mutex-busy" | "io-error", error?: unknown): LeaseHandle {
-  warn(opts, `lease unavailable (${reason}); running unleased`);
+  warn(opts, `lease: unavailable (${reason}); running unleased`);
   const { code, message } = (error ?? {}) as { code?: string; message?: string };
   emit(opts, { type: "fail-open", reason, waitedMs, ...(code !== undefined && { code }), ...(message !== undefined && { message }) });
   return { id: null, leased: false, admission: { waitedMs, level, live: 0, capacity }, childEnv: () => ({}), setChildPid() {}, release() {} };
@@ -407,14 +408,23 @@ export function leaseStatus(opts: LeaseOptions): LeaseStatus {
   return statusOf(opts, opts.level());
 }
 
-/** Production wiring: the real lease directory, the engine's own sampler and policy, and the `events.jsonl` sink. Creates nothing on disk. */
-export function defaultLeaseOptions(env: NodeJS.ProcessEnv = process.env): LeaseOptions {
+/**
+ * Production wiring: the real lease directory, the engine's own sampler and policy, and the `events.jsonl` sink. Creates nothing on disk.
+ * `overrides.level` replaces the sampler (none is built), and `overrides.warn` is the one writer for the lease, the sink,
+ * the policy and the sampler it builds; without it each keeps its stderr default.
+ */
+export function defaultLeaseOptions(
+  env: NodeJS.ProcessEnv = process.env,
+  overrides: { level?: PressureSampler; warn?: (msg: string) => void } = {},
+): LeaseOptions {
+  const { warn } = overrides;
   const dir = leaseDirectory(env);
   return {
     dir,
-    level: defaultPressureSampler(env),
-    policy: pressurePolicyFromEnv(env),
+    level: overrides.level ?? defaultPressureSampler(env, { log: warn }),
+    policy: pressurePolicyFromEnv(env, warn),
     inheritedHolderId: env.CO_LEASE_HOLDER || undefined,
-    onEvent: leaseEventSink(dir),
+    onEvent: leaseEventSink(dir, { warn }),
+    warn,
   };
 }

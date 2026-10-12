@@ -471,6 +471,51 @@ describe("lease", () => {
     });
   });
 
+  describe("defaultLeaseOptions overrides", () => {
+    const sampler = Object.assign(() => "normal" as const, { fresh: () => "normal" as const, overridden: () => false });
+
+    it("uses the caller's sampler instead of building a second one", () => {
+      expect(defaultLeaseOptions({ CO_LEASE_DIR: dir }, { level: sampler }).level).toBe(sampler);
+    });
+
+    it("sends every diagnostic to the one warn and writes nothing to stderr", async () => {
+      const stderr = vi.spyOn(process.stderr, "write");
+      const w = vi.fn<(msg: string) => void>();
+      // A rotation that fails: the sink's rename onto a non-empty directory.
+      mkdirSync(join(dir, "events.jsonl.1", "occupied"), { recursive: true });
+      writeFileSync(join(dir, "events.jsonl"), "x".repeat(6 * 1024 * 1024));
+      const rotating = defaultLeaseOptions({ CO_LEASE_DIR: dir, HOME: tmp }, { level: sampler, warn: w });
+      rotating.onEvent!({ type: "reap", id: "9-zz", reason: "corrupt" });
+      expect(w).toHaveBeenCalledWith(expect.stringMatching(/^lease: cannot rotate/));
+      rmSync(dir, { recursive: true, force: true });
+
+      // An invalid CO_LEASE_SLOTS.
+      defaultLeaseOptions({ CO_LEASE_DIR: dir, CO_LEASE_SLOTS: "many" }, { level: sampler, warn: w });
+      expect(w).toHaveBeenCalledWith(expect.stringMatching(/CO_LEASE_SLOTS/));
+
+      // An orphan-bound reap, then an I/O fail-open.
+      const o = { ...defaultLeaseOptions({ CO_LEASE_DIR: dir }, { level: sampler, warn: w }), now: () => clock, isAlive: (pid: number) => alive.has(pid) };
+      alive.add(900);
+      plantHolder("4242-ab01", { childPid: 900, startedAt: clock - 3 * 3_600_000 });
+      tryAcquireLease(o, meta)!.release();
+      expect(w).toHaveBeenCalledWith(expect.stringMatching(/^lease: reaping holder 4242-ab01/));
+      writeFileSync(join(tmp, "blocker"), "");
+      ((await acquireLease({ ...o, dir: join(tmp, "blocker", "lease") }, meta)) as LeaseHandle).release();
+      expect(w).toHaveBeenCalledWith(expect.stringMatching(/^lease: unavailable \(io-error\)/));
+      expect(stderr).not.toHaveBeenCalled();
+    });
+
+    it("prints no default line that starts with '[lease] lease:'", async () => {
+      const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+      const o = defaultLeaseOptions({ CO_LEASE_DIR: dir, CO_LEASE_SLOTS: "many" }, { level: sampler });
+      writeFileSync(join(tmp, "blocker"), "");
+      ((await acquireLease({ ...o, dir: join(tmp, "blocker", "lease") }, meta)) as LeaseHandle).release();
+      const lines = stderr.mock.calls.map(([c]) => String(c));
+      expect(lines.length).toBeGreaterThan(0);
+      expect(lines.filter((l) => l.startsWith("[lease] lease:"))).toEqual([]);
+    });
+  });
+
   describe("recorded command", () => {
     const MARK = "hunter2";
     const recordedFor = (command: string, label?: string): string => {
