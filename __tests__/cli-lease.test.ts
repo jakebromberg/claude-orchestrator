@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cliLeaseDeps,
+  formatAdmitted,
+  formatNoSlot,
   parseLeaseArgs,
   runLeased,
   runStatus,
@@ -23,6 +25,25 @@ import {
 } from "../src/lease.js";
 import { scriptedPressureSampler } from "../src/testing.js";
 import { unwritableLeaseDir } from "./helpers/lease.js";
+
+describe("lease messages", () => {
+  const holder = (pid: number, command: string): HolderInfo => ({ id: `${pid}-ab`, pid, command, cwd: "/", startedAt: 0, level: "warning", ageSec: 1 });
+
+  it("formats the admitted line exactly, rounding the wait to whole seconds", () => {
+    expect(formatAdmitted({ waitedMs: 2_400, level: "warning", live: 1, capacity: 1 })).toBe("lease: admitted after 2s (pressure=warning, 1/1 live)");
+  });
+
+  it.each<[string, HolderInfo[], string]>([
+    ["one holder", [holder(11, "npm test")], "1 live: 11 npm test"],
+    ["several holders", [holder(11, "npm test"), holder(12, "tsc")], "2 live: 11 npm test, 12 tsc"],
+    ["none", [], "0 live: none"],
+  ])("formats the no-slot line exactly with %s", (_name, live, tail) => {
+    const refusal: LeaseRefusal = { refused: "max-wait", waitedMs: 450_400, level: "warning", live: live.length };
+    expect(formatNoSlot(refusal, { level: "warning", capacity: 1, live })).toBe(
+      `lease: no slot after 450s (pressure=warning, capacity 1, ${tail}); rerun the command — this is not a test failure`,
+    );
+  });
+});
 
 describe("parseLeaseArgs", () => {
   it.each<[string, string[], unknown]>([

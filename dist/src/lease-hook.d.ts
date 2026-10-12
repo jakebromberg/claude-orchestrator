@@ -1,8 +1,9 @@
 /**
  * Hook mode for `claude-orchestrator-lease`: a Claude Code `PreToolUse` /
  * `PostToolUse` / `PostToolUseFailure` hook on `Bash` that decides whether a
- * command is heavy. Part 1 takes no slot: it decides and exits 0 with no
- * output. The hook never rewrites the command and never fails a call.
+ * command is heavy. `PreToolUse` takes a lease slot for a heavy command (waiting up to 450 s) as a detached holder
+ * of the Claude Code process (`CO_LEASE_SESSION_PID`) and lets the command run unchanged; the Post events release it
+ * by id. The hook never rewrites the command and never fails a call: any error prints nothing and exits 0.
  *
  * The matcher has two rules and errs toward heavy: a miss runs a heavy command unleased, a false match costs only a
  * wait. (1) Text that contains `cli-lease.js` or `claude-orchestrator-lease` anywhere is not heavy, so the hook never
@@ -13,6 +14,7 @@
  * its command word (quotes and path removed) and the rest match an anchored pattern. With the default patterns,
  * everything is linear. It is not a shell parser: no expansion, aliases or functions.
  */
+import { type LeaseOptions } from "./lease.js";
 /**
  * Whether `command` is heavy: it does not mention this CLI (`cli-lease.js` or `claude-orchestrator-lease`), and a
  * segment of its raw split matches a default or `extraPatterns` pattern. Extras that are not valid regexes are
@@ -28,6 +30,8 @@ export interface HookIo {
     env: NodeJS.ProcessEnv;
     readStdin(): Promise<string>;
     out(text: string): void;
+    /** Test seam: merged over the options built from `env` (the clock, sleeper, liveness probe, sampler and `onEvent`). */
+    lease?: Partial<LeaseOptions>;
 }
 /** The `hook` subcommand's arguments after `hook`. Always returns 0: hook mode never fails a call. */
 export declare function runHook(args: string[], io: HookIo): Promise<number>;

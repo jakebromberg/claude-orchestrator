@@ -32,7 +32,7 @@ export { createRealProcessRunner } from "./real-process-runner.js";
 export { authBanner, claudeExecOptions, claudeSessionEnv, usesApiKeyBilling, API_CREDENTIAL_ENV_VARS, USE_API_KEY_ENV_VAR, } from "./claude-env.js";
 export { applyPressureOverride, cachedPressureSampler, defaultPressureSampler, heavyCapacity, leaseDirectory, pressurePolicyFromEnv, readMemoryPressure, sessionCapacity, stopAtCritical, } from "./memory-pressure.js";
 export type { PressureLevel, PressurePolicy, PressureSampler } from "./memory-pressure.js";
-export { acquireLease, tryAcquireLease, leaseStatus, defaultLeaseOptions } from "./lease.js";
+export { acquireLease, tryAcquireLease, leaseStatus, defaultLeaseOptions, releaseHolder } from "./lease.js";
 export { leaseEventSink } from "./lease-events.js";
 export { isHeavyCommand } from "./lease-hook.js";
 export type { HolderInfo, HolderMeta, LeaseEvent, LeaseHandle, LeaseOptions, LeaseRefusal, LeaseStatus } from "./lease.js";

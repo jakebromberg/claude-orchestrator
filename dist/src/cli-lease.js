@@ -29,6 +29,15 @@ const EX_USAGE = 64;
 const EX_TEMPFAIL = 75;
 const EX_CONFIG = 78;
 const seconds = (ms) => Math.round(ms / 1000);
+/** The admitted line; the hook prints the same text as `additionalContext`. */
+export function formatAdmitted(a) {
+    return `lease: admitted after ${seconds(a.waitedMs)}s (pressure=${a.level}, ${a.live}/${a.capacity} live)`;
+}
+/** The no-slot line. ship-dag's give-up rule matches its `lease: no slot after` prefix; the hook denies with it too. */
+export function formatNoSlot(refusal, status) {
+    const holders = status.live.map((h) => `${h.pid} ${h.command}`).join(", ") || "none";
+    return `lease: no slot after ${seconds(refusal.waitedMs)}s (pressure=${refusal.level}, capacity ${status.capacity}, ${status.live.length} live: ${holders}); rerun the command — this is not a test failure`;
+}
 function parseSeconds(text) {
     const n = Number(text);
     return text !== undefined && text.trim() !== "" && Number.isFinite(n) && n >= 0 ? n : undefined;
@@ -149,15 +158,11 @@ export async function runLeased(args, d) {
     });
     if (!("leased" in got)) {
         unhook();
-        const s = d.leaseStatus(opts);
-        const holders = s.live.map((h) => `${h.pid} ${h.command}`).join(", ") || "none";
-        d.err(`lease: no slot after ${seconds(got.waitedMs)}s (pressure=${got.level}, capacity ${s.capacity}, ${s.live.length} live: ${holders}); rerun the command — this is not a test failure`);
+        d.err(formatNoSlot(got, d.leaseStatus(opts)));
         return EX_TEMPFAIL;
     }
-    if (got.leased) {
-        const a = got.admission;
-        d.err(`lease: admitted after ${seconds(a.waitedMs)}s (pressure=${a.level}, ${a.live}/${a.capacity} live)`);
-    }
+    if (got.leased)
+        d.err(formatAdmitted(got.admission));
     return new Promise((resolve) => {
         let settled = false;
         finish = (code) => {
