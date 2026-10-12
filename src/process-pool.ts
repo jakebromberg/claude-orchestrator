@@ -6,18 +6,36 @@ interface CompletedProcess {
   exitCode: number;
 }
 
+export interface ProcessPoolOptions {
+  /** Live slot limit; the effective limit is `min(maxParallel, capacity())`. */
+  capacity?: () => number;
+  /** Called with the active count each time `waitForSlot` finds the pool full; true ends the wait with `"stop"`. */
+  shouldStop?: (active: number) => boolean;
+}
+
 export class ProcessPool {
   private maxParallel: number;
   private active: ProcessHandle[] = [];
   private completed: CompletedProcess[] = [];
   private waiters: Array<() => void> = [];
 
-  constructor(maxParallel: number) {
+  constructor(
+    maxParallel: number,
+    private readonly options: ProcessPoolOptions = {},
+  ) {
     this.maxParallel = maxParallel;
   }
 
   setMaxParallel(n: number): void {
     this.maxParallel = Math.max(1, n);
+    this.recheck();
+  }
+
+  /** Wake every waiter to re-evaluate the limit; call after the capacity may have changed. */
+  recheck(): void {
+    const waiters = this.waiters;
+    this.waiters = [];
+    for (const wake of waiters) wake();
   }
 
   /** Hold a slot until the process exits. */
@@ -46,9 +64,7 @@ export class ProcessPool {
       exitCode,
     });
     this.active = this.active.filter((h) => h.pid !== handle.pid);
-    // Wake up any waiters
-    const waiter = this.waiters.shift();
-    if (waiter) waiter();
+    this.recheck();
   }
 
   get activeCount(): number {
@@ -56,18 +72,22 @@ export class ProcessPool {
   }
 
   get isFull(): boolean {
-    return this.active.length >= this.maxParallel;
+    return this.active.length >= Math.min(this.maxParallel, this.options.capacity?.() ?? Infinity);
   }
 
   get activePids(): number[] {
     return this.active.map((h) => h.pid);
   }
 
-  async waitForSlot(): Promise<void> {
-    if (!this.isFull) return;
-    return new Promise<void>((resolve) => {
-      this.waiters.push(resolve);
-    });
+  /** Resolves `"go"` when a slot is free, or `"stop"` when `shouldStop` ends the wait. */
+  async waitForSlot(): Promise<"go" | "stop"> {
+    while (this.isFull) {
+      if (this.options.shouldStop?.(this.active.length)) return "stop";
+      await new Promise<void>((resolve) => {
+        this.waiters.push(resolve);
+      });
+    }
+    return "go";
   }
 
   async waitAll(): Promise<CompletedProcess[]> {

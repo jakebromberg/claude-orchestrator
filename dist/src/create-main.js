@@ -16,6 +16,7 @@ import { encodeRefForFilename } from "./ref.js";
 import { renderPlanPreview } from "./plan-preview.js";
 import { shellQuote } from "./shell-quote.js";
 import { authBanner, claudeExecOptions } from "./claude-env.js";
+import { defaultPressureSampler } from "./memory-pressure.js";
 /** Exported for testing. Builds the `gh issue create` command string with shell-safe quoting. */
 export function buildGhIssueCreateCommand(repo, title) {
     return `gh issue create --repo ${shellQuote(repo)} --title ${shellQuote(title)} --body-file -`;
@@ -99,6 +100,7 @@ function createRealDeps(config) {
             }
             catch { }
         },
+        memoryPressure: defaultPressureSampler(),
     };
 }
 export async function createMain(options) {
@@ -118,6 +120,7 @@ export async function createMain(options) {
     const orchestrator = new Orchestrator(config, deps, {
         maxParallel: args.maxParallel,
         mergePolicy: args.mergeAfterWave ? "after-wave" : "none",
+        adaptive: !args.noAdaptive,
     });
     // Ignore SIGHUP so detached processes survive terminal close
     process.on("SIGHUP", () => { });

@@ -5,6 +5,7 @@ export declare class Orchestrator {
     private deps;
     private maxParallel;
     private mergePolicy;
+    private adaptive;
     constructor(config: OrchestratorConfig, deps: Deps, options?: RunOptions);
     checkPrerequisites(): void;
     resetStaleStatuses(): Promise<void>;
@@ -112,7 +113,15 @@ export declare class Orchestrator {
      * commit — see {@link producedNoCommits} for why a clean exit is not enough.
      */
     private recordCleanExit;
+    /**
+     * Record that memory pressure stopped `issue` at `stage`. An unstarted issue
+     * stays `pending`; one already running is marked `failed`.
+     */
+    private markStopped;
+    /** True (and the issue is failed and stopped) when a fresh reading says a retry may not start. */
+    private retryRefused;
     private launchAndWait;
+    private launchSessions;
     private isZeroByteLog;
     private runPostSessionCheck;
     private handleCheckResultWithRetry;

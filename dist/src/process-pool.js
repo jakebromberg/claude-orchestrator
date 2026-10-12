@@ -1,13 +1,23 @@
 export class ProcessPool {
+    options;
     maxParallel;
     active = [];
     completed = [];
     waiters = [];
-    constructor(maxParallel) {
+    constructor(maxParallel, options = {}) {
+        this.options = options;
         this.maxParallel = maxParallel;
     }
     setMaxParallel(n) {
         this.maxParallel = Math.max(1, n);
+        this.recheck();
+    }
+    /** Wake every waiter to re-evaluate the limit; call after the capacity may have changed. */
+    recheck() {
+        const waiters = this.waiters;
+        this.waiters = [];
+        for (const wake of waiters)
+            wake();
     }
     /** Hold a slot until the process exits. */
     add(handle) {
@@ -33,26 +43,27 @@ export class ProcessPool {
             exitCode,
         });
         this.active = this.active.filter((h) => h.pid !== handle.pid);
-        // Wake up any waiters
-        const waiter = this.waiters.shift();
-        if (waiter)
-            waiter();
+        this.recheck();
     }
     get activeCount() {
         return this.active.length;
     }
     get isFull() {
-        return this.active.length >= this.maxParallel;
+        return this.active.length >= Math.min(this.maxParallel, this.options.capacity?.() ?? Infinity);
     }
     get activePids() {
         return this.active.map((h) => h.pid);
     }
+    /** Resolves `"go"` when a slot is free, or `"stop"` when `shouldStop` ends the wait. */
     async waitForSlot() {
-        if (!this.isFull)
-            return;
-        return new Promise((resolve) => {
-            this.waiters.push(resolve);
-        });
+        while (this.isFull) {
+            if (this.options.shouldStop?.(this.active.length))
+                return "stop";
+            await new Promise((resolve) => {
+                this.waiters.push(resolve);
+            });
+        }
+        return "go";
     }
     async waitAll() {
         while (this.active.length > 0) {

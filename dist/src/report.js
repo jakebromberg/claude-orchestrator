@@ -25,6 +25,8 @@ export function generateReport(configName, issues, getStatus, getMetadata, start
                 wave: issue.wave,
                 status: getStatus(issue.ref),
                 ...(meta.prUrl ? { prUrl: meta.prUrl, prNumber: meta.prNumber } : {}),
+                ...(meta.failureReason ? { failureReason: meta.failureReason } : {}),
+                ...(meta.stopStage ? { stopStage: meta.stopStage } : {}),
             };
         }),
     };

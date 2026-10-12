@@ -17,6 +17,7 @@ import { encodeRefForFilename } from "./ref.js";
 import { renderPlanPreview } from "./plan-preview.js";
 import { shellQuote } from "./shell-quote.js";
 import { authBanner, claudeExecOptions } from "./claude-env.js";
+import { defaultPressureSampler } from "./memory-pressure.js";
 
 export type ConfigFactory =
   | ((projectRoot: string) => OrchestratorConfig)
@@ -116,6 +117,7 @@ function createRealDeps(config: OrchestratorConfig): Deps {
     truncateFile: (filePath: string) => {
       try { fs.truncateSync(filePath, 0); } catch {}
     },
+    memoryPressure: defaultPressureSampler(),
   };
 }
 
@@ -142,6 +144,7 @@ export async function createMain(options: MainOptions): Promise<void> {
   const orchestrator = new Orchestrator(config, deps, {
     maxParallel: args.maxParallel,
     mergePolicy: args.mergeAfterWave ? "after-wave" : "none",
+    adaptive: !args.noAdaptive,
   });
 
   // Ignore SIGHUP so detached processes survive terminal close

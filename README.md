@@ -60,11 +60,19 @@ Amazon Bedrock and Google Vertex backends are not supported: their `CLAUDE_CODE_
 
 ## Memory pressure
 
-`src/memory-pressure.ts` reads the macOS memory-pressure level (`sysctl kern.memorystatus_vm_pressure_level`) and owns the one threshold table later consumers share. It is exported but not yet wired into the engine. Environment variables:
+`src/memory-pressure.ts` reads the macOS memory-pressure level (`sysctl kern.memorystatus_vm_pressure_level`) and owns the one threshold table later consumers share. The engine's session launches and retries follow it (below); the heavy-command lease is not wired yet. Environment variables:
 
 - `CO_LEASE_SLOTS` — heavy-command slot ceiling at `normal` pressure (positive integer, default `4`). An invalid value keeps the default and is reported once on stderr.
 - `CO_PRESSURE_OVERRIDE` — set to exactly `critical-as-warning` to make this process (and what it starts) read `critical` as `warning`. Any other value is ignored with a warning.
 - `CO_LEASE_DIR` — lease directory, which must be absolute (default `${XDG_STATE_HOME:-$HOME/.local/state}/claude-orchestrator/lease`); the sampler persists its last raw reading to `level.json` there, only if the directory already exists. A relative `XDG_STATE_HOME` is ignored; without an absolute `HOME`, the account's home directory from the user database is used, and with neither the sampler throws rather than resolve a path against the working directory.
+
+### Adaptive session launches
+
+With a pressure sampler in `Deps` (the CLI wires `defaultPressureSampler()`), the engine re-reads the level every 10 s and sizes the pool to `min(--parallel, capacity)`: up to `--parallel` at `normal` (once `normal` has held for 60 s after a `warning` or `critical`) and at `unknown`, one at a time at `warning`, none at `critical`. Running sessions are never touched. Without a sampler the engine behaves as it always has.
+
+At `critical` nothing new starts, neither a launch nor a retry (the 0-byte retry and the check-failure retry). Waiting never relieves pressure, so no timer turns a wait into a start: once no pipeline is active and a fresh reading still says `critical`, the wave ends. Each unstarted issue stays `pending`; a retry refused at `critical` marks its issue `failed`. Every stop is recorded on the issue's metadata and on its report row as `failureReason: "memory-critical"` plus `stopStage` (`launch`, `retry`, `post-check` or `session`), so a stopped issue is not mistaken for a model failure or a held cutover gate. The marker is cleared when the issue later launches, retries or runs its check. The way past the stop rule is `CO_PRESSURE_OVERRIDE=critical-as-warning`.
+
+`--no-adaptive` turns off `warning` adaptation and the 60 s hysteresis only. It never bypasses the stop rule.
 
 ## Quick Start
 
@@ -257,6 +265,7 @@ Confirmation comes from an optional `confirmCutover(issue, reason)` hook (return
 npx tsx orchestrate.ts myconfig              # Run all waves (up to 4 in parallel)
 npx tsx orchestrate.ts myconfig --plan       # Preview the wave partition (read-only)
 npx tsx orchestrate.ts myconfig --parallel 8 # Run up to 8 issues concurrently
+npx tsx orchestrate.ts myconfig --no-adaptive # No warning adaptation or hysteresis (critical still stops)
 npx tsx orchestrate.ts myconfig --status     # Show status table
 npx tsx orchestrate.ts myconfig --wave 1     # Run wave 1 only
 npx tsx orchestrate.ts myconfig 1 2 3        # Run specific issues

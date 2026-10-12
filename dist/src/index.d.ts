@@ -1,4 +1,4 @@
-export type { Status, IssueSpec, Issue, RawOrchestratorConfig, OrchestratorConfig, MergePolicy, RunOptions, PostCheckResult, OrchestratorHooks, ParsedMode, ParsedArgs, StatusStore, ProcessHandle, ProcessRunner, Logger, IssueMetadata, MetadataStore, Deps, RunRecord, IssueCommentsConfig, LabelSyncConfig, RetryOnCheckFailureConfig, } from "./types.js";
+export type { Status, IssueSpec, Issue, RawOrchestratorConfig, OrchestratorConfig, MergePolicy, RunOptions, PostCheckResult, OrchestratorHooks, ParsedMode, ParsedArgs, StatusStore, ProcessHandle, ProcessRunner, Logger, IssueMetadata, FailureReason, StopStage, MetadataStore, Deps, RunRecord, IssueCommentsConfig, LabelSyncConfig, RetryOnCheckFailureConfig, } from "./types.js";
 export { Orchestrator, cleanUpMergedIssues } from "./engine.js";
 export { validateConfig } from "./schema.js";
 export type { ValidateConfigOptions } from "./schema.js";
@@ -14,6 +14,9 @@ export { consoleLogger, createSilentLogger, colors } from "./log.js";
 export { createPrintSummary } from "./summary.js";
 export type { SummaryColumn, SummaryOptions } from "./summary.js";
 export { ProcessPool } from "./process-pool.js";
+export type { ProcessPoolOptions } from "./process-pool.js";
+export { createCapacityGovernor } from "./capacity-governor.js";
+export type { CapacityGovernor } from "./capacity-governor.js";
 export { StallMonitor } from "./stall-monitor.js";
 export type { StallMonitorOptions } from "./stall-monitor.js";
 export { startWatch, renderDashboard, readLastLogLine } from "./watch.js";

@@ -21,6 +21,27 @@ function makeIssue(overrides: Omit<Partial<Issue>, "deps"> & { deps?: (number | 
 }
 
 describe("generateReport", () => {
+  it("carries failureReason and stopStage onto the row only when set", () => {
+    const issues = [makeIssue({ number: 1 }), makeIssue({ number: 2 })];
+    const metadata: Record<number, IssueMetadata> = {
+      1: { failureReason: "memory-critical", stopStage: "launch" },
+      2: {},
+    };
+
+    const report = generateReport(
+      "Test",
+      issues,
+      () => "pending" as Status,
+      (n) => metadata[Number(n)] ?? {},
+      new Date("2026-01-01T00:00:00Z"),
+      new Date("2026-01-01T00:01:00Z"),
+    );
+
+    expect(report.issues[0]).toMatchObject({ failureReason: "memory-critical", stopStage: "launch" });
+    expect(report.issues[1]).not.toHaveProperty("failureReason");
+    expect(report.issues[1]).not.toHaveProperty("stopStage");
+  });
+
   it("includes config name and timing", () => {
     const start = new Date("2026-01-01T00:00:00Z");
     const end = new Date("2026-01-01T00:05:00Z");
