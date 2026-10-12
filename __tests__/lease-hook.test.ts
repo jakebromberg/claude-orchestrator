@@ -143,15 +143,21 @@ describe("isHeavyCommand", () => {
   ])("classifies 80 KB of %s in well under a second, and in time that grows linearly", (_name, text, expected) => {
     // A loose absolute budget, so a loaded machine running the whole suite in parallel stays green: the linear
     // matcher takes a few ms here, while the quadratic and exponential versions it replaced take seconds to minutes.
+    // The assertions are the guard; the 60 s test timeout is only a backstop, because one row runs the matcher up to 43
+    // times and a loaded machine has taken longer than the 5 s default for that.
     const start = performance.now();
     expect(isHeavyCommand(text(80))).toBe(expected);
     expect(performance.now() - start).toBeLessThan(1000);
     // Four times the text takes about four times as long when linear and sixteen times as long when quadratic. A
-    // loaded machine can skew one measurement, so the ratio passes if any of three best-of-seven attempts does; a
-    // super-linear slowdown fails all of them.
-    const ratios = [0, 1, 2].map(() => bestOf(text(80), 7) / Math.max(bestOf(text(20), 7), 0.05));
-    expect(Math.min(...ratios)).toBeLessThan(8);
-  });
+    // loaded machine can skew one measurement, so the ratio passes if any of three best-of-seven attempts does (the
+    // loop stops at the first, so a quiet machine pays for one); a super-linear slowdown fails all of them.
+    const [large, small] = [text(80), text(20)];
+    let ratio = Infinity;
+    for (let attempt = 0; attempt < 3 && ratio >= 8; attempt++) {
+      ratio = Math.min(ratio, bestOf(large, 7) / Math.max(bestOf(small, 7), 0.05));
+    }
+    expect(ratio).toBeLessThan(8);
+  }, 60_000);
 
   it.each([
     ["300 quoted assignments before npm test", `${'NAME="x" '.repeat(300)}npm test`, true],
