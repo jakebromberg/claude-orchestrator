@@ -139,6 +139,10 @@ describe("claude-orchestrator-lease (integration)", () => {
 
     wrapper.kill("SIGKILL");
     await wrapperExit;
+    // The dead wrapper no longer beats, so age the heartbeat past its 90 s window: only the live child holds the slot now.
+    const holderPath = path.join(leaseDir, "holders", holderFiles(leaseDir)[0]!);
+    const aged = (Date.now() - 5 * 60_000) / 1000;
+    fs.utimesSync(holderPath, aged, aged);
 
     const status = JSON.parse((await runCli(["status"], env)).stdout);
     expect(status.live).toEqual([{ pid: wrapper.pid, command: "long job", ageSec: expect.any(Number) }]);
