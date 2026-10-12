@@ -3,7 +3,7 @@ import { refOf } from "../src/ref.js";
 import { Orchestrator } from "../src/engine.js";
 import { InMemoryStatusStore, InMemoryMetadataStore } from "../src/status.js";
 import type {
-  Issue, OrchestratorConfig, OrchestratorHooks, RunOptions, Deps, PostCheckResult, Status,
+  Issue, OrchestratorConfig, OrchestratorHooks, PostSessionCheckContext, RunOptions, Deps, PostCheckResult, Status,
 } from "../src/types.js";
 import type { PressureLevel } from "../src/memory-pressure.js";
 import { scriptedPressureSampler } from "../src/testing.js";
@@ -509,7 +509,6 @@ describe("runningSessions", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  type CheckCtx = Parameters<NonNullable<OrchestratorHooks["postSessionCheck"]>>[2];
   const liveSessions = (o: Orchestrator) => (o as unknown as { liveSessions: number }).liveSessions;
 
   it("hands each check the engine's own session count, never including the check's own session", async () => {
@@ -517,7 +516,7 @@ describe("runningSessions", () => {
     const { orchestrator, runner } = setUp(2, "normal", {
       run: { maxParallel: 2 },
       hooks: {
-        postSessionCheck: vi.fn(async (issue: Issue, _wt: string, ctx?: CheckCtx) => {
+        postSessionCheck: vi.fn(async (issue: Issue, _wt: string, ctx?: PostSessionCheckContext) => {
           seen.push({ issue: issue.number, running: ctx?.runningSessions?.() });
           return { passed: true };
         }),
@@ -537,7 +536,7 @@ describe("runningSessions", () => {
     const seen: unknown[] = [];
     const { orchestrator, runner, deps } = setUp(1, "normal", {
       hooks: {
-        postSessionCheck: vi.fn(async (_i: Issue, _w: string, ctx?: CheckCtx) => {
+        postSessionCheck: vi.fn(async (_i: Issue, _w: string, ctx?: PostSessionCheckContext) => {
           seen.push(ctx?.lease);
           return { passed: true };
         }),
@@ -551,6 +550,24 @@ describe("runningSessions", () => {
 
     expect(seen).toEqual([deps.lease]);
     expect(seen[0]).toBe(deps.lease);
+  });
+
+  it("hands the check no lease when Deps.lease is absent", async () => {
+    const seen: unknown[] = [];
+    const { orchestrator, runner } = setUp(1, "normal", {
+      hooks: {
+        postSessionCheck: vi.fn(async (_i: Issue, _w: string, ctx?: PostSessionCheckContext) => {
+          seen.push(ctx?.lease);
+          return { passed: true };
+        }),
+      },
+    });
+    const wave = orchestrator.runWave(1);
+    await vi.advanceTimersByTimeAsync(0);
+    runner.resolvers.get(1000)!(0);
+    await wave;
+
+    expect(seen).toEqual([undefined]);
   });
 
   it("is already uncounted in a continuation chained on the session's own exitCode", async () => {
