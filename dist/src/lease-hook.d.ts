@@ -6,7 +6,8 @@
  *
  * The matcher has two rules and errs toward heavy: a miss runs a heavy command unleased, a false match costs only a
  * wait. (1) Text that contains `cli-lease.js` or `claude-orchestrator-lease` anywhere is not heavy, so the hook never
- * takes the slot the CLI then waits for; the trade is that a command which only mentions the CLI runs unleased.
+ * takes a slot for a command whose text names the CLI; the trade is that a command which only mentions the CLI runs
+ * unleased. A CLI reached indirectly (an `npm test` script that wraps its runner) is not seen.
  * (2) Otherwise the text is split raw at `&&`, `||`, `;`, `|`, a single `&`, newlines, `(`, `)`, backticks, `{` and
  * `}`, with no quote, heredoc or comment tracking. A segment is heavy when, after its leading words are stripped,
  * its command word (quotes and path removed) and the rest match an anchored pattern. With the default patterns,
