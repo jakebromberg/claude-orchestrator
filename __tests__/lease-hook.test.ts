@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { leaseStatus, tryAcquireLease, releaseHolder, type LeaseEvent, type LeaseOptions } from "../src/lease.js";
 import { isHeavyCommand, isHeavyHookCall, runHook, settingsEntries } from "../src/lease-hook.js";
 import { scriptedPressureSampler } from "../src/testing.js";
-import { fakeLeaseClock, isolatedLeaseEnv, unwritableLeaseDir, type FakeLeaseClock } from "./helpers/lease.js";
+import { isolatedLeaseEnv, scriptedLease, unwritableLeaseDir, type FakeLeaseClock, type ScriptedLease } from "./helpers/lease.js";
 
 const CLI = "/opt/co/dist/src/cli-lease.js";
 const QUOTED_CLI = '"${CO_HOME:-$HOME/Developer/claude-orchestrator}/dist/src/cli-lease.js"';
@@ -318,6 +318,7 @@ describe("hook events", () => {
   let dir: string;
   let fake: FakeLeaseClock;
   let alive: Set<number>;
+  let scripted: ScriptedLease;
   let events: LeaseEvent[];
   let level: "normal" | "warning" | "critical";
 
@@ -331,13 +332,13 @@ describe("hook events", () => {
   const run = async (stdin: string, envOver: NodeJS.ProcessEnv = {}, lease: Partial<LeaseOptions> = {}): Promise<{ code: number; out: string }> => {
     const env = isolatedLeaseEnv(dir, { CO_LEASE_HOOK: "on", CO_LEASE_SESSION_PID: String(SESSION), BASH_DEFAULT_TIMEOUT_MS: undefined, ...envOver });
     let out = "";
+    // The directory, policy and warner come from `env` (the real builder); the scripted rest is injected.
+    const { dir: _dir, policy: _policy, warn: _warn, ...injected } = scripted.opts(lease);
     const code = await runHook([], {
       env,
       readStdin: async () => stdin,
       out: (t) => void (out += t),
-      lease: Object.fromEntries(
-        Object.entries({ level: scriptedPressureSampler(() => level), now: fake.now, sleep: fake.sleep, isAlive: (pid: number) => alive.has(pid), onEvent: (e: LeaseEvent) => void events.push(e), ...lease }).filter(([, v]) => v !== undefined),
-      ),
+      lease: injected,
     });
     return { code, out };
   };
@@ -349,10 +350,9 @@ describe("hook events", () => {
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "lease-hook-ev-"));
     dir = join(tmp, "lease");
-    fake = fakeLeaseClock();
-    alive = new Set([SESSION]);
-    events = [];
     level = "normal";
+    scripted = scriptedLease(dir, { level: () => level, alive: [SESSION] });
+    ({ clock: fake, alive, events } = scripted);
   });
   afterEach(() => {
     vi.restoreAllMocks();
@@ -363,7 +363,7 @@ describe("hook events", () => {
   const fillSlot = (expiresIn = 600_000): void => {
     alive.add(7002);
     tryAcquireLease(
-      { dir, level: scriptedPressureSampler("normal"), policy: { heavyCeiling: 1, heavyWarning: 1 }, isAlive: (pid) => alive.has(pid), now: fake.now },
+      scripted.opts(),
       { command: "npm test", cwd: "/", detached: { id: "hook-other", sessionPid: 7002, expiresAt: fake.ms + expiresIn } },
     );
   };
@@ -396,14 +396,13 @@ describe("hook events", () => {
     it("keeps a holder at the 600 s cap live through a backward clock step of up to 90 s", async () => {
       await run(pre({ timeout: 600_000 }));
       fake.ms -= 90_000;
-      const opts = { dir, level: scriptedPressureSampler("normal"), policy: { heavyCeiling: 1, heavyWarning: 1 }, isAlive: (pid: number) => alive.has(pid), now: fake.now };
-      expect(leaseStatus(opts).live.map((h) => h.id)).toEqual(["hook-toolu_1"]);
+      expect(leaseStatus(scripted.opts()).live.map((h) => h.id)).toEqual(["hook-toolu_1"]);
     });
 
     it("counts expiresAt from admission, so a long wait does not eat the call's time", async () => {
       fillSlot();
       fake.onSleep = () => {
-        if (fake.sleeps.length === 3) releaseHolder({ dir, level: scriptedPressureSampler("normal"), policy: { heavyCeiling: 1, heavyWarning: 1 }, now: fake.now }, "hook-other");
+        if (fake.sleeps.length === 3) releaseHolder(scripted.opts(), "hook-other");
       };
       const { out } = await run(pre());
       expect(out).toMatch(/^\{"hookSpecificOutput":\{"hookEventName":"PreToolUse","additionalContext":"lease: admitted after [1-9]\d*s /);

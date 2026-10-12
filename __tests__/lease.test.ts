@@ -17,7 +17,7 @@ import {
 import * as barrel from "../src/index.js";
 import type { PressureLevel } from "../src/memory-pressure.js";
 import { scriptedPressureSampler } from "../src/testing.js";
-import { fakeLeaseClock, unwritableLeaseDir, type FakeLeaseClock } from "./helpers/lease.js";
+import { scriptedLease, unwritableLeaseDir, type FakeLeaseClock, type ScriptedLease } from "./helpers/lease.js";
 
 const meta: HolderMeta = { command: "npm test", cwd: "/work" };
 const HEARTBEAT_STALE_MS = 90_000;
@@ -27,6 +27,7 @@ const realSetInterval = globalThis.setInterval;
 describe("lease", () => {
   let tmp: string;
   let dir: string;
+  let lease: ScriptedLease;
   let fake: FakeLeaseClock;
   let level: PressureLevel;
   let freshLevel: PressureLevel | undefined;
@@ -34,17 +35,7 @@ describe("lease", () => {
   let events: LeaseEvent[];
   let warnings: string[];
 
-  const opts = (over: Partial<LeaseOptions> = {}): LeaseOptions => ({
-    dir,
-    level: scriptedPressureSampler(() => level, { fresh: () => freshLevel ?? level }),
-    policy: { heavyCeiling: 2, heavyWarning: 1 },
-    isAlive: (pid) => alive.has(pid),
-    now: fake.now,
-    sleep: fake.sleep,
-    onEvent: (e) => events.push(e),
-    warn: (m) => warnings.push(m),
-    ...over,
-  });
+  const opts = (over: Partial<LeaseOptions> = {}): LeaseOptions => lease.opts(over);
   const holderFile = (id: string): string => join(dir, "holders", `${id}.json`);
   const readHolder = (h: LeaseHandle) => JSON.parse(readFileSync(holderFile(h.id!), "utf8"));
   /**
@@ -71,12 +62,10 @@ describe("lease", () => {
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "lease-"));
     dir = join(tmp, "lease");
-    fake = fakeLeaseClock();
     level = "normal";
     freshLevel = undefined;
-    alive = new Set([process.pid]);
-    events = [];
-    warnings = [];
+    lease = scriptedLease(dir, { level: () => level, fresh: () => freshLevel ?? level, policy: { heavyCeiling: 2, heavyWarning: 1 } });
+    ({ clock: fake, alive, events, warnings } = lease);
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -663,7 +652,7 @@ describe("lease", () => {
       expect(w).toHaveBeenCalledWith(expect.stringMatching(/CO_LEASE_SLOTS/));
 
       // An orphan-bound reap, then an I/O fail-open.
-      const o = { ...defaultLeaseOptions({ CO_LEASE_DIR: dir }, { level: sampler, warn: w }), now: fake.now, isAlive: (pid: number) => alive.has(pid) };
+      const o = { ...defaultLeaseOptions({ CO_LEASE_DIR: dir }, { level: sampler, warn: w }), now: fake.now, isAlive: opts().isAlive };
       alive.add(900);
       plantHolder("4242-ab01", { childPid: 900, startedAt: fake.ms - 3 * 3_600_000 });
       tryAcquireLease(o, meta)!.release();

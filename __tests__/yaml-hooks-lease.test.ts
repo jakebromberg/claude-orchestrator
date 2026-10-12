@@ -9,7 +9,7 @@ import type { PressureLevel } from "../src/memory-pressure.js";
 import { scriptedPressureSampler } from "../src/testing.js";
 import type { Issue } from "../src/types.js";
 import type { YamlConfig } from "../src/yaml-types.js";
-import { fakeLeaseClock, unwritableLeaseDir, type FakeLeaseClock } from "./helpers/lease.js";
+import { scriptedLease, unwritableLeaseDir, type FakeLeaseClock, type ScriptedLease } from "./helpers/lease.js";
 
 const issue = { number: 7, slug: "foo", ref: "7", wave: 1, dependsOn: [], deps: [], description: "d" } as Issue;
 
@@ -24,31 +24,20 @@ function makeYaml(overrides: Partial<YamlConfig> = {}): YamlConfig {
 
 describe("leased postSessionCheck", () => {
   let tmp: string;
+  let lease: ScriptedLease;
   let clock: FakeLeaseClock;
   let level: PressureLevel;
   let events: LeaseEvent[];
   let warnings: string[];
   let live: Set<number>;
 
-  const leaseOptions = (overrides: Partial<LeaseOptions> = {}): LeaseOptions => ({
-    dir: tmp,
-    level: scriptedPressureSampler(() => level),
-    policy: { heavyCeiling: 1, heavyWarning: 1 },
-    now: clock.now,
-    sleep: clock.sleep,
-    isAlive: (pid) => live.has(pid),
-    onEvent: (e) => events.push(e),
-    warn: (m) => warnings.push(m),
-    ...overrides,
-  });
+  const leaseOptions = (overrides: Partial<LeaseOptions> = {}): LeaseOptions => lease.opts(overrides);
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "post-check-lease-"));
-    clock = fakeLeaseClock();
     level = "normal";
-    events = [];
-    warnings = [];
-    live = new Set([process.pid]);
+    lease = scriptedLease(tmp, { level: () => level });
+    ({ clock, events, warnings, alive: live } = lease);
   });
   afterEach(() => {
     vi.restoreAllMocks();
