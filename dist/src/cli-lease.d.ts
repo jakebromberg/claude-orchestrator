@@ -60,7 +60,11 @@ export declare function parseLeaseArgs(argv: string[]): LeaseArgs;
 export declare function runStatus(d: LeaseCliDeps): number;
 /** Waits for a slot, runs the command with it held, and returns the exit code to pass through. */
 export declare function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>;
-/** The deps `main` runs with: every lease, sink, policy and sampler diagnostic goes through `err`. */
+/**
+ * The deps `main` runs with: every lease, sink, policy and sampler diagnostic goes through `err`.
+ * `base.env` replaces `process.env` everywhere the CLI reads the environment (the lease options, `CO_LEASE_MAX_WAIT` and the child's env);
+ * `base.level` replaces the sampler, so none is built. `main` passes neither; tests pass both to stay hermetic.
+ */
 export declare function cliLeaseDeps(err: (line: string) => void, base?: {
     env?: NodeJS.ProcessEnv;
     level?: PressureSampler;

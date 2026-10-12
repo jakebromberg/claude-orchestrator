@@ -202,7 +202,11 @@ export async function runLeased(args, d) {
 // ---------------------------------------------------------------------------
 // CLI entry point — only runs when invoked directly.
 // ---------------------------------------------------------------------------
-/** The deps `main` runs with: every lease, sink, policy and sampler diagnostic goes through `err`. */
+/**
+ * The deps `main` runs with: every lease, sink, policy and sampler diagnostic goes through `err`.
+ * `base.env` replaces `process.env` everywhere the CLI reads the environment (the lease options, `CO_LEASE_MAX_WAIT` and the child's env);
+ * `base.level` replaces the sampler, so none is built. `main` passes neither; tests pass both to stay hermetic.
+ */
 export function cliLeaseDeps(err, base = {}) {
     const { env = process.env, level } = base;
     return {
