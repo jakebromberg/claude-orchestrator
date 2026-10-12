@@ -137,13 +137,14 @@ function borrowedHandle(id, level, capacity, live) {
 }
 /**
  * Creates the lease and holders directories (mode 0700), tightens one this user owns to 0700, and throws
- * (an I/O error) on one that is a symlink, not a directory, or another user's.
+ * (an I/O error) on one that is a symlink, not a directory, or another user's. A platform without uids
+ * (Windows) skips the ownership check.
  */
 function ensureOwnDirs(dir) {
     for (const d of [dir, holdersDir(dir)]) {
         mkdirSync(d, { recursive: true, mode: 0o700 });
         const st = lstatSync(d);
-        if (!st.isDirectory() || st.uid !== process.getuid?.())
+        if (!st.isDirectory() || (process.getuid && st.uid !== process.getuid()))
             throw new Error(`lease: ${d} is not a directory this user owns`);
         if (st.mode & 0o077)
             chmodSync(d, 0o700);
