@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -9,7 +9,7 @@ import type { PressureLevel } from "../src/memory-pressure.js";
 import { scriptedPressureSampler } from "../src/testing.js";
 import type { Issue } from "../src/types.js";
 import type { YamlConfig } from "../src/yaml-types.js";
-import { fakeLeaseClock, type FakeLeaseClock } from "./helpers/lease.js";
+import { fakeLeaseClock, unwritableLeaseDir, type FakeLeaseClock } from "./helpers/lease.js";
 
 const issue = { number: 7, slug: "foo", ref: "7", wave: 1, dependsOn: [], deps: [], description: "d" } as Issue;
 
@@ -227,8 +227,7 @@ describe("leased postSessionCheck", () => {
   });
 
   it("runs every command unleased, with no holder env, when the lease directory is unusable at normal pressure", async () => {
-    writeFileSync(join(tmp, "blocker"), "");
-    const broken = leaseOptions({ dir: join(tmp, "blocker", "lease") });
+    const broken = leaseOptions({ dir: unwritableLeaseDir(tmp) });
     const envs: Array<Record<string, string> | undefined> = [];
     const runCommand = vi.fn(async (_c: string, _d: string, env?: Record<string, string>) => { envs.push(env); return ""; });
     const hooks = deriveHooks(makeYaml(), { runCommand });
