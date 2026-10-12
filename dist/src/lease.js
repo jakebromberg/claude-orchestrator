@@ -70,8 +70,7 @@ function unlessGone(read) {
         throw err;
     }
 }
-/** A PID that `kill(pid, 0)` checks as one process: `0` and negatives address a group, or every process. */
-/** A PID `process.kill` accepts: a positive integer below 2^31. */
+/** A PID that `kill(pid, 0)` checks as one process: `0` and negatives address a group, or every process, and `process.kill` rejects 2^31 and above. */
 const isPid = (n) => Number.isInteger(n) && n > 0 && n < 2 ** 31;
 function parseHolder(text) {
     try {
