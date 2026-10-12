@@ -4,16 +4,17 @@
  * command is heavy. Part 1 takes no slot: it decides and exits 0 with no
  * output. The hook never rewrites the command and never fails a call.
  *
- * The matcher is a regex over raw text with no shell parsing: a pattern is
- * tried at the start of the command and after `&&`, `||`, `;`, `|`, a single
- * `&`, `(`, a newline, or `then`/`do`/`else`/`time`/`!`/`{`, past an optional prefix (`NAME=value`, `env`, `timeout <n>`, `nice`,
- * a path). A segment that calls this CLI is skipped; with `--shell` or `--` the
+ * The matcher is a lexical scan, not a shell parser (no expansion, aliases or functions). One pass splits the text
+ * into segments at top-level `&&`, `||`, `;`, `|`, a single `&`, a newline and a subshell `(`; a separator inside
+ * `'…'`, `"…"`, `$(…)` or backticks does not split. Each segment's leading words are stripped one token at a time
+ * (`NAME=value`, `env`, `timeout <n>`, `nice [-n <n>]`, `then`/`do`/`else`/`time`/`!`/`{`), and the command word is
+ * compared with its quotes and path removed. A segment that calls this CLI is skipped; with `--shell` or `--` the
  * rest of the text is the CLI's own argument and is skipped too.
  */
 /**
  * Whether any segment of `command` matches a default or `extraPatterns` heavy pattern. Extras that are not valid
- * regexes are ignored; every pattern is followed by an end boundary (not `\w`, `.`, `/` or `-`). The text is split into
- * segments once, so matching is linear; a segment that wraps this CLI ends the scan.
+ * regexes are ignored; every pattern is followed by an end boundary (not `\w`, `.`, `/` or `-`). A segment that wraps
+ * this CLI ends the scan.
  */
 export declare function isHeavyCommand(command: string, extraPatterns?: readonly string[]): boolean;
 /**

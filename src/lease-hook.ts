@@ -4,10 +4,11 @@
  * command is heavy. Part 1 takes no slot: it decides and exits 0 with no
  * output. The hook never rewrites the command and never fails a call.
  *
- * The matcher is a regex over raw text with no shell parsing: a pattern is
- * tried at the start of the command and after `&&`, `||`, `;`, `|`, a single
- * `&`, `(`, a newline, or `then`/`do`/`else`/`time`/`!`/`{`, past an optional prefix (`NAME=value`, `env`, `timeout <n>`, `nice`,
- * a path). A segment that calls this CLI is skipped; with `--shell` or `--` the
+ * The matcher is a lexical scan, not a shell parser (no expansion, aliases or functions). One pass splits the text
+ * into segments at top-level `&&`, `||`, `;`, `|`, a single `&`, a newline and a subshell `(`; a separator inside
+ * `'…'`, `"…"`, `$(…)` or backticks does not split. Each segment's leading words are stripped one token at a time
+ * (`NAME=value`, `env`, `timeout <n>`, `nice [-n <n>]`, `then`/`do`/`else`/`time`/`!`/`{`), and the command word is
+ * compared with its quotes and path removed. A segment that calls this CLI is skipped; with `--shell` or `--` the
  * rest of the text is the CLI's own argument and is skipped too.
  */
 
@@ -37,15 +38,56 @@ const DEFAULT_PATTERNS: readonly (readonly [word: string, pattern: string])[] = 
   ["deno", "deno test"],
   ["make", "make"],
   ["scripts/test", "scripts/test[\\w-]*\\.sh"],
-  ["git", "git(?: -[Cc] (?:'[^']*'|\\S+))* push"], // pre-push hooks
+  ["git", "git(?: -[Cc] (?:'[^']*'|\"[^\"]*\"|\\S+))* push"], // pre-push hooks
 ];
 
-const SEPARATORS = /[;|\n(]|(?<![<>])&(?!>)/; // `&&` and `||` split as two; `2>&1` and `&>` do not
-const LEADING = "\\s*(?:(?:then|do|else|time|!|\\{)\\s+)*";
-const ARG = "(?:\"[^\"]*\"|'[^']*'|\\S+)";
-const PREFIX = `(?:[A-Za-z_]\\w*=(?:"[^"]*"|'[^']*'|\\S*)\\s+|env\\s+|timeout\\s+\\d+[smhd]?\\s+|nice\\s+)*(?:\\S*/)?`;
-const CLI = "(?:node\\s+(?:\"(?:[^\"]*/)?cli-lease\\.js\"|'(?:[^']*/)?cli-lease\\.js'|(?:\\S*/)?cli-lease\\.js)|claude-orchestrator-lease[\"']?)";
-const WRAPPING_CLI = new RegExp(`^${LEADING}${PREFIX}${CLI}(?:\\s+--(?:max-wait|label)\\s+${ARG})*\\s+--(?:shell)?(?=\\s|$)`);
+const PREFIX_WORD = /^(?:then|do|else|time|!|\{|env|nice|timeout|[A-Za-z_]\w*=.*)$/s;
+const SUBSHELL_START = /^(?:\s|then|do|else|time|!|\{)*$/;
+const CLI_JS = /(?:^|\/)cli-lease\.js$/;
+
+/** Index of the first character at or after `from`, outside quotes, `$(…)`, backticks and escapes, for which `stop` holds; else the length. */
+function scanTop(s: string, from: number, stop: (i: number) => boolean): number {
+  const open: string[] = [];
+  for (let i = from; i < s.length; i++) {
+    const c = s[i]!;
+    const top = open[open.length - 1];
+    if (c === "\\") i++;
+    else if (top === '"' && c === '"') open.pop();
+    else if (top !== '"' && c === "'") {
+      const close = s.indexOf("'", i + 1);
+      if (close < 0) return s.length;
+      i = close;
+    } else if (top !== '"' && c === '"') open.push('"');
+    else if (c === "$" && s[i + 1] === "(") open.push(")"), i++;
+    else if (c === "`") top === "`" ? open.pop() : open.push("`");
+    else if (top === ")" && (c === "(" || c === ")")) c === ")" ? open.pop() : open.push(")");
+    else if (!open.length && stop(i)) return i;
+  }
+  return s.length;
+}
+
+/** The text split at top-level separators; `&&` and `||` split as two, `>&`, `&>` and `2>&1` do not. */
+function segments(text: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  const isSeparator = (i: number): boolean => {
+    const c = text[i]!;
+    if (c === "&") return !"<>".includes(text[i - 1] ?? "") && text[i + 1] !== ">";
+    return ";|\n".includes(c) || (c === "(" && i - start < 24 && SUBSHELL_START.test(text.slice(start, i)));
+  };
+  for (;;) {
+    const end = scanTop(text, start, isSeparator);
+    out.push(text.slice(start, end));
+    if (end >= text.length) return out;
+    start = end + 1;
+  }
+}
+
+/** `[start, end)` of the first word at or after `p`; quotes, `$(…)` and escapes keep a word whole. */
+function word(s: string, p: number): [number, number] {
+  while (p < s.length && /\s/.test(s[p]!)) p++;
+  return [p, scanTop(s, p, (i) => /\s/.test(s[i]!))];
+}
 
 const isRegex = (source: string): boolean => {
   try {
@@ -58,15 +100,38 @@ const isRegex = (source: string): boolean => {
 
 /**
  * Whether any segment of `command` matches a default or `extraPatterns` heavy pattern. Extras that are not valid
- * regexes are ignored; every pattern is followed by an end boundary (not `\w`, `.`, `/` or `-`). The text is split into
- * segments once, so matching is linear; a segment that wraps this CLI ends the scan.
+ * regexes are ignored; every pattern is followed by an end boundary (not `\w`, `.`, `/` or `-`). A segment that wraps
+ * this CLI ends the scan.
  */
 export function isHeavyCommand(command: string, extraPatterns: readonly string[] = []): boolean {
   const patterns = [...DEFAULT_PATTERNS.map(([, p]) => p), ...extraPatterns.filter(isRegex)];
-  const heavy = new RegExp(`^${LEADING}${PREFIX}(?:${patterns.map((p) => `(?:${p})`).join("|")})(?![\\w./-])`);
-  for (const segment of command.replace(/\\\n/g, " ").split(SEPARATORS)) {
-    if (heavy.test(segment)) return true;
-    if (WRAPPING_CLI.test(segment)) return false;
+  const heavy = new RegExp(`(?:${patterns.map((p) => `(?:${p})`).join("|")})(?![\\w./-])`, "y");
+  for (const segment of segments(command.replace(/\\\n/g, " "))) {
+    let [from, to] = word(segment, 0);
+    for (let prev = ""; ; prev = segment.slice(from, to), [from, to] = word(segment, to)) {
+      const w = segment.slice(from, to);
+      const numeric = (prev === "timeout" || prev === "-n") && /^\d+[smhd]?$/.test(w);
+      if (!numeric && !PREFIX_WORD.test(w) && !(prev === "nice" && w === "-n")) break;
+    }
+    const name = segment.slice(from, to).replace(/["']/g, "");
+    const base = name.slice(name.lastIndexOf("/") + 1);
+    let [argFrom, argTo] = word(segment, to);
+    const isCli = base === "claude-orchestrator-lease" || (base === "node" && CLI_JS.test(segment.slice(argFrom, argTo).replace(/["']/g, "")));
+    if (isCli) {
+      for (let pos = base === "node" ? argTo : to; ; ) {
+        [argFrom, argTo] = word(segment, pos);
+        const flag = segment.slice(argFrom, argTo);
+        if (flag === "--shell" || flag === "--") return false;
+        if (flag !== "--max-wait" && flag !== "--label") break;
+        pos = word(segment, argTo)[1];
+      }
+      continue;
+    }
+    const text = name + segment.slice(to);
+    for (let k = 0; k >= 0; k = name.indexOf("/", k) + 1 || -1) {
+      heavy.lastIndex = k;
+      if (heavy.test(text)) return true;
+    }
   }
   return false;
 }
