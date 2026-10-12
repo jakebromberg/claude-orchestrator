@@ -378,52 +378,46 @@ describe("lease", () => {
   });
 
   describe("recorded command", () => {
-    it.each([
-      ["DATABASE_URL_TEST=postgres://u:p@h/db npm test", "DATABASE_URL_TEST=… npm test"],
-      ["A=1 B='two words' C=\"x y\" npm test", "A=… B=… C=… npm test"],
-      ["cd x && TOKEN=abc npm test", "cd x && TOKEN=… npm test"],
-      ["npm run a || SECRET=s npm run b; K=v make", "npm run a || SECRET=… npm run b; K=… make"],
-      ["build | KEY=1 grep x", "build | KEY=… grep x"],
-      ["(PASS=hunter2 npm test)", "(PASS=… npm test)"],
-      ["(cd x; TOKEN=abc;npm test)", "(cd x; TOKEN=…;npm test)"],
-      ["npm ci\nDATABASE_URL_TEST=postgres://u:secret@h/db npm test", "npm ci\nDATABASE_URL_TEST=… npm test"],
-      ["set -e\n  KEY=v make", "set -e\n  KEY=… make"],
-      ["a & TOKEN=s1 b", "a & TOKEN=… b"],
-      ["{ TOKEN=s1 b; }", "{ TOKEN=… b; }"],
-      ["npm test --reporter=dot", "npm test --reporter=dot"],
-      ["echo A=1", "echo A=…"],
-      ['TOKEN="abc"def npm test', "TOKEN=… npm test"],
-      ["PASS=a\\ b npm test", "PASS=… npm test"],
-      ['URL=postgres://u:"p w"@h npm test', "URL=… npm test"],
-      ['A="se\\"cret more" npm test', "A=… npm test"],
-      ["TOKEN=$(cat f)tail npm test", "TOKEN=… npm test"],
-      ["K='unterminated npm test", "K=…"],
-      ["export TOKEN=s3cr3t && npm test", "export TOKEN=… && npm test"],
-      ["env TOKEN=s3cr3t npm test", "env TOKEN=… npm test"],
-      ["if true; then TOKEN=s3cr3t npm test; fi", "if true; then TOKEN=… npm test; fi"],
-      ["bash -c 'TOKEN=s3cr3t npm test'", "bash -c 'TOKEN=…'"],
-      ['env "PASS=hunter2 two" npm test', 'env "PASS=…" npm test'],
-      ["docker run -e 'API_KEY=abc def' img", "docker run -e 'API_KEY=…' img"],
-      ['docker run -e "PGPASSWORD=ab|cd" img', 'docker run -e "PGPASSWORD=…" img'],
-      ['export "TOKEN=s3 cr3t"', 'export "TOKEN=…"'],
-      ['env "A=x \\" y" npm test', 'env "A=…" npm test'],
-      ["TOKEN+=s3cr3t npm test", "TOKEN+=… npm test"],
-    ])("redacts %j", (command, expected) => {
-      const h = tryAcquireLease(opts(), { command, cwd: "/w" })!;
-      expect(readHolder(h).command).toBe(expected);
-      h.release();
-    });
-
-    it("truncates to 200 characters after redaction", () => {
-      const h = tryAcquireLease(opts(), { command: `SECRET=${"s".repeat(500)} ${"x".repeat(500)}`, cwd: "/w" })!;
+    const MARK = "hunter2";
+    const recordedFor = (command: string, label?: string): string => {
+      const h = tryAcquireLease(opts(), { command, label, cwd: "/w" })!;
       const recorded = readHolder(h).command as string;
-      expect(recorded).toHaveLength(200);
-      expect(recorded.startsWith("SECRET=… xxx")).toBe(true);
+      h.release();
+      return recorded;
+    };
+
+    it.each([
+      ["DATABASE_URL_TEST=postgres://u:hunter2@h/db npm test", "DATABASE_URL_TEST=…"],
+      ["cd x && npm test", "cd x && npm test"],
+      ["npm test --reporter=dot", "npm test --reporter=…"],
+      [`env "TOKEN=abc"'hunter2' npm`, `env "TOKEN=…`],
+      ["env $'TOKEN=hunter2' npm test", "env $'TOKEN=…"],
+      [`docker build --build-arg="NPM_TOKEN=hunter2" .`, "docker build --build-arg=…"],
+      [`bash -lc "cd db && PGPASSWORD=\"hunter2 x\" psql"`, `bash -lc "cd db && PGPASSWORD=…`],
+      [`"$X"=hunter2 npm test`, `"$X"=…`],
+      ["X[0]=hunter2 npm test", "X[0]=…"],
+      ["TOKEN\\=hunter2 npm test", "TOKEN\\=…"],
+      ["npm ci\nTOKEN=hunter2 npm test", "npm ci\nTOKEN=…"],
+      ["git clone https://u:hunter2@h/r", "git clone https://…"],
+      ["psql postgres://u:hunter2@h/db", "psql postgres://…"],
+    ])("records %j as %j", (command, expected) => {
+      const recorded = recordedFor(command);
+      expect(recorded).toBe(expected);
+      expect(recorded).not.toContain(MARK);
     });
 
-    it("records a caller-supplied label instead of the command", () => {
-      const h = tryAcquireLease(opts(), { command: "SECRET=1 npm test", label: "unit tests", cwd: "/w" })!;
-      expect(readHolder(h).command).toBe("unit tests");
+    it("truncates a command with no = or :// to 200 characters", () => {
+      expect(recordedFor("x".repeat(500))).toBe("x".repeat(200));
+    });
+
+    it("truncates after the cut, so a late = never brings its value back", () => {
+      const recorded = recordedFor(`${"x".repeat(300)}=hunter2`);
+      expect(recorded).toHaveLength(200);
+      expect(recorded).not.toContain("=");
+    });
+
+    it("records a caller-supplied label verbatim instead of the command", () => {
+      expect(recordedFor("SECRET=1 npm test", "unit tests")).toBe("unit tests");
     });
   });
 
