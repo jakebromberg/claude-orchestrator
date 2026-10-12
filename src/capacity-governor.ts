@@ -24,6 +24,7 @@ export function createCapacityGovernor(opts: {
   maxParallel: number;
   adaptive: boolean;
   logger: Logger;
+  /** Monotonic milliseconds, used to time the 60 s hysteresis. Defaults to `performance.now()`; do not inject `Date.now`, since a backward wall-clock step would stretch the hold. */
   now?: () => number;
 }): CapacityGovernor {
   const { sampler, maxParallel, adaptive, logger, now = () => performance.now() } = opts;
@@ -40,8 +41,9 @@ export function createCapacityGovernor(opts: {
         held = raw;
         calmSince = undefined;
       } else if (held !== "normal") {
-        calmSince ??= now();
-        if (now() - calmSince >= HYSTERESIS_MS) held = "normal";
+        const t = now();
+        calmSince ??= t;
+        if (t - calmSince >= HYSTERESIS_MS) held = "normal";
       }
       if (held !== "normal") level = held;
     }
