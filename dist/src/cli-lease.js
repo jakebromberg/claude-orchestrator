@@ -102,12 +102,38 @@ export async function runLeased(args, d) {
     const opts = optionsOrReport(d);
     if (!opts)
         return EX_CONFIG;
-    const fromEnv = parseSeconds(d.env.CO_LEASE_MAX_WAIT);
-    if (d.env.CO_LEASE_MAX_WAIT !== undefined && fromEnv === undefined) {
-        d.err(`lease: ignoring invalid CO_LEASE_MAX_WAIT=${JSON.stringify(d.env.CO_LEASE_MAX_WAIT)}; using ${DEFAULT_MAX_WAIT_SEC}s`);
+    const envWait = d.env.CO_LEASE_MAX_WAIT || undefined;
+    const fromEnv = parseSeconds(envWait);
+    if (envWait !== undefined && fromEnv === undefined && args.maxWaitSec === undefined) {
+        d.err(`lease: ignoring invalid CO_LEASE_MAX_WAIT=${JSON.stringify(envWait)}; using ${DEFAULT_MAX_WAIT_SEC}s`);
     }
     const maxWaitMs = (args.maxWaitSec ?? fromEnv ?? DEFAULT_MAX_WAIT_SEC) * 1000;
     const [file, fileArgs] = args.shell !== undefined ? ["/bin/sh", ["-c", args.shell]] : [args.argv[0], args.argv.slice(1)];
+    // Installed before acquiring: a signal's default action would otherwise kill the wrapper between the holder file's
+    // write and the spawn, leaving a slot that no child holds. A handler can only run while waiting (nothing is held, so
+    // the signal is re-raised to kill the wrapper as before) or once the child exists, never in between.
+    let child;
+    let signalled;
+    let grace;
+    let finish = (_code) => { };
+    const handlers = FORWARDED.map((sig) => {
+        const forward = () => {
+            if (child === undefined) {
+                unhook();
+                d.signals.kill(d.signals.pid, sig);
+                return;
+            }
+            signalled ??= constants.signals[sig];
+            child.kill(sig);
+            grace ??= setTimeout(() => {
+                child.kill("SIGKILL");
+                finish(128 + signalled);
+            }, GRACE_MS);
+        };
+        d.signals.on(sig, forward);
+        return [sig, forward];
+    });
+    const unhook = () => handlers.forEach(([sig, forward]) => d.signals.off(sig, forward));
     let lastProgress = d.now();
     const start = lastProgress;
     const got = await d.acquire(opts, { command: args.shell ?? args.argv.join(" "), label: args.label, cwd: d.cwd }, {
@@ -120,6 +146,7 @@ export async function runLeased(args, d) {
         },
     });
     if (!("leased" in got)) {
+        unhook();
         const s = d.leaseStatus(opts);
         const holders = s.live.map((h) => `${h.pid} ${h.command}`).join(", ") || "none";
         d.err(`lease: no slot after ${seconds(got.waitedMs)}s (pressure=${got.level}, capacity ${s.capacity}, ${s.live.length} live: ${holders}); rerun the command — this is not a test failure`);
@@ -130,33 +157,29 @@ export async function runLeased(args, d) {
         d.err(`lease: admitted after ${seconds(a.waitedMs)}s (pressure=${a.level}, ${a.live}/${a.capacity} live)`);
     }
     return new Promise((resolve) => {
-        // Same env merge as `runShellAsync`: `childEnv()` is only the holder-id delta.
-        const child = d.spawn(file, fileArgs, { env: { ...d.env, ...got.childEnv() } });
-        let signalled;
-        let grace;
-        const handlers = FORWARDED.map((sig) => {
-            const forward = () => {
-                signalled ??= constants.signals[sig];
-                child.kill(sig);
-                grace ??= setTimeout(() => {
-                    child.kill("SIGKILL");
-                    finish(128 + signalled);
-                }, GRACE_MS);
-            };
-            d.signals.on(sig, forward);
-            return [sig, forward];
-        });
-        const finish = (code) => {
+        let settled = false;
+        finish = (code) => {
+            if (settled)
+                return;
+            settled = true;
             clearTimeout(grace);
-            for (const [sig, forward] of handlers)
-                d.signals.off(sig, forward);
+            unhook();
             got.release({ exitCode: code });
             resolve(code);
         };
-        child.once("error", (e) => {
+        const cannotRun = (e) => {
             d.err(`lease: cannot run ${file}: ${e.message}`);
-            finish(e.code === "ENOENT" ? 127 : 126);
-        });
+            finish(e.code === "ENOENT" || file === "" ? 127 : 126);
+        };
+        try {
+            // Same env merge as `runShellAsync`: `childEnv()` is only the holder-id delta.
+            child = d.spawn(file, fileArgs, { env: { ...d.env, ...got.childEnv() } });
+        }
+        catch (e) {
+            // Node throws, rather than emitting 'error', for an empty program name and most errnos (ENOEXEC, ENOTDIR, ELOOP).
+            return cannotRun(e);
+        }
+        child.once("error", cannotRun);
         child.once("close", (code, signal) => {
             const exit = signalled !== undefined ? 128 + signalled : (code ?? 128 + (constants.signals[signal] ?? 0));
             if (args.shell !== undefined && exit === 127) {
