@@ -38,5 +38,6 @@ export interface MainOptions {
     argv?: string[];
     projectRoot?: string;
 }
+/** Exported for testing. */
 export declare function createRealDeps(config: OrchestratorConfig, mode: ParsedMode): Deps;
 export declare function createMain(options: MainOptions): Promise<void>;

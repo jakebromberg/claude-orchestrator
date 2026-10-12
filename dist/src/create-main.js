@@ -70,6 +70,7 @@ export function buildDetachSpawnCommand(opts) {
 }
 /** Modes that launch sessions. Only these read memory pressure, so a lease-directory misconfiguration cannot break the read-only ones. */
 const DISPATCH_MODES = new Set(["run-all", "run-specific", "retry-failed"]);
+/** Exported for testing. */
 export function createRealDeps(config, mode) {
     return {
         statusStore: new FileStatusStore(config.configDir),
