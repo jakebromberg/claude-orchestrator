@@ -26,7 +26,7 @@ src/
 ├── dependency-files.ts   # Dependency file detection
 ├── report.ts             # Post-run report generation
 ├── memory-pressure.ts    # Memory-pressure level reader, heavy/session capacity tables, stop rule, cached sampler
-├── capacity-governor.ts  # createCapacityGovernor() — pressure readings → session capacity, 60 s hysteresis, transition logging
+├── capacity-governor.ts  # createCapacityGovernor() — pressure readings → launch capacity (bounds pipelines), 60 s hysteresis, transition logging
 ├── lease.ts              # Machine-wide heavy-command lease: holder files, 30 s mtime heartbeat (90 s staleness) + child-PID liveness, admission, fail-open (acquireLease, leaseStatus)
 ├── lease-events.ts       # leaseEventSink(): JSONL sink for the lease's onEvent seam — <lease dir>/events.jsonl, 5 MB rotation to events.jsonl.1, write failures swallowed
 ├── cli-lease.ts          # claude-orchestrator-lease bin: run a command under the lease (exit 75 no slot, 78 misconfigured), `status` as JSON
