@@ -293,7 +293,7 @@ export interface Logger {
 }
 
 /** Why an issue ended without a model verdict; new values may be added. */
-export type FailureReason = "memory-critical";
+export type FailureReason = "memory-critical" | "lease-wait";
 
 /** Where in an issue's pipeline a stop took effect. */
 export type StopStage = "launch" | "post-check" | "retry" | "session";
