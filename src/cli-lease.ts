@@ -231,6 +231,9 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
 // CLI entry point — only runs when invoked directly.
 // ---------------------------------------------------------------------------
 
+/** The CLI's lease options: every lease, sink, policy and sampler diagnostic goes through `err`. */
+export const cliLeaseOptions = (env: NodeJS.ProcessEnv, err: (line: string) => void): LeaseOptions => defaultLeaseOptions(env, { warn: err });
+
 async function main(argv: string[]): Promise<number> {
   let args: LeaseArgs;
   try {
@@ -239,15 +242,18 @@ async function main(argv: string[]): Promise<number> {
     process.stderr.write(`lease: ${(err as Error).message}\nusage: claude-orchestrator-lease [--max-wait <sec>] [--label <text>] (-- <cmd> [args...] | --shell '<command line>') | status\n`);
     return EX_USAGE;
   }
+  const err = (line: string): void => {
+    process.stderr.write(`${line}\n`);
+  };
   const deps: LeaseCliDeps = {
-    leaseOptions: () => defaultLeaseOptions(),
+    leaseOptions: () => cliLeaseOptions(process.env, err),
     acquire: acquireLease,
     leaseStatus,
     spawn: (file, fileArgs, opts) => spawn(file, fileArgs, { stdio: "inherit", env: opts.env }),
     env: process.env,
     cwd: process.cwd(),
     out: (text) => process.stdout.write(text),
-    err: (line) => process.stderr.write(`${line}\n`),
+    err,
     now: Date.now,
     signals: process,
   };

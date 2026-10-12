@@ -114,6 +114,8 @@ export interface LeaseRefusal {
 }
 /** The lease's directory rule, given `lstat` stats: a real directory (not a symlink) this user owns. A platform without uids (Windows) skips the ownership check. */
 export declare function isOwnDir(st: Stats): boolean;
+/** The one default diagnostics writer, shared with the event sink. Messages carry their own `lease:` prefix. */
+export declare function defaultWarn(msg: string): void;
 /** A single non-blocking attempt: a handle, or `null` when not admitted this poll. */
 export declare function tryAcquireLease(opts: LeaseOptions, meta: HolderMeta): LeaseHandle | null;
 /**
@@ -128,6 +130,13 @@ export declare function acquireLease(opts: LeaseOptions, meta: HolderMeta, wait?
 }): Promise<LeaseHandle | LeaseRefusal>;
 /** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. */
 export declare function leaseStatus(opts: LeaseOptions): LeaseStatus;
-/** Production wiring: the real lease directory, the engine's own sampler and policy, and the `events.jsonl` sink. Creates nothing on disk. */
-export declare function defaultLeaseOptions(env?: NodeJS.ProcessEnv): LeaseOptions;
+/**
+ * Production wiring: the real lease directory, the engine's own sampler and policy, and the `events.jsonl` sink. Creates nothing on disk.
+ * `overrides.level` replaces the sampler (none is built), and `overrides.warn` is the one writer for the lease, the sink,
+ * the policy and the sampler it builds; without it each keeps its stderr default.
+ */
+export declare function defaultLeaseOptions(env?: NodeJS.ProcessEnv, overrides?: {
+    level?: PressureSampler;
+    warn?: (msg: string) => void;
+}): LeaseOptions;
 export {};
