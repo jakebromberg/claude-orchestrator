@@ -1,20 +1,15 @@
 import { describe, it, expect, vi } from "vitest";
 import { createCapacityGovernor } from "../src/capacity-governor.js";
-import type { PressureLevel, PressureSampler } from "../src/memory-pressure.js";
+import type { PressureLevel } from "../src/memory-pressure.js";
+import { scriptedPressureSampler } from "../src/testing.js";
 import type { Logger } from "../src/types.js";
-
-function scripted(levels: PressureLevel[]): PressureSampler {
-  let i = 0;
-  const read = () => levels[Math.min(i++, levels.length - 1)];
-  return Object.assign(read, { fresh: read });
-}
 
 function setUp(levels: PressureLevel[], adaptive = true, maxParallel = 4) {
   const clock = { t: 0 };
   const info = vi.fn();
   const logger = { info, warn: vi.fn(), error: vi.fn(), step: vi.fn(), header: vi.fn() } as Logger;
   const governor = createCapacityGovernor({
-    sampler: scripted(levels),
+    sampler: scriptedPressureSampler(levels),
     maxParallel,
     adaptive,
     logger,

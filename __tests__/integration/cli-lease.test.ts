@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { isolatedLeaseEnv } from "../helpers/lease.js";
 
 /**
  * Integration test for the `claude-orchestrator-lease` CLI, against the built
@@ -19,14 +20,6 @@ interface CliRun {
   code: number | null;
   stdout: string;
   stderr: string;
-}
-
-/** The parent env with every `CO_LEASE_*` / `CO_PRESSURE_*` scrubbed, then the isolation settings applied. */
-function isolatedEnv(leaseDir: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => !k.startsWith("CO_LEASE_") && !k.startsWith("CO_PRESSURE_")),
-  );
-  return { ...env, CO_LEASE_DIR: leaseDir, CO_LEASE_SLOTS: "1", CO_PRESSURE_OVERRIDE: "critical-as-warning", ...extra };
 }
 
 function runCli(args: string[], env: NodeJS.ProcessEnv): Promise<CliRun> {
@@ -86,7 +79,7 @@ describe("claude-orchestrator-lease (integration)", () => {
   });
 
   it("passes the exit code through, prints the admitted line and releases the slot", async () => {
-    const r = await runCli(["--", "node", "-e", "process.exit(7)"], isolatedEnv(leaseDir));
+    const r = await runCli(["--", "node", "-e", "process.exit(7)"], isolatedLeaseEnv(leaseDir));
     expect(r.code).toBe(7);
     expect(r.stderr).toMatch(/^lease: admitted after 0s \(pressure=\w+, 1\/1 live\)$/m);
     expect(holderFiles(leaseDir)).toEqual([]);
@@ -95,21 +88,21 @@ describe("claude-orchestrator-lease (integration)", () => {
   it("runs --shell under /bin/sh with the parent's variables and CO_LEASE_HOLDER", async () => {
     const r = await runCli(
       ["--shell", 'echo "$PARENT_ONLY $CO_LEASE_HOLDER"; status=3; exit $status'],
-      isolatedEnv(leaseDir, { PARENT_ONLY: "from-parent", SHELL: "/bin/zsh" }),
+      isolatedLeaseEnv(leaseDir, { PARENT_ONLY: "from-parent", SHELL: "/bin/zsh" }),
     );
     expect(r.code).toBe(3);
     expect(r.stdout).toMatch(/^from-parent \d+-[0-9a-f]{8}\n$/);
   });
 
   it("reports holders from status without creating the lease directory", async () => {
-    const r = await runCli(["status"], isolatedEnv(leaseDir));
+    const r = await runCli(["status"], isolatedLeaseEnv(leaseDir));
     expect(r.code).toBe(0);
     expect(JSON.parse(r.stdout)).toEqual({ level: expect.any(String), capacity: 1, live: [] });
     expect(fs.existsSync(leaseDir)).toBe(false);
   });
 
   it("exits 78 naming CO_LEASE_DIR for a relative directory, in the run form and in status", async () => {
-    const env = isolatedEnv("relative/dir");
+    const env = isolatedLeaseEnv("relative/dir");
     for (const args of [["--", "node", "-e", "process.exit(0)"], ["status"]]) {
       const r = await runCli(args, env);
       expect(r.code).toBe(78);
@@ -128,7 +121,7 @@ describe("claude-orchestrator-lease (integration)", () => {
     cannotStart.push(["an executable with no #! line (ENOEXEC)", 126, (dir) => (fs.writeFileSync(path.join(dir, "ci.sh"), "exit 0\n", { mode: 0o755 }), path.join(dir, "ci.sh"))]);
   }
   it.each(cannotStart)("exits %s with %i and releases the slot when spawn throws", async (_name, expected, program) => {
-    const env = isolatedEnv(leaseDir);
+    const env = isolatedLeaseEnv(leaseDir);
     const r = await runCli(["--", program(tmpDir)], env);
     expect(r.code).toBe(expected);
     expect(r.stderr).toMatch(/^lease: admitted after/m);
@@ -138,7 +131,7 @@ describe("claude-orchestrator-lease (integration)", () => {
   });
 
   it("dies of a signal that arrives while it waits for a slot, and holds nothing", async () => {
-    const env = isolatedEnv(leaseDir);
+    const env = isolatedLeaseEnv(leaseDir);
     const first = spawn("node", [cliPath, "--", "node", "-e", "setTimeout(() => {}, 60000)"], { env, stdio: "ignore" });
     childPids.push(first.pid!);
     childPids.push((await until(() => holderWithChild(leaseDir), "the first holder to record its child PID")).childPid);
@@ -161,7 +154,7 @@ describe("claude-orchestrator-lease (integration)", () => {
   }, 30_000);
 
   it("forwards SIGTERM to the child, exits 143 and releases the slot", async () => {
-    const wrapper = spawn("node", [cliPath, "--", "node", "-e", "setTimeout(() => {}, 60000)"], { env: isolatedEnv(leaseDir), stdio: "ignore" });
+    const wrapper = spawn("node", [cliPath, "--", "node", "-e", "setTimeout(() => {}, 60000)"], { env: isolatedLeaseEnv(leaseDir), stdio: "ignore" });
     const exited = new Promise<number | null>((resolve) => wrapper.once("exit", (code) => resolve(code)));
     await until(() => holderWithChild(leaseDir), "the holder to record its child PID");
     wrapper.kill("SIGTERM");
@@ -170,7 +163,7 @@ describe("claude-orchestrator-lease (integration)", () => {
   }, 30_000);
 
   it("keeps the slot when the wrapper is SIGKILLed while its child lives, and frees it when the child dies", async () => {
-    const env = isolatedEnv(leaseDir);
+    const env = isolatedLeaseEnv(leaseDir);
     const wrapper = spawn("node", [cliPath, "--label", "long job", "--", "node", "-e", "setTimeout(() => {}, 60000)"], {
       env,
       stdio: "ignore",

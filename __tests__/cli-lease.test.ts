@@ -20,6 +20,7 @@ import {
   type LeaseRefusal,
   type LeaseStatus,
 } from "../src/lease.js";
+import { scriptedPressureSampler } from "../src/testing.js";
 
 describe("parseLeaseArgs", () => {
   it.each<[string, string[], unknown]>([
@@ -380,7 +381,7 @@ describe("runLeased", () => {
     const realLease = (): Partial<LeaseCliDeps> => {
       const opts: LeaseOptions = {
         dir,
-        level: Object.assign(() => "normal" as const, { fresh: () => "normal" as const }),
+        level: scriptedPressureSampler("normal"),
         policy: { heavyCeiling: 1, heavyWarning: 1 },
       };
       return {
@@ -452,7 +453,7 @@ describe("runLeased", () => {
         const real = deps({
           leaseOptions: () => ({
             dir,
-            level: Object.assign(() => "normal" as const, { fresh: () => "normal" as const }),
+            level: scriptedPressureSampler("normal"),
             policy: { heavyCeiling: 2, heavyWarning: 1 },
           }),
           leaseStatus,

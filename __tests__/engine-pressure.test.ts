@@ -5,7 +5,8 @@ import { InMemoryStatusStore, InMemoryMetadataStore } from "../src/status.js";
 import type {
   Issue, OrchestratorConfig, OrchestratorHooks, RunOptions, Deps, PostCheckResult, Status,
 } from "../src/types.js";
-import type { PressureLevel, PressureSampler } from "../src/memory-pressure.js";
+import type { PressureLevel } from "../src/memory-pressure.js";
+import { scriptedPressureSampler } from "../src/testing.js";
 
 function makeIssue(number: number, wave = 1): Issue {
   const base = { number, slug: `issue-${number}`, wave, dependsOn: [], description: `Issue ${number}` };
@@ -15,12 +16,12 @@ function makeIssue(number: number, wave = 1): Issue {
 /** A sampler whose cached reading (`sample`) and fresh reading can differ, to model a stale cache. */
 function makeSampler(level: PressureLevel) {
   const ctl = { level, freshLevel: undefined as PressureLevel | undefined, freshCalls: 0 };
-  const sampler = Object.assign(() => ctl.level, {
+  const sampler = scriptedPressureSampler(() => ctl.level, {
     fresh: () => {
       ctl.freshCalls++;
       return ctl.freshLevel ?? ctl.level;
     },
-  }) as PressureSampler;
+  });
   return { ctl, sampler };
 }
 

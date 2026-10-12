@@ -15,6 +15,8 @@ import {
 } from "../src/lease.js";
 import * as barrel from "../src/index.js";
 import type { PressureLevel } from "../src/memory-pressure.js";
+import { scriptedPressureSampler } from "../src/testing.js";
+import { fakeLeaseClock, type FakeLeaseClock } from "./helpers/lease.js";
 
 const meta: HolderMeta = { command: "npm test", cwd: "/work" };
 const HEARTBEAT_STALE_MS = 90_000;
@@ -24,26 +26,20 @@ const realSetInterval = globalThis.setInterval;
 describe("lease", () => {
   let tmp: string;
   let dir: string;
-  let clock: number;
+  let fake: FakeLeaseClock;
   let level: PressureLevel;
   let freshLevel: PressureLevel | undefined;
   let alive: Set<number>;
   let events: LeaseEvent[];
   let warnings: string[];
-  let sleeps: number[];
-  let onSleep: () => void;
 
   const opts = (over: Partial<LeaseOptions> = {}): LeaseOptions => ({
     dir,
-    level: Object.assign(() => level, { fresh: () => freshLevel ?? level }),
+    level: scriptedPressureSampler(() => level, { fresh: () => freshLevel ?? level }),
     policy: { heavyCeiling: 2, heavyWarning: 1 },
     isAlive: (pid) => alive.has(pid),
-    now: () => clock,
-    sleep: async (ms) => {
-      sleeps.push(ms);
-      clock += ms;
-      onSleep();
-    },
+    now: fake.now,
+    sleep: fake.sleep,
     onEvent: (e) => events.push(e),
     warn: (m) => warnings.push(m),
     ...over,
@@ -56,8 +52,8 @@ describe("lease", () => {
    * boundary rows pin the floor and not utimes' rounding (Node 20 and 22 truncate to whole microseconds).
    */
   const writeHolder = (id: string, rec: Record<string, unknown>, beatAgoMs = 2 * HEARTBEAT_STALE_MS): void => {
-    writeFileSync(holderFile(id), JSON.stringify({ id, pid: 4242, command: "x", cwd: "/", startedAt: clock, level: "normal", ...rec }));
-    const beatAt = (clock - beatAgoMs + 0.5) / 1000;
+    writeFileSync(holderFile(id), JSON.stringify({ id, pid: 4242, command: "x", cwd: "/", startedAt: fake.ms, level: "normal", ...rec }));
+    const beatAt = (fake.ms - beatAgoMs + 0.5) / 1000;
     utimesSync(holderFile(id), beatAt, beatAt);
   };
   /** Creates the lease directory through an acquire (which reaps what it finds), then writes the holder. */
@@ -68,20 +64,18 @@ describe("lease", () => {
   const busyMutex = (): void => {
     tryAcquireLease(opts(), meta)!.release();
     writeFileSync(join(dir, ".mutex"), "");
-    utimesSync(join(dir, ".mutex"), clock / 1000, clock / 1000); // fresh on the injected clock, not from its future
+    utimesSync(join(dir, ".mutex"), fake.ms / 1000, fake.ms / 1000); // fresh on the injected clock, not from its future
   };
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "lease-"));
     dir = join(tmp, "lease");
-    clock = Date.now();
+    fake = fakeLeaseClock();
     level = "normal";
     freshLevel = undefined;
     alive = new Set([process.pid]);
     events = [];
     warnings = [];
-    sleeps = [];
-    onSleep = () => {};
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -116,13 +110,13 @@ describe("lease", () => {
 
     it("wakes a waiter when a holder releases", async () => {
       const a = tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta)!;
-      onSleep = () => a.release();
+      fake.onSleep = () => a.release();
       const r = await acquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta);
       expect(isHandle(r) && r.leased).toBe(true);
-      expect(sleeps).toHaveLength(1);
-      expect(sleeps[0]).toBeGreaterThanOrEqual(2_000);
-      expect(sleeps[0]).toBeLessThanOrEqual(4_000);
-      expect((r as LeaseHandle).admission.waitedMs).toBe(sleeps[0]);
+      expect(fake.sleeps).toHaveLength(1);
+      expect(fake.sleeps[0]).toBeGreaterThanOrEqual(2_000);
+      expect(fake.sleeps[0]).toBeLessThanOrEqual(4_000);
+      expect((r as LeaseHandle).admission.waitedMs).toBe(fake.sleeps[0]);
     });
 
     it("records the wait, level, live count (including itself) and capacity at admission", () => {
@@ -134,7 +128,7 @@ describe("lease", () => {
 
     it("records the holder and reports it through leaseStatus", () => {
       const h = tryAcquireLease(opts(), { command: "npm test", cwd: "/work" })!;
-      expect(readHolder(h)).toEqual({ id: h.id, pid: process.pid, command: "npm test", cwd: "/work", startedAt: clock, level: "normal" });
+      expect(readHolder(h)).toEqual({ id: h.id, pid: process.pid, command: "npm test", cwd: "/work", startedAt: fake.ms, level: "normal" });
       h.setChildPid(777);
       expect(readHolder(h).childPid).toBe(777);
       const status = leaseStatus(opts());
@@ -166,7 +160,7 @@ describe("lease", () => {
       ["warn", { warn: () => { throw new Error("stderr closed"); } }],
     ] as const)("keeps its behaviour when %s throws", (name, callbacks) => {
       alive.add(900);
-      plantHolder("4242-ab01", { childPid: 900, startedAt: clock - 3 * 3_600_000 }); // orphan-bound: warns
+      plantHolder("4242-ab01", { childPid: 900, startedAt: fake.ms - 3 * 3_600_000 }); // orphan-bound: warns
       writeHolder("4242-ab02", {}); // stale-heartbeat
       const o = opts({ policy: { heavyCeiling: 1, heavyWarning: 1 }, ...callbacks });
       const h = tryAcquireLease(o, meta)!;
@@ -180,13 +174,13 @@ describe("lease", () => {
 
     it("calls back only after releasing the mutex, so a slow callback cannot let a second acquirer in", () => {
       alive.add(900);
-      plantHolder("4242-ab03", { childPid: 900, startedAt: clock - 3 * 3_600_000 }); // orphan-bound: warns and reaps
+      plantHolder("4242-ab03", { childPid: 900, startedAt: fake.ms - 3 * 3_600_000 }); // orphan-bound: warns and reaps
       const one = opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } });
       const mutexHeld: boolean[] = [];
       let second: LeaseHandle | null | undefined;
       const slow = (): void => {
         mutexHeld.push(existsSync(join(dir, ".mutex")));
-        clock += 11_000; // outlives the mutex's 10 s staleness window
+        fake.ms += 11_000; // outlives the mutex's 10 s staleness window
         if (second === undefined) second = tryAcquireLease(one, meta);
       };
       const first = tryAcquireLease({ ...one, onEvent: slow, warn: slow }, meta);
@@ -196,7 +190,7 @@ describe("lease", () => {
 
     it("measures capped waiters starving behind uncapped ones (admission is not FIFO)", () => {
       const held = [tryAcquireLease(opts(), meta)!, tryAcquireLease(opts(), meta)!];
-      const cappedLevel = { level: Object.assign(() => "warning" as const, { fresh: () => "warning" as const }) };
+      const cappedLevel = { level: scriptedPressureSampler("warning") };
       let capped = 0;
       let uncapped = 0;
       for (let round = 0; round < 10; round++) {
@@ -232,7 +226,7 @@ describe("lease", () => {
       ["a far-future heartbeat with a live child", -3_600_000, true, 60_000, true],
     ])("%s", (_name, beatAgo, childAlive, startedAgo, stillLive) => {
       if (childAlive) alive.add(900);
-      plantHolder("4242-aaaa", { childPid: childAlive === undefined ? undefined : 900, startedAt: clock - startedAgo }, beatAgo);
+      plantHolder("4242-aaaa", { childPid: childAlive === undefined ? undefined : 900, startedAt: fake.ms - startedAgo }, beatAgo);
       const h = tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta);
       expect(h === null).toBe(stillLive);
       expect(existsSync(holderFile("4242-aaaa"))).toBe(stillLive);
@@ -258,7 +252,7 @@ describe("lease", () => {
       const mtimeOf = (h: LeaseHandle): number => statSync(holderFile(h.id!)).mtimeMs;
       /** Advances the injected clock and the fake timers together. */
       const tick = (ms: number): void => {
-        clock += ms;
+        fake.ms += ms;
         vi.advanceTimersByTime(ms);
       };
 
@@ -269,9 +263,9 @@ describe("lease", () => {
         tick(29_999);
         expect(mtimeOf(h)).toBe(written);
         tick(1);
-        expect(Math.abs(mtimeOf(h) - clock)).toBeLessThan(1);
+        expect(Math.abs(mtimeOf(h) - fake.ms)).toBeLessThan(1);
         for (let i = 0; i < 5; i++) tick(30_000);
-        expect(Math.abs(mtimeOf(h) - clock)).toBeLessThan(1);
+        expect(Math.abs(mtimeOf(h) - fake.ms)).toBeLessThan(1);
         expect(leaseStatus(opts()).live.map((x) => x.id)).toEqual([h.id]);
         h.release();
       });
@@ -309,7 +303,7 @@ describe("lease", () => {
       it("keeps a holder reaped while it still runs out of the count, even when it then records a child", () => {
         const one = opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } });
         const a = tryAcquireLease(one, meta)!;
-        const stalled = (clock - (HEARTBEAT_STALE_MS + 10_000) + 0.5) / 1000; // its event loop missed every beat
+        const stalled = (fake.ms - (HEARTBEAT_STALE_MS + 10_000) + 0.5) / 1000; // its event loop missed every beat
         utimesSync(holderFile(a.id!), stalled, stalled);
         const b = tryAcquireLease(one, meta)!;
         expect(events).toContainEqual({ type: "reap", id: a.id, reason: "stale-heartbeat" });
@@ -323,7 +317,7 @@ describe("lease", () => {
 
     it("reaps an orphan past the bound with a warning and an event", () => {
       alive.add(900);
-      plantHolder("4242-bbbb", { childPid: 900, startedAt: clock - 3 * 3_600_000 });
+      plantHolder("4242-bbbb", { childPid: 900, startedAt: fake.ms - 3 * 3_600_000 });
       tryAcquireLease(opts(), meta)!.release();
       expect(warnings.join("\n")).toMatch(/4242-bbbb.*2 h orphan bound/);
       expect(events).toContainEqual({ type: "reap", id: "4242-bbbb", reason: "orphan-bound" });
@@ -381,10 +375,10 @@ describe("lease", () => {
     it("fails open after 30 s of a busy mutex, with one warning", async () => {
       busyMutex();
       // Keep the mutex fresh on the injected clock so it never reads as stale.
-      onSleep = () => utimesSync(join(dir, ".mutex"), clock / 1000, clock / 1000);
+      fake.onSleep = () => utimesSync(join(dir, ".mutex"), fake.ms / 1000, fake.ms / 1000);
       const r = await acquireLease(opts(), meta);
       expect(r).toMatchObject({ leased: false, id: null });
-      expect(sleeps.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(30_000);
+      expect(fake.sleeps.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(30_000);
       expect(warnings).toHaveLength(1);
       expect(events).toContainEqual(expect.objectContaining({ type: "fail-open", reason: "mutex-busy" }));
     });
@@ -392,7 +386,7 @@ describe("lease", () => {
     it("never fails open at critical: a busy mutex stays no free slot until maxWaitMs", async () => {
       busyMutex();
       level = "critical";
-      onSleep = () => utimesSync(join(dir, ".mutex"), clock / 1000, clock / 1000);
+      fake.onSleep = () => utimesSync(join(dir, ".mutex"), fake.ms / 1000, fake.ms / 1000);
       const r = await acquireLease(opts(), meta, { maxWaitMs: 60_000 });
       expect(r).toMatchObject({ refused: "max-wait", level: "critical" });
       expect(warnings).toEqual([]);
@@ -400,7 +394,7 @@ describe("lease", () => {
 
     it("reaps a stale mutex left by a killed holder", () => {
       busyMutex();
-      const old = (clock - 20_000) / 1000;
+      const old = (fake.ms - 20_000) / 1000;
       utimesSync(join(dir, ".mutex"), old, old);
       expect(tryAcquireLease(opts(), meta)?.leased).toBe(true);
     });
@@ -464,7 +458,7 @@ describe("lease", () => {
       const lease = join(tmp, "never");
       const o = defaultLeaseOptions({ CO_LEASE_DIR: lease, HOME: tmp });
       expect(o.dir).toBe(lease);
-      leaseStatus({ ...o, level: Object.assign(() => "normal" as const, { fresh: () => "normal" as const }) });
+      leaseStatus({ ...o, level: scriptedPressureSampler("normal") });
       expect(existsSync(lease)).toBe(false);
     });
 
@@ -571,7 +565,7 @@ describe("lease", () => {
       const onWait = vi.fn();
       const r = await acquireLease(opts(full), meta, { maxWaitMs: 5_000, onWait });
       expect(r).toEqual({ refused: "max-wait", waitedMs: 5_000, level: "normal", live: 1 });
-      expect(sleeps.reduce((a, b) => a + b, 0)).toBe(5_000);
+      expect(fake.sleeps.reduce((a, b) => a + b, 0)).toBe(5_000);
       expect(onWait).toHaveBeenCalledWith(expect.objectContaining({ capacity: 1 }));
       expect(events).toContainEqual({ type: "timeout", refused: "max-wait", waitedMs: 5_000 });
     });
@@ -581,7 +575,7 @@ describe("lease", () => {
       const stopWhen = vi.fn((s) => s.level === "critical" && s.live.length === 0);
       const r = await acquireLease(opts(), meta, { stopWhen });
       expect(r).toEqual({ refused: "stopped", waitedMs: 0, level: "critical", live: 0 });
-      expect(sleeps).toEqual([]);
+      expect(fake.sleeps).toEqual([]);
       expect(stopWhen).toHaveBeenCalledTimes(2);
     });
 
@@ -613,7 +607,7 @@ describe("lease", () => {
       [undefined, "warning", undefined],
     ] as const)("sampler overridden()=%s at %s records override=%s in the holder file and the acquire event", (overridden, lvl, expected) => {
       level = lvl;
-      const sampler = Object.assign(() => level, { fresh: () => level, ...(overridden === undefined ? {} : { overridden: () => overridden }) });
+      const sampler = scriptedPressureSampler(() => level, { overridden });
       const h = tryAcquireLease(opts({ level: sampler }), meta)!;
       expect(readHolder(h).override).toBe(expected);
       expect(h.admission.override).toBe(expected);
@@ -625,7 +619,7 @@ describe("lease", () => {
     it("records the held time on release, and no exitCode when none is given", () => {
       const h = tryAcquireLease(opts(), meta)!;
       const g = tryAcquireLease(opts(), meta)!;
-      clock += 12_345;
+      fake.ms += 12_345;
       h.release({ exitCode: 1 });
       g.release();
       expect(events.filter((e) => e.type === "release")).toStrictEqual([
@@ -648,7 +642,7 @@ describe("lease", () => {
       writeFileSync(join(tmp, "blocker"), "");
       tryAcquireLease(opts({ dir: join(tmp, "blocker", "lease") }), meta);
       busyMutex();
-      onSleep = () => utimesSync(join(dir, ".mutex"), clock / 1000, clock / 1000);
+      fake.onSleep = () => utimesSync(join(dir, ".mutex"), fake.ms / 1000, fake.ms / 1000);
       await acquireLease(opts(), meta);
       expect(events.filter((e) => e.type === "fail-open")).toStrictEqual([
         { type: "fail-open", reason: "io-error", waitedMs: 0, code: "ENOTDIR", message: expect.any(String) },
