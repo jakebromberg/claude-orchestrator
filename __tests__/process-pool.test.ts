@@ -232,14 +232,15 @@ describe("ProcessPool capacity and stop", () => {
     runner = createMockRunner();
   });
 
-  it("limits slots to min(maxParallel, capacity())", () => {
-    let cap = 1;
-    const pool = new ProcessPool(4, { capacity: () => cap });
-    pool.add(spawn());
-    expect(pool.isFull).toBe(true);
-
-    cap = 9;
-    expect(pool.isFull).toBe(false);
+  it.each([
+    { maxParallel: 4, cap: 1, active: 1, full: true }, // capacity binds
+    { maxParallel: 4, cap: 9, active: 1, full: false },
+    { maxParallel: 1, cap: 9, active: 1, full: true }, // maxParallel binds (the 0-byte fallback)
+    { maxParallel: 2, cap: 0, active: 0, full: true },
+  ])("limits slots to min(maxParallel, capacity()): %o", ({ maxParallel, cap, active, full }) => {
+    const pool = new ProcessPool(maxParallel, { capacity: () => cap });
+    for (let i = 0; i < active; i++) pool.add(spawn());
+    expect(pool.isFull).toBe(full);
   });
 
   it("waits through a recheck that leaves the pool full, then resolves go once capacity rises", async () => {

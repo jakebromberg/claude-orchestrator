@@ -8,7 +8,9 @@ import { perIssueSpawnArgs } from "./model-effort.js";
 import { isModeNode, isCommandNode, cutoverReason, manualGateLabel } from "./mode-node.js";
 import { shellQuote } from "./shell-quote.js";
 import { createCapacityGovernor } from "./capacity-governor.js";
+import type { CapacityGovernor } from "./capacity-governor.js";
 import { stopAtCritical } from "./memory-pressure.js";
+import type { PressureSampler } from "./memory-pressure.js";
 import type { MergeResult } from "./merge.js";
 import type {
   Issue,
@@ -19,6 +21,7 @@ import type {
   MergePolicy,
   ProcessHandle,
   Logger,
+  PostCheckResult,
   StopStage,
 } from "./types.js";
 
@@ -50,6 +53,8 @@ export class Orchestrator {
   private maxParallel: number;
   private mergePolicy: MergePolicy;
   private adaptive: boolean;
+  /** Run-scoped, so the 60 s hysteresis spans wave boundaries; created by the first launch. */
+  private governor?: CapacityGovernor;
 
   constructor(config: OrchestratorConfig, deps: Deps, options?: RunOptions) {
     this.config = config;
@@ -627,6 +632,13 @@ export class Orchestrator {
     if (status) await this.setStatus(issue, status);
   }
 
+  /** True (and the issue is failed and stopped) when the check did not run for memory pressure; such a result is never retried. */
+  private async checkStopped(issue: Issue, result: PostCheckResult): Promise<boolean> {
+    if (!result.stopped) return false;
+    await this.markStopped(issue, "post-check", "failed");
+    return true;
+  }
+
   /** True (and the issue is failed and stopped) when a fresh reading says a retry may not start. */
   private async retryRefused(issue: Issue): Promise<boolean> {
     if (this.deps.memoryPressure?.fresh() !== "critical") return false;
@@ -635,29 +647,37 @@ export class Orchestrator {
     return true;
   }
 
-  private async launchAndWait(
-    ready: Array<{ issue: Issue; prompt: string; sessionId: string }>,
-  ): Promise<void> {
-    const sampler = this.deps.memoryPressure;
-    const governor = sampler && createCapacityGovernor({
+  /** The run's one governor, read afresh as each wave starts launching. */
+  private capacityGovernor(sampler: PressureSampler): CapacityGovernor {
+    if (this.governor) this.governor.tick();
+    else this.governor = createCapacityGovernor({
       sampler,
       maxParallel: this.maxParallel,
       adaptive: this.adaptive,
       logger: this.deps.logger,
     });
+    return this.governor;
+  }
+
+  private async launchAndWait(
+    ready: Array<{ issue: Issue; prompt: string; sessionId: string }>,
+  ): Promise<void> {
+    const sampler = this.deps.memoryPressure;
+    const governor = sampler && this.capacityGovernor(sampler);
     const pool = new ProcessPool(this.maxParallel, {
       capacity: governor?.capacity,
       // A cached critical reading alone never ends the wave; a fresh one must agree.
       shouldStop: sampler && ((active) =>
         stopAtCritical(sampler(), active) && stopAtCritical(sampler.fresh(), active)),
     });
+    // Unref'd: running sessions keep the process alive. launchSessions refs it while
+    // a launch waits, when the tick may be the only thing left that can wake it.
     const timer = governor && setInterval(() => {
       governor.tick();
       pool.recheck();
-    }, PRESSURE_CHECK_INTERVAL_MS);
-    timer?.unref();
+    }, PRESSURE_CHECK_INTERVAL_MS).unref();
     try {
-      await this.launchSessions(ready, pool);
+      await this.launchSessions(ready, pool, timer);
     } finally {
       clearInterval(timer);
     }
@@ -666,12 +686,16 @@ export class Orchestrator {
   private async launchSessions(
     ready: Array<{ issue: Issue; prompt: string; sessionId: string }>,
     pool: ProcessPool,
+    pressureTimer?: NodeJS.Timeout,
   ): Promise<void> {
     let fallbackTriggered = false;
     const postCheckPromises: Promise<void>[] = [];
 
     for (const [index, { issue, prompt, sessionId }] of ready.entries()) {
-      if (await pool.waitForSlot() === "stop") {
+      pressureTimer?.ref();
+      const slot = await pool.waitForSlot();
+      pressureTimer?.unref();
+      if (slot === "stop") {
         const unstarted = ready.slice(index).map((r) => r.issue);
         for (const i of unstarted) await this.markStopped(i, "launch");
         this.deps.logger.warn(
@@ -885,11 +909,7 @@ export class Orchestrator {
     stderrFile: string,
   ): Promise<boolean> {
     if (checkResult.passed) return true;
-
-    if (checkResult.stopped) {
-      await this.markStopped(issue, "post-check", "failed");
-      return false;
-    }
+    if (await this.checkStopped(issue, checkResult)) return false;
 
     const retryConfig = this.config.retryOnCheckFailure;
     if (!retryConfig?.enabled) {
@@ -950,6 +970,7 @@ export class Orchestrator {
         );
         return true;
       }
+      if (await this.checkStopped(issue, checkResult)) return false;
     }
 
     // All retries exhausted

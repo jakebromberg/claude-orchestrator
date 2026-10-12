@@ -68,7 +68,9 @@ export function buildDetachSpawnCommand(opts) {
         : ["tsx", scriptPath, configName, ...childArgv];
     return { command: "npx", args };
 }
-function createRealDeps(config) {
+/** Modes that launch sessions. Only these read memory pressure, so a lease-directory misconfiguration cannot break the read-only ones. */
+const DISPATCH_MODES = new Set(["run-all", "run-specific", "retry-failed"]);
+function createRealDeps(config, mode) {
     return {
         statusStore: new FileStatusStore(config.configDir),
         metadataStore: new FileMetadataStore(config.configDir),
@@ -100,7 +102,7 @@ function createRealDeps(config) {
             }
             catch { }
         },
-        memoryPressure: defaultPressureSampler(),
+        ...(DISPATCH_MODES.has(mode) ? { memoryPressure: defaultPressureSampler() } : {}),
     };
 }
 export async function createMain(options) {
@@ -116,7 +118,7 @@ export async function createMain(options) {
     const scriptPath = process.argv[1];
     const config = await Promise.resolve(configs[configName](projectRoot));
     const args = parseArgs(restArgv);
-    const deps = createRealDeps(config);
+    const deps = createRealDeps(config, args.mode);
     const orchestrator = new Orchestrator(config, deps, {
         maxParallel: args.maxParallel,
         mergePolicy: args.mergeAfterWave ? "after-wave" : "none",

@@ -7,8 +7,8 @@ import type {
 } from "../src/types.js";
 import type { PressureLevel, PressureSampler } from "../src/memory-pressure.js";
 
-function makeIssue(number: number): Issue {
-  const base = { number, slug: `issue-${number}`, wave: 1, dependsOn: [], description: `Issue ${number}` };
+function makeIssue(number: number, wave = 1): Issue {
+  const base = { number, slug: `issue-${number}`, wave, dependsOn: [], description: `Issue ${number}` };
   return { ...base, ref: refOf(base), deps: [] };
 }
 
@@ -44,9 +44,11 @@ function makeRunner() {
 function setUp(
   issueCount: number,
   level: PressureLevel,
-  opts: { run?: RunOptions; hooks?: Partial<OrchestratorHooks>; retries?: number; logSize?: number } = {},
+  opts: {
+    run?: RunOptions; hooks?: Partial<OrchestratorHooks>; retries?: number; logSize?: number; waves?: number[];
+  } = {},
 ) {
-  const issues = Array.from({ length: issueCount }, (_, i) => makeIssue(i + 1));
+  const issues = Array.from({ length: issueCount }, (_, i) => makeIssue(i + 1, opts.waves?.[i]));
   const hooks: OrchestratorHooks = {
     showHelp: vi.fn(),
     shouldSkipIssue: () => ({ skip: false }),
@@ -149,7 +151,6 @@ describe("pressure-aware launches", () => {
     async ({ adaptive }) => {
       const { orchestrator, runner, status, meta, logger } = setUp(2, "critical", { run: { adaptive } });
       await orchestrator.runWave(1);
-      await vi.advanceTimersByTimeAsync(3_600_000);
 
       expect(runner.spawned.length).toBe(0);
       for (const n of [1, 2]) {
@@ -161,24 +162,95 @@ describe("pressure-aware launches", () => {
     },
   );
 
-  it("lets running sessions finish, then stops the wave only once none is active", async () => {
-    const { orchestrator, runner, ctl, status, meta } = setUp(2, "normal", { run: { maxParallel: 1 } });
+  it.each([{ adaptive: true }, { adaptive: false }])(
+    "lets running sessions finish, starts nothing however long critical lasts, then stops once none is active (%o)",
+    async ({ adaptive }) => {
+      const { orchestrator, runner, ctl, status, meta } = setUp(2, "normal", { run: { maxParallel: 1, adaptive } });
+      const wave = orchestrator.runWave(1);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runner.spawned.length).toBe(1);
+
+      // The launcher is blocked at critical behind a running session: no timer may turn this wait into a start.
+      ctl.level = "critical";
+      await vi.advanceTimersByTimeAsync(3_600_000);
+      expect(runner.spawned.length).toBe(1);
+      expect(status(2)).toBe("pending");
+      expect(meta(2).failureReason).toBeUndefined();
+
+      runner.resolvers.get(1000)!(0);
+      await wave;
+
+      expect(status(1)).toBe("succeeded");
+      expect(runner.spawned.length).toBe(1);
+      expect(meta(2)).toMatchObject({ failureReason: "memory-critical", stopStage: "launch" });
+    },
+  );
+
+  it("holds the process open while a launch waits on the pressure tick, and the tick still applies the stop", async () => {
+    const intervals = vi.spyOn(globalThis, "setInterval");
+    const { orchestrator, runner, ctl, status, meta } = setUp(2, "critical", { run: { maxParallel: 1 } });
+    ctl.freshLevel = "normal"; // a stale cached critical: capacity 0, but no stop
     const wave = orchestrator.runWave(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runner.spawned.length).toBe(0);
+
+    // Nothing is running, so the tick is the only thing that can wake this launcher.
+    // Unref'd, it would let Node exit mid-wave with no report and the issues unmarked.
+    const tick = intervals.mock.results[0].value as NodeJS.Timeout;
+    expect(tick.hasRef()).toBe(true);
+    intervals.mockRestore();
+
+    ctl.freshLevel = undefined; // a fresh reading now agrees: critical
+    await vi.advanceTimersByTimeAsync(10_000);
+    await wave;
+
+    expect(runner.spawned.length).toBe(0);
+    for (const n of [1, 2]) {
+      expect(status(n)).toBe("pending");
+      expect(meta(n)).toMatchObject({ failureReason: "memory-critical", stopStage: "launch" });
+    }
+  });
+
+  it("keeps the 60 s hysteresis across a wave boundary", async () => {
+    const { orchestrator, runner, ctl } = setUp(4, "warning", { run: { maxParallel: 3 }, waves: [1, 2, 2, 2] });
+    const run = orchestrator.runAllWaves();
     await vi.advanceTimersByTimeAsync(0);
     expect(runner.spawned.length).toBe(1);
 
-    ctl.level = "critical";
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(runner.spawned.length).toBe(1);
-    expect(status(2)).toBe("pending");
-    expect(meta(2).failureReason).toBeUndefined();
-
+    ctl.level = "normal";
     runner.resolvers.get(1000)!(0);
-    await wave;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runner.spawned.length).toBe(2); // wave 2 still launches one at a time
 
-    expect(status(1)).toBe("succeeded");
-    expect(runner.spawned.length).toBe(1);
-    expect(meta(2)).toMatchObject({ failureReason: "memory-critical", stopStage: "launch" });
+    await vi.advanceTimersByTimeAsync(70_000);
+    expect(runner.spawned.length).toBe(4);
+
+    for (const pid of [1001, 1002, 1003]) runner.resolvers.get(pid)!(0);
+    await run;
+  });
+
+  it("keeps the 0-byte fallback's limit of 1 through a return to normal", async () => {
+    const { orchestrator, runner, ctl } = setUp(3, "normal", { run: { maxParallel: 2 }, logSize: 0 });
+    const wave = orchestrator.runWave(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runner.spawned.length).toBe(2);
+
+    runner.resolvers.get(1000)!(1); // 0-byte failure: retried once
+    await vi.advanceTimersByTimeAsync(0);
+    runner.resolvers.get(1002)!(1); // still 0-byte: fall back to one session at a time
+    await vi.advanceTimersByTimeAsync(0);
+
+    ctl.level = "warning";
+    await vi.advanceTimersByTimeAsync(10_000);
+    ctl.level = "normal";
+    await vi.advanceTimersByTimeAsync(70_000); // capacity is back to 2
+    expect(runner.spawned.length).toBe(3); // issue 3 still waits for issue 2
+
+    runner.resolvers.get(1001)!(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runner.spawned.length).toBe(4);
+    runner.resolvers.get(1003)!(0);
+    await wave;
   });
 
   it("does not let one stale critical sample end the wave: a fresh reading confirms", async () => {
@@ -263,6 +335,32 @@ describe("pressure-aware retries", () => {
     expect(status(1)).toBe("failed");
     expect(meta(1)).toMatchObject({ failureReason: "memory-critical", stopStage: "retry" });
   });
+
+  it.each([1, 2])(
+    "never retries a check that did not run for memory pressure after a retry (maxRetries %i)",
+    async (retries) => {
+      const results: PostCheckResult[] = [
+        { passed: false, output: "lint", summary: "lint" },
+        { passed: false, stopped: "memory-critical" },
+      ];
+      const { orchestrator, runner, status, meta } = setUp(1, "normal", {
+        hooks: { postSessionCheck: vi.fn(async () => results.shift()!) },
+        retries,
+      });
+      const wave = orchestrator.runWave(1);
+      await vi.advanceTimersByTimeAsync(0);
+      runner.resolvers.get(1000)!(0);
+      await vi.advanceTimersByTimeAsync(0);
+      runner.resolvers.get(1001)!(0);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(runner.spawned.length).toBe(2);
+      for (const resolve of runner.resolvers.values()) resolve(0);
+      await wave;
+      expect(status(1)).toBe("failed");
+      expect(meta(1)).toMatchObject({ failureReason: "memory-critical", stopStage: "post-check" });
+    },
+  );
 
   it("never retries a check that did not run for memory pressure", async () => {
     const stopped: PostCheckResult = { passed: false, stopped: "memory-critical" };
