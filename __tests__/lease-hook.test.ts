@@ -14,80 +14,53 @@ const HEAVY = [
   "pytest -q", "uv run --no-sync pytest -q", "uv run mypy .", ".venv/bin/pytest", "./.venv/bin/pytest", "mypy src", "uv sync", "uv pip install -r r.txt",
   "xcodebuild test -scheme WXYC", "swift build", "xcrun swift test", "cargo build", "./gradlew test", "go vet ./...", "deno test", "make", "make test",
   "scripts/test-all.sh", "./scripts/test.sh", "git push origin HEAD",
-  "cd app && npm test", "git add . ; npm ci", "ruff check . || pytest -q", "echo hi | npm test", "echo hi\nnpm test",
-  // The CLI's own text is skipped, nothing else.
-  `npm ci && node ${CLI} --shell 'npm test'`,
-  `node ${CLI} status && npm test`,
-  `claude-orchestrator-lease status && npm test`,
-  `cat ${CLI}; npm test`,
-  `./node_modules/.bin/claude-orchestrator-lease status; make`,
-  // Segment starts beyond && || ; | and newline.
-  "if x; then npm test; fi", "for f in a; do pytest; done", "if x; then a; else make; fi", "(npm test)", "{ npm test; }", "time npm test", "! npm test",
-  "echo a & npm test", "then deno test", "echo hi 2>&1 | npm test",
-  // git's global options before push.
-  "git -C /path/to/wt push -u origin HEAD", "git -c core.hooksPath=x push", "git -C '/a b' -c k=v push",
-  // Pattern words and paths.
-  "make test", "make", "scripts/test-all.sh", `cat x \\\n && npm test`,
-  // Quote-aware prefixes: a quoted or `$(…)` assignment value, and a quoted command word or git directory.
-  "FOO=$(pwd) npm test", 'DATABASE_URL="$(cat .env.test)" npm test', "A=$(echo a b) B='c d' env X=`pwd` npm test", "'npm' test", '"./node_modules/.bin/vitest" run',
-  ...[30, 300].map((n) => `${'NAME="x" '.repeat(n)}npm test`),
-  'git -C "/a b" push', "git -c 'k=a b' push",
-  // A separator inside the CLI's text is not a split, but one after it is.
-  `echo 'a && b' && npm test`, `echo "$(ls; pwd)" ; npm test`, `claude-orchestrator-lease --label 'a; b' status && npm test`,
-  // Heredoc bodies and `#` comments are data: an apostrophe in them opens no quote.
+  "cd app && npm test", "git add . ; npm ci", "ruff check . || pytest -q", "echo hi | npm test", "echo hi\nnpm test", `cat x \\\n && npm test`, "git -C /path/to/wt \\\n  push -u origin HEAD",
+  // Every separator starts a segment: & ( ) { } and backticks too.
+  "(npm test)", "{ npm test; }", "echo a & npm test", "echo hi 2>&1 | npm test", "npm test 2>&1",
+  // Leading words stripped one token at a time.
+  "if x; then npm test; fi", "for f in a; do pytest; done", "if x; then a; else make; fi", "time npm test", "! npm test", "then deno test",
+  "if npm test; then echo ok; fi", "if ! npm test; then exit 1; fi", "elif make; then :; fi", "while ! make; do sleep 1; done", "until npm test; do :; done",
+  "nice -n 10 npm test", "timeout -s KILL 600 npm test", "env CI=1 npm test",
+  "bash -c 'npm test'", "bash -c 'npm ci && npm test'", "timeout 600 bash -c 'npm ci && npm test'", 'sh -c "make"', "bash -lc 'npm test'", "/bin/zsh -c make",
+  // Quoted assignments, a quoted command word, and git's global options before push.
+  "'npm' test", '"./node_modules/.bin/vitest" run', ...[30, 300].map((n) => `${'NAME="x" '.repeat(n)}npm test`),
+  "git -C /path/to/wt push -u origin HEAD", "git -c core.hooksPath=x push", "git -C '/a b' -c k=v push", 'git -C "/a b" push', "git -c 'k=a b' push",
+  // `$(…)` and backtick bodies are segments of their own.
+  "FOO=$(pwd) npm test", 'DATABASE_URL="$(cat .env.test)" npm test', "A=$(echo a b) B='c d' env X=`pwd` npm test",
+  `out=$(npm test 2>&1); echo "$out" | tail`, "echo $(npm test)", "x=`make`", "X=`date +%s` npm test",
+  // Quotes, heredocs and comments are not tracked, so an apostrophe in them hides nothing after them.
+  `echo 'a && b' && npm test`, `echo "$(ls; pwd)" ; npm test`, `echo "it's\nok && npm test`,
   `git commit -m "$(cat <<'EOF'\nTighten the matcher's scan\n\nIt's "quoted" here\nEOF\n)" && git push -u origin HEAD`,
   `git commit -m "$(cat <<'EOF'\nFix the hook's matcher\nEOF\n)" && git push`,
   "# don't skip\nnpm test", "cat > f <<EOF\nDon't\nEOF\nmake", "ls # it's here\nnpm test",
-  // Substitution bodies and `sh -c` arguments are command lists; `if`/`while` conditions are segment starts.
-  `out=$(npm test 2>&1); echo "$out" | tail`, "echo $(npm test)", "x=`make`", "X=`date +%s` npm test",
-  "bash -c 'npm ci && npm test'", "timeout 600 bash -c 'npm ci && npm test'", 'sh -c "make"',
-  "if npm test; then echo ok; fi", "if ! npm test; then exit 1; fi", "while ! make; do sleep 1; done", "nice -n 10 npm test",
-  // Unbalanced text is rescanned raw.
-  `echo "it's\nok && npm test`,
+  "cat > a.txt <<END-OF-FILE\nhello\nEND-OF-FILE\nnpm test", "cat <<E\"O\"F\nit's\nEOF\nnpm test", "x=$(( 1 << n ))\nnpm test",
+  "cat <<-EOF\n\tit's\n\tEOF\nnpm test", "sh <<'EOF'\nnpm test\nEOF", "bash -s <<'EOF'\nmake\nEOF",
+  // Heavy words in data: a false match costs only a wait.
+  "cat <<'EOF'\nnpm test\nEOF", 'echo "a \\" ; npm test"', "ls # a; npm test",
 ];
 
 const NOT_HEAVY = [
-  "ls -la", "git status", "git pull", "cat package.json", "cat Makefile", "cat tsconfig.json", "echo npm test", 'grep -r "npm test" .',
-  "npm run dev", "npm view left-pad", "npm testing", "node server.js", "makefile", "ls scripts/test.sh",
+  "ls", "ls -la", "echo hi", "git status", "git pull", "cat package.json", "cat Makefile", "cat tsconfig.json", "echo npm test", 'grep -r "npm test" .',
+  "npm run dev", "npm view left-pad", "npm testing", "node server.js", "makefile", "ls scripts/test.sh", 'echo "$(ls)"', "cat <<'EOF'\nhello\nEOF", "",
+  // A pattern word as a directory or file name.
+  "./make/foo.sh", "tools/jest/run.sh", "vitest.config.ts",
+  // The CLI rule: any text that mentions the CLI takes no slot, whatever surrounds it.
   `node ${CLI} --shell 'npm ci && npm test'`,
   `claude-orchestrator-lease --shell 'npm ci && npm test'`,
   `node ${QUOTED_CLI} --shell 'npm ci && npm test'`,
-  `./node_modules/.bin/claude-orchestrator-lease --max-wait 30 --label 'ci run' --shell 'npm ci; npm test'`,
-  `CO_X=1 node ${CLI} -- npm test`,
-  // Skip rule: continuations, quoted bins, and the prefix and `--` forms (each fails without its part).
-  `node "${CLI}" \\\n  --shell 'npm ci && npm test'`,
-  `claude-orchestrator-lease --label ci \\\n  --shell 'npm ci && npm test'`,
-  `"./node_modules/.bin/claude-orchestrator-lease" --shell 'npm ci && npm test'`,
-  `'./node_modules/.bin/claude-orchestrator-lease' --shell 'npm ci && npm test'`,
-  `"$CO_HOME/node_modules/.bin/claude-orchestrator-lease" --shell 'npm ci; npm test'`,
-  `CO_X=1 node ${CLI} --shell 'a && npm test'`,
-  `env CI=1 timeout 60 claude-orchestrator-lease --shell 'a && npm test'`,
-  `CO_X=1 node ${CLI} -- sh -c 'a; npm test'`,
-  `node ${CLI} -- sh -c 'a; npm test'`,
-  // A pattern word as a directory or file name.
-  "./make/foo.sh", "tools/jest/run.sh", "vitest.config.ts", "./make/claude-orchestrator-lease status",
-  `node ${CLI} status && ls`,
-  `ls && node ${CLI} --shell 'npm test'`,
-  // A separator or `$(…)` inside the CLI's own quoted path or option must not hide it; quoted bins and spaced paths too.
   `node "$(git rev-parse --show-toplevel)/dist/src/cli-lease.js" --shell 'npm ci && npm test'`,
-  `claude-orchestrator-lease --label 'lint & npm test' --shell 'make'`,
-  `claude-orchestrator-lease --label 'a; npm test | c (d)' --shell 'make'`,
-  `'claude-orchestrator-lease' --shell 'npm ci && npm test'`,
-  `node "/opt/my co/dist/src/cli-lease.js" --shell 'npm ci && npm test'`,
-  `FOO=$(pwd) node ${CLI} --shell 'npm test'`,
-  // Data, not commands: quoted `#`, heredoc bodies, a light substitution, `#` mid-word, an escaped quote.
-  'echo "#" && ls', "cat <<'EOF'\nnpm test\nEOF", 'echo "$(ls)"', "a#b=1 ls", 'echo "a \\" ; npm test"', "ls # a; npm test",
-  // The CLI followed by top-level text: `--shell`/`--` skip the rest, so each row fails if the CLI is not recognized.
-  "claude-orchestrator-lease -- npm ci && npm test",
-  'node "$CO_HOME/dist/src/cli-lease.js" --shell \'x\' && npm test',
+  `"./node_modules/.bin/claude-orchestrator-lease" --shell 'npm ci && npm test'`,
+  `./node_modules/.bin/claude-orchestrator-lease --max-wait 30 --label 'ci run' --shell 'npm ci; npm test'`,
+  `node "${CLI}" \\\n  --shell 'npm ci && npm test'`,
+  `CO_X=1 node ${CLI} -- sh -c 'a; npm test'`,
+  `out=$(claude-orchestrator-lease --shell 'npm ci && npm test')`,
   "claude-orchestrator-lease --label 'a; b' -- npm test ; make",
-  `claude-orchestrator-lease --max-wait 5 --label "a b" -- npm ci && npm test`,
-  `claude-orchestrator-lease --label "a; npm test" --shell 'make'`,
-  `node "/opt/my co/dist/src/cli-lease.js" -- npm ci && npm test`,
-  "claude-orchestrator-lease \\\n -- npm ci && npm test",
-  "'claude-orchestrator-lease' -- npm ci && npm test",
-  "out=$(claude-orchestrator-lease --shell 'npm ci && npm test')",
-  "",
+  "cat <<'EOF' | gh pr comment 141 --body-file -\nIt's done\nEOF\nclaude-orchestrator-lease --shell 'npm ci && npm test'",
+  "echo $'it\\'s'; claude-orchestrator-lease --label 'lint & test' --shell 'npm ci && npm test'",
+  // A command that only mentions the CLI runs unleased: the accepted trade for a rule that cannot deadlock.
+  `npm ci && node ${CLI} --shell 'npm test'`,
+  `cat ${CLI}; npm test`,
+  "claude-orchestrator-lease status && npm test",
 ];
 
 describe("isHeavyCommand", () => {
@@ -100,22 +73,17 @@ describe("isHeavyCommand", () => {
   });
 
   it.each([
-    [30, "npm test", true],
-    [300, "npm test", true],
-    [30, "ls", false],
-    [300, "ls", false],
-  ])("classifies %i quoted assignments before %j in well under 50 ms", (n, tail, expected) => {
-    const text = `${'NAME="x" '.repeat(n)}${tail}`;
+    ["80 KB of a;", "a;".repeat(40_000), false],
+    ["80 KB of a && ", "a && ".repeat(16_000), false],
+    ["80 KB of a(", "a(".repeat(40_000), false],
+    ["80 KB of '", "'".repeat(80_000), false],
+    ["300 quoted assignments before npm test", `${'NAME="x" '.repeat(300)}npm test`, true],
+    ["300 quoted assignments before ls", `${'NAME="x" '.repeat(300)}ls`, false],
+    ["24 quoted git options before pull", `git${" -c 'x'".repeat(24)} pull`, false],
+  ])("classifies %s in under 50 ms", (_name, text, expected) => {
     const start = performance.now();
     expect(isHeavyCommand(text)).toBe(expected);
     expect(performance.now() - start).toBeLessThan(50);
-  });
-
-  it.each(["a;", "a && ", "a(", "a $(", "'", "$(", "<<EOF\n", "x <<EOF # it's\n"])("classifies 80 KB of %j in under 200 ms", (unit) => {
-    const text = unit.repeat(80_000 / unit.length);
-    const start = performance.now();
-    expect(isHeavyCommand(text)).toBe(false);
-    expect(performance.now() - start).toBeLessThan(200);
   });
 
   it("adds extra patterns after the same prefix, and ignores one that is not a regex", () => {
