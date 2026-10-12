@@ -42,6 +42,29 @@ describe("createCapacityGovernor", () => {
     expect(governor.capacity()).toBe(4);
   });
 
+  it("default clock is monotonic: a backward wall-clock step mid-hold does not extend the 60 s", () => {
+    const wall = vi.spyOn(Date, "now");
+    const mono = vi.spyOn(performance, "now");
+    try {
+      wall.mockReturnValue(1_000_000);
+      mono.mockReturnValue(0);
+      const governor = createCapacityGovernor({
+        sampler: scripted(["warning", "normal", "normal"]),
+        maxParallel: 4,
+        adaptive: true,
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), step: vi.fn(), header: vi.fn() } as Logger,
+      });
+      governor.tick(); // calm starts
+      wall.mockReturnValue(1_000_000 - 3_600_000); // wall clock steps back an hour
+      mono.mockReturnValue(60_000);
+      governor.tick();
+      expect(governor.capacity()).toBe(4);
+    } finally {
+      wall.mockRestore();
+      mono.mockRestore();
+    }
+  });
+
   it("restarts the 60 s when pressure returns mid-hold", () => {
     const { governor, clock } = setUp(["warning", "normal", "warning", "normal", "normal"]);
     clock.t = 10_000;
