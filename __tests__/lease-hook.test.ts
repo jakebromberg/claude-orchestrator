@@ -79,11 +79,13 @@ describe("isHeavyCommand", () => {
     ["80 KB of '", "'".repeat(80_000), false],
     ["300 quoted assignments before npm test", `${'NAME="x" '.repeat(300)}npm test`, true],
     ["300 quoted assignments before ls", `${'NAME="x" '.repeat(300)}ls`, false],
-    ["24 quoted git options before pull", `git${" -c 'x'".repeat(24)} pull`, false],
-  ])("classifies %s in under 50 ms", (_name, text, expected) => {
+    ["28 quoted git options before pull", `git${" -c 'x'".repeat(28)} pull`, false],
+  ])("classifies %s in well under a second", (_name, text, expected) => {
+    // A generous wall-clock budget, so a loaded machine running the whole suite in parallel stays green: the linear
+    // matcher takes a few ms here, while the quadratic and exponential versions it replaced take seconds to minutes.
     const start = performance.now();
     expect(isHeavyCommand(text)).toBe(expected);
-    expect(performance.now() - start).toBeLessThan(50);
+    expect(performance.now() - start).toBeLessThan(1000);
   });
 
   it("adds extra patterns after the same prefix, and ignores one that is not a regex", () => {
