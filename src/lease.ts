@@ -417,12 +417,22 @@ export function defaultLeaseOptions(
   env: NodeJS.ProcessEnv = process.env,
   overrides: { level?: PressureSampler; warn?: (msg: string) => void } = {},
 ): LeaseOptions {
-  const { warn } = overrides;
+  // One non-throwing writer for every consumer; policy and sampler lines get a `memory-pressure:` tag since the writer is not stderr's tagged default.
+  const inject = overrides.warn;
+  const safe = (msg: string): void => {
+    try {
+      inject?.(msg);
+    } catch {
+      // A diagnostics writer must never change what the lease does.
+    }
+  };
+  const warn = inject && safe;
+  const tagged = warn && ((msg: string): void => warn(`memory-pressure: ${msg}`));
   const dir = leaseDirectory(env);
   return {
     dir,
-    level: overrides.level ?? defaultPressureSampler(env, { log: warn }),
-    policy: pressurePolicyFromEnv(env, warn),
+    level: overrides.level ?? defaultPressureSampler(env, { log: tagged }),
+    policy: pressurePolicyFromEnv(env, tagged),
     inheritedHolderId: env.CO_LEASE_HOLDER || undefined,
     onEvent: leaseEventSink(dir, { warn }),
     warn,

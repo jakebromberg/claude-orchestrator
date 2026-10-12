@@ -202,22 +202,10 @@ export async function runLeased(args, d) {
 // ---------------------------------------------------------------------------
 // CLI entry point — only runs when invoked directly.
 // ---------------------------------------------------------------------------
-/** The CLI's lease options: every lease, sink, policy and sampler diagnostic goes through `err`. */
-export const cliLeaseOptions = (env, err) => defaultLeaseOptions(env, { warn: err });
-async function main(argv) {
-    let args;
-    try {
-        args = parseLeaseArgs(argv);
-    }
-    catch (err) {
-        process.stderr.write(`lease: ${err.message}\nusage: claude-orchestrator-lease [--max-wait <sec>] [--label <text>] (-- <cmd> [args...] | --shell '<command line>') | status\n`);
-        return EX_USAGE;
-    }
-    const err = (line) => {
-        process.stderr.write(`${line}\n`);
-    };
-    const deps = {
-        leaseOptions: () => cliLeaseOptions(process.env, err),
+/** The deps `main` runs with: every lease, sink, policy and sampler diagnostic goes through `err`. */
+export function cliLeaseDeps(err) {
+    return {
+        leaseOptions: () => defaultLeaseOptions(process.env, { warn: err }),
         acquire: acquireLease,
         leaseStatus,
         spawn: (file, fileArgs, opts) => spawn(file, fileArgs, { stdio: "inherit", env: opts.env }),
@@ -228,6 +216,19 @@ async function main(argv) {
         now: Date.now,
         signals: process,
     };
+}
+async function main(argv) {
+    let args;
+    try {
+        args = parseLeaseArgs(argv);
+    }
+    catch (err) {
+        process.stderr.write(`lease: ${err.message}\nusage: claude-orchestrator-lease [--max-wait <sec>] [--label <text>] (-- <cmd> [args...] | --shell '<command line>') | status\n`);
+        return EX_USAGE;
+    }
+    const deps = cliLeaseDeps((line) => {
+        process.stderr.write(`${line}\n`);
+    });
     return args.kind === "status" ? runStatus(deps) : runLeased(args, deps);
 }
 // A bin is run through a symlink (`node_modules/.bin/...`), so compare real paths.
