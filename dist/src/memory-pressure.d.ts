@@ -25,6 +25,8 @@ export declare function sessionCapacity(level: PressureLevel, maxParallel: numbe
 export declare function stopAtCritical(level: PressureLevel, running: number): boolean;
 /** `CO_LEASE_SLOTS` overrides the heavy ceiling; an invalid value keeps the default and is reported. */
 export declare function pressurePolicyFromEnv(env?: NodeJS.ProcessEnv, warn?: (msg: string) => void): PressurePolicy;
+/** True when a reading taken at `at` is no older than `maxAgeMs` at `now`; a reading from the future (a clock step back) is not fresh. */
+export declare function isFresh(at: number, now: number, maxAgeMs: number): boolean;
 /** Wraps `read` in a TTL cache (default 10 s). A cached level from the future (the clock stepped back) has expired. */
 export declare function cachedPressureSampler(read: () => PressureLevel, ttlMs?: number, now?: () => number): PressureSampler;
 /** Maps `critical` to `warning` only for `CO_PRESSURE_OVERRIDE=critical-as-warning`; other values are ignored with a warning. */
