@@ -58,6 +58,9 @@ const HEAVY = [
   'MSG="a $(date) b c" npm test', "A=${B}/x npm test \"it's\"",
   // Heavy words in data: a false match costs only a wait.
   "cat <<'EOF'\nnpm test\nEOF", 'echo "a \\" ; npm test"', "ls # a; npm test",
+  // Quoted git option values that hold the other quote or nothing; a single-quoted value glued to a letter; short option aliases.
+  `git -C "O'Brien" push`, `git -c "user.name=D'Angelo" push`, 'git -C "" push', `git -c 'k="v"' push`, "FOO='a;b'c npm test",
+  "npm -C app test", "npx -p vitest vitest run", "python -m pip install -r requirements.txt", "python3 -m pip install .",
 ];
 
 const NOT_HEAVY = [
@@ -93,6 +96,8 @@ const NOT_HEAVY = [
   `npm ci && node ${CLI} --shell 'npm test'`,
   `cat ${CLI}; npm test`,
   "claude-orchestrator-lease status && npm test",
+  // The forward scan runs only after `)`, `}` or a backtick: a quote closed by a stripped tail is not reopened.
+  `FOO="a;b" echo "x npm test`,
 ];
 
 describe("isHeavyCommand", () => {
@@ -106,14 +111,12 @@ describe("isHeavyCommand", () => {
 
   // `text(kb)` is about `kb` KB of the same adversarial shape.
   const rep = (unit: string, kb: number): string => unit.repeat(Math.ceil((kb * 1000) / unit.length));
-  const bestOf = (text: string, runs = 5): number => {
-    let best = Infinity;
-    for (let n = 0; n < runs; n++) {
-      const start = performance.now();
-      isHeavyCommand(text);
-      best = Math.min(best, performance.now() - start);
-    }
-    return best;
+  /** CPU milliseconds for one classification: CPU time leaves out the time a loaded machine spends preempting this process. */
+  const cpuMs = (text: string): number => {
+    const start = process.cpuUsage();
+    isHeavyCommand(text);
+    const { user, system } = process.cpuUsage(start);
+    return (user + system) / 1000;
   };
 
   it.each<[string, (kb: number) => string, boolean]>([
@@ -140,6 +143,10 @@ describe("isHeavyCommand", () => {
     ["quoted tokens after npm", (kb) => `npm ${rep('"a" ', kb)}`, false],
     ["quoted git options", (kb) => `git${rep(" -c 'x'", kb)} pull`, false],
     ["quoted spans in a git option value", (kb) => `git -c a${rep("'x y'b", kb)} push`, true],
+    // The main loop over a segment's tokens: prefix words, assignments and wrappers, each followed by the command word.
+    ["prefix-word chains", (kb) => `${rep("nohup exec command ", kb)}npm test`, true],
+    ["assignment chains", (kb) => `${rep("A=1 ", kb)}ls`, false],
+    ["wrapper chains", (kb) => `${rep("env nice time ", kb)}ls`, false],
   ])("classifies 80 KB of %s in well under a second, and in time that grows linearly", (_name, text, expected) => {
     // A loose absolute budget, so a loaded machine running the whole suite in parallel stays green: the linear
     // matcher takes a few ms here, while the quadratic and exponential versions it replaced take seconds to minutes.
@@ -148,15 +155,21 @@ describe("isHeavyCommand", () => {
     const start = performance.now();
     expect(isHeavyCommand(text(80))).toBe(expected);
     expect(performance.now() - start).toBeLessThan(1000);
-    // Four times the text takes about four times as long when linear and sixteen times as long when quadratic. A
-    // loaded machine can skew one measurement, so the ratio passes if any of three best-of-seven attempts does (the
-    // loop stops at the first, so a quiet machine pays for one); a super-linear slowdown fails all of them.
-    const [large, small] = [text(80), text(20)];
+    // Eight times the text takes about eight times as long when linear and sixty-four times as long when quadratic, so
+    // the bound sits between them at 24, about three times from each. Each attempt interleaves seven small and seven
+    // large runs and compares their fastest CPU times, so load swings fall on both sides; the ratio passes if any of three
+    // attempts does (the loop stops at the first), and a super-linear slowdown fails all of them.
+    const [large, small] = [text(80), text(10)];
     let ratio = Infinity;
-    for (let attempt = 0; attempt < 3 && ratio >= 8; attempt++) {
-      ratio = Math.min(ratio, bestOf(large, 7) / Math.max(bestOf(small, 7), 0.05));
+    for (let attempt = 0; attempt < 3 && ratio >= 24; attempt++) {
+      let [l, sm] = [Infinity, Infinity];
+      for (let n = 0; n < 7; n++) {
+        sm = Math.min(sm, cpuMs(small));
+        l = Math.min(l, cpuMs(large));
+      }
+      ratio = Math.min(ratio, l / Math.max(sm, 0.05));
     }
-    expect(ratio).toBeLessThan(8);
+    expect(ratio).toBeLessThan(24);
   }, 60_000);
 
   it.each([
