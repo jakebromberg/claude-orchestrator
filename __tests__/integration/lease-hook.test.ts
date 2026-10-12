@@ -25,6 +25,9 @@ function run(file: string, args: string[], env: NodeJS.ProcessEnv, stdin = ""): 
       if (err && typeof err.code !== "number") return reject(err);
       resolve({ code: (err?.code as number | undefined) ?? 0, stdout, stderr });
     });
+    // A gated-off or filtered settings line exits without reading stdin, so the write can hit EPIPE (Linux reports it
+    // reliably); that is the behaviour under test, not a failure.
+    child.stdin!.on("error", (err: NodeJS.ErrnoException) => { if (err.code !== "EPIPE") reject(err); });
     child.stdin!.end(stdin);
   });
 }
