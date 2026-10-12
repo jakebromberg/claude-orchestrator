@@ -16,9 +16,23 @@ import { claudeExecOptions } from "./claude-env.js";
 const OUTPUT_TAIL_BYTES = 64 * 1024;
 
 /**
+ * The last `max` bytes of `buf`, moved forward past any UTF-8 continuation
+ * bytes so that the tail never starts in the middle of a character.
+ */
+function utf8Tail(buf: Buffer, max: number): Buffer {
+  if (buf.length <= max) return buf;
+  let start = buf.length - max;
+  while (start < buf.length && (buf[start] & 0xc0) === 0x80) start++;
+  return buf.subarray(start);
+}
+
+/**
  * Runs `cmd` under `/bin/sh -c` without blocking the event loop, keeping only
  * the last 64 KiB of combined stdout/stderr. Resolves with that tail on exit 0;
  * rejects with an Error carrying the exit code (or signal) and the tail.
+ *
+ * `onSpawn` receives the child's PID. If it throws, the child is killed and
+ * the promise rejects with that error, but only after the child has exited.
  */
 export function runShellAsync(
   cmd: string,
@@ -32,20 +46,29 @@ export function runShellAsync(
       env: env ? { ...process.env, ...env } : process.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    if (child.pid !== undefined) onSpawn?.(child.pid);
-    let tail = Buffer.alloc(0);
+    let tail: Buffer = Buffer.alloc(0);
     const collect = (chunk: Buffer) => {
-      tail = Buffer.concat([tail, chunk]).subarray(-OUTPUT_TAIL_BYTES);
+      tail = utf8Tail(Buffer.concat([tail, chunk]), OUTPUT_TAIL_BYTES);
     };
     child.stdout.on("data", collect);
     child.stderr.on("data", collect);
+    let onSpawnFailure: { error: unknown } | undefined;
     child.on("error", reject);
     child.on("close", (code, signal) => {
+      if (onSpawnFailure) return reject(onSpawnFailure.error);
       const output = tail.toString("utf-8");
       if (code === 0) return resolve(output);
       const how = signal ? `signal ${signal}` : `exit code ${code}`;
       reject(new Error(`Command failed with ${how}\n${output}`));
     });
+    if (child.pid !== undefined && onSpawn) {
+      try {
+        onSpawn(child.pid);
+      } catch (error) {
+        onSpawnFailure = { error };
+        child.kill();
+      }
+    }
   });
 }
 

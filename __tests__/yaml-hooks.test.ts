@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { refOf, normalizeDep } from "../src/ref.js";
@@ -791,11 +791,61 @@ describe("deriveHooks", () => {
       expect(runCommand).toHaveBeenCalledTimes(1);
     });
 
-    it("default runner reports the child's PID via onSpawn and honors env", async () => {
+    it("default runner reports the child's own PID via onSpawn", async () => {
       const onSpawn = vi.fn();
-      const out = await runShellAsync("echo $CO_X", dir, { CO_X: "hi" }, onSpawn);
-      expect(out.trim()).toBe("hi");
-      expect(onSpawn).toHaveBeenCalledWith(expect.any(Number));
+      // `$$` is the PID of the spawned `sh` itself, not of the test process.
+      const out = await runShellAsync("echo $$", dir, undefined, onSpawn);
+      expect(onSpawn).toHaveBeenCalledTimes(1);
+      expect(onSpawn).toHaveBeenCalledWith(Number(out.trim()));
+    });
+
+    it.each([
+      { name: "with env", env: { CO_X: "hi" }, expected: "inherited:hi" },
+      { name: "without env", env: undefined, expected: "inherited:" },
+    ])("default runner keeps the parent's environment ($name)", async ({ env, expected }) => {
+      vi.stubEnv("CO_PARENT_ONLY", "inherited");
+      try {
+        const out = await runShellAsync('echo "$CO_PARENT_ONLY:$CO_X"', dir, env);
+        expect(out.trim()).toBe(expected);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it("default runner runs in the given cwd", async () => {
+      const out = await runShellAsync("pwd -P", dir);
+      expect(out.trim()).toBe(realpathSync(dir));
+    });
+
+    it("kills the child and rejects only after it exits when onSpawn throws", async () => {
+      let pid: number | undefined;
+      const run = runShellAsync("exec sleep 10", dir, undefined, (p) => {
+        pid = p;
+        throw new Error("onSpawn boom");
+      });
+      try {
+        await expect(run).rejects.toThrow("onSpawn boom");
+        expect(pid).toBeDefined();
+        // The child has been reaped: signalling it fails with ESRCH.
+        expect(() => process.kill(pid!, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+      } finally {
+        // Don't leave the `sleep` behind if the assertions failed.
+        if (pid !== undefined && pid !== process.pid) {
+          try { process.kill(pid, "SIGKILL"); } catch {}
+        }
+      }
+    });
+
+    it("default runner starts the tail on a UTF-8 character boundary", async () => {
+      // 90000 bytes of "€\n" (E2 82 AC 0A) then "Z": a raw 64 KiB cut of the
+      // 90001 bytes lands on 0x82, in the middle of a "€".
+      const err = await runShellAsync("yes € | head -c 90000; printf Z; exit 1", dir).then(
+        () => undefined,
+        (e: Error) => e,
+      );
+      expect(err).toBeInstanceOf(Error);
+      expect(err!.message).not.toContain("\uFFFD");
+      expect(err!.message.endsWith("€\nZ")).toBe(true);
     });
 
     it("default runner fails with the exit code", async () => {
@@ -818,10 +868,10 @@ describe("deriveHooks", () => {
       expect(result.output!.length).toBeLessThan(70 * 1024);
     });
 
-    it("default runner runs under sh in the given cwd and does not block the event loop", async () => {
+    it("default runner does not block the event loop", async () => {
       let ticks = 0;
       const timer = setInterval(() => ticks++, 10);
-      const result = await check("sleep 0.3; pwd");
+      const result = await check("sleep 0.3");
       clearInterval(timer);
       expect(result.passed).toBe(true);
       expect(ticks).toBeGreaterThan(5);
