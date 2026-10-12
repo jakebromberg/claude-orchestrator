@@ -181,7 +181,8 @@ function unlessGone<T>(read: () => T): T | undefined {
 }
 
 /** A PID that `kill(pid, 0)` checks as one process: `0` and negatives address a group, or every process. */
-const isPid = (n: unknown): boolean => Number.isInteger(n) && (n as number) > 0;
+/** A PID `process.kill` accepts: a positive integer below 2^31. */
+const isPid = (n: unknown): boolean => Number.isInteger(n) && (n as number) > 0 && (n as number) < 2 ** 31;
 
 function parseHolder(text: string): HolderRecord | null {
   try {
@@ -376,17 +377,17 @@ function failOpen(opts: LeaseOptions, level: PressureLevel, capacity: number, wa
 }
 
 /** Throws on a detached id, session PID or `expiresAt` that would write a holder the next scan reaps as corrupt: a caller's bug, not an I/O error to fail open on. */
-function checkDetachedId(meta: HolderMeta): void {
+function checkDetached(meta: HolderMeta): void {
   const d = meta.detached;
   if (!d) return;
   if (!HOLDER_ID.test(d.id)) throw new TypeError(`lease: detached holder id ${JSON.stringify(d.id)} is not 1 to 160 of [A-Za-z0-9_-]`);
-  if (!isPid(d.sessionPid)) throw new TypeError(`lease: detached session PID ${String(d.sessionPid)} is not a positive integer`);
+  if (!isPid(d.sessionPid)) throw new TypeError(`lease: detached session PID ${String(d.sessionPid)} is not a positive integer below 2^31`);
   if (!Number.isFinite(d.expiresAt)) throw new TypeError(`lease: detached expiresAt ${String(d.expiresAt)} is not a finite number`);
 }
 
-/** A single non-blocking attempt: a handle, or `null` when not admitted this poll. Throws a `TypeError` on a detached id outside `[A-Za-z0-9_-]`. */
+/** A single non-blocking attempt: a handle, or `null` when not admitted this poll. Throws a `TypeError` on an invalid detached id, session PID or `expiresAt`. */
 export function tryAcquireLease(opts: LeaseOptions, meta: HolderMeta): LeaseHandle | null {
-  checkDetachedId(meta);
+  checkDetached(meta);
   const r = attempt(opts, meta, 0);
   if (r.kind === "admitted") return r.handle;
   return r.kind === "error" && r.level !== "critical" ? failOpen(opts, r.level, r.capacity, 0, "io-error", r.error) : null;
@@ -413,7 +414,7 @@ export async function acquireLease(
   meta: HolderMeta,
   wait: { maxWaitMs?: number; onWait?(s: LeaseStatus & { waitedMs: number }): void; stopWhen?(s: LeaseStatus): boolean } = {},
 ): Promise<LeaseHandle | LeaseRefusal> {
-  checkDetachedId(meta);
+  checkDetached(meta);
   const { now = Date.now, sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)), pollMs = POLL_MS } = opts;
   const start = now();
   let busySince: number | undefined;
@@ -445,7 +446,7 @@ export async function acquireLease(
 /**
  * Releases a detached holder by id from any process; idempotent. Returns whether a holder file was removed, and emits
  * one `release` event with `heldMs` only then. It removes only a valid detached record (one with `expiresAt`): a
- * wrapper's own holder and a corrupt file are left to their owner and the reaper. An id with a character outside
+ * wrapper's own holder and a corrupt file are left to their owner and the reaper. An id that is not 1 to 160 of
  * `[A-Za-z0-9_-]` names no holder, and a holders or lease directory that breaks the directory rule (a symlink, or
  * another user's) is not read, so neither can reach a file outside `holders/`.
  */

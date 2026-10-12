@@ -462,6 +462,7 @@ describe("lease", () => {
       ["a session PID of 0", { sessionPid: 0 }],
       ["a negative session PID", { sessionPid: -1 }],
       ["a fractional session PID", { sessionPid: 1.5 }],
+      ["a session PID of 2^31, which process.kill rejects", { sessionPid: 2 ** 31 }],
       ["a NaN expiresAt", { expiresAt: NaN }],
       ["an infinite expiresAt", { expiresAt: Infinity }],
     ])("throws a TypeError for %s, before taking a slot or writing anything", async (_name, over) => {

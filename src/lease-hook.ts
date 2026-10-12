@@ -30,9 +30,9 @@ import { shellQuote } from "./shell-quote.js";
 const NPM_OPTIONS = "(?: (?:(?:--prefix|-C|--workspace|-w|--package|-p) (?:'[^']*'|\"[^\"]*\"|[^\\s'\"-]\\S*)|-[\\w-]+(?:=\\S*)?))*";
 
 /** Between the words of a pre-filter entry: whitespace as JSON writes it (`\t`, `\n`), or a quote or continuation run. */
-const GAP = "([^[:alnum:]]|\\\\[tnr])+";
+const GAP = "([^A-Za-z0-9]|\\\\[tnr])+";
 /** What may follow a command word in the hook JSON: the pre-filter's counterpart of the matcher's `(?![\w./-])`. */
-const END = "([^[:alnum:]_./-]|$)";
+const END = "([^A-Za-z0-9_./-]|$)";
 
 /**
  * `[word, pattern]`: `word` is an ERE found in every command `pattern` matches; the printed shell pre-filter greps the hook
