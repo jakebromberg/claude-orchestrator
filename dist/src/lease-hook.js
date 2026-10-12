@@ -17,7 +17,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acquireLease, defaultLeaseOptions, leaseStatus, releaseHolder } from "./lease.js";
+import { acquireLease, defaultLeaseOptions, DETACHED_TTL_MAX_MS, leaseStatus, releaseHolder } from "./lease.js";
 import { formatAdmitted, formatNoSlot } from "./lease-messages.js";
 import { shellQuote } from "./shell-quote.js";
 /** `[word, pattern]`: `word` appears in every command `pattern` matches; the printed shell pre-filter greps for it. */
@@ -160,13 +160,14 @@ export function isHeavyHookCall(stdin, env) {
 const WAIT_MS = 450_000;
 const GRACE_MS = 60_000;
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
-const MAX_CALL_TIMEOUT_MS = 600_000;
+/** 10 min: the lease believes no `expiresAt` further ahead than its TTL cap, which includes the grace. */
+const MAX_CALL_TIMEOUT_MS = DETACHED_TTL_MAX_MS - GRACE_MS;
 const TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DENY_BACKGROUND = "lease: run heavy commands in the foreground so the lease can track them";
 const positive = (n) => typeof n === "number" && Number.isFinite(n) && n > 0;
 const decision = (fields) => `${JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", ...fields } })}\n`;
 /**
- * The call's Bash timeout, capped at the 10 min maximum so `expiresAt` stays inside the lease's 660 s bound: its own
+ * The call's Bash timeout, capped at 10 min so `expiresAt` stays inside the lease's 660 s TTL cap: its own
  * `timeout`, else the session's `BASH_DEFAULT_TIMEOUT_MS`, else 2 min.
  */
 function callTimeoutMs(input, env) {
@@ -190,12 +191,13 @@ async function handleEvent(stdin, io) {
     }
     if (!isHeavyHookCall(stdin, env))
         return;
-    if (input.tool_input?.run_in_background === true)
-        return io.out(decision({ permissionDecision: "deny", permissionDecisionReason: DENY_BACKGROUND }));
     const sessionPid = Number(env.CO_LEASE_SESSION_PID);
     if (!Number.isInteger(sessionPid) || sessionPid <= 0)
         return;
     const opts = { ...defaultLeaseOptions(env, { warn: () => { } }), ...io.lease };
+    // Only a hook that can lease denies a background call; a misconfigured one stays inert.
+    if (input.tool_input?.run_in_background === true)
+        return io.out(decision({ permissionDecision: "deny", permissionDecisionReason: DENY_BACKGROUND }));
     const now = opts.now ?? Date.now;
     const timeoutMs = callTimeoutMs(input, env);
     const cwd = typeof input.cwd === "string" ? input.cwd : process.cwd();
