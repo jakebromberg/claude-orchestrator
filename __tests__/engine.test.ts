@@ -1332,7 +1332,9 @@ describe("Orchestrator", () => {
       runner.resolvers.get(1000)!(0);
       await promise;
 
-      expect(postSessionCheck).toHaveBeenCalledWith(issue, `/worktrees/${issue.slug}`);
+      expect(postSessionCheck).toHaveBeenCalledWith(
+        issue, `/worktrees/${issue.slug}`, expect.objectContaining({ runningSessions: expect.any(Function) }),
+      );
       expect(deps.statusStore.get("1")).toBe("succeeded");
     });
 

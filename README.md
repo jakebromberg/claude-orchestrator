@@ -31,7 +31,9 @@ Each run prints the mode it's using, naming any credential it dropped:
 ### What the scrub does and doesn't cover
 
 - It applies to the session **and everything the session runs** — a command the agent executes through its Bash tool sees the scrubbed environment too.
-- `postSessionCheck` is the deliberate exception: it runs *your* commands (tests, lint, typecheck), which may legitimately need an API key, so it keeps the full environment. Commands run asynchronously under `/bin/sh -c` (only the last 64 KiB of output is kept, and a non-zero exit fails the check with that tail), so a slow check does not freeze the engine; an injected `runCommand` may return a string or a Promise. If your test suite is credential-dependent, note that the agent running it in-session and the orchestrator running it afterwards will see different environments.
+- `postSessionCheck` is the deliberate exception: it runs *your* commands (tests, lint, typecheck), which may legitimately need an API key, so it keeps the full environment. Commands run asynchronously under `/bin/sh -c` (only the last 64 KiB of output is kept, and a non-zero exit fails the check with that tail), so a slow check does not freeze the engine; an injected `runCommand` may return a string or a Promise. If your test suite is credential-dependent, note that the agent running it in-session and the orchestrator running it afterwards will see different environments. Sessions themselves never see a lease holder: `CO_LEASE_HOLDER` is stripped from their environment too.
+
+  When the engine has a machine-wide lease (a run mode; see [Heavy-command lease](#heavy-command-lease)), each derived check holds **one lease slot** for its whole command loop, labelled `post-check <ref>`. Its commands get the holder id in their child env and report their PID, so the holder stays live while a suite runs. At `critical` memory pressure the check waits, with no time cap and a once-a-minute `waiting for a lease slot` line, for as long as a lease holder or one of the engine's own sessions could still relieve the pressure; once neither is left it returns `stopped: "memory-critical"` without running its commands (the sequential-file collision scan, which only reads git, still runs) and the issue is failed, never retried. Without a lease, none of this happens and no lease I/O is done.
 - `ANTHROPIC_CUSTOM_HEADERS` is not scrubbed — it also carries ordinary headers a proxy may require. If you use it to pass a credential, opt in explicitly so the billing mode is accurate.
 
 ### Opting in to API billing
@@ -471,7 +473,7 @@ Each config provides an `OrchestratorHooks` object:
 | `interpolatePrompt(issue)` | Build the Claude prompt |
 | `getClaudeArgs(issue)` | Extra CLI args for claude |
 | `printSummary(issues, getStatus)` | Display status table |
-| `postSessionCheck?(issue, path)` | Optional post-session validation (returns `PostCheckResult` with `passed`, `summary`, `output`) |
+| `postSessionCheck?(issue, path, ctx?)` | Optional post-session validation (returns `PostCheckResult` with `passed`, `summary`, `output`, and `stopped` when it did not run at `critical` memory pressure). `ctx` is `{ lease?: LeaseOptions; runningSessions?(): number }`: with `ctx.lease` a check takes one lease slot with `acquireLease` (`stopWhen` from `stopAtCritical(level, live + runningSessions())`), must report each child's PID through `setChildPid`, and must not block the event loop. A check that ignores `ctx.lease` runs unleased. |
 | `onStatusChange?(issue, old, new)` | Optional hook called on every status transition (used by label sync) |
 
 ### Agent-to-Agent Communication

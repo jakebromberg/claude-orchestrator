@@ -17,7 +17,7 @@ import { encodeRefForFilename } from "./ref.js";
 import { renderPlanPreview } from "./plan-preview.js";
 import { shellQuote } from "./shell-quote.js";
 import { authBanner, claudeExecOptions } from "./claude-env.js";
-import { defaultPressureSampler } from "./memory-pressure.js";
+import { defaultLeaseOptions } from "./lease.js";
 
 export type ConfigFactory =
   | ((projectRoot: string) => OrchestratorConfig)
@@ -92,7 +92,7 @@ export interface MainOptions {
 /** Modes that launch sessions. Only these read memory pressure, so a lease-directory misconfiguration cannot break the read-only ones. */
 const DISPATCH_MODES: ReadonlySet<ParsedMode> = new Set(["run-all", "run-specific", "retry-failed"]);
 
-function createRealDeps(config: OrchestratorConfig, mode: ParsedMode): Deps {
+export function createRealDeps(config: OrchestratorConfig, mode: ParsedMode): Deps {
   return {
     statusStore: new FileStatusStore(config.configDir),
     metadataStore: new FileMetadataStore(config.configDir),
@@ -120,8 +120,15 @@ function createRealDeps(config: OrchestratorConfig, mode: ParsedMode): Deps {
     truncateFile: (filePath: string) => {
       try { fs.truncateSync(filePath, 0); } catch {}
     },
-    ...(DISPATCH_MODES.has(mode) ? { memoryPressure: defaultPressureSampler() } : {}),
+    ...dispatchDeps(mode),
   };
+}
+
+/** The lease and the one sampler the engine shares with it; built only for modes that launch sessions. */
+function dispatchDeps(mode: ParsedMode): Pick<Deps, "lease" | "memoryPressure"> {
+  if (!DISPATCH_MODES.has(mode)) return {};
+  const lease = defaultLeaseOptions(process.env, { warn: consoleLogger.warn });
+  return { lease, memoryPressure: lease.level };
 }
 
 export async function createMain(options: MainOptions): Promise<void> {

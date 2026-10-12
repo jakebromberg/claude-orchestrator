@@ -132,13 +132,16 @@ export function authBanner(env: NodeJS.ProcessEnv = process.env): {
 /**
  * Build the environment for a child `claude` process.
  *
- * Two things are removed:
+ * Three things are removed:
  * 1. Every `CLAUDE`-prefixed var except {@link PRESERVED_CLAUDE_ENV_VARS}, so the
  *    child doesn't believe it's a nested Claude Code session. Matched by prefix
  *    rather than by name because Claude Code and IDE integrations add new ones
  *    over time.
  * 2. {@link API_CREDENTIAL_ENV_VARS}, so the session uses the Claude Code login
  *    rather than API credits — unless API-key billing is opted in.
+ * 3. `CO_LEASE_HOLDER`, so a session never inherits a lease holder id from the
+ *    engine's environment. The engine's own lease holder ids reach only the
+ *    post-session check's commands.
  *
  * Note the scrub reaches everything the session itself runs: a command the agent
  * executes through its Bash tool sees this environment too. The `postSessionCheck`
@@ -164,6 +167,7 @@ export function claudeSessionEnv(
   if (!keepApiKey) {
     for (const key of API_CREDENTIAL_ENV_VARS) delete result[key];
   }
+  delete result.CO_LEASE_HOLDER;
 
   return result;
 }

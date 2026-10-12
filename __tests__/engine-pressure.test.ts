@@ -504,3 +504,86 @@ describe("pressure-aware retries", () => {
     expect(meta(1)).toMatchObject({ failureReason: "memory-critical", stopStage: "post-check" });
   });
 });
+
+describe("runningSessions", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  type CheckCtx = Parameters<NonNullable<OrchestratorHooks["postSessionCheck"]>>[2];
+  const liveSessions = (o: Orchestrator) => (o as unknown as { liveSessions: number }).liveSessions;
+
+  it("hands each check the engine's own session count, never including the check's own session", async () => {
+    const seen: Array<{ issue: number; running: number | undefined }> = [];
+    const { orchestrator, runner } = setUp(2, "normal", {
+      run: { maxParallel: 2 },
+      hooks: {
+        postSessionCheck: vi.fn(async (issue: Issue, _wt: string, ctx?: CheckCtx) => {
+          seen.push({ issue: issue.number, running: ctx?.runningSessions?.() });
+          return { passed: true };
+        }),
+      },
+    });
+    const wave = orchestrator.runWave(1);
+    await vi.advanceTimersByTimeAsync(0);
+    runner.resolvers.get(1000)!(0);
+    await vi.advanceTimersByTimeAsync(0);
+    runner.resolvers.get(1001)!(0);
+    await wave;
+
+    expect(seen).toEqual([{ issue: 1, running: 1 }, { issue: 2, running: 0 }]);
+  });
+
+  it("is already uncounted in a continuation chained on the session's own exitCode", async () => {
+    const { orchestrator, runner } = setUp(1, "normal");
+    const seen: number[] = [];
+    const spawnSession = (orchestrator as unknown as { spawnSession: (...a: unknown[]) => { exitCode: Promise<number> } })
+      .spawnSession.bind(orchestrator);
+    (orchestrator as unknown as { spawnSession: unknown }).spawnSession = (...a: unknown[]) => {
+      const handle = spawnSession(...a);
+      void handle.exitCode.then(() => seen.push(liveSessions(orchestrator)));
+      return handle;
+    };
+    const wave = orchestrator.runWave(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(liveSessions(orchestrator)).toBe(1);
+    runner.resolvers.get(1000)!(0);
+    await wave;
+
+    expect(seen).toEqual([0]);
+  });
+
+  it("counts a check-failure retry and a 0-byte retry, and uncounts each when it exits", async () => {
+    const check = setUp(1, "normal", { hooks: { postSessionCheck: vi.fn(async () => ({ passed: false })) }, retries: 1 });
+    const checkWave = check.orchestrator.runWave(1);
+    await vi.advanceTimersByTimeAsync(0);
+    check.runner.resolvers.get(1000)!(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(liveSessions(check.orchestrator)).toBe(1);
+    check.runner.resolvers.get(1001)!(1);
+    await checkWave;
+    expect(liveSessions(check.orchestrator)).toBe(0);
+
+    const zero = setUp(1, "normal", { logSize: 0 });
+    const zeroWave = zero.orchestrator.runWave(1);
+    await vi.advanceTimersByTimeAsync(0);
+    zero.runner.resolvers.get(1000)!(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(liveSessions(zero.orchestrator)).toBe(1);
+    zero.runner.resolvers.get(1001)!(1);
+    await zeroWave;
+    expect(liveSessions(zero.orchestrator)).toBe(0);
+  });
+
+  it("uncounts a session whose exitCode rejects", async () => {
+    const { orchestrator, runner } = setUp(1, "normal");
+    const exitCode = Promise.reject(new Error("lost"));
+    exitCode.catch(() => {});
+    runner.spawn = () => ({ pid: 1000, issueNumber: 0, exitCode });
+    (orchestrator as unknown as { spawnSession: (...a: unknown[]) => unknown })
+      .spawnSession(makeIssue(1), [], "/w", "/l", "/e");
+    expect(liveSessions(orchestrator)).toBe(1);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(liveSessions(orchestrator)).toBe(0);
+  });
+});
