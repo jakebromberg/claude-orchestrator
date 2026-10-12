@@ -527,7 +527,7 @@ export class Orchestrator {
     }
     /**
      * True (and the issue is failed and stopped) when the session's own terminal
-     * `result` record ends with the line `orchestrator-stop: lease-wait`: the agent
+     * `result` record contains the exact line `orchestrator-stop: lease-wait`: the agent
      * gave up after repeated lease denials, which no commit or green check undoes.
      * `log` is the transcript read right after a clean exit; the last non-hook
      * `result` record is the session's (a check-failure retry appends to the same
@@ -833,19 +833,24 @@ export class Orchestrator {
 }
 /**
  * The `result` text of the last `type: "result"` record in a stream-json
- * transcript that is not tagged `hook_event_name` (a hook's output, not the
- * session's), or "" when there is none.
+ * transcript that is not a hook's output (tagged `hook_event_name` or
+ * `hook_event`), or "" when there is none. The search stops at the last
+ * session-start record (`type: "system"`, `subtype: "init"`): the log is
+ * appended to across runs, so a record before it is another session's.
  */
 function lastSessionResult(log) {
     const lines = log.split("\n");
     for (let i = lines.length - 1; i >= 0; i--) {
-        if (!lines[i].includes('"result"'))
+        if (!lines[i].includes('"result"') && !lines[i].includes('"init"'))
             continue;
         try {
             const rec = JSON.parse(lines[i]);
-            if (rec.type === "result" && rec.hook_event_name === undefined) {
+            if (rec.hook_event_name !== undefined || rec.hook_event !== undefined)
+                continue;
+            if (rec.type === "system" && rec.subtype === "init")
+                return "";
+            if (rec.type === "result")
                 return typeof rec.result === "string" ? rec.result : "";
-            }
         }
         catch {
             // Not a JSON record (a partial last line, or stray output).
