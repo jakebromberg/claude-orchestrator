@@ -123,11 +123,19 @@ export declare class Orchestrator {
     /** True (and the issue is failed and stopped) when the check did not run for memory pressure; such a result is never retried. */
     private checkStopped;
     /**
-     * The one place a `claude` session is spawned for an issue: tags the handle
-     * with the issue number and, unless `monitor` is false, attaches the stall
-     * monitor. `exitCode` resolves after the monitor has stopped. Per-session
-     * accounting and post-exit reads of the session log belong here, so every
-     * spawn site picks them up together.
+     * The one place a `claude` session is spawned for an issue. Unless `tagIssue`
+     * is false, it tags the handle with the issue number. It attaches a stall
+     * monitor only when `monitor` is true and the effective stall timeout
+     * (`issue.stallTimeout ?? config.stallTimeout`) is above 0.
+     *
+     * Its exit reaction is attached to `handle.exitCode` before the caller can
+     * attach one, so it runs first: on a normal exit, every continuation a call
+     * site chains on `handle.exitCode` runs after the monitor has stopped, with
+     * no extra microtask hop. Per-session accounting (#104) and post-exit reads
+     * of the session log (#106) belong in that reaction, so every spawn site
+     * picks them up together. Accounting must also run when `exitCode` rejects
+     * (a `.finally`-style handler covering both paths), or a rejected exit
+     * leaks a count.
      */
     private spawnSession;
     /** True (and the issue is failed and stopped) when a fresh reading says a retry may not start. */
