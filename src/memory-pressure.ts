@@ -129,6 +129,11 @@ export function applyPressureOverride(
   return level === "critical" ? "warning" : level;
 }
 
+/** True when `CO_PRESSURE_OVERRIDE` is set to the one recognised value, `critical-as-warning`. */
+export function pressureOverrideInEffect(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.CO_PRESSURE_OVERRIDE === OVERRIDE_VALUE;
+}
+
 /**
  * The lease directory, shared with the lease itself so the path is resolved in
  * one place: `CO_LEASE_DIR` when absolute, else `$XDG_STATE_HOME/claude-orchestrator/lease`,
@@ -213,7 +218,7 @@ export function defaultPressureSampler(
 
   return cachedPressureSampler(() => {
     const level = applyPressureOverride(raw(), env);
-    if (env.CO_PRESSURE_OVERRIDE === OVERRIDE_VALUE) log(`CO_PRESSURE_OVERRIDE=${OVERRIDE_VALUE} in effect: critical reads as warning`);
+    if (pressureOverrideInEffect(env)) log(`CO_PRESSURE_OVERRIDE=${OVERRIDE_VALUE} in effect: critical reads as warning`);
     return level;
   }, SAMPLE_TTL_MS, now);
 }

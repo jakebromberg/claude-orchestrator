@@ -74,6 +74,13 @@ At `critical` nothing new starts, neither a launch nor a retry (the 0-byte retry
 
 `--no-adaptive` turns off `warning` adaptation and the 60 s hysteresis only. It never bypasses the stop rule.
 
+### Heavy-command lease
+
+`src/lease.ts` is a machine-wide, file-based lease for heavy commands (`acquireLease`, `tryAcquireLease`, `leaseStatus`, `defaultLeaseOptions`); nothing acquires it yet. A request is admitted while the number of live holders is below `heavyCapacity(level, policy)`; otherwise it polls every 3 s ± 1 s and never spins. A holder is live while its wrapper PID is alive, or its recorded child PID is alive and younger than 2 h; heartbeat liveness, which stops a recycled wrapper PID from pinning a slot, is #112. The lease fails open (an unleased handle and one warning) on a directory I/O error, including a holder file it cannot read, or a mutex busy for 30 s, except at `critical`, where that counts as no free slot; `leaseStatus` then reports no live holders rather than throw. Only an unparseable or malformed holder file is reaped as corrupt. The directory is created with mode 0700 at the first acquire, never by `defaultLeaseOptions()`. Recorded commands have the value of each `NAME=value` assignment at the start of a segment (the start, or after a newline, `;`, `|`, `&`, `(` or `{`) redacted, and are truncated to 200 characters. An `onEvent` or `warn` callback that throws is warned about once and never changes what the lease does.
+
+- `CO_LEASE_DIR` — see above.
+- `CO_LEASE_HOLDER` — the holder id of an admitted lease, passed only in the child's env (`handle.childEnv()`), never set in the holder's own `process.env`. A nested acquire in that child (`defaultLeaseOptions()` reads it as `inheritedHolderId`) is admitted at once while the holder is live.
+
 ## Quick Start
 
 ### 1. Create a YAML config
