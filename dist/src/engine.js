@@ -561,10 +561,10 @@ export class Orchestrator {
             })
             : null;
         stallMonitor?.start();
-        // A rejection reaches the caller through `handle.exitCode` itself and
-        // leaves the monitor running, as before; this branch only swallows its
-        // own copy so it is not reported as unhandled.
         this.liveSessions++;
+        // Either way the session stops counting. An exit stops the monitor; a rejection reaches the caller through
+        // `handle.exitCode` itself and leaves the monitor running, as before, and this branch only swallows its own copy so
+        // it is not reported as unhandled.
         handle.exitCode.then(() => {
             this.liveSessions--;
             stallMonitor?.stop();

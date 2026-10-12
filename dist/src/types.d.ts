@@ -145,6 +145,20 @@ export interface RetryOnCheckFailureConfig {
     maxRetries: number;
     enabled: boolean;
 }
+/** The third argument the engine hands `OrchestratorHooks.postSessionCheck`. */
+export interface PostSessionCheckContext {
+    /** `Deps.lease`, as the engine holds it; absent when the engine has no lease. */
+    lease?: LeaseOptions;
+    /** The engine's own running-session count, never including the check's own session. */
+    runningSessions?(): number;
+}
+/** The third argument the engine hands `OrchestratorHooks.postSessionCheck`. */
+export interface PostSessionCheckContext {
+    /** `Deps.lease`, as the engine holds it; absent when the engine has no lease. */
+    lease?: LeaseOptions;
+    /** The engine's own running-session count, never including the check's own session. */
+    runningSessions?(): number;
+}
 export interface OrchestratorHooks {
     showHelp(): void;
     shouldSkipIssue(issue: Issue): {
@@ -172,17 +186,14 @@ export interface OrchestratorHooks {
      * Optional hook called after Claude exits 0, before marking "succeeded".
      *
      * `ctx.lease` is set when the engine has a machine-wide heavy-command lease; a check that ignores it runs unleased.
-     * A check that uses it takes one slot with `acquireLease` before its heavy commands and releases it in `finally`. It
+     * A check that uses it takes one slot with `acquireLease({ ...ctx.lease, inheritedHolderId: undefined }, …)` (the engine must never ride a `CO_LEASE_HOLDER` it inherited, or the check would skip the capacity and stop rules) before its heavy commands and releases it in `finally`. It
      * must report each child's PID through the handle's `setChildPid` (the holder is reaped after 90 s without a
      * heartbeat, and a check that blocks the event loop sends none) and must not block the event loop. Pass
      * `stopWhen: (s) => stopAtCritical(s.level, s.live.length + (ctx.runningSessions?.() ?? 0))` so a wait at `critical` ends
      * once nothing is left to relieve the pressure, and return `stopped: "memory-critical"` without running the heavy
      * commands. `ctx.runningSessions()` counts the engine's running `claude` sessions, never the check's own.
      */
-    postSessionCheck?(issue: Issue, worktreePath: string, ctx?: {
-        lease?: LeaseOptions;
-        runningSessions?(): number;
-    }): Promise<PostCheckResult>;
+    postSessionCheck?(issue: Issue, worktreePath: string, ctx?: PostSessionCheckContext): Promise<PostCheckResult>;
     /** Optional hook called when an issue's status changes. Errors are non-fatal. */
     onStatusChange?(issue: Issue, oldStatus: Status, newStatus: Status): Promise<void>;
     /**

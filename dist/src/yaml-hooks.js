@@ -82,7 +82,11 @@ function acquireCheckLease(lease, issue, cwd, command, runningSessions = () => 0
             if (lastLogged !== undefined && at - lastLogged < WAIT_LOG_INTERVAL_MS)
                 return;
             lastLogged = at;
-            (lease.warn ?? defaultWarn)(`Issue #${issue.number} post-check waiting for a lease slot (${s.level}, ${s.live.length}/${s.capacity} slots held)`);
+            // A throwing writer must never change what the check does.
+            try {
+                (lease.warn ?? defaultWarn)(`Issue #${issue.number} post-check waiting for a lease slot (${s.level}, ${s.live.length}/${s.capacity} slots held)`);
+            }
+            catch { }
         },
         stopWhen: (s) => stopAtCritical(s.level, s.live.length + runningSessions()),
     });
