@@ -3,7 +3,8 @@
  * Holders are files in `<dir>/holders/`; a request is admitted while the live
  * holder count is under `heavyCapacity(level, policy)`. Liveness is a live
  * heartbeat (the holder file's mtime, refreshed every 30 s) or a live child PID,
- * so a crashed or killed holder cannot leak a slot. The lease fails open on I/O errors and a long-busy mutex,
+ * so a crashed or killed holder cannot leak a slot. A detached holder (hook mode) is live while its session PID is
+ * alive and its `expiresAt` has not passed. The lease fails open on I/O errors and a long-busy mutex,
  * except at `critical`, where nothing new starts. It never spins.
  */
 import { randomBytes } from "node:crypto";
@@ -19,6 +20,8 @@ const HEARTBEAT_STALE_MS = 90_000;
 const FAIL_OPEN_MS = 30_000;
 const POLL_MS = 3_000;
 const COMMAND_MAX = 200;
+/** The largest Bash call timeout (10 min) plus the 60 s grace: a detached `expiresAt` further ahead than this is not believed. */
+const DETACHED_MAX_MS = 660_000;
 const holdersDir = (dir) => join(dir, "holders");
 function pidAlive(pid) {
     try {
@@ -30,16 +33,23 @@ function pidAlive(pid) {
     }
 }
 /**
- * The single liveness rule; CO-5's detached holders (#105) extend it. A holder is live while its heartbeat is
+ * The single liveness rule. A detached holder (`expiresAt` set) is judged first and never by its heartbeat: it is
+ * `expired` once `nowMs >= expiresAt` or when `expiresAt` is more than 660 s ahead (one-sided, so a forward clock
+ * step frees the slot early and a backward one keeps it, still bounded by the session PID), else live while its
+ * session PID (`pid`) is alive, and `dead-session` when not. Any other holder is live while its heartbeat is
  * fresh: `mtimeMs` within 90 s of `nowMs`, in either direction (the mutex's rule, so a small backward clock
  * step cannot reap a live holder, while a heartbeat dated further ahead is stale). Otherwise it is live only
  * while its child PID is alive and within the 2 h orphan bound, and else reaped as `stale-heartbeat`. The
- * wrapper PID is never consulted, so a recycled one cannot pin a slot. A detached holder has no wrapper to
- * beat, so #105 will exempt it from the heartbeat rule by holder kind. `null` is a file that is not a holder record.
+ * wrapper PID is never consulted, so a recycled one cannot pin a slot. `null` is a file that is not a holder record.
  */
 function verdict(rec, mtimeMs, nowMs, alive) {
     if (!rec)
         return "corrupt";
+    if (rec.expiresAt !== undefined) {
+        if (nowMs >= rec.expiresAt || rec.expiresAt - nowMs > DETACHED_MAX_MS)
+            return "expired";
+        return alive(rec.pid) ? "live" : "dead-session";
+    }
     if (isWithinWindow(mtimeMs, nowMs, HEARTBEAT_STALE_MS))
         return "live";
     if (rec.childPid && alive(rec.childPid))
@@ -62,7 +72,7 @@ const isPid = (n) => Number.isInteger(n) && n > 0;
 function parseHolder(text) {
     try {
         const rec = JSON.parse(text);
-        return isPid(rec?.pid) && (rec.childPid === undefined || isPid(rec.childPid)) && typeof rec.startedAt === "number" ? rec : null;
+        return isPid(rec?.pid) && (rec.childPid === undefined || isPid(rec.childPid)) && typeof rec.startedAt === "number" && (rec.expiresAt === undefined || Number.isFinite(rec.expiresAt)) ? rec : null;
     }
     catch {
         return null;
@@ -104,9 +114,12 @@ function recordedCommand({ command, label }) {
 }
 function createHolder(opts, meta, command, admission) {
     const now = opts.now ?? Date.now;
-    const id = `${process.pid}-${randomBytes(4).toString("hex")}`;
+    const { detached } = meta;
+    const id = detached?.id ?? `${process.pid}-${randomBytes(4).toString("hex")}`;
     const file = join(holdersDir(opts.dir), `${id}.json`);
-    const rec = { id, pid: process.pid, command, cwd: meta.cwd, startedAt: now(), level: admission.level };
+    const rec = { id, pid: detached?.sessionPid ?? process.pid, command, cwd: meta.cwd, startedAt: now(), level: admission.level };
+    if (detached)
+        rec.expiresAt = detached.expiresAt;
     if (admission.override)
         rec.override = true;
     const write = () => {
@@ -115,10 +128,11 @@ function createHolder(opts, meta, command, admission) {
     };
     write();
     let released = false;
+    // A detached holder gets no heartbeat: its session PID and `expiresAt` keep it live.
     // Unref'd, so it never keeps the process alive. A file found gone was reaped: its heartbeat went stale (this event
     // loop stalled past 90 s, or the wall clock jumped) with no live child recorded. Such a holder stays out of the count
     // for the rest of its run, so neither the beat (utimes never creates) nor setChildPid recreates the file.
-    const beat = setInterval(() => {
+    const beat = detached ? undefined : setInterval(() => {
         try {
             const at = now() / 1000;
             utimesSync(file, at, at);
@@ -127,7 +141,7 @@ function createHolder(opts, meta, command, admission) {
             // Reaped, which is final, or unwritable for now, which the next beat retries.
         }
     }, HEARTBEAT_MS);
-    beat.unref();
+    beat?.unref();
     return {
         id,
         leased: true,
@@ -310,6 +324,19 @@ export async function acquireLease(opts, meta, wait = {}) {
         const jittered = Math.round(pollMs * (2 / 3 + Math.random() * (2 / 3)));
         await sleep(wait.maxWaitMs === undefined ? jittered : Math.min(jittered, wait.maxWaitMs - waitedMs));
     }
+}
+/**
+ * Releases a detached holder by id from any process; idempotent. Returns whether a holder file was removed, and emits
+ * one `release` event with `heldMs` (0 when the file is not a valid record) only then.
+ */
+export function releaseHolder(opts, id) {
+    const file = join(holdersDir(opts.dir), `${id}.json`);
+    const text = unlessGone(() => readFileSync(file, "utf8"));
+    if (text === undefined || unlessGone(() => (unlinkSync(file), true)) === undefined)
+        return false;
+    const startedAt = parseHolder(text)?.startedAt;
+    emit(opts, { type: "release", id, heldMs: startedAt === undefined ? 0 : (opts.now ?? Date.now)() - startedAt });
+    return true;
 }
 /** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. */
 export function leaseStatus(opts) {

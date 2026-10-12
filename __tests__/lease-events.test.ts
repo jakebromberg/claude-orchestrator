@@ -75,7 +75,9 @@ describe("leaseEventSink", () => {
     ["corrupt reap", { type: "reap", id: "2-cd", reason: "corrupt" }],
     ["io-error fail-open", { type: "fail-open", reason: "io-error", waitedMs: 0, code: "EACCES", message: "denied" }],
     ["mutex-busy fail-open", { type: "fail-open", reason: "mutex-busy", waitedMs: 30_000 }],
-    ["unknown future reap reason", { type: "reap", id: "3-ef", reason: "dead-session" as never }],
+    ["dead-session reap", { type: "reap", id: "hook-t1", reason: "dead-session" }],
+    ["expired reap", { type: "reap", id: "hook-t1", reason: "expired" }],
+    ["unknown future reap reason", { type: "reap", id: "3-ef", reason: "future-reason" as never }],
   ])("writes %s as it is, plus ts", (_name, event) => {
     leaseEventSink(dir, { now: () => TS })(event);
     expect(readFileSync(join(dir, "events.jsonl"), "utf8")).toBe(`${JSON.stringify({ ts: ISO, ...event })}\n`);

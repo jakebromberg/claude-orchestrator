@@ -6,6 +6,7 @@ import {
   acquireLease,
   defaultLeaseOptions,
   leaseStatus,
+  releaseHolder,
   tryAcquireLease,
   type HolderMeta,
   type LeaseEvent,
@@ -363,6 +364,81 @@ describe("lease", () => {
       plantHolder("4242-dddd", {});
       expect(leaseStatus(opts()).live).toEqual([]);
       expect(existsSync(holderFile("4242-dddd"))).toBe(true);
+    });
+  });
+
+  describe("detached holders", () => {
+    const SESSION = 7001;
+    const detached = (over: Partial<NonNullable<HolderMeta["detached"]>> = {}): HolderMeta => ({
+      ...meta,
+      detached: { id: "hook-toolu_1", sessionPid: SESSION, expiresAt: fake.ms + 180_000, ...over },
+    });
+    const one = { policy: { heavyCeiling: 1, heavyWarning: 1 } };
+
+    it("records the given id, the session PID and expiresAt, and starts no heartbeat", () => {
+      const spy = vi.spyOn(globalThis, "setInterval");
+      const h = tryAcquireLease(opts(), detached())!;
+      expect(h.id).toBe("hook-toolu_1");
+      expect(readHolder(h)).toMatchObject({ id: "hook-toolu_1", pid: SESSION, expiresAt: fake.ms + 180_000, startedAt: fake.ms });
+      expect(spy).not.toHaveBeenCalled();
+      expect(events).toContainEqual(expect.objectContaining({ type: "acquire", id: "hook-toolu_1" }));
+    });
+
+    // [description, session alive?, expiresAt offset ms from now, still live? / reap reason, heartbeat age ms]
+    it.each<[string, boolean, number, "live" | "dead-session" | "expired", number]>([
+      ["a live session before expiresAt", true, 60_000, "live", 10_000],
+      ["a live session whose heartbeat is long stale (the heartbeat rule never applies)", true, 60_000, "live", 10 * HEARTBEAT_STALE_MS],
+      ["a dead session before expiresAt", false, 60_000, "dead-session", 0],
+      ["a live session at expiresAt", true, 0, "expired", 0],
+      ["a live session 1 ms before expiresAt", true, 1, "live", 0],
+      ["a live session past expiresAt", true, -1, "expired", 0],
+      ["a live session exactly 660 s before expiresAt", true, 660_000, "live", 0],
+      ["a live session with expiresAt 1 ms past the 660 s bound", true, 660_001, "expired", 0],
+    ])("%s", (_name, sessionAlive, expiresIn, expected, beatAgo) => {
+      if (sessionAlive) alive.add(SESSION);
+      plantHolder("hook-x", { pid: SESSION, expiresAt: fake.ms + expiresIn }, beatAgo);
+      expect(leaseStatus(opts()).live.some((x) => x.id === "hook-x")).toBe(expected === "live");
+      tryAcquireLease(opts(), meta)!.release();
+      expect(events.filter((e) => e.type === "reap")).toEqual(expected === "live" ? [] : [{ type: "reap", id: "hook-x", reason: expected }]);
+      expect(existsSync(holderFile("hook-x"))).toBe(expected === "live");
+    });
+
+    it.each([["a string", "soon"], ["NaN", null], ["a boolean", true]])("reaps a holder whose expiresAt is %s as corrupt", (_n, expiresAt) => {
+      plantHolder("hook-y", { pid: SESSION, expiresAt });
+      alive.add(SESSION);
+      tryAcquireLease(opts(), meta)!.release();
+      expect(events).toContainEqual({ type: "reap", id: "hook-y", reason: "corrupt" });
+    });
+
+    it("counts a live detached holder against capacity", () => {
+      alive.add(SESSION);
+      tryAcquireLease(opts(one), detached())!;
+      expect(tryAcquireLease(opts(one), meta)).toBeNull();
+    });
+
+    describe("releaseHolder", () => {
+      it("removes the holder and emits one release with heldMs", () => {
+        tryAcquireLease(opts(), detached());
+        fake.ms += 4_000;
+        expect(releaseHolder(opts(), "hook-toolu_1")).toBe(true);
+        expect(existsSync(holderFile("hook-toolu_1"))).toBe(false);
+        expect(events.filter((e) => e.type === "release")).toEqual([{ type: "release", id: "hook-toolu_1", heldMs: 4_000 }]);
+      });
+
+      it("is idempotent: a holder that is already gone returns false and emits nothing", () => {
+        tryAcquireLease(opts(), meta)!.release();
+        events.length = 0;
+        expect(releaseHolder(opts(), "hook-nope")).toBe(false);
+        expect(releaseHolder(opts({ dir: join(tmp, "never") }), "hook-nope")).toBe(false);
+        expect(events).toEqual([]);
+      });
+
+      it("removes a holder file that is not a valid record, with heldMs 0", () => {
+        tryAcquireLease(opts(), meta)!.release();
+        writeFileSync(holderFile("hook-bad"), "{not json");
+        expect(releaseHolder(opts(), "hook-bad")).toBe(true);
+        expect(events).toContainEqual({ type: "release", id: "hook-bad", heldMs: 0 });
+      });
     });
   });
 
@@ -731,5 +807,6 @@ describe("lease", () => {
     expect(barrel.tryAcquireLease).toBe(tryAcquireLease);
     expect(barrel.leaseStatus).toBe(leaseStatus);
     expect(barrel.defaultLeaseOptions).toBe(defaultLeaseOptions);
+    expect(barrel.releaseHolder).toBe(releaseHolder);
   });
 });

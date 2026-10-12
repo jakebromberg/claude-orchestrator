@@ -1,6 +1,6 @@
 import { type Stats } from "node:fs";
 import { type PressureLevel, type PressurePolicy, type PressureSampler } from "./memory-pressure.js";
-type ReapReason = "stale-heartbeat" | "orphan-bound" | "corrupt";
+type ReapReason = "stale-heartbeat" | "orphan-bound" | "corrupt" | "dead-session" | "expired";
 export type LeaseEvent = {
     type: "acquire";
     id: string;
@@ -52,11 +52,20 @@ export interface LeaseOptions {
     onEvent?(e: LeaseEvent): void;
     warn?(msg: string): void;
 }
-/** What a holder file records about the request; `label` replaces `command` when given. */
+/**
+ * What a holder file records about the request; `label` replaces `command` when given. `detached` records a holder
+ * for a process that is not this one (hook mode): `id` is used as given, `sessionPid` is the liveness PID, and no
+ * heartbeat runs. `expiresAt` is read when the holder is written, so it may be a getter that counts from admission.
+ */
 export interface HolderMeta {
     command: string;
     label?: string;
     cwd: string;
+    detached?: {
+        id: string;
+        sessionPid: number;
+        expiresAt: number;
+    };
 }
 interface HolderRecord {
     id: string;
@@ -65,6 +74,8 @@ interface HolderRecord {
     command: string;
     cwd: string;
     startedAt: number;
+    /** Detached holders only: epoch ms after which the holder is expired. */
+    expiresAt?: number;
     level: PressureLevel;
     override?: true;
 }
@@ -128,6 +139,11 @@ export declare function acquireLease(opts: LeaseOptions, meta: HolderMeta, wait?
     onWait?(s: LeaseStatus): void;
     stopWhen?(s: LeaseStatus): boolean;
 }): Promise<LeaseHandle | LeaseRefusal>;
+/**
+ * Releases a detached holder by id from any process; idempotent. Returns whether a holder file was removed, and emits
+ * one `release` event with `heldMs` (0 when the file is not a valid record) only then.
+ */
+export declare function releaseHolder(opts: LeaseOptions, id: string): boolean;
 /** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. */
 export declare function leaseStatus(opts: LeaseOptions): LeaseStatus;
 /**

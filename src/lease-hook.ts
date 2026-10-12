@@ -1,8 +1,9 @@
 /**
  * Hook mode for `claude-orchestrator-lease`: a Claude Code `PreToolUse` /
  * `PostToolUse` / `PostToolUseFailure` hook on `Bash` that decides whether a
- * command is heavy. Part 1 takes no slot: it decides and exits 0 with no
- * output. The hook never rewrites the command and never fails a call.
+ * command is heavy. `PreToolUse` takes a lease slot for a heavy command (waiting up to 450 s) as a detached holder
+ * of the Claude Code process (`CO_LEASE_SESSION_PID`) and lets the command run unchanged; the Post events release it
+ * by id. The hook never rewrites the command and never fails a call: any error prints nothing and exits 0.
  *
  * The matcher has two rules and errs toward heavy: a miss runs a heavy command unleased, a false match costs only a
  * wait. (1) Text that contains `cli-lease.js` or `claude-orchestrator-lease` anywhere is not heavy, so the hook never
@@ -17,6 +18,8 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { formatAdmitted, formatNoSlot } from "./cli-lease.js";
+import { acquireLease, defaultLeaseOptions, leaseStatus, releaseHolder, type LeaseOptions } from "./lease.js";
 import { shellQuote } from "./shell-quote.js";
 
 /** `[word, pattern]`: `word` appears in every command `pattern` matches; the printed shell pre-filter greps for it. */
@@ -155,13 +158,70 @@ export interface HookIo {
   env: NodeJS.ProcessEnv;
   readStdin(): Promise<string>;
   out(text: string): void;
+  /** Test seam: merged over the options built from `env` (the clock, sleeper, liveness probe, sampler and `onEvent`). */
+  lease?: Partial<LeaseOptions>;
+}
+
+const WAIT_MS = 450_000;
+const GRACE_MS = 60_000;
+const DEFAULT_CALL_TIMEOUT_MS = 120_000;
+const MAX_CALL_TIMEOUT_MS = 600_000;
+const TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const DENY_BACKGROUND = "lease: run heavy commands in the foreground so the lease can track them";
+
+interface HookInput {
+  hook_event_name?: unknown;
+  tool_name?: unknown;
+  tool_use_id?: unknown;
+  cwd?: unknown;
+  tool_input?: { command?: unknown; timeout?: unknown; run_in_background?: unknown };
+}
+
+const positive = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;
+const decision = (fields: Record<string, string>): string => `${JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", ...fields } })}\n`;
+
+/**
+ * The call's Bash timeout, capped at the 10 min maximum so `expiresAt` stays inside the lease's 660 s bound: its own
+ * `timeout`, else the session's `BASH_DEFAULT_TIMEOUT_MS`, else 2 min.
+ */
+function callTimeoutMs(input: HookInput, env: NodeJS.ProcessEnv): number {
+  const fromEnv = Number(env.BASH_DEFAULT_TIMEOUT_MS);
+  return Math.min(MAX_CALL_TIMEOUT_MS, [input.tool_input?.timeout, fromEnv].find(positive) ?? DEFAULT_CALL_TIMEOUT_MS);
+}
+
+/** Dispatches one hook event; `runHook` swallows whatever this throws. */
+async function handleEvent(stdin: string, io: HookIo): Promise<void> {
+  const { env } = io;
+  if (env.CO_LEASE_HOOK !== "on") return;
+  const input = JSON.parse(stdin) as HookInput;
+  const toolUseId = input.tool_use_id;
+  if (input.tool_name !== "Bash" || typeof toolUseId !== "string" || !TOOL_USE_ID.test(toolUseId)) return;
+  const event = input.hook_event_name;
+  const id = `hook-${toolUseId}`;
+  if (event === "PostToolUse" || event === "PostToolUseFailure") {
+    releaseHolder({ ...defaultLeaseOptions(env, { warn: () => {} }), ...io.lease }, id);
+    return;
+  }
+  if (!isHeavyHookCall(stdin, env)) return;
+  if (input.tool_input?.run_in_background === true) return io.out(decision({ permissionDecision: "deny", permissionDecisionReason: DENY_BACKGROUND }));
+  const sessionPid = Number(env.CO_LEASE_SESSION_PID);
+  if (!Number.isInteger(sessionPid) || sessionPid <= 0) return;
+  const opts: LeaseOptions = { ...defaultLeaseOptions(env, { warn: () => {} }), ...io.lease };
+  const now = opts.now ?? Date.now;
+  const timeoutMs = callTimeoutMs(input, env);
+  const cwd = typeof input.cwd === "string" ? input.cwd : process.cwd();
+  // `expiresAt` is a getter so it counts from admission, not from the start of a wait that can last 450 s.
+  const detached = { id, sessionPid, get expiresAt() { return now() + timeoutMs + GRACE_MS; } };
+  const got = await acquireLease(opts, { command: String(input.tool_input!.command), cwd, detached }, { maxWaitMs: WAIT_MS });
+  if (!("leased" in got)) io.out(decision({ permissionDecision: "deny", permissionDecisionReason: formatNoSlot(got, leaseStatus(opts)) }));
+  else if (got.leased) io.out(decision({ additionalContext: formatAdmitted(got.admission) }));
 }
 
 /** The `hook` subcommand's arguments after `hook`. Always returns 0: hook mode never fails a call. */
 export async function runHook(args: string[], io: HookIo): Promise<number> {
   try {
     if (args[0] === "--print-settings-entry") io.out(`${JSON.stringify(settingsEntries(), null, 2)}\n`);
-    else isHeavyHookCall(await io.readStdin(), io.env); // part 2 (#123) takes a slot here when this is true
+    else await handleEvent(await io.readStdin(), io);
   } catch {
     // Silent by design: a failing hook would show an error on every Bash call.
   }

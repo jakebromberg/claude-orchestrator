@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isolatedLeaseEnv } from "../helpers/lease.js";
 
 /**
- * Hook mode against the built `dist/`. Part 1 takes no lease, but the env is isolated anyway, so nothing here can
+ * Hook mode against the built `dist/`. The env is always isolated (a temp lease directory), so nothing here can
  * touch the machine's real lease directory.
  */
 
@@ -91,5 +91,21 @@ describe("lease hook mode (integration)", () => {
     ] as const) {
       expect(await run("sh", ["-c", command], { ...env, ...extra }, stdin)).toEqual({ code: 0, stdout: "", stderr: "" });
     }
+  });
+
+  it("runs the printed command under /bin/sh from this process: its parent PID is the holder's liveness PID, and the Post event releases it", async () => {
+    const { hooks } = JSON.parse((await run("node", [distCli, "hook", "--print-settings-entry"], env)).stdout) as {
+      hooks: Record<"PreToolUse" | "PostToolUse", [{ hooks: [{ command: string }] }]>;
+    };
+    const holder = join(leaseDir, "holders", "hook-toolu_sh.json");
+    const entry = (event: "PreToolUse" | "PostToolUse"): string => hooks[event][0].hooks[0].command;
+    const pre = await run("/bin/sh", ["-c", entry("PreToolUse")], env, hookInput("npm test", { tool_use_id: "toolu_sh" }));
+    expect(pre.code).toBe(0);
+    expect(pre.stderr).toBe("");
+    expect(JSON.parse(pre.stdout).hookSpecificOutput.additionalContext).toMatch(/^lease: admitted after 0s \(pressure=\w+, 1\/1 live\)$/);
+    expect(JSON.parse(readFileSync(holder, "utf8"))).toMatchObject({ id: "hook-toolu_sh", pid: process.pid });
+    const post = await run("/bin/sh", ["-c", entry("PostToolUse")], env, hookInput("npm test", { tool_use_id: "toolu_sh", hook_event_name: "PostToolUse" }));
+    expect(post).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(existsSync(holder)).toBe(false);
   });
 });

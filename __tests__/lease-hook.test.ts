@@ -1,8 +1,11 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { tryAcquireLease, releaseHolder, type LeaseEvent, type LeaseOptions } from "../src/lease.js";
 import { isHeavyCommand, isHeavyHookCall, runHook, settingsEntries } from "../src/lease-hook.js";
+import { scriptedPressureSampler } from "../src/testing.js";
+import { fakeLeaseClock, isolatedLeaseEnv, unwritableLeaseDir, type FakeLeaseClock } from "./helpers/lease.js";
 
 const CLI = "/opt/co/dist/src/cli-lease.js";
 const QUOTED_CLI = '"${CO_HOME:-$HOME/Developer/claude-orchestrator}/dist/src/cli-lease.js"';
@@ -193,5 +196,199 @@ describe("settingsEntries", () => {
     const words = /grep -qE '([^']+)'/.exec(commandOf("PreToolUse"))![1]!;
     const prefilter = new RegExp(words);
     for (const command of HEAVY) expect(prefilter.test(command), command).toBe(true);
+  });
+});
+
+describe("hook events", () => {
+  const SESSION = 7001;
+  const DENY_BACKGROUND = "lease: run heavy commands in the foreground so the lease can track them";
+  let tmp: string;
+  let dir: string;
+  let fake: FakeLeaseClock;
+  let alive: Set<number>;
+  let events: LeaseEvent[];
+  let level: "normal" | "warning" | "critical";
+
+  const holderFile = (id: string): string => join(dir, "holders", `${id}.json`);
+  const holders = (): string[] => (existsSync(join(dir, "holders")) ? readdirSync(join(dir, "holders")).sort() : []);
+  const call = (event: string, over: Record<string, unknown> = {}, input: Record<string, unknown> = {}): string =>
+    JSON.stringify({ hook_event_name: event, tool_name: "Bash", tool_use_id: "toolu_1", cwd: "/work", tool_input: { command: "npm test", ...input }, ...over });
+  const pre = (input: Record<string, unknown> = {}, over: Record<string, unknown> = {}): string => call("PreToolUse", over, input);
+
+  /** Runs the hook with the real option builder from `env`; only the clock, the sleeper, the liveness probe and the sampler are scripted. */
+  const run = async (stdin: string, envOver: NodeJS.ProcessEnv = {}, lease: Partial<LeaseOptions> = {}): Promise<{ code: number; out: string }> => {
+    const env = isolatedLeaseEnv(dir, { CO_LEASE_HOOK: "on", CO_LEASE_SESSION_PID: String(SESSION), BASH_DEFAULT_TIMEOUT_MS: undefined, ...envOver });
+    let out = "";
+    const code = await runHook([], {
+      env,
+      readStdin: async () => stdin,
+      out: (t) => void (out += t),
+      lease: Object.fromEntries(
+        Object.entries({ level: scriptedPressureSampler(() => level), now: fake.now, sleep: fake.sleep, isAlive: (pid: number) => alive.has(pid), onEvent: (e: LeaseEvent) => void events.push(e), ...lease }).filter(([, v]) => v !== undefined),
+      ),
+    });
+    return { code, out };
+  };
+  const admitted = (line: string): string => JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: line } }) + "\n";
+  const denied = (reason: string): string =>
+    JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }) + "\n";
+  const record = (id: string): Record<string, unknown> => JSON.parse(readFileSync(holderFile(id), "utf8")) as Record<string, unknown>;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "lease-hook-ev-"));
+    dir = join(tmp, "lease");
+    fake = fakeLeaseClock();
+    alive = new Set([SESSION]);
+    events = [];
+    level = "normal";
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  /** Fills the one slot with a detached holder that outlives a 450 s wait. */
+  const fillSlot = (expiresIn = 600_000): void => {
+    alive.add(7002);
+    tryAcquireLease(
+      { dir, level: scriptedPressureSampler("normal"), policy: { heavyCeiling: 1, heavyWarning: 1 }, isAlive: (pid) => alive.has(pid), now: fake.now },
+      { command: "npm test", cwd: "/", detached: { id: "hook-other", sessionPid: 7002, expiresAt: fake.ms + expiresIn } },
+    );
+  };
+
+  describe("PreToolUse", () => {
+    it("admits: a detached holder for the session, the admitted line as additionalContext, and no decision", async () => {
+      const start = fake.ms;
+      const { code, out } = await run(pre());
+      expect(code).toBe(0);
+      expect(out).toBe(admitted("lease: admitted after 0s (pressure=normal, 1/1 live)"));
+      expect(JSON.parse(out).hookSpecificOutput).not.toHaveProperty("permissionDecision");
+      expect(JSON.parse(out)).not.toHaveProperty("updatedInput");
+      expect(record("hook-toolu_1")).toMatchObject({ id: "hook-toolu_1", pid: SESSION, cwd: "/work", expiresAt: start + 120_000 + 60_000 });
+    });
+
+    // [description, tool_input.timeout, BASH_DEFAULT_TIMEOUT_MS, expected call timeout ms]
+    it.each<[string, unknown, string | undefined, number]>([
+      ["the call's own timeout", 300_000, "90000", 300_000],
+      ["BASH_DEFAULT_TIMEOUT_MS when the call has none", undefined, "90000", 90_000],
+      ["120 000 when neither is set", undefined, undefined, 120_000],
+      ["120 000 when the env value is not a number", undefined, "soon", 120_000],
+      ["120 000 when the call's timeout is not a positive number", -5, undefined, 120_000],
+      ["the 600 000 cap for a larger timeout", 900_000, undefined, 600_000],
+    ])("sets expiresAt from %s plus 60 s", async (_name, timeout, envDefault, expected) => {
+      const start = fake.ms;
+      await run(pre(timeout === undefined ? {} : { timeout }), { BASH_DEFAULT_TIMEOUT_MS: envDefault });
+      expect(record("hook-toolu_1").expiresAt).toBe(start + expected + 60_000);
+    });
+
+    it("counts expiresAt from admission, so a long wait does not eat the call's time", async () => {
+      fillSlot();
+      fake.onSleep = () => {
+        if (fake.sleeps.length === 3) releaseHolder({ dir, level: scriptedPressureSampler("normal"), policy: { heavyCeiling: 1, heavyWarning: 1 }, now: fake.now }, "hook-other");
+      };
+      const { out } = await run(pre());
+      expect(out).toMatch(/^\{"hookSpecificOutput":\{"hookEventName":"PreToolUse","additionalContext":"lease: admitted after [1-9]\d*s /);
+      expect(record("hook-toolu_1").expiresAt).toBe(fake.ms + 180_000);
+    });
+
+    it("denies with the exact no-slot line when no slot frees within 450 s", async () => {
+      fillSlot();
+      const { code, out } = await run(pre());
+      expect(code).toBe(0);
+      expect(out).toBe(denied("lease: no slot after 450s (pressure=normal, capacity 1, 1 live: 7002 npm test); rerun the command — this is not a test failure"));
+      expect(holders()).toEqual(["hook-other.json"]);
+      expect(events).toContainEqual({ type: "timeout", refused: "max-wait", waitedMs: 450_000 });
+    });
+
+    it("denies at critical, whatever the lease directory", async () => {
+      level = "critical";
+      const { out } = await run(pre(), { CO_LEASE_DIR: unwritableLeaseDir(tmp) });
+      expect(out).toBe(denied("lease: no slot after 450s (pressure=critical, capacity 0, 0 live: none); rerun the command — this is not a test failure"));
+    });
+
+    it("denies run_in_background for a heavy command, without taking a slot or waiting", async () => {
+      const { out } = await run(pre({ run_in_background: true }));
+      expect(out).toBe(denied(DENY_BACKGROUND));
+      expect(holders()).toEqual([]);
+      expect(fake.sleeps).toEqual([]);
+    });
+
+    it("lets a light command run_in_background through silently", async () => {
+      expect(await run(pre({ command: "ls", run_in_background: true }))).toEqual({ code: 0, out: "" });
+    });
+
+    it.each<[string, string, NodeJS.ProcessEnv]>([
+      ["a light command", pre({ command: "ls" }), {}],
+      ["the gate off", pre(), { CO_LEASE_HOOK: "" }],
+      ["a non-Bash tool", pre({}, { tool_name: "Edit" }), {}],
+      ["no session PID", pre(), { CO_LEASE_SESSION_PID: undefined }],
+      ["a session PID that is not a PID", pre(), { CO_LEASE_SESSION_PID: "0" }],
+      ["malformed input", "{", {}],
+    ])("prints nothing and takes no slot for %s", async (_name, stdin, env) => {
+      expect(await run(stdin, env)).toEqual({ code: 0, out: "" });
+      expect(holders()).toEqual([]);
+    });
+
+    it("fails open below critical when the directory is unwritable: no holder, no output", async () => {
+      expect(await run(pre(), { CO_LEASE_DIR: unwritableLeaseDir(tmp) })).toEqual({ code: 0, out: "" });
+      expect(events).toContainEqual(expect.objectContaining({ type: "fail-open", reason: "io-error" }));
+      expect(holders()).toEqual([]);
+    });
+  });
+
+  describe.each(["PostToolUse", "PostToolUseFailure"])("%s", (event) => {
+    it("releases hook-<tool_use_id> silently, once, with one release event", async () => {
+      await run(pre());
+      fake.ms += 5_000;
+      expect(await run(call(event))).toEqual({ code: 0, out: "" });
+      expect(holders()).toEqual([]);
+      expect(await run(call(event))).toEqual({ code: 0, out: "" });
+      expect(events.filter((e) => e.type === "release")).toEqual([{ type: "release", id: "hook-toolu_1", heldMs: 5_000 }]);
+    });
+
+    it("leaves another call's holder alone, and does nothing with the gate off", async () => {
+      await run(pre({}, { tool_use_id: "toolu_2" }));
+      await run(call(event));
+      await run(call(event, { tool_use_id: "toolu_2" }), { CO_LEASE_HOOK: "" });
+      expect(holders()).toEqual(["hook-toolu_2.json"]);
+    });
+  });
+
+  describe("tool_use_id", () => {
+    const BAD: [string, unknown][] = [
+      ["a slash", "a/b"], ["a parent segment", "../escape"], ["dots only", ".."], ["a leading slash", "/etc/x"], ["a dot", "a.b"], ["a space", "a b"],
+      ["empty", ""], ["129 characters", "x".repeat(129)], ["a number", 7], ["null", null],
+    ];
+    it.each(BAD)("creates and removes nothing for %s, on all three events", async (_name, id) => {
+      await run(pre({}, { tool_use_id: "toolu_keep" }));
+      writeFileSync(join(dir, "victim.json"), "{}");
+      const before = [holders(), readdirSync(dir).sort()];
+      for (const event of ["PreToolUse", "PostToolUse", "PostToolUseFailure"]) {
+        expect(await run(call(event, { tool_use_id: id }))).toEqual({ code: 0, out: "" });
+      }
+      expect([holders(), readdirSync(dir).sort()]).toEqual(before);
+    });
+
+    it("accepts 128 characters of letters, digits, underscore and hyphen", async () => {
+      const id = `${"aZ09_-".repeat(22)}ab`.slice(0, 128);
+      await run(pre({}, { tool_use_id: id }));
+      expect(holders()).toEqual([`hook-${id}.json`]);
+    });
+  });
+
+  describe("configuration errors", () => {
+    it("exits 0 with no output for a relative CO_LEASE_DIR, and writes nothing to stderr", async () => {
+      const stderr = vi.spyOn(process.stderr, "write");
+      expect(await run(pre(), { CO_LEASE_DIR: "relative/dir" })).toEqual({ code: 0, out: "" });
+      expect(stderr).not.toHaveBeenCalled();
+    });
+
+    it("prints nothing to stderr for a bad CO_LEASE_SLOTS and CO_PRESSURE_OVERRIDE and an unwritable directory", async () => {
+      const stderr = vi.spyOn(process.stderr, "write");
+      const { code, out } = await run(pre(), { CO_LEASE_SLOTS: "many", CO_PRESSURE_OVERRIDE: "bogus", CO_LEASE_DIR: unwritableLeaseDir(tmp) }, { level: undefined });
+      expect(code).toBe(0);
+      expect(out === "" || JSON.parse(out).hookSpecificOutput !== undefined).toBe(true);
+      expect(stderr).not.toHaveBeenCalled();
+    });
   });
 });
