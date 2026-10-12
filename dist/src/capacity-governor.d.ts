@@ -18,5 +18,6 @@ export declare function createCapacityGovernor(opts: {
     maxParallel: number;
     adaptive: boolean;
     logger: Logger;
+    /** Monotonic milliseconds, used to time the 60 s hysteresis. Defaults to `performance.now()`; do not inject `Date.now`, since a backward wall-clock step would stretch the hold. */
     now?: () => number;
 }): CapacityGovernor;

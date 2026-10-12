@@ -9,7 +9,7 @@ function scripted(levels: PressureLevel[]): PressureSampler {
   return Object.assign(read, { fresh: read });
 }
 
-function setUp(levels: PressureLevel[], adaptive = true, maxParallel = 4) {
+function setUp(levels: PressureLevel[], adaptive = true, maxParallel = 4, injectClock = true) {
   const clock = { t: 0 };
   const info = vi.fn();
   const logger = { info, warn: vi.fn(), error: vi.fn(), step: vi.fn(), header: vi.fn() } as Logger;
@@ -18,7 +18,7 @@ function setUp(levels: PressureLevel[], adaptive = true, maxParallel = 4) {
     maxParallel,
     adaptive,
     logger,
-    now: () => clock.t,
+    ...(injectClock && { now: () => clock.t }),
   });
   return { governor, clock, info };
 }
@@ -53,14 +53,12 @@ describe("createCapacityGovernor", () => {
     try {
       wall.mockReturnValue(1_000_000);
       mono.mockReturnValue(0);
-      const governor = createCapacityGovernor({
-        sampler: scripted(["warning", "normal", "normal"]),
-        maxParallel: 4,
-        adaptive: true,
-        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), step: vi.fn(), header: vi.fn() } as Logger,
-      });
+      const { governor } = setUp(["warning", "normal", "normal", "normal"], true, 4, false);
       governor.tick(); // calm starts
       wall.mockReturnValue(1_000_000 - 3_600_000); // wall clock steps back an hour
+      mono.mockReturnValue(59_999);
+      governor.tick();
+      expect(governor.capacity()).toBe(1);
       mono.mockReturnValue(60_000);
       governor.tick();
       expect(governor.capacity()).toBe(4);
