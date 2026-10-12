@@ -4,11 +4,14 @@
  * command is heavy. Part 1 takes no slot: it decides and exits 0 with no
  * output. The hook never rewrites the command and never fails a call.
  *
- * The matcher is a lexical scan, not a shell parser (no expansion, aliases or functions). One pass splits the text
- * into segments at top-level `&&`, `||`, `;`, `|`, a single `&`, a newline and a subshell `(`; a separator inside
- * `'…'`, `"…"`, `$(…)` or backticks does not split. Each segment's leading words are stripped one token at a time
- * (`NAME=value`, `env`, `timeout <n>`, `nice [-n <n>]`, `then`/`do`/`else`/`time`/`!`/`{`), and the command word is
- * compared with its quotes and path removed. A segment that calls this CLI is skipped; with `--shell` or `--` the
+ * The matcher is a lexical scan, not a shell parser (no expansion, aliases or functions); it errs toward heavy, except
+ * for this CLI. One pass splits the text into segments at top-level `&&`, `||`, `;`, `|`, a single `&`, a newline and
+ * a subshell `(`; nothing inside `'…'`, `"…"`, `$(…)`, backticks, a heredoc body or a `#` comment splits, and nothing
+ * in a heredoc body or comment opens a quote. Text that ends inside a quote, `$(` or backtick is also rescanned raw
+ * (split at every separator). Each segment's leading words are stripped one token at a time (`NAME=value`, `env`,
+ * `timeout <n>`, `nice [-n <n>]`, `if`/`elif`/`while`/`until`/`then`/`do`/`else`/`time`/`!`/`{`), and the command word
+ * is compared with its quotes and path removed. `$(…)` and backtick bodies and the `sh`/`bash`/`zsh -c` argument are
+ * classified the same way, three levels deep. A segment that calls this CLI is skipped; with `--shell` or `--` the
  * rest of the text is the CLI's own argument and is skipped too.
  */
 import { readFileSync } from "node:fs";
@@ -38,40 +41,90 @@ const DEFAULT_PATTERNS = [
     ["scripts/test", "scripts/test[\\w-]*\\.sh"],
     ["git", "git(?: -[Cc] (?:'[^']*'|\"[^\"]*\"|\\S+))* push"], // pre-push hooks
 ];
-const PREFIX_WORD = /^(?:then|do|else|time|!|\{|env|nice|timeout|[A-Za-z_]\w*=.*)$/s;
-const SUBSHELL_START = /^(?:\s|then|do|else|time|!|\{)*$/;
+const PREFIX_WORD = /^(?:if|elif|while|until|then|do|else|time|!|\{|env|nice|timeout|[A-Za-z_]\w*=.*)$/s;
+const SUBSHELL_START = /^(?:\s|if|elif|while|until|then|do|else|time|!|\{)*$/;
 const CLI_JS = /(?:^|\/)cli-lease\.js$/;
-/** Index of the first character at or after `from`, outside quotes, `$(…)`, backticks and escapes, for which `stop` holds; else the length. */
-function scanTop(s, from, stop) {
+const HEREDOC = /<<(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|([A-Za-z_]\w*))/y;
+/** Index of the newline that ends heredoc `tag`'s delimiter line, for a body that starts after the newline at `i`; else the length. */
+function heredocEnd(s, i, tag, dash) {
+    for (let end = i; i < s.length; i = end) {
+        end = s.indexOf("\n", i + 1);
+        if (end < 0)
+            end = s.length;
+        const line = s.slice(i + 1, end);
+        if (line === tag || (dash && line.replace(/^\t+/, "") === tag))
+            return end;
+    }
+    return s.length;
+}
+/**
+ * Index of the first character at or after `from` for which `stop` holds, outside quotes, `$(…)`, backticks, escapes,
+ * heredoc bodies and `#` comments (`raw` tracks none of them); else the length, or -1 if a quote, `$(` or backtick is
+ * still open. Each outermost `$(…)` or backtick body closed on the way is added to `subs`.
+ */
+function scanTop(s, from, stop, subs = [], raw = false) {
     const open = [];
+    const heredocs = [];
+    let [subAt, subDepth] = [-1, -1];
+    const enter = (closer, at) => {
+        if (subDepth < 0)
+            [subAt, subDepth] = [at, open.length];
+        open.push(closer);
+    };
+    const leave = (at) => {
+        open.pop();
+        if (open.length === subDepth)
+            subs.push(s.slice(subAt, at)), (subDepth = -1);
+    };
+    let m;
     for (let i = from; i < s.length; i++) {
         const c = s[i];
         const top = open[open.length - 1];
-        if (c === "\\")
+        if (!raw && c === "\n" && heredocs.length && top !== '"') {
+            for (const [tag, dash] of heredocs.splice(0))
+                i = heredocEnd(s, i, tag, dash);
+            if (i >= s.length)
+                break;
+        }
+        if (raw) {
+            if (stop(i))
+                return i;
+        }
+        else if (c === "\\")
             i++;
         else if (top === '"' && c === '"')
             open.pop();
         else if (top !== '"' && c === "'") {
             const close = s.indexOf("'", i + 1);
             if (close < 0)
-                return s.length;
+                return -1;
             i = close;
         }
         else if (top !== '"' && c === '"')
             open.push('"');
         else if (c === "$" && s[i + 1] === "(")
-            open.push(")"), i++;
+            enter(")", i + 2), i++;
         else if (c === "`")
-            top === "`" ? open.pop() : open.push("`");
+            top === "`" ? leave(i) : enter("`", i + 1);
         else if (top === ")" && (c === "(" || c === ")"))
-            c === ")" ? open.pop() : open.push(")");
+            c === ")" ? leave(i) : enter(")", i + 1);
+        else if (top !== '"' && c === "#" && /[\s;&|()]/.test(s[i - 1] ?? " ")) {
+            const end = s.indexOf("\n", i);
+            if (end < 0)
+                break;
+            i = end - 1;
+        }
+        else if (top !== '"' && c === "<" && s[i - 1] !== "<" && ((HEREDOC.lastIndex = i), (m = HEREDOC.exec(s)))) {
+            heredocs.push([m[2] ?? m[3] ?? m[4], m[1] === "-"]);
+            i = HEREDOC.lastIndex - 1;
+        }
         else if (!open.length && stop(i))
             return i;
     }
-    return s.length;
+    return open.length ? -1 : s.length;
 }
-/** The text split at top-level separators; `&&` and `||` split as two, `>&`, `&>` and `2>&1` do not. */
-function segments(text) {
+/** Top-level segments with their `$(…)`/backtick bodies, and whether the text ends open; `&&`/`||` split as two, `>&`, `&>`, `2>&1` do not. */
+function segments(text, raw) {
     const out = [];
     let start = 0;
     const isSeparator = (i) => {
@@ -81,10 +134,11 @@ function segments(text) {
         return ";|\n".includes(c) || (c === "(" && i - start < 24 && SUBSHELL_START.test(text.slice(start, i)));
     };
     for (;;) {
-        const end = scanTop(text, start, isSeparator);
-        out.push(text.slice(start, end));
-        if (end >= text.length)
-            return out;
+        const subs = [];
+        const end = scanTop(text, start, isSeparator, subs, raw);
+        out.push([text.slice(start, end < 0 ? undefined : end), subs]);
+        if (end < 0 || end >= text.length)
+            return [out, end < 0];
         start = end + 1;
     }
 }
@@ -92,8 +146,11 @@ function segments(text) {
 function word(s, p) {
     while (p < s.length && /\s/.test(s[p]))
         p++;
-    return [p, scanTop(s, p, (i) => /\s/.test(s[i]))];
+    const end = scanTop(s, p, (i) => /\s/.test(s[i]));
+    return [p, end < 0 ? s.length : end];
 }
+/** A shell word with its quotes and escapes removed. */
+const unquote = (w) => w.replace(/'([^']*)'|"((?:\\.|[^"\\])*)"|\\(.)/gs, (_m, sq, dq, esc) => sq ?? dq?.replace(/\\(["\\$`])/g, "$1") ?? esc ?? "");
 const isRegex = (source) => {
     try {
         new RegExp(source);
@@ -106,12 +163,17 @@ const isRegex = (source) => {
 /**
  * Whether any segment of `command` matches a default or `extraPatterns` heavy pattern. Extras that are not valid
  * regexes are ignored; every pattern is followed by an end boundary (not `\w`, `.`, `/` or `-`). A segment that wraps
- * this CLI ends the scan.
+ * this CLI with `--shell` or `--` ends the scan.
  */
 export function isHeavyCommand(command, extraPatterns = []) {
     const patterns = [...DEFAULT_PATTERNS.map(([, p]) => p), ...extraPatterns.filter(isRegex)];
     const heavy = new RegExp(`(?:${patterns.map((p) => `(?:${p})`).join("|")})(?![\\w./-])`, "y");
-    for (const segment of segments(command.replace(/\\\n/g, " "))) {
+    return isHeavyText(command.replace(/\\\n/g, " "), heavy, 0);
+}
+/** `isHeavyCommand` on joined text, `depth` substitution or `-c` levels down; unbalanced text is rescanned `raw`. */
+function isHeavyText(text, heavy, depth, raw = false) {
+    const [list, unbalanced] = segments(text, raw);
+    scan: for (const [segment, subs] of list) {
         let [from, to] = word(segment, 0);
         for (let prev = "";; prev = segment.slice(from, to), [from, to] = word(segment, to)) {
             const w = segment.slice(from, to);
@@ -128,21 +190,25 @@ export function isHeavyCommand(command, extraPatterns = []) {
                 [argFrom, argTo] = word(segment, pos);
                 const flag = segment.slice(argFrom, argTo);
                 if (flag === "--shell" || flag === "--")
-                    return false;
+                    break scan;
                 if (flag !== "--max-wait" && flag !== "--label")
                     break;
                 pos = word(segment, argTo)[1];
             }
             continue;
         }
-        const text = name + segment.slice(to);
+        const command = name + segment.slice(to);
         for (let k = 0; k >= 0; k = name.indexOf("/", k) + 1 || -1) {
             heavy.lastIndex = k;
-            if (heavy.test(text))
+            if (heavy.test(command))
                 return true;
         }
+        if (/^(?:ba|z)?sh$/.test(base) && /^-[a-z]*c[a-z]*$/.test(segment.slice(argFrom, argTo)))
+            subs.push(unquote(segment.slice(...word(segment, argTo))));
+        if (depth < 3 && subs.some((body) => isHeavyText(body, heavy, depth + 1)))
+            return true;
     }
-    return false;
+    return unbalanced && isHeavyText(text, heavy, depth, true);
 }
 /** `CO_LEASE_PATTERNS_FILE`: a JSON array of extra patterns. A missing or malformed file adds none. */
 function extraPatterns(env) {
