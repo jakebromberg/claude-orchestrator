@@ -156,6 +156,9 @@ describe("transcripts that declare a stop", () => {
     ["an appended log whose last run declares it", transcript(init("a"), result("old"), init("b"), result(STOP))],
     ["CRLF line endings", transcript(result(`gave up\r\n${STOP}\r\n`))],
     ["a partial last line after the session's record", transcript(result(STOP)) + '{"type":"result","resu'],
+    // Only a system/init record starts a new run: neither another system record nor an "init" subtype on another type does.
+    ["the session's record followed by a non-init system record", transcript(result(STOP), JSON.stringify({ type: "system", subtype: "status", result: "x" }))],
+    ["the session's record followed by a non-system record with subtype init", transcript(result(STOP), JSON.stringify({ type: "assistant", subtype: "init" }))],
   ])("stops for %s", async (_name, log) => {
     const check = vi.fn(async () => ({ passed: true }));
     const t = setUp({ check });
