@@ -135,11 +135,15 @@ export declare function tryAcquireLease(opts: LeaseOptions, meta: HolderMeta): L
 /**
  * Polls (3 s ± 1 s, never spinning) until admitted. `stopWhen` is checked on
  * every poll, and a stop is confirmed with a `level.fresh()` re-read before it
- * is returned, so one stale cached sample cannot end a wave.
+ * is returned, so one stale cached sample cannot end a wave. `onWait` also receives `waitedMs`, the wait measured on
+ * `LeaseOptions.now` and equal to the `waitedMs` of the admission or refusal at that poll, so a progress line can throttle
+ * on it without a clock of its own.
  */
 export declare function acquireLease(opts: LeaseOptions, meta: HolderMeta, wait?: {
     maxWaitMs?: number;
-    onWait?(s: LeaseStatus): void;
+    onWait?(s: LeaseStatus & {
+        waitedMs: number;
+    }): void;
     stopWhen?(s: LeaseStatus): boolean;
 }): Promise<LeaseHandle | LeaseRefusal>;
 /**

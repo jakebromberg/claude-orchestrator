@@ -299,7 +299,9 @@ function statusOf(opts, level) {
 /**
  * Polls (3 s ± 1 s, never spinning) until admitted. `stopWhen` is checked on
  * every poll, and a stop is confirmed with a `level.fresh()` re-read before it
- * is returned, so one stale cached sample cannot end a wave.
+ * is returned, so one stale cached sample cannot end a wave. `onWait` also receives `waitedMs`, the wait measured on
+ * `LeaseOptions.now` and equal to the `waitedMs` of the admission or refusal at that poll, so a progress line can throttle
+ * on it without a clock of its own.
  */
 export async function acquireLease(opts, meta, wait = {}) {
     checkDetachedId(meta);
@@ -330,7 +332,7 @@ export async function acquireLease(opts, meta, wait = {}) {
         }
         if (wait.maxWaitMs !== undefined && waitedMs >= wait.maxWaitMs)
             return refuse("max-wait", r.level, status.live.length);
-        wait.onWait?.(status);
+        wait.onWait?.({ ...status, waitedMs });
         const jittered = Math.round(pollMs * (2 / 3 + Math.random() * (2 / 3)));
         await sleep(wait.maxWaitMs === undefined ? jittered : Math.min(jittered, wait.maxWaitMs - waitedMs));
     }

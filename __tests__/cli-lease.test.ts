@@ -86,12 +86,11 @@ const holder = (over: Partial<HolderInfo> = {}): HolderInfo => ({
 describe("runLeased", () => {
   let err: string[];
   let out: string[];
-  let clock: number;
   let handle: LeaseHandle & { release: ReturnType<typeof vi.fn>; setChildPid: ReturnType<typeof vi.fn> };
   let child: FakeChild;
   let spawned: { file: string; args: string[]; env: NodeJS.ProcessEnv }[];
   let signals: EventEmitter & { pid: number; kill: ReturnType<typeof vi.fn> };
-  let acquired: { meta: unknown; wait: { maxWaitMs?: number; onWait?(s: LeaseStatus): void } }[];
+  let acquired: { meta: unknown; wait: { maxWaitMs?: number; onWait?(s: LeaseStatus & { waitedMs: number }): void } }[];
   let outcome: LeaseHandle | LeaseRefusal;
   let env: NodeJS.ProcessEnv;
 
@@ -121,7 +120,6 @@ describe("runLeased", () => {
     cwd: "/work",
     out: (t) => out.push(t),
     err: (l) => err.push(l),
-    now: () => clock,
     signals,
     ...over,
   });
@@ -138,7 +136,6 @@ describe("runLeased", () => {
   beforeEach(() => {
     err = [];
     out = [];
-    clock = 0;
     handle = makeHandle();
     outcome = handle;
     child = new FakeChild();
@@ -300,8 +297,8 @@ describe("runLeased", () => {
 
     it("prints one progress line per minute while waiting", async () => {
       const waiting = deps({
-        acquire: (async (_o: LeaseOptions, _m: unknown, wait: { onWait?(s: LeaseStatus): void }) => {
-          for (clock = 0; clock <= 125_000; clock += 5_000) wait.onWait?.({ level: "warning", capacity: 1, live: [holder()] });
+        acquire: (async (_o: LeaseOptions, _m: unknown, wait: { onWait?(s: LeaseStatus & { waitedMs: number }): void }) => {
+          for (let waitedMs = 0; waitedMs <= 125_000; waitedMs += 5_000) wait.onWait?.({ level: "warning", capacity: 1, live: [holder()], waitedMs });
           return handle;
         }) as unknown as typeof acquireLease,
       });

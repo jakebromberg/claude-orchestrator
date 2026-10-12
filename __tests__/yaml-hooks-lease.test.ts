@@ -280,16 +280,16 @@ describe("leased postSessionCheck", () => {
   });
 
   describe("waiting line", () => {
-    it("logs at most once a minute, throttled on the monotonic clock", async () => {
+    it("logs at most once a minute, throttled on the lease's waitedMs", async () => {
       const full = tryAcquireLease(leaseOptions(), { command: "other", cwd: "/" })!;
       full.setChildPid(process.pid);
-      let mono = 1_000_000;
-      vi.spyOn(performance, "now").mockImplementation(() => mono);
-      // A step of the wall clock must not release the throttle; only monotonic time does.
+      let elapsed = 0;
       const steps = [0, 20_000, 50_000, 61_000, 70_000, 125_000, 130_000];
       clock.onSleep = () => {
         const i = clock.sleeps.length;
-        mono = 1_000_000 + steps[Math.min(i, steps.length - 1)];
+        const target = steps[Math.min(i, steps.length - 1)];
+        clock.ms += target - elapsed - clock.sleeps[i - 1]!; // the sleep itself already advanced the clock
+        elapsed = target;
         if (i === steps.length - 1) full.release();
       };
       const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands: ["npm test"] } }), { runCommand: vi.fn(async () => "") });

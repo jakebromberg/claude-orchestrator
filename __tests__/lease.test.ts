@@ -120,6 +120,16 @@ describe("lease", () => {
       expect((r as LeaseHandle).admission.waitedMs).toBe(fake.sleeps[0]);
     });
 
+    it("passes onWait the wait measured on the injected clock, as the admission reports it", async () => {
+      const a = tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta)!;
+      fake.onSleep = () => { if (fake.sleeps.length === 3) a.release(); };
+      const seen: number[] = [];
+      const r = await acquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta, { onWait: (s) => seen.push(s.waitedMs) });
+      const elapsed = fake.sleeps.map((_, i) => fake.sleeps.slice(0, i).reduce((x, y) => x + y, 0));
+      expect(seen).toEqual(elapsed.slice(0, 3));
+      expect((r as LeaseHandle).admission.waitedMs).toBe(fake.sleeps.reduce((x, y) => x + y, 0));
+    });
+
     it("records the wait, level, live count (including itself) and capacity at admission", () => {
       tryAcquireLease(opts(), meta);
       const b = tryAcquireLease(opts(), meta)!;
