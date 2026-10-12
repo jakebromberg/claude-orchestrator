@@ -104,6 +104,16 @@ claude-orchestrator-lease status
 - **Exit 78**: the lease is misconfigured (for example a relative `CO_LEASE_DIR`); the command is not run. Usage errors exit 64. If the lease directory is unusable the command runs unleased after one warning.
 - `status` prints `{ level, capacity, live: [{ pid, command, ageSec }] }` as JSON (`override: true` on a holder admitted while `CO_PRESSURE_OVERRIDE` actually turned a `critical` reading into `warning`). It never creates the lease directory; in an existing one, reading the pressure level refreshes `level.json`.
 
+#### Hook mode (`claude-orchestrator-lease hook`)
+
+Agents run most heavy commands through the Bash tool, where prompt text cannot enforce a machine-wide limit. `hook` is the command for a user-level Claude Code `PreToolUse`/`PostToolUse`/`PostToolUseFailure` hook on `Bash`: it reads the hook's JSON from stdin (only `hook_event_name`, `tool_name` and `tool_input.command`) and decides whether the command is heavy. **It takes no slot yet** (part 2, #123, adds the lease): it always exits 0 with no output, and it never rewrites the command. Unparseable input, a non-Bash tool, or any error also exits 0 silently, and hook mode never reads the lease directory, so a relative `CO_LEASE_DIR` does not affect it.
+
+- `CO_LEASE_HOOK=on` is the gate. Anything else, including unset, makes the hook a no-op. Set it on engine invocations, or launch a session as `CO_LEASE_HOOK=on claude`.
+- A command is heavy when a segment (the start of the command, or the text after `&&`, `||`, `;`, `|` or a newline) matches a pattern, past an optional prefix (`NAME=value`, `env`, `timeout <n>`, `nice`, a path such as `.venv/bin/`). The matcher is a regex over raw text with no shell parsing. Defaults: `npm ci|install|i|test|t`, `npm run test|build|typecheck|lint|ci…`, `npx vitest|jest|tsc|playwright`, bare `vitest`/`jest`/`tsc`, `node --test`, `pytest`, `uv run … pytest|mypy`, `mypy`, `uv sync|pip install`, `xcodebuild`, `swift build|test`, `cargo build|test`, `gradlew`, `go build|test|vet`, `deno test`, `make`, `scripts/test*.sh`, and `git push` (pre-push hooks). The matcher is exported as `isHeavyCommand(command, extraPatterns?)`.
+- `CO_LEASE_PATTERNS_FILE` names a JSON array of extra patterns (regex sources, matched after the same prefix). A missing or malformed file, or a pattern that is not a regex, adds nothing.
+- A segment that calls this CLI (`node <path>/cli-lease.js` or the `claude-orchestrator-lease` bin) is never heavy. With `--shell` or `--`, the rest of the text is the CLI's own argument and is skipped too; with `status` only its own segment is skipped, so `claude-orchestrator-lease status && npm test` is heavy for `npm test`.
+- `claude-orchestrator-lease hook --print-settings-entry` prints the `hooks` settings to install as JSON: one `Bash` entry each for `PreToolUse` (`timeout: 500`), `PostToolUse` and `PostToolUseFailure`. Each runs the gate and a word pre-filter in the shell, so most Bash calls never start `node` (the pre-filter is bypassed while `CO_LEASE_PATTERNS_FILE` is set), and points at the `cli-lease.js` of the build that printed it, not at `CO_HOME`. Installing it is your step; nothing here edits `~/.claude/settings.json`.
+
 ## Quick Start
 
 ### 1. Create a YAML config

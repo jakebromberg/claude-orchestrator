@@ -46,7 +46,7 @@ describe("parseLeaseArgs", () => {
     ["a negative --max-wait", ["--max-wait", "-1", "--", "x"], /--max-wait must be/],
     ["a repeated --label", ["--label", "a", "--label", "b", "--", "x"], /--label given more than once/],
     ["an unknown flag", ["--bogus", "--", "x"], /Unknown argument: --bogus/],
-    ["an unknown subcommand", ["hook"], /Unknown subcommand: hook/],
+    ["an unknown subcommand", ["bogus"], /Unknown subcommand: bogus/],
     ["arguments after status", ["status", "now"], /status takes no arguments/],
   ])("rejects %s", (_name, argv, message) => {
     expect(() => parseLeaseArgs(argv)).toThrow(message);

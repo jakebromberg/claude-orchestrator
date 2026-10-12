@@ -30,6 +30,7 @@ src/
 ├── lease.ts              # Machine-wide heavy-command lease: holder files, 30 s mtime heartbeat (90 s staleness) + child-PID liveness, admission, fail-open (acquireLease, leaseStatus)
 ├── lease-events.ts       # leaseEventSink(): JSONL sink for the lease's onEvent seam — <lease dir>/events.jsonl, 5 MB rotation to events.jsonl.1, write failures swallowed
 ├── cli-lease.ts          # claude-orchestrator-lease bin: run a command under the lease (exit 75 no slot, 78 misconfigured), `status` as JSON
+├── lease-hook.ts         # Hook mode (`claude-orchestrator-lease hook`): isHeavyCommand() matcher + CLI skip rule, CO_LEASE_HOOK gate, settingsEntries() for `--print-settings-entry`; part 1 takes no slot
 ├── file-lock.ts          # tryLockOnce(): non-blocking O_EXCL mutex with mtime staleness (isWithinWindow is the shared freshness rule), token-checked release, turn-taking reapers (the lease's mutex)
 ├── claude-env.ts         # claudeSessionEnv() — child env for spawned `claude` sessions (auth/billing)
 ├── real-process-runner.ts # Real child_process spawner

@@ -6,6 +6,7 @@
  *   claude-orchestrator-lease [--max-wait <sec>] [--label <text>] -- <cmd> [args...]
  *   claude-orchestrator-lease [--max-wait <sec>] [--label <text>] --shell '<command line>'
  *   claude-orchestrator-lease status
+ *   claude-orchestrator-lease hook [--print-settings-entry]
  *
  * The slot is held for exactly as long as the command lives, and the command's
  * exit code is passed through. Exit 75 means no slot within the wait cap
@@ -21,6 +22,7 @@ import { constants } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { PressureSampler } from "./memory-pressure.js";
 import { acquireLease, defaultLeaseOptions, leaseStatus, type LeaseOptions, type LeaseStatus } from "./lease.js";
+import { runHook } from "./lease-hook.js";
 
 const DEFAULT_MAX_WAIT_SEC = 100;
 const GRACE_MS = 10_000;
@@ -253,7 +255,15 @@ export function cliLeaseDeps(err: (line: string) => void, base: { env?: NodeJS.P
   };
 }
 
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 async function main(argv: string[]): Promise<number> {
+  // Before the usage and configuration exits: hook mode never fails a Bash call.
+  if (argv[0] === "hook") return runHook(argv.slice(1), { env: process.env, readStdin, out: (text) => void process.stdout.write(text) });
   let args: LeaseArgs;
   try {
     args = parseLeaseArgs(argv);

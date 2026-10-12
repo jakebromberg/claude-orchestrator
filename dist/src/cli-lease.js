@@ -6,6 +6,7 @@
  *   claude-orchestrator-lease [--max-wait <sec>] [--label <text>] -- <cmd> [args...]
  *   claude-orchestrator-lease [--max-wait <sec>] [--label <text>] --shell '<command line>'
  *   claude-orchestrator-lease status
+ *   claude-orchestrator-lease hook [--print-settings-entry]
  *
  * The slot is held for exactly as long as the command lives, and the command's
  * exit code is passed through. Exit 75 means no slot within the wait cap
@@ -19,6 +20,7 @@ import { realpathSync } from "node:fs";
 import { constants } from "node:os";
 import { fileURLToPath } from "node:url";
 import { acquireLease, defaultLeaseOptions, leaseStatus } from "./lease.js";
+import { runHook } from "./lease-hook.js";
 const DEFAULT_MAX_WAIT_SEC = 100;
 const GRACE_MS = 10_000;
 const PROGRESS_MS = 60_000;
@@ -222,7 +224,16 @@ export function cliLeaseDeps(err, base = {}) {
         signals: process,
     };
 }
+async function readStdin() {
+    const chunks = [];
+    for await (const chunk of process.stdin)
+        chunks.push(chunk);
+    return Buffer.concat(chunks).toString("utf8");
+}
 async function main(argv) {
+    // Before the usage and configuration exits: hook mode never fails a Bash call.
+    if (argv[0] === "hook")
+        return runHook(argv.slice(1), { env: process.env, readStdin, out: (text) => void process.stdout.write(text) });
     let args;
     try {
         args = parseLeaseArgs(argv);
