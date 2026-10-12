@@ -23,17 +23,17 @@ import { formatAdmitted, formatNoSlot } from "./lease-messages.js";
 import { shellQuote } from "./shell-quote.js";
 
 /**
- * npm/npx options before the subcommand: `--prefix`, `--workspace`, `-w` and `--package` take a value (which does not start
- * with `-`), any other option stands alone or is `--name=value`. The two alternatives start with different characters or
- * differ in the value's first character, so a failed match cannot backtrack exponentially.
+ * npm/npx options before the subcommand: `--prefix`/`-C`, `--workspace`/`-w` and `--package`/`-p` take a value, and any
+ * other option stands alone or is `--name=value`. A valued option can also be read as a lone flag, but a value never
+ * starts with `-`, so each token has at most one reading that continues the match, and a failed match stays linear.
  */
-const NODE_OPTIONS = "(?: (?:(?:--prefix|--workspace|-w|--package) (?:'[^']*'|\"[^\"]*\"|[^\\s'\"-]\\S*)|-[\\w-]+(?:=\\S*)?))*";
+const NPM_OPTIONS = "(?: (?:(?:--prefix|-C|--workspace|-w|--package|-p) (?:'[^']*'|\"[^\"]*\"|[^\\s'\"-]\\S*)|-[\\w-]+(?:=\\S*)?))*";
 
 /** `[word, pattern]`: `word` appears in every command `pattern` matches; the printed shell pre-filter greps for it. */
 const DEFAULT_PATTERNS: readonly (readonly [word: string, pattern: string])[] = [
-  ["npm", `npm${NODE_OPTIONS} (?:ci|install|i|test|t)`],
-  ["npm", `npm${NODE_OPTIONS} run (?:test|build|typecheck|lint|ci)[\\w:-]*`],
-  ["npx", `npx${NODE_OPTIONS} (?:vitest|jest|tsc|playwright)`],
+  ["npm", `npm${NPM_OPTIONS} (?:ci|install|i|test|t)`],
+  ["npm", `npm${NPM_OPTIONS} run (?:test|build|typecheck|lint|ci)[\\w:-]*`],
+  ["npx", `npx${NPM_OPTIONS} (?:vitest|jest|tsc|playwright)`],
   ["vitest", "vitest"],
   ["jest", "jest"],
   ["tsc", "tsc"],
@@ -41,7 +41,7 @@ const DEFAULT_PATTERNS: readonly (readonly [word: string, pattern: string])[] = 
   ["pytest", "pytest"],
   ["uv", "uv run (?:\\S+ )*(?:pytest|mypy)"],
   ["mypy", "mypy"],
-  ["python", "python3? -m (?:pytest|mypy)"],
+  ["python", "python3? -m (?:pytest|mypy|pip install)"],
   ["pip", "pip3? install"],
   ["uv", "uv (?:sync|pip install)"],
   ["xcodebuild", "(?:xcrun )?xcodebuild"],
@@ -66,8 +66,12 @@ const SEPARATOR = /([;&|\n()`{}])/;
 const PREFIX_WORDS = new Set(["if", "elif", "while", "until", "then", "do", "else", "!", "nohup", "exec", "command"]);
 /** Wrappers that skip option tokens before the operand (`timeout` also a duration); the pattern is the options that take a separate argument. */
 const WRAPPERS = new Map([["time", /^$/], ["env", /^-[uC]$/], ["nice", /^-n$/], ["timeout", /^-[ks]$/]]);
-/** Whether a token holds an odd number of `"` or `'` (an apostrophe inside a word, as in `Let's`, is not a quote). */
-const oddQuote = (token: string): boolean => token.split('"').length % 2 === 0 || token.replace(/[A-Za-z]'[A-Za-z]/g, "").split("'").length % 2 === 0;
+/**
+ * Whether a token holds an odd number of `"` or `'`. An English contraction's apostrophe (`Let's`, `don't`, `we're`) is not a
+ * quote, but any other letter-quote-letter is, so a single-quoted value glued to a letter (`'a;b'c`) still counts.
+ */
+const oddQuote = (token: string): boolean =>
+  token.split('"').length % 2 === 0 || token.replace(/[A-Za-z]'(?:[stdm]|re|ve|ll)(?![A-Za-z])/gi, "").split("'").length % 2 === 0;
 
 const isRegex = (source: string): boolean => {
   try {
@@ -95,8 +99,9 @@ export function isHeavyCommand(command: string, extraPatterns: readonly string[]
  * Strips the segment's leading words one whitespace token at a time, then tests the command word and the rest. A
  * command word that fails is stripped too when it looks like the tail of a word split at a separator inside it: glued
  * to the `)`, `}` or backtick before the segment (`PYTHONPATH=$(pwd)/src pytest`), or holding an odd number of a quote
- * character (`FOO="a;b" npm test`). The heuristic can also make prose heavy (`"fix(ci): make …"`), which costs only a
- * wait. A tail of more than one word (`MSG="a $(date) b c" npm test`) is skipped by scanning once to the token that closes it.
+ * character (`FOO="a;b" npm test`). The heuristic can still make some prose heavy, which costs only a wait. In a
+ * segment that follows `)`, `}` or a backtick, a tail of more than one word (`MSG="a $(date) b c" npm test`) is skipped
+ * by scanning once to the token that closes it; a multi-word value split at `;`, `|` or `&` still hides the command.
  */
 function isHeavySegment(segment: string, heavy: RegExp, after = ""): boolean {
   const follows = /[)}`]/.test(after);
@@ -134,8 +139,9 @@ function isHeavySegment(segment: string, heavy: RegExp, after = ""): boolean {
         continue;
       }
     }
-    // A token that is wholly quoted (`npm "test"`) is tested without its quotes.
-    const text = [name, ...tokens.slice(i + 1).map((t) => t.replace(/^(["'])(\S*)\1$/, "$2"))].join(" ");
+    // A token that is wholly quoted with no other quote inside (`npm "test"`) is tested without its quotes; `""` and
+    // `"O'Brien"` keep theirs, so a pattern that parses quoted values (git's) still sees them.
+    const text = [name, ...tokens.slice(i + 1).map((t) => t.replace(/^(["'])([^\s'"]+)\1$/, "$2"))].join(" ");
     // From the command word's start, then after each `/` in it (`./scripts/test.sh`, `.venv/bin/pytest`).
     for (let k = 0; k >= 0; k = name.indexOf("/", k) + 1 || -1) {
       heavy.lastIndex = k;
@@ -146,9 +152,9 @@ function isHeavySegment(segment: string, heavy: RegExp, after = ""): boolean {
       stripped = true;
       continue;
     }
-    // A word that still fails (after a strip, or in a segment that follows `)`, `}` or a backtick) may be inside a
-    // multi-word value: resume after the first token with an odd quote count, which closes it.
-    if (!scanned && (stripped || follows)) {
+    // In a segment that follows `)`, `}` or a backtick, a word that still fails may be inside a multi-word value: resume
+    // after the first token with an odd quote count, which closes it. (After an odd-quote strip the quote is already closed.)
+    if (!scanned && follows) {
       scanned = true;
       while (i < tokens.length && !oddQuote(tokens[i]!)) i++;
       continue;
