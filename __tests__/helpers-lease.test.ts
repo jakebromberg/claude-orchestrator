@@ -172,6 +172,9 @@ describe("scriptedLease", () => {
   it("applies per-call overrides, and an explicit undefined drops the scripted field", () => {
     const lease = scriptedLease("/unused");
     expect(lease.opts({ policy: { heavyCeiling: 3, heavyWarning: 2 } }).policy).toEqual({ heavyCeiling: 3, heavyWarning: 2 });
-    expect(lease.opts({ level: undefined }).level).toBeUndefined();
+    // The key itself goes, so a caller spreading these options over its defaults keeps the real field.
+    expect(lease.opts({ level: undefined })).not.toHaveProperty("level");
+    const defaults: Record<string, unknown> = { level: "real" };
+    expect({ ...defaults, ...lease.opts({ level: undefined }) }.level).toBe("real");
   });
 });

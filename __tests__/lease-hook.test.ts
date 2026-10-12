@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { leaseStatus, tryAcquireLease, releaseHolder, type LeaseEvent, type LeaseOptions } from "../src/lease.js";
 import { isHeavyCommand, isHeavyHookCall, runHook, settingsEntries } from "../src/lease-hook.js";
-import { scriptedPressureSampler } from "../src/testing.js";
 import { isolatedLeaseEnv, scriptedLease, unwritableLeaseDir, type FakeLeaseClock, type ScriptedLease } from "./helpers/lease.js";
 
 const CLI = "/opt/co/dist/src/cli-lease.js";

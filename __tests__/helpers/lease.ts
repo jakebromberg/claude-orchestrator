@@ -91,17 +91,21 @@ export function scriptedLease(
     alive,
     events,
     warnings,
-    opts: (over = {}) => ({
-      dir,
-      level: scriptedPressureSampler(init.level ?? "normal", init.fresh ? { fresh: init.fresh } : {}),
-      policy: init.policy ?? { heavyCeiling: 1, heavyWarning: 1 },
-      isAlive: (pid) => alive.has(pid),
-      now: clock.now,
-      sleep: clock.sleep,
-      onEvent: (e) => void events.push(e),
-      warn: (m) => void warnings.push(m),
-      ...over,
-    }),
+    opts: (over = {}) => {
+      const opts: LeaseOptions = {
+        dir,
+        level: scriptedPressureSampler(init.level ?? "normal", init.fresh ? { fresh: init.fresh } : {}),
+        policy: init.policy ?? { heavyCeiling: 1, heavyWarning: 1 },
+        isAlive: (pid) => alive.has(pid),
+        now: clock.now,
+        sleep: clock.sleep,
+        onEvent: (e) => void events.push(e),
+        warn: (m) => void warnings.push(m),
+        ...over,
+      };
+      for (const [key, value] of Object.entries(over)) if (value === undefined) delete opts[key as keyof LeaseOptions];
+      return opts;
+    },
   };
 }
 
