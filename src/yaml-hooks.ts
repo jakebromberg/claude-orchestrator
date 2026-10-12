@@ -12,7 +12,7 @@ import { resolveRepoSettings } from "./repo-settings.js";
 import { perIssueSpawnArgs } from "./model-effort.js";
 import { shellQuote } from "./shell-quote.js";
 import { claudeExecOptions } from "./claude-env.js";
-import { acquireLease, type LeaseHandle, type LeaseOptions, type LeaseRefusal } from "./lease.js";
+import { acquireLease, defaultWarn, type LeaseHandle, type LeaseOptions, type LeaseRefusal } from "./lease.js";
 import { stopAtCritical } from "./memory-pressure.js";
 
 const OUTPUT_TAIL_BYTES = 64 * 1024;
@@ -97,7 +97,7 @@ function acquireCheckLease(
         const at = performance.now();
         if (lastLogged !== undefined && at - lastLogged < WAIT_LOG_INTERVAL_MS) return;
         lastLogged = at;
-        (lease.warn ?? console.warn)(
+        (lease.warn ?? defaultWarn)(
           `Issue #${issue.number} post-check waiting for a lease slot (${s.level}, ${s.live.length}/${s.capacity} slots held)`,
         );
       },

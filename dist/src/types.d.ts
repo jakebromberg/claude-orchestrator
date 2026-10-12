@@ -175,7 +175,7 @@ export interface OrchestratorHooks {
      * A check that uses it takes one slot with `acquireLease` before its heavy commands and releases it in `finally`. It
      * must report each child's PID through the handle's `setChildPid` (the holder is reaped after 90 s without a
      * heartbeat, and a check that blocks the event loop sends none) and must not block the event loop. Pass
-     * `stopWhen: (s) => stopAtCritical(s.level, s.live.length + ctx.runningSessions())` so a wait at `critical` ends
+     * `stopWhen: (s) => stopAtCritical(s.level, s.live.length + (ctx.runningSessions?.() ?? 0))` so a wait at `critical` ends
      * once nothing is left to relieve the pressure, and return `stopped: "memory-critical"` without running the heavy
      * commands. `ctx.runningSessions()` counts the engine's running `claude` sessions, never the check's own.
      */

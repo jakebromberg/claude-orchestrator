@@ -533,6 +533,26 @@ describe("runningSessions", () => {
     expect(seen).toEqual([{ issue: 1, running: 1 }, { issue: 2, running: 0 }]);
   });
 
+  it("hands each check the engine's own Deps.lease", async () => {
+    const seen: unknown[] = [];
+    const { orchestrator, runner, deps } = setUp(1, "normal", {
+      hooks: {
+        postSessionCheck: vi.fn(async (_i: Issue, _w: string, ctx?: CheckCtx) => {
+          seen.push(ctx?.lease);
+          return { passed: true };
+        }),
+      },
+    });
+    deps.lease = { dir: "/unused", level: deps.memoryPressure!, policy: { heavyCeiling: 1, heavyWarning: 1 } };
+    const wave = orchestrator.runWave(1);
+    await vi.advanceTimersByTimeAsync(0);
+    runner.resolvers.get(1000)!(0);
+    await wave;
+
+    expect(seen).toEqual([deps.lease]);
+    expect(seen[0]).toBe(deps.lease);
+  });
+
   it("is already uncounted in a continuation chained on the session's own exitCode", async () => {
     const { orchestrator, runner } = setUp(1, "normal");
     const seen: number[] = [];
