@@ -505,6 +505,26 @@ describe("lease", () => {
       expect(stderr).not.toHaveBeenCalled();
     });
 
+    it("never lets a throwing injected writer change what the policy, sampler or sink does", async () => {
+      const w = vi.fn(() => {
+        throw new Error("sink closed");
+      });
+      const o = defaultLeaseOptions({ CO_LEASE_DIR: dir, CO_LEASE_SLOTS: "many", CO_PRESSURE_OVERRIDE: "nope" }, { warn: w });
+      expect(w).toHaveBeenCalled();
+      expect(o.policy).toEqual({ heavyCeiling: 4, heavyWarning: 1 });
+      expect(() => o.level()).not.toThrow();
+      writeFileSync(join(tmp, "blocker"), "");
+      ((await acquireLease({ ...o, dir: join(tmp, "blocker", "lease") }, meta)) as LeaseHandle).release();
+    });
+
+    it("tags the policy's and sampler's lines with 'memory-pressure:' so each is identifiable", () => {
+      const w = vi.fn();
+      defaultLeaseOptions({ CO_LEASE_DIR: dir, CO_LEASE_SLOTS: "many", CO_PRESSURE_OVERRIDE: "nope" }, { warn: w })?.level();
+      const lines = w.mock.calls.map(([m]) => String(m));
+      expect(lines.length).toBeGreaterThanOrEqual(2);
+      expect(lines.every((l) => /^(memory-pressure|lease): /.test(l))).toBe(true);
+    });
+
     it("prints no default line that starts with '[lease] lease:'", async () => {
       const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
       const o = defaultLeaseOptions({ CO_LEASE_DIR: dir, CO_LEASE_SLOTS: "many" }, { level: sampler });

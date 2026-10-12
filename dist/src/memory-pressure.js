@@ -128,7 +128,7 @@ export function leaseDirectory(env = process.env, accountHome = () => userInfo()
  * when `leaseDirectory(env)` does. `deps` exists for tests.
  */
 export function defaultPressureSampler(env = process.env, deps = {}) {
-    const { read = () => readMemoryPressure(), now = Date.now, log: emit = stderrWarn } = deps;
+    const { read = () => readMemoryPressure(), now = Date.now, log: emit = warnOnce } = deps;
     const logged = new Set();
     const log = (msg) => {
         if (!logged.has(msg)) {
@@ -176,7 +176,7 @@ export function defaultPressureSampler(env = process.env, deps = {}) {
     let overridden = false;
     const sampler = cachedPressureSampler(() => {
         const reading = raw();
-        const level = applyPressureOverride(reading, env);
+        const level = applyPressureOverride(reading, env, log);
         overridden = level !== reading;
         if (overridden)
             log(`CO_PRESSURE_OVERRIDE=${OVERRIDE_VALUE} in effect: critical reads as warning`);

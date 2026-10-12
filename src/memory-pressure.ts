@@ -167,7 +167,7 @@ export function defaultPressureSampler(
   env: NodeJS.ProcessEnv = process.env,
   deps: { read?: () => PressureLevel | null; now?: () => number; log?: (msg: string) => void } = {},
 ): PressureSampler {
-  const { read = () => readMemoryPressure(), now = Date.now, log: emit = stderrWarn } = deps;
+  const { read = () => readMemoryPressure(), now = Date.now, log: emit = warnOnce } = deps;
   const logged = new Set<string>();
   const log = (msg: string): void => {
     if (!logged.has(msg)) {
@@ -216,7 +216,7 @@ export function defaultPressureSampler(
   let overridden = false;
   const sampler = cachedPressureSampler(() => {
     const reading = raw();
-    const level = applyPressureOverride(reading, env);
+    const level = applyPressureOverride(reading, env, log);
     overridden = level !== reading;
     if (overridden) log(`CO_PRESSURE_OVERRIDE=${OVERRIDE_VALUE} in effect: critical reads as warning`);
     return level;
