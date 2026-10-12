@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const built = vi.hoisted(() => ({ deps: [] as ({ log?: (msg: string) => void } | undefined)[] }));
 vi.mock("../src/memory-pressure.js", async (importOriginal) => {
@@ -16,9 +19,15 @@ const { scriptedPressureSampler } = await import("../src/testing.js");
 const { defaultLeaseOptions } = await import("../src/lease.js");
 
 describe("defaultLeaseOptions sampler wiring", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "lease-options-"));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
   it("hands the sampler it builds a log that reaches the caller's warn", () => {
     const warn = vi.fn();
-    defaultLeaseOptions({ CO_LEASE_DIR: "/lease" }, { warn });
+    defaultLeaseOptions({ CO_LEASE_DIR: dir }, { warn });
     built.deps.at(-1)?.log?.("x");
     expect(warn).toHaveBeenCalledWith("memory-pressure: x");
   });
@@ -26,7 +35,7 @@ describe("defaultLeaseOptions sampler wiring", () => {
   it("builds no sampler when the caller supplies one", () => {
     built.deps.length = 0;
     const level = scriptedPressureSampler("normal", { overridden: false });
-    expect(defaultLeaseOptions({ CO_LEASE_DIR: "/lease" }, { level }).level).toBe(level);
+    expect(defaultLeaseOptions({ CO_LEASE_DIR: dir }, { level }).level).toBe(level);
     expect(built.deps).toEqual([]);
   });
 });
