@@ -107,9 +107,8 @@ function reapIfStale(lockFile: string, staleAfterMs: number, now: () => number):
     // A reaper that stalled past `staleAfterMs` since that check has lost its
     // turn, and the lock may now be another holder's: remove only the same file.
     const current = lstatSync(lockFile, { throwIfNoEntry: false });
-    if (current && (current.dev !== stale.dev || current.ino !== stale.ino || current.mtimeMs !== stale.mtimeMs)) {
-      return false;
-    }
+    if (!current) return true;
+    if (current.dev !== stale.dev || current.ino !== stale.ino || current.mtimeMs !== stale.mtimeMs) return false;
     rmSync(lockFile, { force: true });
     return true;
   } finally {

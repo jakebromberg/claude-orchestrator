@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { existsSync, fstatSync, lutimesSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, fstatSync, lutimesSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tryLockOnce, type FileLock } from "../src/file-lock.js";
@@ -8,15 +8,12 @@ import { tryLockOnce, type FileLock } from "../src/file-lock.js";
 // failure mock the module (as claude-auth-wiring.test.ts does). Until a row
 // queues a failure, both mocks make the real calls.
 const fault = vi.hoisted(() => ({ writeSync: vi.fn(), lstatSync: vi.fn() }));
-vi.mock("node:fs", async (importOriginal) => {
-  const fs = await importOriginal<typeof import("node:fs")>();
-  return {
-    ...fs,
-    writeSync: fault.writeSync.mockImplementation(fs.writeSync),
-    lstatSync: fault.lstatSync.mockImplementation(fs.lstatSync),
-  };
-});
-const { lstatSync: realLstatSync } = await vi.importActual<typeof import("node:fs")>("node:fs");
+vi.mock("node:fs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs")>()),
+  writeSync: fault.writeSync,
+  lstatSync: fault.lstatSync,
+}));
+const { lstatSync: realLstatSync, writeSync: realWriteSync } = await vi.importActual<typeof import("node:fs")>("node:fs");
 const ioError = (code: string): NodeJS.ErrnoException => Object.assign(new Error(`${code}: injected`), { code });
 
 describe("tryLockOnce", () => {
@@ -28,6 +25,9 @@ describe("tryLockOnce", () => {
   const ageLock = (ms: number, file = lockFile): void => setMtime(file, Date.now() - ms);
 
   beforeEach(() => {
+    // Drop any failure a failed row queued but never consumed.
+    fault.writeSync.mockReset().mockImplementation(realWriteSync);
+    fault.lstatSync.mockReset().mockImplementation(realLstatSync);
     tmp = mkdtempSync(join(tmpdir(), "file-lock-"));
     lockFile = join(tmp, ".mutex");
   });
@@ -95,29 +95,41 @@ describe("tryLockOnce", () => {
     expect([reaper, ...others].filter((l) => l !== null)).toHaveLength(1);
   });
 
-  // ext4 often gives a new file the inode number just freed; APFS does not.
-  it.each([
-    ["has a new inode number", false],
-    ["reuses the stale lock's inode number", true],
-  ])("leaves exactly one holder when a reaper stalls past staleAfterMs in its re-check and the new lock %s", (_name, reuseInode) => {
-    const turn = `${lockFile}.reap`;
+  // Each row's event runs inside the reaper's clock reading under its turn, just
+  // after its lstat judged the lock stale. ext4 often gives a new file the inode
+  // number just freed; APFS does not, so one row fakes that.
+  const takeOverStalledReap = (): void => {
+    ageLock(staleAfterMs + 1_000, `${lockFile}.reap`);
+    expect(tryLockOnce(lockFile, { staleAfterMs })).not.toBeNull();
+  };
+  it.each<[string, (stale: Stats) => void]>([
+    ["the reaper stalls past staleAfterMs and another caller reaps its turn and the lock, and takes it", takeOverStalledReap],
+    ["the same happens and the new lock reuses the stale lock's inode number", ({ dev, ino }) => {
+      takeOverStalledReap();
+      fault.lstatSync.mockImplementationOnce((file: string) => Object.assign(realLstatSync(file), { dev, ino }));
+    }],
+    ["a late release removes the lock and a new caller takes it just after the reaper's last lstat", () => {
+      rmSync(lockFile);
+      fault.lstatSync.mockImplementationOnce((file: string) => {
+        const gone = realLstatSync(file, { throwIfNoEntry: false });
+        expect(tryLockOnce(lockFile, { staleAfterMs })).not.toBeNull();
+        return gone;
+      });
+    }],
+  ])("leaves exactly one holder of a stale lock when %s", (_name, midReap) => {
     writeFileSync(lockFile, "");
     ageLock(staleAfterMs + 1_000);
-    const { dev, ino } = realLstatSync(lockFile);
-    let other: FileLock | null | undefined;
-    // The reaper's clock reading under its turn (after its lstat) stalls: its turn
-    // goes stale, and another caller reaps the turn and the lock, and takes the lock.
+    const stale = realLstatSync(lockFile);
+    let ran = false;
     const now = (): number => {
-      if (other === undefined && existsSync(turn)) {
-        ageLock(staleAfterMs + 1_000, turn);
-        other = tryLockOnce(lockFile, { staleAfterMs });
-        if (reuseInode) fault.lstatSync.mockImplementationOnce((file: string) => Object.assign(realLstatSync(file), { dev, ino }));
+      if (!ran && existsSync(`${lockFile}.reap`)) {
+        ran = true;
+        midReap(stale);
       }
       return Date.now();
     };
-    const reaper = tryLockOnce(lockFile, { staleAfterMs, now });
-    expect(other).toBeTruthy();
-    expect(reaper).toBeNull();
+    expect(tryLockOnce(lockFile, { staleAfterMs, now })).toBeNull();
+    expect(existsSync(lockFile)).toBe(true);
   });
 
   it.each([
