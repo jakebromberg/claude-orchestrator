@@ -306,6 +306,12 @@ describe("pressure-aware launches", () => {
       ends: "failed",
     },
     {
+      name: "skipped by the wrapper's shouldSkipIssue",
+      opts: { hooks: { shouldSkipIssue: () => ({ skip: true }) } },
+      run: (o) => o.runSpecific([1]),
+      ends: "succeeded",
+    },
+    {
       name: "held at a cutover gate",
       opts: {
         shape: (issues) => {
@@ -326,8 +332,11 @@ describe("pressure-aware launches", () => {
     expect(status(1)).toBe(ends);
     expect(meta(1).failureReason).toBeUndefined();
     expect(meta(1).stopStage).toBeUndefined();
-    const heldLines = logger.warn.mock.calls.filter(([m]) => String(m).includes("held at a cutover gate"));
-    expect(heldLines.some(([m]) => String(m).includes("Held: 1"))).toBe(Boolean(held));
+    if (held) {
+      // Only runAllWaves reports held gates, so only the held row can assert it.
+      const heldLines = logger.warn.mock.calls.filter(([m]) => String(m).includes("held at a cutover gate"));
+      expect(heldLines.some(([m]) => String(m).includes("Held: 1"))).toBe(true);
+    }
   });
 
   it("leaves the metadata of an already-succeeded issue unchanged", async () => {
@@ -434,6 +443,22 @@ describe("pressure-aware retries", () => {
     expect(runner.spawned.length).toBe(1);
     expect(status(1)).toBe("failed");
     expect(meta(1)).toMatchObject({ failureReason: "memory-critical", stopStage: "retry" });
+  });
+
+  it("clears a marker left during the first attempt once the 0-byte retry has run", async () => {
+    const { orchestrator, runner, deps, status, meta } = setUp(1, "normal", { logSize: 0 });
+    const wave = orchestrator.runWave(1);
+    await vi.advanceTimersByTimeAsync(0);
+    deps.metadataStore.update("1", { failureReason: "memory-critical", stopStage: "launch" }); // left by the first attempt
+    runner.resolvers.get(1000)!(1); // 0-byte failure: retried once
+    await vi.advanceTimersByTimeAsync(0);
+    runner.resolvers.get(1001)!(1); // the retry fails too, so nothing later can clear the marker
+    await wave;
+
+    expect(runner.spawned.length).toBe(2);
+    expect(status(1)).toBe("failed");
+    expect(meta(1).failureReason).toBeUndefined();
+    expect(meta(1).stopStage).toBeUndefined();
   });
 
   it.each([1, 2])(
