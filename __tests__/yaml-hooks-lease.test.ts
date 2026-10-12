@@ -282,6 +282,7 @@ describe("leased postSessionCheck", () => {
   describe("waiting line", () => {
     it("logs at most once a minute, throttled on the lease's waitedMs", async () => {
       const full = tryAcquireLease(leaseOptions(), { command: "other", cwd: "/" })!;
+      // The clock passes the 90 s heartbeat window, so the live child PID is what keeps the blocking holder live.
       full.setChildPid(process.pid);
       let elapsed = 0;
       const steps = [0, 20_000, 50_000, 61_000, 70_000, 125_000, 130_000];
