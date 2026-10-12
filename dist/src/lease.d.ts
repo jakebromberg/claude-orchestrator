@@ -133,11 +133,10 @@ export declare function defaultWarn(msg: string): void;
 /** A single non-blocking attempt: a handle, or `null` when not admitted this poll. Throws a `TypeError` on a detached id outside `[A-Za-z0-9_-]`. */
 export declare function tryAcquireLease(opts: LeaseOptions, meta: HolderMeta): LeaseHandle | null;
 /**
- * Polls (3 s ± 1 s, never spinning) until admitted. `stopWhen` is checked on
- * every poll, and a stop is confirmed with a `level.fresh()` re-read before it
- * is returned, so one stale cached sample cannot end a wave. `onWait` also receives `waitedMs`, the wait measured on
- * `LeaseOptions.now` and equal to the `waitedMs` of the admission or refusal at that poll, so a progress line can throttle
- * on it without a clock of its own.
+ * Polls (3 s ± 1 s, never spinning) until admitted. `stopWhen` is checked on every poll, and a stop is confirmed with a
+ * `level.fresh()` re-read before it is returned, so one stale cached sample cannot end a wave. `onWait` runs on each poll
+ * that neither admits nor refuses, and also receives `waitedMs`: the wait so far, measured on `LeaseOptions.now` the
+ * same way as an admission's or refusal's `waitedMs`, so a progress line can throttle on it without a clock of its own.
  */
 export declare function acquireLease(opts: LeaseOptions, meta: HolderMeta, wait?: {
     maxWaitMs?: number;
