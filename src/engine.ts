@@ -256,6 +256,10 @@ export class Orchestrator {
         continue;
       }
 
+      // Taking the issue up again: whatever ends this dispatch must not inherit
+      // a stop marker from an earlier one (a stop in this dispatch re-sets its own).
+      this.deps.metadataStore.update(issue.ref, NO_STOP);
+
       // Let the wrapper skip issues. Write succeeded so dependents see this
       // dep as fulfilled — a skip-return means the work is done by other means.
       const skipResult = this.config.hooks.shouldSkipIssue(issue);
