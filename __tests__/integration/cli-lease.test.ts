@@ -1,0 +1,154 @@
+import { execFile, execFileSync, spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+
+/**
+ * Integration test for the `claude-orchestrator-lease` CLI, against the built
+ * `dist/`. Every process runs in a fresh mkdtemp lease directory with capacity
+ * pinned to 1 at every pressure level (`CO_LEASE_SLOTS=1` plus
+ * `CO_PRESSURE_OVERRIDE=critical-as-warning`), so nothing touches the
+ * machine's real lease directory.
+ */
+
+const cliPath = fileURLToPath(new URL("../../dist/src/cli-lease.js", import.meta.url));
+
+interface CliRun {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+/** The parent env with every `CO_LEASE_*` / `CO_PRESSURE_*` scrubbed, then the isolation settings applied. */
+function isolatedEnv(leaseDir: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([k]) => !k.startsWith("CO_LEASE_") && !k.startsWith("CO_PRESSURE_")),
+  );
+  return { ...env, CO_LEASE_DIR: leaseDir, CO_LEASE_SLOTS: "1", CO_PRESSURE_OVERRIDE: "critical-as-warning", ...extra };
+}
+
+function runCli(args: string[], env: NodeJS.ProcessEnv): Promise<CliRun> {
+  return new Promise((resolve, reject) => {
+    execFile("node", [cliPath, ...args], { env }, (err, stdout, stderr) => {
+      if (err && typeof err.code !== "number") return reject(err);
+      resolve({ code: (err?.code as number | undefined) ?? 0, stdout, stderr });
+    });
+  });
+}
+
+/** The first holder record that has recorded its child PID. */
+function holderWithChild(leaseDir: string): { childPid: number } | undefined {
+  for (const file of holderFiles(leaseDir)) {
+    const rec = JSON.parse(fs.readFileSync(path.join(leaseDir, "holders", file), "utf8"));
+    if (rec.childPid) return rec;
+  }
+  return undefined;
+}
+
+const holderFiles = (leaseDir: string): string[] => {
+  try {
+    return fs.readdirSync(path.join(leaseDir, "holders")).filter((n) => n.endsWith(".json"));
+  } catch {
+    return [];
+  }
+};
+
+async function until<T>(read: () => T | undefined, what: string): Promise<T> {
+  for (let i = 0; i < 200; i++) {
+    const v = read();
+    if (v !== undefined) return v;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+describe("claude-orchestrator-lease (integration)", () => {
+  let tmpDir: string;
+  let leaseDir: string;
+  let childPids: number[];
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-lease-cli-"));
+    leaseDir = path.join(tmpDir, "lease");
+    childPids = [];
+  });
+  afterEach(() => {
+    for (const pid of childPids) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("passes the exit code through, prints the admitted line and releases the slot", async () => {
+    const r = await runCli(["--", "node", "-e", "process.exit(7)"], isolatedEnv(leaseDir));
+    expect(r.code).toBe(7);
+    expect(r.stderr).toMatch(/^lease: admitted after 0s \(pressure=\w+, 1\/1 live\)$/m);
+    expect(holderFiles(leaseDir)).toEqual([]);
+  });
+
+  it("runs --shell under /bin/sh with the parent's variables and CO_LEASE_HOLDER", async () => {
+    const r = await runCli(
+      ["--shell", 'echo "$PARENT_ONLY $CO_LEASE_HOLDER"; status=3; exit $status'],
+      isolatedEnv(leaseDir, { PARENT_ONLY: "from-parent", SHELL: "/bin/zsh" }),
+    );
+    expect(r.code).toBe(3);
+    expect(r.stdout).toMatch(/^from-parent \d+-[0-9a-f]{8}\n$/);
+  });
+
+  it("reports holders from status without creating the lease directory", async () => {
+    const r = await runCli(["status"], isolatedEnv(leaseDir));
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.stdout)).toEqual({ level: expect.any(String), capacity: 1, live: [] });
+    expect(fs.existsSync(leaseDir)).toBe(false);
+  });
+
+  it("exits 78 naming CO_LEASE_DIR for a relative directory, in the run form and in status", async () => {
+    const env = isolatedEnv("relative/dir");
+    for (const args of [["--", "node", "-e", "process.exit(0)"], ["status"]]) {
+      const r = await runCli(args, env);
+      expect(r.code).toBe(78);
+      expect(r.stderr).toMatch(/^lease: .*CO_LEASE_DIR.*\n$/);
+      expect(r.stdout).toBe("");
+    }
+  });
+
+  it("forwards SIGTERM to the child, exits 143 and releases the slot", async () => {
+    const wrapper = spawn("node", [cliPath, "--", "node", "-e", "setTimeout(() => {}, 60000)"], { env: isolatedEnv(leaseDir), stdio: "ignore" });
+    const exited = new Promise<number | null>((resolve) => wrapper.once("exit", (code) => resolve(code)));
+    await until(() => holderWithChild(leaseDir), "the holder to record its child PID");
+    wrapper.kill("SIGTERM");
+    expect(await exited).toBe(143);
+    expect(holderFiles(leaseDir)).toEqual([]);
+  }, 30_000);
+
+  it("keeps the slot when the wrapper is SIGKILLed while its child lives, and frees it when the child dies", async () => {
+    const env = isolatedEnv(leaseDir);
+    const wrapper = spawn("node", [cliPath, "--label", "long job", "--", "node", "-e", "setTimeout(() => {}, 60000)"], {
+      env,
+      stdio: "ignore",
+    });
+    const wrapperExit = new Promise<void>((resolve) => wrapper.once("exit", () => resolve()));
+    const rec = await until(() => holderWithChild(leaseDir), "the holder to record its child PID");
+    childPids.push(rec.childPid);
+
+    wrapper.kill("SIGKILL");
+    await wrapperExit;
+
+    const status = JSON.parse((await runCli(["status"], env)).stdout);
+    expect(status.live).toEqual([{ pid: wrapper.pid, command: "long job", ageSec: expect.any(Number) }]);
+    const busy = await runCli(["--max-wait", "0", "--", "node", "-e", "process.exit(0)"], env);
+    expect(busy.code).toBe(75);
+    expect(busy.stderr).toContain("lease: no slot after 0s");
+    expect(busy.stderr).toContain("rerun the command — this is not a test failure");
+
+    process.kill(rec.childPid, "SIGKILL");
+    const freed = () => (JSON.parse(execFileSync("node", [cliPath, "status"], { env, encoding: "utf8" })).live.length === 0 ? true : undefined);
+    await until(freed, "the slot to free");
+  }, 30_000);
+});
