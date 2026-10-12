@@ -2,7 +2,7 @@ import { execFileSync, execSync, spawn } from "node:child_process";
 import { existsSync as fsExistsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Issue, OrchestratorHooks, PostCheckResult, Status } from "./types.js";
+import type { Issue, OrchestratorHooks, PostCheckResult, PostSessionCheckContext, Status } from "./types.js";
 import type { YamlConfig } from "./yaml-types.js";
 import { createPrintSummary, type SummaryColumn } from "./summary.js";
 import { interpolate } from "./interpolate.js";
@@ -97,9 +97,12 @@ function acquireCheckLease(
         const at = performance.now();
         if (lastLogged !== undefined && at - lastLogged < WAIT_LOG_INTERVAL_MS) return;
         lastLogged = at;
-        (lease.warn ?? defaultWarn)(
-          `Issue #${issue.number} post-check waiting for a lease slot (${s.level}, ${s.live.length}/${s.capacity} slots held)`,
-        );
+        // A throwing writer must never change what the check does.
+        try {
+          (lease.warn ?? defaultWarn)(
+            `Issue #${issue.number} post-check waiting for a lease slot (${s.level}, ${s.live.length}/${s.capacity} slots held)`,
+          );
+        } catch {}
       },
       stopWhen: (s) => stopAtCritical(s.level, s.live.length + runningSessions()),
     },
@@ -360,7 +363,7 @@ export function deriveHooks(
     hooks.postSessionCheck = async (
       issue: Issue,
       worktreePath: string,
-      ctx?: { lease?: LeaseOptions; runningSessions?(): number },
+      ctx?: PostSessionCheckContext,
     ): Promise<PostCheckResult> => {
       // Resolve this issue's repo's effective check profile: its commands, its
       // collision domains, and — critically — its base branch (iOS `master`,
