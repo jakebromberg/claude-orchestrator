@@ -1,4 +1,4 @@
-import type { Issue, Status, IssueMetadata } from "./types.js";
+import type { Issue, Status, IssueMetadata, FailureReason, StopStage } from "./types.js";
 import { repoOfRef } from "./ref.js";
 
 /**
@@ -32,6 +32,9 @@ export interface ReportData {
     status: Status;
     prUrl?: string;
     prNumber?: number;
+    /** Set when the engine stopped this issue rather than the model failing it. */
+    failureReason?: FailureReason;
+    stopStage?: StopStage;
   }>;
 }
 
@@ -60,6 +63,8 @@ export function generateReport(
         wave: issue.wave,
         status: getStatus(issue.ref),
         ...(meta.prUrl ? { prUrl: meta.prUrl, prNumber: meta.prNumber } : {}),
+        ...(meta.failureReason ? { failureReason: meta.failureReason } : {}),
+        ...(meta.stopStage ? { stopStage: meta.stopStage } : {}),
       };
     }),
   };

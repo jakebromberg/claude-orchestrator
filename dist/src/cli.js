@@ -7,6 +7,7 @@ export function parseArgs(argv) {
         mergeAfterWave: false,
         detach: false,
         notify: false,
+        noAdaptive: false,
     };
     let i = 0;
     while (i < argv.length) {
@@ -47,6 +48,10 @@ export function parseArgs(argv) {
                 break;
             case "--notify":
                 result.notify = true;
+                i++;
+                break;
+            case "--no-adaptive":
+                result.noAdaptive = true;
                 i++;
                 break;
             case "--tail":

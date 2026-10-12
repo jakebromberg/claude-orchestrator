@@ -3,7 +3,7 @@ export type {
   Status, IssueSpec, Issue, RawOrchestratorConfig, OrchestratorConfig,
   MergePolicy, RunOptions, PostCheckResult, OrchestratorHooks,
   ParsedMode, ParsedArgs, StatusStore, ProcessHandle, ProcessRunner,
-  Logger, IssueMetadata, MetadataStore, Deps, RunRecord, IssueCommentsConfig, LabelSyncConfig, RetryOnCheckFailureConfig,
+  Logger, IssueMetadata, FailureReason, StopStage, MetadataStore, Deps, RunRecord, IssueCommentsConfig, LabelSyncConfig, RetryOnCheckFailureConfig,
 } from "./types.js";
 
 // Engine
@@ -35,6 +35,9 @@ export type { SummaryColumn, SummaryOptions } from "./summary.js";
 
 // Process management
 export { ProcessPool } from "./process-pool.js";
+export type { ProcessPoolOptions } from "./process-pool.js";
+export { createCapacityGovernor } from "./capacity-governor.js";
+export type { CapacityGovernor } from "./capacity-governor.js";
 export { StallMonitor } from "./stall-monitor.js";
 export type { StallMonitorOptions } from "./stall-monitor.js";
 

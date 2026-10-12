@@ -1,4 +1,4 @@
-import type { Issue, Status, IssueMetadata } from "./types.js";
+import type { Issue, Status, IssueMetadata, FailureReason, StopStage } from "./types.js";
 export interface ReportData {
     configName: string;
     startedAt: string;
@@ -19,6 +19,9 @@ export interface ReportData {
         status: Status;
         prUrl?: string;
         prNumber?: number;
+        /** Set when the engine stopped this issue rather than the model failing it. */
+        failureReason?: FailureReason;
+        stopStage?: StopStage;
     }>;
 }
 export declare function generateReport(configName: string, issues: Issue[], getStatus: (ref: string) => Status, getMetadata: (ref: string) => IssueMetadata, startedAt: Date, finishedAt: Date): ReportData;

@@ -9,6 +9,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     mergeAfterWave: false,
     detach: false,
     notify: false,
+    noAdaptive: false,
   };
 
   let i = 0;
@@ -59,6 +60,11 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
       case "--notify":
         result.notify = true;
+        i++;
+        break;
+
+      case "--no-adaptive":
+        result.noAdaptive = true;
         i++;
         break;
 

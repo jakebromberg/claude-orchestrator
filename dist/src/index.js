@@ -14,6 +14,7 @@ export { consoleLogger, createSilentLogger, colors } from "./log.js";
 export { createPrintSummary } from "./summary.js";
 // Process management
 export { ProcessPool } from "./process-pool.js";
+export { createCapacityGovernor } from "./capacity-governor.js";
 export { StallMonitor } from "./stall-monitor.js";
 // Watch
 export { startWatch, renderDashboard, readLastLogLine } from "./watch.js";

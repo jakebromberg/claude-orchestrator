@@ -7,7 +7,13 @@ import { encodeRefForFilename, repoOfRef } from "./ref.js";
 import { perIssueSpawnArgs } from "./model-effort.js";
 import { isModeNode, isCommandNode, cutoverReason, manualGateLabel } from "./mode-node.js";
 import { shellQuote } from "./shell-quote.js";
+import { createCapacityGovernor } from "./capacity-governor.js";
+import { stopAtCritical } from "./memory-pressure.js";
 const STALL_CHECK_INTERVAL_MS = 10_000;
+/** How often live pressure is re-read to adapt the launch capacity. */
+const PRESSURE_CHECK_INTERVAL_MS = 10_000;
+/** Merged into metadata updates so a stale stop marker never misclassifies a later model failure. */
+const NO_STOP = { failureReason: undefined, stopStage: undefined };
 /**
  * How many scraped PR URLs to put to `gh pr view` before giving up.
  *
@@ -25,11 +31,13 @@ export class Orchestrator {
     deps;
     maxParallel;
     mergePolicy;
+    adaptive;
     constructor(config, deps, options) {
         this.config = config;
         this.deps = deps;
         this.maxParallel = options?.maxParallel ?? 4;
         this.mergePolicy = options?.mergePolicy ?? "none";
+        this.adaptive = options?.adaptive ?? true;
     }
     checkPrerequisites() {
         if (!this.deps.commandExists("claude")) {
@@ -98,7 +106,8 @@ export class Orchestrator {
      * a run that quietly skipped half the DAG reads as a clean success. Surface it.
      */
     reportHeldGates() {
-        const held = this.config.issues.filter((i) => this.deps.statusStore.get(i.ref) === "pending");
+        const held = this.config.issues.filter((i) => this.deps.statusStore.get(i.ref) === "pending" &&
+            this.deps.metadataStore.get(i.ref).failureReason === undefined);
         if (held.length === 0)
             return;
         const skipped = this.config.issues.filter((i) => this.deps.statusStore.get(i.ref) === "skipped").length;
@@ -497,12 +506,59 @@ export class Orchestrator {
         await this.setStatus(issue, "succeeded");
         this.deps.logger.info(`Issue #${issue.number} succeeded${note}`);
     }
+    /**
+     * Record that memory pressure stopped `issue` at `stage`. An unstarted issue
+     * stays `pending`; one already running is marked `failed`.
+     */
+    async markStopped(issue, stage, status) {
+        this.deps.metadataStore.update(issue.ref, { failureReason: "memory-critical", stopStage: stage });
+        if (status)
+            await this.setStatus(issue, status);
+    }
+    /** True (and the issue is failed and stopped) when a fresh reading says a retry may not start. */
+    async retryRefused(issue) {
+        if (this.deps.memoryPressure?.fresh() !== "critical")
+            return false;
+        this.deps.logger.error(`Issue #${issue.number}: memory pressure is critical, not starting a retry`);
+        await this.markStopped(issue, "retry", "failed");
+        return true;
+    }
     async launchAndWait(ready) {
-        const pool = new ProcessPool(this.maxParallel);
+        const sampler = this.deps.memoryPressure;
+        const governor = sampler && createCapacityGovernor({
+            sampler,
+            maxParallel: this.maxParallel,
+            adaptive: this.adaptive,
+            logger: this.deps.logger,
+        });
+        const pool = new ProcessPool(this.maxParallel, {
+            capacity: governor?.capacity,
+            // A cached critical reading alone never ends the wave; a fresh one must agree.
+            shouldStop: sampler && ((active) => stopAtCritical(sampler(), active) && stopAtCritical(sampler.fresh(), active)),
+        });
+        const timer = governor && setInterval(() => {
+            governor.tick();
+            pool.recheck();
+        }, PRESSURE_CHECK_INTERVAL_MS);
+        timer?.unref();
+        try {
+            await this.launchSessions(ready, pool);
+        }
+        finally {
+            clearInterval(timer);
+        }
+    }
+    async launchSessions(ready, pool) {
         let fallbackTriggered = false;
         const postCheckPromises = [];
-        for (const { issue, prompt, sessionId } of ready) {
-            await pool.waitForSlot();
+        for (const [index, { issue, prompt, sessionId }] of ready.entries()) {
+            if (await pool.waitForSlot() === "stop") {
+                const unstarted = ready.slice(index).map((r) => r.issue);
+                for (const i of unstarted)
+                    await this.markStopped(i, "launch");
+                this.deps.logger.warn(`Memory pressure is critical and no session is active; not launching ${unstarted.map((i) => i.ref).join(", ")} (failureReason: memory-critical)`);
+                break;
+            }
             await this.setStatus(issue, "running");
             this.deps.logger.step(`Launching Claude session for issue #${issue.number}: ${issue.description}`);
             const worktreePath = this.config.hooks.getWorktreePath(issue);
@@ -526,7 +582,7 @@ export class Orchestrator {
                 "--verbose",
             ];
             const launchTime = new Date().toISOString();
-            this.deps.metadataStore.update(issue.ref, { startedAt: launchTime });
+            this.deps.metadataStore.update(issue.ref, { startedAt: launchTime, ...NO_STOP });
             const stderrFile = `${this.config.configDir}/logs/issue-${encodeRefForFilename(issue.ref)}.stderr.log`;
             const handle = this.deps.processRunner.spawn("claude", args, { cwd: worktreePath, logFile, stderrFile });
             handle.issueNumber = issue.number;
@@ -563,6 +619,8 @@ export class Orchestrator {
                             }
                         }
                         catch { }
+                        if (await this.retryRefused(issue))
+                            return;
                         this.deps.logger.warn(`Issue #${issue.number} produced 0-byte log (exit ${exitCode}), retrying once...`);
                         this.deps.truncateFile(logFile);
                         this.deps.truncateFile(stderrFile);
@@ -587,6 +645,7 @@ export class Orchestrator {
                         this.deps.metadataStore.update(issue.ref, {
                             exitCode: retryExitCode,
                             finishedAt: new Date().toISOString(),
+                            ...NO_STOP,
                         });
                         this.recordPrFromLog(issue, logFile);
                         if (retryExitCode !== 0) {
@@ -626,6 +685,7 @@ export class Orchestrator {
     async runPostSessionCheck(issue, worktreePath) {
         if (!this.config.hooks.postSessionCheck)
             return { passed: true };
+        this.deps.metadataStore.update(issue.ref, NO_STOP);
         try {
             const result = await this.config.hooks.postSessionCheck(issue, worktreePath);
             if (!result.passed) {
@@ -642,6 +702,10 @@ export class Orchestrator {
     async handleCheckResultWithRetry(issue, checkResult, originalPrompt, worktreePath, logFile, stderrFile) {
         if (checkResult.passed)
             return true;
+        if (checkResult.stopped) {
+            await this.markStopped(issue, "post-check", "failed");
+            return false;
+        }
         const retryConfig = this.config.retryOnCheckFailure;
         if (!retryConfig?.enabled) {
             await this.setStatus(issue, "failed");
@@ -649,6 +713,8 @@ export class Orchestrator {
         }
         const maxRetries = retryConfig.maxRetries;
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            if (await this.retryRefused(issue))
+                return false;
             this.deps.logger.warn(`Issue #${issue.number} check failed, retry ${attempt}/${maxRetries}...`);
             const failureContext = checkResult.output ?? checkResult.summary ?? "unknown failure";
             const retryPrompt = `${originalPrompt}\n\n## CI Failure Context\n\nThe following checks failed:\n\n${failureContext}\n\nPlease fix these issues.`;
@@ -669,6 +735,7 @@ export class Orchestrator {
                 exitCode: retryExitCode,
                 finishedAt: new Date().toISOString(),
                 retryCount: attempt,
+                ...NO_STOP,
             });
             if (retryExitCode !== 0) {
                 await this.setStatus(issue, "failed");

@@ -12,7 +12,12 @@ describe("parseArgs", () => {
       mergeAfterWave: false,
       detach: false,
       notify: false,
+      noAdaptive: false,
     });
+  });
+
+  it("parses --no-adaptive", () => {
+    expect(parseArgs(["--no-adaptive"]).noAdaptive).toBe(true);
   });
 
   it("parses --help", () => {

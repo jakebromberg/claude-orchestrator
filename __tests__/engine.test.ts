@@ -2057,12 +2057,15 @@ describe("Orchestrator", () => {
       expect(runner.spawned.length).toBe(3);
 
       // Issue 1 retry: still 0-byte, exit 1 -> triggers setMaxParallel(1) and
-      // frees issue 1's slot, so issue 3 (pid=1003) spawns
+      // frees issue 1's slot. Issue 2 is still running, so the limit of 1 is
+      // already met and issue 3 keeps waiting.
       runner.resolvers.get(1002)!(1);
-      await vi.waitFor(() => expect(runner.spawned.length).toBe(4));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(runner.spawned.length).toBe(3);
 
-      // Issues 2 and 3 complete successfully — pool now has 0 active
+      // Issue 2 completes -> issue 3 (pid=1003) spawns, then completes
       runner.resolvers.get(1001)!(0);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(4));
       runner.resolvers.get(1003)!(0);
 
       // Issue 4 (pid=1004) should spawn (maxParallel=1, 0 active -> has slot)

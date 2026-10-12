@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { ProcessPool } from "../src/process-pool.js";
 import type { ProcessHandle, ProcessRunner } from "../src/types.js";
 
@@ -221,5 +221,71 @@ describe("ProcessPool", () => {
       await slot;
       expect(pool.activeCount).toBe(0);
     });
+  });
+});
+
+describe("ProcessPool capacity and stop", () => {
+  let runner: ReturnType<typeof createMockRunner>;
+  const spawn = () => runner.spawn("cmd", [], { cwd: "/a", logFile: "/a.log" });
+
+  beforeEach(() => {
+    runner = createMockRunner();
+  });
+
+  it("limits slots to min(maxParallel, capacity())", () => {
+    let cap = 1;
+    const pool = new ProcessPool(4, { capacity: () => cap });
+    pool.add(spawn());
+    expect(pool.isFull).toBe(true);
+
+    cap = 9;
+    expect(pool.isFull).toBe(false);
+  });
+
+  it("waits through a recheck that leaves the pool full, then resolves go once capacity rises", async () => {
+    let cap = 0;
+    const pool = new ProcessPool(4, { capacity: () => cap });
+    let result: string | undefined;
+    pool.waitForSlot().then((r) => (result = r));
+
+    pool.recheck();
+    await Promise.resolve();
+    expect(result).toBeUndefined();
+
+    cap = 2;
+    pool.recheck();
+    await vi.waitFor(() => expect(result).toBe("go"));
+  });
+
+  it("wakes every waiter when setMaxParallel raises the limit", async () => {
+    const pool = new ProcessPool(1);
+    pool.add(spawn());
+    const results: string[] = [];
+    pool.waitForSlot().then((r) => results.push(r));
+    pool.waitForSlot().then((r) => results.push(r));
+
+    pool.setMaxParallel(3);
+    await vi.waitFor(() => expect(results).toEqual(["go", "go"]));
+  });
+
+  it("resolves stop when shouldStop holds for the active count", async () => {
+    const seen: number[] = [];
+    const pool = new ProcessPool(4, {
+      capacity: () => 0,
+      shouldStop: (active) => (seen.push(active), active === 0),
+    });
+
+    expect(await pool.waitForSlot()).toBe("stop");
+    expect(seen).toEqual([0]);
+  });
+
+  it("keeps waiting while shouldStop is false, and stops once the last process drains", async () => {
+    const pool = new ProcessPool(4, { capacity: () => 0, shouldStop: (active) => active === 0 });
+    const h = spawn();
+    pool.add(h);
+    const result = pool.waitForSlot();
+
+    runner.resolvers.get(h.pid)!(0);
+    expect(await result).toBe("stop");
   });
 });

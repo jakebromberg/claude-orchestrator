@@ -1,3 +1,4 @@
+import type { PressureSampler } from "./memory-pressure.js";
 export type Status = "pending" | "running" | "succeeded" | "failed" | "skipped" | "interrupted";
 export interface IssueSpec {
     number: number;
@@ -127,6 +128,8 @@ export type MergePolicy = "none" | "after-wave";
 export interface RunOptions {
     maxParallel?: number;
     mergePolicy?: MergePolicy;
+    /** Adapt to `warning` pressure and hold 60 s of hysteresis (default true). `critical` always stops. */
+    adaptive?: boolean;
 }
 export interface PostCheckResult {
     passed: boolean;
@@ -134,6 +137,8 @@ export interface PostCheckResult {
     summary?: string;
     /** Raw command output for machine consumption (injected into retry prompts). */
     output?: string;
+    /** The check did not run because memory pressure was critical; never retried. */
+    stopped?: "memory-critical";
 }
 export interface RetryOnCheckFailureConfig {
     maxRetries: number;
@@ -195,6 +200,7 @@ export interface ParsedArgs {
     mergeAfterWave: boolean;
     detach: boolean;
     notify: boolean;
+    noAdaptive: boolean;
     decomposeFile?: string;
     createIssues?: boolean;
     decomposeIssue?: number;
@@ -233,6 +239,10 @@ export interface Logger {
     step(message: string): void;
     header(message: string): void;
 }
+/** Why an issue ended without a model verdict; new values may be added. */
+export type FailureReason = "memory-critical";
+/** Where in an issue's pipeline a stop took effect. */
+export type StopStage = "launch" | "post-check" | "retry" | "session";
 export interface IssueMetadata {
     prUrl?: string;
     prNumber?: number;
@@ -241,6 +251,8 @@ export interface IssueMetadata {
     finishedAt?: string;
     filesChanged?: string[];
     retryCount?: number;
+    failureReason?: FailureReason;
+    stopStage?: StopStage;
 }
 export interface MetadataStore {
     get(ref: string): IssueMetadata;
@@ -274,6 +286,8 @@ export interface Deps {
         timeout?: number;
     }): string;
     truncateFile(path: string): void;
+    /** Memory-pressure sampler; absent reads as `"unknown"` (no adaptation, no stop). */
+    memoryPressure?: PressureSampler;
 }
 export interface RunRecord {
     id: string;

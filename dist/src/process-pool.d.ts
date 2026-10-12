@@ -4,13 +4,22 @@ interface CompletedProcess {
     issueNumber: number;
     exitCode: number;
 }
+export interface ProcessPoolOptions {
+    /** Live slot limit; the effective limit is `min(maxParallel, capacity())`. */
+    capacity?: () => number;
+    /** Called with the active count each time `waitForSlot` finds the pool full; true ends the wait with `"stop"`. */
+    shouldStop?: (active: number) => boolean;
+}
 export declare class ProcessPool {
+    private readonly options;
     private maxParallel;
     private active;
     private completed;
     private waiters;
-    constructor(maxParallel: number);
+    constructor(maxParallel: number, options?: ProcessPoolOptions);
     setMaxParallel(n: number): void;
+    /** Wake every waiter to re-evaluate the limit; call after the capacity may have changed. */
+    recheck(): void;
     /** Hold a slot until the process exits. */
     add(handle: ProcessHandle): void;
     /**
@@ -23,7 +32,8 @@ export declare class ProcessPool {
     get activeCount(): number;
     get isFull(): boolean;
     get activePids(): number[];
-    waitForSlot(): Promise<void>;
+    /** Resolves `"go"` when a slot is free, or `"stop"` when `shouldStop` ends the wait. */
+    waitForSlot(): Promise<"go" | "stop">;
     waitAll(): Promise<CompletedProcess[]>;
 }
 export {};
