@@ -49,13 +49,16 @@ export function heavyCapacity(level, policy) {
         return 0;
     return level === "warning" ? policy.heavyWarning : policy.heavyCeiling;
 }
-/** Concurrent engine sessions at a level. */
+/** Concurrent engine sessions at a level. In the engine this bounds pipelines, not only live `claude` processes: a pipeline keeps its slot through its post-session check and retries. */
 export function sessionCapacity(level, maxParallel) {
     if (level === "critical")
         return 0;
     return level === "warning" ? 1 : maxParallel;
 }
-/** The stop rule: critical with nothing running that could relieve it by finishing. */
+/**
+ * The stop rule: critical with nothing running that could relieve it by finishing.
+ * `running` counts only other work that could finish and relieve pressure, never the caller's own slot, pipeline or lease holder: counting itself means `running` is never 0 and a wait at critical never ends.
+ */
 export function stopAtCritical(level, running) {
     return level === "critical" && running === 0;
 }

@@ -87,5 +87,7 @@ describe("createCapacityGovernor", () => {
     expect(info).toHaveBeenCalledTimes(2);
     expect(info.mock.calls[0][0]).toContain("warning");
     expect(info.mock.calls[1][0]).toContain("critical");
+    expect(info.mock.calls[0][0]).toContain("launch capacity 1");
+    expect(info.mock.calls[1][0]).toContain("launch capacity 0");
   });
 });

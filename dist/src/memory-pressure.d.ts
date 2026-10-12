@@ -21,9 +21,12 @@ export declare function readMemoryPressure(deps?: {
 }): PressureLevel | null;
 /** Heavy-command slots at a level; `critical` is always 0. */
 export declare function heavyCapacity(level: PressureLevel, policy: PressurePolicy): number;
-/** Concurrent engine sessions at a level. */
+/** Concurrent engine sessions at a level. In the engine this bounds pipelines, not only live `claude` processes: a pipeline keeps its slot through its post-session check and retries. */
 export declare function sessionCapacity(level: PressureLevel, maxParallel: number): number;
-/** The stop rule: critical with nothing running that could relieve it by finishing. */
+/**
+ * The stop rule: critical with nothing running that could relieve it by finishing.
+ * `running` counts only other work that could finish and relieve pressure, never the caller's own slot, pipeline or lease holder: counting itself means `running` is never 0 and a wait at critical never ends.
+ */
 export declare function stopAtCritical(level: PressureLevel, running: number): boolean;
 /** `CO_LEASE_SLOTS` overrides the heavy ceiling; an invalid value keeps the default and is reported. */
 export declare function pressurePolicyFromEnv(env?: NodeJS.ProcessEnv, warn?: (msg: string) => void): PressurePolicy;
