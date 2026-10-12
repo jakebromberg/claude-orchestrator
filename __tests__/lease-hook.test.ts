@@ -34,6 +34,16 @@ const HEAVY = [
   'git -C "/a b" push', "git -c 'k=a b' push",
   // A separator inside the CLI's text is not a split, but one after it is.
   `echo 'a && b' && npm test`, `echo "$(ls; pwd)" ; npm test`, `claude-orchestrator-lease --label 'a; b' status && npm test`,
+  // Heredoc bodies and `#` comments are data: an apostrophe in them opens no quote.
+  `git commit -m "$(cat <<'EOF'\nTighten the matcher's scan\n\nIt's "quoted" here\nEOF\n)" && git push -u origin HEAD`,
+  `git commit -m "$(cat <<'EOF'\nFix the hook's matcher\nEOF\n)" && git push`,
+  "# don't skip\nnpm test", "cat > f <<EOF\nDon't\nEOF\nmake", "ls # it's here\nnpm test",
+  // Substitution bodies and `sh -c` arguments are command lists; `if`/`while` conditions are segment starts.
+  `out=$(npm test 2>&1); echo "$out" | tail`, "echo $(npm test)", "x=`make`", "X=`date +%s` npm test",
+  "bash -c 'npm ci && npm test'", "timeout 600 bash -c 'npm ci && npm test'", 'sh -c "make"',
+  "if npm test; then echo ok; fi", "if ! npm test; then exit 1; fi", "while ! make; do sleep 1; done", "nice -n 10 npm test",
+  // Unbalanced text is rescanned raw.
+  `echo "it's\nok && npm test`,
 ];
 
 const NOT_HEAVY = [
@@ -65,6 +75,18 @@ const NOT_HEAVY = [
   `'claude-orchestrator-lease' --shell 'npm ci && npm test'`,
   `node "/opt/my co/dist/src/cli-lease.js" --shell 'npm ci && npm test'`,
   `FOO=$(pwd) node ${CLI} --shell 'npm test'`,
+  // Data, not commands: quoted `#`, heredoc bodies, a light substitution, `#` mid-word, an escaped quote.
+  'echo "#" && ls', "cat <<'EOF'\nnpm test\nEOF", 'echo "$(ls)"', "a#b=1 ls", 'echo "a \\" ; npm test"', "ls # a; npm test",
+  // The CLI followed by top-level text: `--shell`/`--` skip the rest, so each row fails if the CLI is not recognized.
+  "claude-orchestrator-lease -- npm ci && npm test",
+  'node "$CO_HOME/dist/src/cli-lease.js" --shell \'x\' && npm test',
+  "claude-orchestrator-lease --label 'a; b' -- npm test ; make",
+  `claude-orchestrator-lease --max-wait 5 --label "a b" -- npm ci && npm test`,
+  `claude-orchestrator-lease --label "a; npm test" --shell 'make'`,
+  `node "/opt/my co/dist/src/cli-lease.js" -- npm ci && npm test`,
+  "claude-orchestrator-lease \\\n -- npm ci && npm test",
+  "'claude-orchestrator-lease' -- npm ci && npm test",
+  "out=$(claude-orchestrator-lease --shell 'npm ci && npm test')",
   "",
 ];
 
@@ -89,7 +111,7 @@ describe("isHeavyCommand", () => {
     expect(performance.now() - start).toBeLessThan(50);
   });
 
-  it.each(["a;", "a && ", "a(", "a $(", "'"])("classifies 80 KB of %j in under 200 ms", (unit) => {
+  it.each(["a;", "a && ", "a(", "a $(", "'", "$(", "<<EOF\n", "x <<EOF # it's\n"])("classifies 80 KB of %j in under 200 ms", (unit) => {
     const text = unit.repeat(80_000 / unit.length);
     const start = performance.now();
     expect(isHeavyCommand(text)).toBe(false);
