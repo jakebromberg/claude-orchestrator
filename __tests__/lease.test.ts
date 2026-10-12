@@ -343,6 +343,16 @@ describe("lease", () => {
       expect(tryAcquireLease(opts(), meta)).toBeNull();
     });
 
+    it("skips the ownership check on a platform without uids", () => {
+      const { getuid } = process;
+      process.getuid = undefined;
+      try {
+        expect(tryAcquireLease(opts(), meta)?.leased).toBe(true);
+      } finally {
+        process.getuid = getuid;
+      }
+    });
+
     it("is not created by defaultLeaseOptions() or leaseStatus", () => {
       const lease = join(tmp, "never");
       const o = defaultLeaseOptions({ CO_LEASE_DIR: lease, HOME: tmp });
