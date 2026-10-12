@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { settingsEntries } from "../../src/lease-hook.js";
 import { isolatedLeaseEnv } from "../helpers/lease.js";
 
 /**
@@ -97,6 +98,19 @@ describe("lease hook mode (integration)", () => {
     ] as const) {
       expect(await run("sh", ["-c", command], { ...env, ...extra }, stdin)).toEqual({ code: 0, stdout: "", stderr: "" });
     }
+  });
+
+  it("runs a printed command whose CLI path is missing under /bin/sh: exit 0, no stdout, one stderr line naming the path, and none when filtered out", async () => {
+    const missing = join(leaseDir, "gone", "cli-lease.js");
+    const command = settingsEntries(missing).hooks.PreToolUse[0].hooks[0].command;
+    for (const event of ["PreToolUse", "PostToolUse"]) {
+      const gated = await run("/bin/sh", ["-c", command], env, hookInput("npm test", { hook_event_name: event, tool_use_id: "toolu_gone" }));
+      expect(gated).toMatchObject({ code: 0, stdout: "" });
+      expect(gated.stderr.trimEnd().split("\n")).toHaveLength(1);
+      expect(gated.stderr).toContain(missing);
+      expect(gated.stderr).toMatch(/print .*again/);
+    }
+    expect(await run("/bin/sh", ["-c", command], env, hookInput("ls"))).toEqual({ code: 0, stdout: "", stderr: "" });
   });
 
   it("runs the printed command under /bin/sh from this process: its parent PID is the holder's liveness PID, and the Post event releases it", async () => {

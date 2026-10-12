@@ -31,8 +31,8 @@ const POLL_MS = 3_000;
 const COMMAND_MAX = 200;
 /** The longest a detached holder may be set to live: the largest Bash call timeout (10 min) plus hook mode's 60 s grace. */
 export const DETACHED_TTL_MAX_MS = 660_000;
-/** A detached holder's id, and the only ids `releaseHolder` accepts, so neither can name a path outside `holders/`. */
-const HOLDER_ID = /^[\w-]+$/;
+/** A detached holder's id, and the only ids `releaseHolder` accepts, so neither can name a path outside `holders/` or overrun a file name. */
+const HOLDER_ID = /^[\w-]{1,160}$/;
 
 type ReapReason = "stale-heartbeat" | "orphan-bound" | "corrupt" | "dead-session" | "expired";
 
@@ -66,9 +66,11 @@ export interface LeaseOptions {
 
 /**
  * What a holder file records about the request; `label` replaces `command` when given. `detached` records a holder
- * for a process that is not this one (hook mode): `id` is used as the holder id and must match `[A-Za-z0-9_-]+`
- * (acquiring throws a `TypeError` otherwise), `sessionPid` is the liveness PID, and no
- * heartbeat runs. `expiresAt` is read when the holder is written, so it may be a getter that counts from admission.
+ * for a process that is not this one (hook mode): `id` is used as the holder id and must match `[A-Za-z0-9_-]{1,160}`,
+ * `sessionPid` is the liveness PID and must be a positive integer, and `expiresAt` must be finite (acquiring throws a
+ * `TypeError` otherwise); no heartbeat runs. `expiresAt` is read when the holder is written, so it may be a getter that
+ * counts from admission. Acquiring an `id` whose holder is already live admits at once without a second holder or count:
+ * two hook installs handling one call share one slot, and the borrowed handle's `release` does nothing.
  */
 export interface HolderMeta {
   command: string;
@@ -131,7 +133,7 @@ export interface LeaseRefusal {
 }
 
 type Attempt =
-  | { kind: "admitted"; handle: LeaseHandle }
+  | { kind: "admitted"; handle: LeaseHandle; borrowed?: true }
   | { kind: "full" | "busy"; level: PressureLevel; capacity: number }
   | { kind: "error"; level: PressureLevel; capacity: number; error: unknown };
 
@@ -327,7 +329,9 @@ function attempt(opts: LeaseOptions, meta: HolderMeta, waitedMs: number): Attemp
         reaped.push(d);
       }
       const admission = { waitedMs, level, live: live.length + 1, capacity, ...(overridden && { override: true as const }) };
-      if (live.length < capacity) r = { kind: "admitted", handle: createHolder(opts, meta, command, admission) };
+      // A second hook install for the same call acquires the id the first one holds: that call is already admitted.
+      if (meta.detached && live.some((h) => h.id === meta.detached!.id)) r = { kind: "admitted", handle: borrowedHandle(meta.detached.id, level, capacity, live.length), borrowed: true };
+      else if (live.length < capacity) r = { kind: "admitted", handle: createHolder(opts, meta, command, admission) };
       else r = { kind: "full", level, capacity };
     } finally {
       lock.release();
@@ -339,7 +343,7 @@ function attempt(opts: LeaseOptions, meta: HolderMeta, waitedMs: number): Attemp
     if (reason === "orphan-bound") warn(opts, `lease: reaping holder ${id}: its child outlived the 2 h orphan bound`);
     emit(opts, { type: "reap", id, reason });
   }
-  if (r.kind === "admitted") emit(opts, { type: "acquire", id: r.handle.id!, ...r.handle.admission });
+  if (r.kind === "admitted" && !r.borrowed) emit(opts, { type: "acquire", id: r.handle.id!, ...r.handle.admission });
   return r;
 }
 
@@ -371,9 +375,13 @@ function failOpen(opts: LeaseOptions, level: PressureLevel, capacity: number, wa
   return { id: null, leased: false, admission: { waitedMs, level, live: 0, capacity }, childEnv: () => ({}), setChildPid() {}, release() {} };
 }
 
-/** Throws on a detached id that could name a path outside `holders/`: a caller's bug, not an I/O error to fail open on. */
+/** Throws on a detached id, session PID or `expiresAt` that would write a holder the next scan reaps as corrupt: a caller's bug, not an I/O error to fail open on. */
 function checkDetachedId(meta: HolderMeta): void {
-  if (meta.detached && !HOLDER_ID.test(meta.detached.id)) throw new TypeError(`lease: detached holder id ${JSON.stringify(meta.detached.id)} is not [A-Za-z0-9_-]+`);
+  const d = meta.detached;
+  if (!d) return;
+  if (!HOLDER_ID.test(d.id)) throw new TypeError(`lease: detached holder id ${JSON.stringify(d.id)} is not 1 to 160 of [A-Za-z0-9_-]`);
+  if (!isPid(d.sessionPid)) throw new TypeError(`lease: detached session PID ${String(d.sessionPid)} is not a positive integer`);
+  if (!Number.isFinite(d.expiresAt)) throw new TypeError(`lease: detached expiresAt ${String(d.expiresAt)} is not a finite number`);
 }
 
 /** A single non-blocking attempt: a handle, or `null` when not admitted this poll. Throws a `TypeError` on a detached id outside `[A-Za-z0-9_-]`. */
@@ -438,14 +446,17 @@ export async function acquireLease(
  * Releases a detached holder by id from any process; idempotent. Returns whether a holder file was removed, and emits
  * one `release` event with `heldMs` only then. It removes only a valid detached record (one with `expiresAt`): a
  * wrapper's own holder and a corrupt file are left to their owner and the reaper. An id with a character outside
- * `[A-Za-z0-9_-]` names no holder, and a holders directory that breaks the lease's directory rule (a symlink, or
+ * `[A-Za-z0-9_-]` names no holder, and a holders or lease directory that breaks the directory rule (a symlink, or
  * another user's) is not read, so neither can reach a file outside `holders/`.
  */
 export function releaseHolder(opts: LeaseOptions, id: string): boolean {
   if (!HOLDER_ID.test(id)) return false;
   const dir = holdersDir(opts.dir);
-  const st = unlessGone(() => lstatSync(dir));
-  if (!st || !isOwnDir(st)) return false;
+  const ownDir = (d: string): boolean => {
+    const st = unlessGone(() => lstatSync(d));
+    return st !== undefined && isOwnDir(st);
+  };
+  if (!ownDir(opts.dir) || !ownDir(dir)) return false;
   const file = join(dir, `${id}.json`);
   const text = unlessGone(() => readFileSync(file, "utf8"));
   const rec = text === undefined ? null : parseHolder(text);
