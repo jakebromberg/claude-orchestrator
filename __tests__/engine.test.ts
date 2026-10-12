@@ -2861,6 +2861,42 @@ describe("CI failure retry", () => {
     expect(retryArgs[promptIndex + 1]).toContain("test failed: assertion error");
   });
 
+  it("runs the check-failure retry without a stall monitor", async () => {
+    vi.useFakeTimers();
+    try {
+      let checkCallCount = 0;
+      const issue = makeIssue({ number: 1, wave: 1 });
+      const config = makeConfig([issue], {
+        postSessionCheck: vi.fn(async () => ({ passed: ++checkCallCount > 1 })),
+      });
+      config.stallTimeout = 30;
+      config.retryOnCheckFailure = { maxRetries: 1, enabled: true };
+      const getLogFileSize = vi.fn(() => 100);
+      const deps = makeDeps({ getLogFileSize });
+      const orchestrator = new Orchestrator(config, deps);
+
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const killSpy = vi.spyOn(deps.processRunner, "kill");
+      const promise = orchestrator.runWave(1);
+
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+      runner.resolvers.get(1000)!(0);
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(2));
+
+      // Only the retry is running; a monitor would poll the log and kill the silent session.
+      getLogFileSize.mockClear();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(getLogFileSize).not.toHaveBeenCalled();
+      expect(killSpy).not.toHaveBeenCalled();
+
+      runner.resolvers.get(1001)!(0);
+      await vi.advanceTimersByTimeAsync(0);
+      await promise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("marks as failed when all retries exhausted", async () => {
     const issue = makeIssue({ number: 1, wave: 1 });
     const config = makeConfig([issue], {
