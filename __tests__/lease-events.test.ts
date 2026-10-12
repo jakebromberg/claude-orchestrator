@@ -22,11 +22,12 @@ import { Worker } from "node:worker_threads";
 import { defaultLeaseOptions, tryAcquireLease, type LeaseEvent } from "../src/lease.js";
 import { leaseEventSink } from "../src/lease-events.js";
 import * as barrel from "../src/index.js";
+import { scriptedPressureSampler } from "../src/testing.js";
 
 const TS = Date.UTC(2026, 9, 11, 12, 0, 0);
 const ISO = "2026-10-11T12:00:00.000Z";
 const RELEASE: LeaseEvent = { type: "release", id: "1-ab", heldMs: 5 };
-const normal = Object.assign(() => "normal" as const, { fresh: () => "normal" as const });
+const normal = scriptedPressureSampler("normal");
 const noFifos = process.platform === "win32";
 
 /**
@@ -197,7 +198,7 @@ describe("leaseEventSink", () => {
   describe("wiring", () => {
     it("defaultLeaseOptions records the lease's own events once the directory exists", () => {
       const o = defaultLeaseOptions({ CO_LEASE_DIR: dir });
-      const h = tryAcquireLease({ ...o, level: Object.assign(() => "normal" as const, { fresh: () => "normal" as const }) }, { command: "npm test", cwd: "/w" })!;
+      const h = tryAcquireLease({ ...o, level: scriptedPressureSampler("normal") }, { command: "npm test", cwd: "/w" })!;
       h.release({ exitCode: 0 });
       expect((lines() as { type: string }[]).map((l) => l.type)).toEqual(["acquire", "release"]);
     });
@@ -205,7 +206,7 @@ describe("leaseEventSink", () => {
     it("an unwritable log never fails an acquire", () => {
       mkdirSync(join(dir, "events.jsonl"));
       const o = defaultLeaseOptions({ CO_LEASE_DIR: dir });
-      const h = tryAcquireLease({ ...o, level: Object.assign(() => "normal" as const, { fresh: () => "normal" as const }) }, { command: "npm test", cwd: "/w" });
+      const h = tryAcquireLease({ ...o, level: scriptedPressureSampler("normal") }, { command: "npm test", cwd: "/w" });
       expect(h?.leased).toBe(true);
       h!.release();
     });

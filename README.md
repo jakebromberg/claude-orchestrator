@@ -514,8 +514,10 @@ The dashboard shows issues grouped by wave with status badges, PR links, and exp
 Import test helpers from `claude-orchestrator/testing`:
 
 ```typescript
-import { InMemoryStatusStore, InMemoryMetadataStore, createSilentLogger } from "@funlandresearch/claude-orchestrator/testing";
+import { InMemoryStatusStore, InMemoryMetadataStore, createSilentLogger, scriptedPressureSampler } from "@funlandresearch/claude-orchestrator/testing";
 ```
+
+`scriptedPressureSampler(levels, options?)` builds a fake `PressureSampler`: `levels` is one level, a list (one level per reading, then the last one held), or a function read on every call. `options.fresh` makes `fresh()` disagree with the cached reading, and `options.overridden` adds `overridden()`.
 
 ## Development
 

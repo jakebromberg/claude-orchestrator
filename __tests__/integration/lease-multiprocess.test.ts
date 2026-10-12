@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { isolatedLeaseEnv } from "../helpers/lease.js";
 
 /**
  * Multi-process integration test for the heavy-command lease, against the
@@ -32,14 +33,6 @@ function runNode(script: string, env: NodeJS.ProcessEnv): Promise<ChildRun> {
   });
 }
 
-/** The parent env with every `CO_LEASE_*` / `CO_PRESSURE_*` scrubbed, then the isolation settings applied. */
-function isolatedEnv(leaseDir: string): NodeJS.ProcessEnv {
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => !k.startsWith("CO_LEASE_") && !k.startsWith("CO_PRESSURE_")),
-  );
-  return { ...env, CO_LEASE_DIR: leaseDir, CO_LEASE_SLOTS: "1", CO_PRESSURE_OVERRIDE: "critical-as-warning" };
-}
-
 const holdScript = (holdMs: number): string => `
 import { acquireLease, defaultLeaseOptions, leaseStatus } from ${JSON.stringify(distIndex)};
 const opts = { ...defaultLeaseOptions(), pollMs: 60 };
@@ -65,7 +58,7 @@ describe("lease multi-process (integration)", () => {
   });
 
   it("never admits more concurrent holders than the reported capacity", async () => {
-    const runs = await Promise.all(Array.from({ length: 6 }, () => runNode(holdScript(120), isolatedEnv(leaseDir))));
+    const runs = await Promise.all(Array.from({ length: 6 }, () => runNode(holdScript(120), isolatedLeaseEnv(leaseDir))));
     for (const r of runs) expect(r.code, `stderr=${r.stderr}`).toBe(0);
     const results = runs.map((r) => JSON.parse(r.stdout) as { leased: boolean; start: number; end: number; live: number; capacity: number });
 
