@@ -52,6 +52,42 @@ describe("unwritableLeaseDir", () => {
 });
 
 describe("installIsolatedHome", () => {
+  it("is installed for this test file: the default lease directory is under the guard's temp home", () => {
+    expect(leaseDirectory({})).toMatch(/\/co-home-[^/]+\/\.local\/state\/claude-orchestrator\/lease$/);
+  });
+
+  it("removes CO_LEASE_* and CO_PRESSURE_* from process.env and restores them on dispose", () => {
+    const outer = installIsolatedHome();
+    process.env.CO_LEASE_DIR = "/elsewhere";
+    process.env.CO_PRESSURE_OVERRIDE = "critical-as-warning";
+    const isolated = installIsolatedHome();
+    try {
+      expect(process.env.CO_LEASE_DIR).toBeUndefined();
+      expect(process.env.CO_PRESSURE_OVERRIDE).toBeUndefined();
+    } finally {
+      isolated.dispose();
+    }
+    try {
+      expect(process.env.CO_LEASE_DIR).toBe("/elsewhere");
+      expect(process.env.CO_PRESSURE_OVERRIDE).toBe("critical-as-warning");
+    } finally {
+      delete process.env.CO_LEASE_DIR;
+      delete process.env.CO_PRESSURE_OVERRIDE;
+      outer.dispose();
+    }
+  });
+
+  it("retire removes the temp home but keeps the redirects", () => {
+    const isolated = installIsolatedHome();
+    try {
+      isolated.retire();
+      expect(existsSync(isolated.home)).toBe(false);
+      expect(leaseDirectory({})).toContain(isolated.home);
+    } finally {
+      isolated.dispose();
+    }
+  });
+
   it("points the default lease directory, via HOME, XDG_STATE_HOME or the account home, at a temp home, and restores on dispose", () => {
     const before = { home: process.env.HOME, xdg: process.env.XDG_STATE_HOME, userInfo: userInfo };
     const isolated = installIsolatedHome();
