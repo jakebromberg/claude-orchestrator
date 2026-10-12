@@ -15,6 +15,7 @@
   },
   "bin": {
     "claude-orchestrator-claim": "dist/src/cli-claim.js",
+    "claude-orchestrator-lease": "dist/src/cli-lease.js",
     "claude-orchestrator-merge-appendable": "dist/src/cli-merge-appendable.js"
   },
   "files": [
