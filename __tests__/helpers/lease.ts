@@ -64,7 +64,9 @@ export interface IsolatedHome {
   stray: () => string[];
   /** Puts the state directory back to its planted shape. */
   reset: () => void;
-  /** Restores `HOME`, `XDG_STATE_HOME` and `os.userInfo`, and removes the temp home. */
+  /** Removes the temp home and leaves the redirects in place, so late work in the worker still cannot reach the account home. */
+  retire: () => void;
+  /** Restores `HOME`, `XDG_STATE_HOME`, `os.userInfo` and the scrubbed `CO_LEASE_*` / `CO_PRESSURE_*` variables, and removes the temp home. */
   dispose: () => void;
 }
 
@@ -73,15 +75,21 @@ export interface IsolatedHome {
  * `leaseDirectory` falls back to for an env without `HOME`, and which `HOME` does not influence) all resolve inside it.
  * The default lease directory is planted empty, because the sampler persists `level.json` only into a directory that
  * exists: a test that resolves the default directory and writes there leaves an entry `stray()` reports, on a machine
- * with or without a real lease directory. Installed for the whole run by `isolate-home.ts`.
+ * with or without a real lease directory. It also removes every `CO_LEASE_*` / `CO_PRESSURE_*` variable from `process.env`,
+ * so an exported `CO_LEASE_DIR` cannot take a test elsewhere. The home is created under `parent`. Installed once per test file by `isolate-home.ts`.
  */
-export function installIsolatedHome(): IsolatedHome {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "co-home-")));
+export function installIsolatedHome(parent: string = tmpdir()): IsolatedHome {
+  const home = realpathSync(mkdtempSync(join(parent, "co-home-")));
   const stateDir = join(home, ".local", "state", "claude-orchestrator");
   const saved = { HOME: process.env.HOME, XDG_STATE_HOME: process.env.XDG_STATE_HOME, userInfo: os.userInfo };
   const plant = (): void => {
     mkdirSync(join(stateDir, "lease"), { recursive: true });
   };
+
+  const scrubbed = Object.fromEntries(
+    Object.entries(process.env).filter(([k]) => k.startsWith("CO_LEASE_") || k.startsWith("CO_PRESSURE_")),
+  );
+  for (const key of Object.keys(scrubbed)) delete process.env[key];
 
   process.env.HOME = home;
   process.env.XDG_STATE_HOME = join(home, ".local", "state");
@@ -92,21 +100,15 @@ export function installIsolatedHome(): IsolatedHome {
   plant();
 
   const stray = (): string[] => {
-    const found: string[] = [];
-    const walk = (dir: string, prefix: string): void => {
-      for (const name of readdirSync(dir).sort()) {
-        const rel = prefix ? `${prefix}/${name}` : name;
-        if (rel !== "lease") found.push(rel);
-        if (statSync(join(dir, name)).isDirectory()) walk(join(dir, name), rel);
-      }
-    };
     try {
-      if (!statSync(join(stateDir, "lease")).isDirectory()) throw new Error("not a directory");
-      walk(stateDir, "");
+      if (!statSync(join(stateDir, "lease")).isDirectory()) return ["lease (missing)"];
     } catch {
-      found.push("lease (missing)");
+      return ["lease (missing)"];
     }
-    return found;
+    return readdirSync(stateDir, { recursive: true })
+      .map(String)
+      .filter((rel) => rel !== "lease")
+      .sort();
   };
 
   return {
@@ -116,11 +118,13 @@ export function installIsolatedHome(): IsolatedHome {
       rmSync(stateDir, { recursive: true, force: true });
       plant();
     },
+    retire: () => rmSync(home, { recursive: true, force: true }),
     dispose: () => {
       for (const key of ["HOME", "XDG_STATE_HOME"] as const) {
         if (saved[key] === undefined) delete process.env[key];
         else process.env[key] = saved[key];
       }
+      Object.assign(process.env, scrubbed);
       os.userInfo = saved.userInfo;
       syncBuiltinESMExports();
       rmSync(home, { recursive: true, force: true });
