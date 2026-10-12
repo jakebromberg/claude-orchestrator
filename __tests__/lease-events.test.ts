@@ -121,6 +121,24 @@ describe("leaseEventSink", () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
+  it("stays quiet when another process rotated first (ENOENT), keeping its one warning for a real failure", () => {
+    writeFileSync(join(dir, "events.jsonl"), `${JSON.stringify({ pad: "x".repeat(200) })}\n`);
+    const warn = vi.fn();
+    const lostRace = Object.assign(new Error("ENOENT: no such file or directory, rename"), { code: "ENOENT" });
+    const rename = vi.fn<(from: string, to: string) => void>().mockImplementationOnce(() => {
+      throw lostRace;
+    });
+    const sink = leaseEventSink(dir, { now: () => TS, maxBytes: 100, warn, rename });
+    sink(RELEASE);
+    expect(warn).not.toHaveBeenCalled();
+    expect(lines().at(-1)).toEqual({ ts: ISO, ...RELEASE });
+    rename.mockImplementationOnce(() => {
+      throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+    });
+    sink(RELEASE);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
   it("creates events.jsonl with mode 0600", () => {
     leaseEventSink(dir)(RELEASE);
     expect(statSync(join(dir, "events.jsonl")).mode & 0o777).toBe(0o600);
