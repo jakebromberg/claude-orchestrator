@@ -152,13 +152,6 @@ export interface PostSessionCheckContext {
     /** The engine's own running-session count, never including the check's own session. */
     runningSessions?(): number;
 }
-/** The third argument the engine hands `OrchestratorHooks.postSessionCheck`. */
-export interface PostSessionCheckContext {
-    /** `Deps.lease`, as the engine holds it; absent when the engine has no lease. */
-    lease?: LeaseOptions;
-    /** The engine's own running-session count, never including the check's own session. */
-    runningSessions?(): number;
-}
 export interface OrchestratorHooks {
     showHelp(): void;
     shouldSkipIssue(issue: Issue): {
