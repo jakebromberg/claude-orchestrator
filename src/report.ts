@@ -40,7 +40,7 @@ export interface ReportData {
      * written before this field existed, so consumers can tell the two apart.
      */
     ran: boolean;
-    /** `--session-id` of each launch; present only when `ran`. */
+    /** `--session-id` of each session launched for the row (the launch, then each check-failure retry); present only when `ran`. */
     sessionIds?: string[];
   }>;
 }
@@ -52,7 +52,7 @@ export function generateReport(
   getMetadata: (ref: string) => IssueMetadata,
   startedAt: Date,
   finishedAt: Date,
-  launched: ReadonlyMap<string, readonly string[]> = new Map(),
+  launched: ReadonlyMap<string, readonly string[]>,
 ): ReportData {
   const durationSeconds =
     Math.round((finishedAt.getTime() - startedAt.getTime()) / 10) / 100;

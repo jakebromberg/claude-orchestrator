@@ -36,6 +36,7 @@ describe("generateReport", () => {
       (n) => metadata[Number(n)] ?? {},
       new Date("2026-01-01T00:00:00Z"),
       new Date("2026-01-01T00:01:00Z"),
+      new Map(),
     );
 
     expect(report.issues[0]).toMatchObject({ failureReason: "memory-critical", stopStage: "launch" });
@@ -62,19 +63,6 @@ describe("generateReport", () => {
     expect(report.issues[1]).not.toHaveProperty("sessionIds");
   });
 
-  it("marks every row ran: false when no launches are supplied", () => {
-    const report = generateReport(
-      "Test",
-      [makeIssue({ number: 1 })],
-      () => "pending" as Status,
-      () => ({}),
-      new Date("2026-01-01T00:00:00Z"),
-      new Date("2026-01-01T00:01:00Z"),
-    );
-
-    expect(report.issues[0]).toMatchObject({ ran: false });
-  });
-
   it("includes config name and timing", () => {
     const start = new Date("2026-01-01T00:00:00Z");
     const end = new Date("2026-01-01T00:05:00Z");
@@ -85,6 +73,7 @@ describe("generateReport", () => {
       () => ({}),
       start,
       end,
+      new Map(),
     );
 
     expect(report.configName).toBe("Test Orchestrator");
@@ -111,6 +100,7 @@ describe("generateReport", () => {
       (n) => metadata[Number(n)] ?? {},
       new Date("2026-01-01T00:00:00Z"),
       new Date("2026-01-01T00:01:00Z"),
+      new Map(),
     );
 
     expect(report.issues).toHaveLength(2);
@@ -154,6 +144,7 @@ describe("generateReport", () => {
       (ref) => meta[ref] ?? {},
       new Date("2026-01-01T00:00:00Z"),
       new Date("2026-01-01T00:01:00Z"),
+      new Map(),
     );
 
     expect(report.issues[0]).toMatchObject({
@@ -179,6 +170,7 @@ describe("generateReport", () => {
       () => ({}),
       new Date("2026-01-01T00:00:00Z"),
       new Date("2026-01-01T00:01:00Z"),
+      new Map(),
     );
 
     expect(report.issues[0].ref).toBe("7");
@@ -200,6 +192,7 @@ describe("formatReport", () => {
           : {},
       new Date("2026-01-01T00:00:00Z"),
       new Date("2026-01-01T00:02:30Z"),
+      new Map(),
     );
 
     const md = formatReport(report);
@@ -224,6 +217,7 @@ describe("formatReport", () => {
       () => ({}),
       new Date("2026-01-01T00:00:00Z"),
       new Date("2026-01-01T00:01:00Z"),
+      new Map(),
     );
 
     const md = formatReport(report);
@@ -245,6 +239,7 @@ describe("formatReport", () => {
       () => ({}),
       new Date("2026-01-01T00:00:00Z"),
       new Date("2026-01-01T00:01:00Z"),
+      new Map(),
     );
 
     const md = formatReport(report);
@@ -260,6 +255,7 @@ describe("formatReport", () => {
       () => ({}),
       new Date(),
       new Date(),
+      new Map(),
     );
 
     const md = formatReport(report);

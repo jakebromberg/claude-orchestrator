@@ -9,7 +9,7 @@ import { repoOfRef } from "./ref.js";
 function refLabel(issue) {
     return repoOfRef(issue.ref) !== undefined ? issue.ref : `#${issue.number}`;
 }
-export function generateReport(configName, issues, getStatus, getMetadata, startedAt, finishedAt, launched = new Map()) {
+export function generateReport(configName, issues, getStatus, getMetadata, startedAt, finishedAt, launched) {
     const durationSeconds = Math.round((finishedAt.getTime() - startedAt.getTime()) / 10) / 100;
     return {
         configName,
