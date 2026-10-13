@@ -27,9 +27,9 @@ export interface ReportData {
          * written before this field existed, so consumers can tell the two apart.
          */
         ran: boolean;
-        /** `--session-id` of each launch; present only when `ran`. */
+        /** `--session-id` of each session launched for the row (the launch, then each check-failure retry); present only when `ran`. */
         sessionIds?: string[];
     }>;
 }
-export declare function generateReport(configName: string, issues: Issue[], getStatus: (ref: string) => Status, getMetadata: (ref: string) => IssueMetadata, startedAt: Date, finishedAt: Date, launched?: ReadonlyMap<string, readonly string[]>): ReportData;
+export declare function generateReport(configName: string, issues: Issue[], getStatus: (ref: string) => Status, getMetadata: (ref: string) => IssueMetadata, startedAt: Date, finishedAt: Date, launched: ReadonlyMap<string, readonly string[]>): ReportData;
 export declare function formatReport(report: ReportData): string;
