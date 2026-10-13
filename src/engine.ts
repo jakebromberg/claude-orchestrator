@@ -58,7 +58,10 @@ export class Orchestrator {
   private governor?: CapacityGovernor;
   /** `claude` sessions currently running; `spawnSession` is the only writer. */
   private liveSessions = 0;
-  /** Session ids this run launched, by issue ref; a 0-byte retry reuses its id, so one launch is one entry. */
+  /**
+   * Session ids this run launched, by issue ref, in launch order. A 0-byte retry
+   * reuses its launch's id; each check-failure retry adds its own.
+   */
   private launched = new Map<string, string[]>();
 
   constructor(config: OrchestratorConfig, deps: Deps, options?: RunOptions) {
@@ -72,6 +75,11 @@ export class Orchestrator {
   /** Rows this run launched a session for, with the `--session-id` of each launch (for the run report). */
   launchedSessions(): ReadonlyMap<string, readonly string[]> {
     return this.launched;
+  }
+
+  /** Append `sessionId` to `issue`'s launch record. Call it at every spawn that passes `--session-id`. */
+  private recordLaunch(issue: Issue, sessionId: string): void {
+    this.launched.set(issue.ref, [...(this.launched.get(issue.ref) ?? []), sessionId]);
   }
 
   checkPrerequisites(): void {
@@ -808,7 +816,7 @@ export class Orchestrator {
         break;
       }
 
-      this.launched.set(issue.ref, [...(this.launched.get(issue.ref) ?? []), sessionId]);
+      this.recordLaunch(issue, sessionId);
       await this.setStatus(issue, "running");
       this.deps.logger.step(
         `Launching Claude session for issue #${issue.number}: ${issue.description}`,
@@ -996,6 +1004,8 @@ export class Orchestrator {
       const retryPrompt = `${originalPrompt}\n\n## CI Failure Context\n\nThe following checks failed:\n\n${failureContext}\n\nPlease fix these issues.`;
 
       const tools = this.config.allowedTools ?? DEFAULT_ALLOWED_TOOLS;
+      // A fresh id per retry: each one is its own session writing to the row's log.
+      const sessionId = this.deps.generateSessionId();
       // Escalate effort one tier per attempt (capped at max), keeping the model
       // (the Haiku guardrail may still promote a weak model to Sonnet).
       const retryArgs = [
@@ -1004,9 +1014,11 @@ export class Orchestrator {
         "--allowedTools", tools.join(","),
         ...this.config.hooks.getClaudeArgs(issue),
         "--output-format", "stream-json",
+        "--session-id", sessionId,
         "--verbose",
       ];
 
+      this.recordLaunch(issue, sessionId);
       const retryHandle = this.spawnSession(
         issue, retryArgs, worktreePath, logFile, stderrFile, { monitor: false, tagIssue: false },
       );

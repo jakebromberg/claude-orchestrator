@@ -15,6 +15,7 @@ import type {
   Logger,
 } from "../src/types.js";
 import type { MergeResult } from "../src/merge.js";
+import { scriptedPressureSampler } from "../src/testing.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -505,6 +506,69 @@ describe("Orchestrator", () => {
       await promise;
 
       expect(orchestrator.launchedSessions().get("1")).toEqual(["test-session-id"]);
+    });
+
+    it("gives each check-failure retry its own --session-id and appends it to the row's ids", async () => {
+      let checks = 0;
+      const ids = ["sid-1", "sid-2", "sid-3"];
+      const { orchestrator, config, deps } = makeOrchestrator(
+        [makeIssue({ number: 1, wave: 1 })],
+        { postSessionCheck: vi.fn(async () => ({ passed: ++checks > 2 })) },
+        { generateSessionId: () => ids.shift()! },
+      );
+      config.retryOnCheckFailure = { maxRetries: 2, enabled: true };
+
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      const promise = orchestrator.runWave(1);
+      for (const pid of [1000, 1001, 1002]) {
+        await vi.waitFor(() => expect(runner.spawned.length).toBe(pid - 999));
+        runner.resolvers.get(pid)!(0);
+      }
+      await promise;
+
+      const sessionIdArg = (args: string[]) => args[args.indexOf("--session-id") + 1];
+      expect(runner.spawned.map((s) => sessionIdArg(s.args))).toEqual(["sid-1", "sid-2", "sid-3"]);
+      expect(orchestrator.launchedSessions().get("1")).toEqual(["sid-1", "sid-2", "sid-3"]);
+    });
+
+    it.each<{ path: string; issues: Issue[]; status?: Record<string, Status>; deps?: Partial<Deps>; run: (o: Orchestrator) => Promise<void>; ref: string; expected: Status }>([
+      {
+        path: "memory-critical stop",
+        issues: [makeIssue({ number: 1, wave: 1 })],
+        deps: { memoryPressure: scriptedPressureSampler("critical") },
+        run: (o) => o.runWave(1), ref: "1", expected: "pending",
+      },
+      {
+        path: "mode-node",
+        issues: [makeIssue({ number: 1, wave: 1, mode: "deploy", command: "true" })],
+        run: (o) => o.runWave(1), ref: "1", expected: "succeeded",
+      },
+      {
+        path: "dep-blocked row",
+        issues: [makeIssue({ number: 1, wave: 1 }), makeIssue({ number: 2, wave: 2, deps: [1] })],
+        status: { "1": "failed" },
+        run: (o) => o.runWave(2), ref: "2", expected: "skipped",
+      },
+      {
+        path: "cutover-held row",
+        issues: [makeIssue({ number: 1, wave: 1, mode: "gate" })],
+        run: (o) => o.runAllWaves(), ref: "1", expected: "pending",
+      },
+      {
+        path: "already-succeeded row in a run-all re-run",
+        issues: [makeIssue({ number: 1, wave: 1 })],
+        status: { "1": "succeeded" },
+        run: (o) => o.runAllWaves(), ref: "1", expected: "succeeded",
+      },
+    ])("records nothing for a $path", async ({ issues, status, deps: depsOverrides, run, ref, expected }) => {
+      const { orchestrator, deps } = makeOrchestrator(issues, undefined, depsOverrides);
+      for (const [r, s] of Object.entries(status ?? {})) deps.statusStore.set(r, s);
+
+      await run(orchestrator);
+
+      expect(deps.statusStore.get(ref)).toBe(expected);
+      expect((deps.processRunner as ReturnType<typeof makeMockRunner>).spawned).toHaveLength(0);
+      expect(orchestrator.launchedSessions().has(ref)).toBe(false);
     });
   });
 

@@ -36,7 +36,10 @@ export class Orchestrator {
     governor;
     /** `claude` sessions currently running; `spawnSession` is the only writer. */
     liveSessions = 0;
-    /** Session ids this run launched, by issue ref; a 0-byte retry reuses its id, so one launch is one entry. */
+    /**
+     * Session ids this run launched, by issue ref, in launch order. A 0-byte retry
+     * reuses its launch's id; each check-failure retry adds its own.
+     */
     launched = new Map();
     constructor(config, deps, options) {
         this.config = config;
@@ -48,6 +51,10 @@ export class Orchestrator {
     /** Rows this run launched a session for, with the `--session-id` of each launch (for the run report). */
     launchedSessions() {
         return this.launched;
+    }
+    /** Append `sessionId` to `issue`'s launch record. Call it at every spawn that passes `--session-id`. */
+    recordLaunch(issue, sessionId) {
+        this.launched.set(issue.ref, [...(this.launched.get(issue.ref) ?? []), sessionId]);
     }
     checkPrerequisites() {
         if (!this.deps.commandExists("claude")) {
@@ -664,7 +671,7 @@ export class Orchestrator {
                 this.deps.logger.warn(`Memory pressure is critical and no session is active; not launching ${unstarted.map((i) => i.ref).join(", ")} (failureReason: memory-critical)`);
                 break;
             }
-            this.launched.set(issue.ref, [...(this.launched.get(issue.ref) ?? []), sessionId]);
+            this.recordLaunch(issue, sessionId);
             await this.setStatus(issue, "running");
             this.deps.logger.step(`Launching Claude session for issue #${issue.number}: ${issue.description}`);
             const worktreePath = this.config.hooks.getWorktreePath(issue);
@@ -797,6 +804,8 @@ export class Orchestrator {
             const failureContext = checkResult.output ?? checkResult.summary ?? "unknown failure";
             const retryPrompt = `${originalPrompt}\n\n## CI Failure Context\n\nThe following checks failed:\n\n${failureContext}\n\nPlease fix these issues.`;
             const tools = this.config.allowedTools ?? DEFAULT_ALLOWED_TOOLS;
+            // A fresh id per retry: each one is its own session writing to the row's log.
+            const sessionId = this.deps.generateSessionId();
             // Escalate effort one tier per attempt (capped at max), keeping the model
             // (the Haiku guardrail may still promote a weak model to Sonnet).
             const retryArgs = [
@@ -805,8 +814,10 @@ export class Orchestrator {
                 "--allowedTools", tools.join(","),
                 ...this.config.hooks.getClaudeArgs(issue),
                 "--output-format", "stream-json",
+                "--session-id", sessionId,
                 "--verbose",
             ];
+            this.recordLaunch(issue, sessionId);
             const retryHandle = this.spawnSession(issue, retryArgs, worktreePath, logFile, stderrFile, { monitor: false, tagIssue: false });
             const retryExitCode = await retryHandle.exitCode;
             this.deps.metadataStore.update(issue.ref, {
