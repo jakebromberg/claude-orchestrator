@@ -8,8 +8,9 @@ import { runWatchdog, type WatchdogDeps } from "../src/watchdog.js";
 const T0 = Date.parse("2026-10-16T12:00:00Z");
 const MIN = 60_000;
 
-type Row = [pid: number, ppid: number, pgid: number, stat: string, command: string];
-const table = (rows: Row[]) => rows.map(([pid, ppid, pgid, stat, command]) => `${pid} ${ppid} ${pgid} 501 ${stat} 01:00 ${command}`).join("\n");
+// `etime` defaults to two hours, so a row's process started before every engine record's `startedAt` (11:00).
+type Row = [pid: number, ppid: number, pgid: number, stat: string, command: string, etime?: string];
+const table = (rows: Row[]) => rows.map(([pid, ppid, pgid, stat, command, etime = "02:00:00"]) => `${pid} ${ppid} ${pgid} 501 ${stat} ${etime} ${command}`).join("\n");
 
 // A stopped session: claude leads group 100 and its child shares it.
 const SESSION: Row[] = [
@@ -171,16 +172,18 @@ describe("watchdog", () => {
     });
 
     // Sessions share the engine's group (spawned without detached), so a stale record with a live pid is reported on
-    // its own, whatever the group's stat says: a pid-only stop, or an engine wedged while still running.
+    // its own, whatever the group's stat says: a pid-only stop, or an engine wedged while still running. The threshold
+    // is the engine's stallTimeout + 10 minutes (40 at 1800 s), so a healthy engine blocked in a long synchronous
+    // command is not reported.
     it.each([
       ["stopped by pid while its session in the same group runs", [[700, 1, 700, "T", "node run.js"], [701, 700, 700, "S", "claude -p"]] as Row[]],
       ["running but wedged", [[700, 1, 700, "S", "node run.js"]] as Row[]],
-    ])("reports a stale record with a live pid when the engine is %s", (_name, scan) => {
+    ])("reports a stale record with a live pid when the engine is %s, after stallTimeout + 10 minutes", (_name, scan) => {
       rows = scan;
-      engine({}, 4 * MIN);
+      engine({}, 39 * MIN);
       checkAt(0);
       expect(brief()).toBe("");
-      engine({}, 6 * MIN);
+      engine({}, 41 * MIN);
       checkAt(0);
       expect(brief()).toContain("engine run-1 (pid 700)");
       expect(brief()).toContain("stopped or wedged");
@@ -188,9 +191,58 @@ describe("watchdog", () => {
       expect(brief()).not.toContain("process group 700");
     });
 
+    it.each([
+      [0, 9, 11],
+      [600, 19, 21],
+    ])("with stallTimeout %i s is quiet at %i minutes stale and reports at %i", (stallTimeout, quiet, loud) => {
+      rows = [[700, 1, 700, "S", "node run.js"]];
+      engine({ stallTimeout }, quiet * MIN);
+      checkAt(0);
+      expect(brief()).toBe("");
+      engine({ stallTimeout }, loud * MIN);
+      checkAt(0);
+      expect(brief()).toContain("stopped or wedged");
+    });
+
+    it("reports a stale record whose pid now belongs to a process started after the engine as dead, not wedged", () => {
+      rows = [[700, 1, 700, "S", "vim notes", "05:00"]];
+      engine({}, 60 * MIN);
+      checkAt(0);
+      expect(brief()).toContain("died");
+      expect(brief()).not.toContain("wedged");
+      checkAt(2);
+      expect(brief()).toBe("");
+    });
+
+    it("keeps reporting a stalled engine while its group goes fully stopped, until the stopped-group rule reports it", () => {
+      rows = [[700, 1, 700, "T", "node run.js"], [701, 700, 700, "S", "claude -p"]];
+      engine({}, 41 * MIN);
+      checkAt(0);
+      expect(brief()).toContain("stopped or wedged");
+      rows = [[700, 1, 700, "T", "node run.js"], [701, 700, 700, "T", "claude -p"]];
+      // First seen fully stopped at minute 2, so the stopped-group rule reports it from minute 7.
+      for (const m of [2, 4, 6]) {
+        engine({}, (41 + m) * MIN);
+        checkAt(m);
+        expect(brief()).toContain("stopped or wedged");
+      }
+      engine({}, 48 * MIN);
+      checkAt(7);
+      expect(brief()).toContain("process group 700");
+      expect(brief()).not.toContain("wedged");
+    });
+
+    it("skips a stalled engine whose group has a suspension record", () => {
+      rows = [[700, 1, 700, "S", "node run.js"]];
+      engine({}, 60 * MIN);
+      writeRecord("suspensions", "700.json", { pgid: 700 });
+      checkAt(0);
+      expect(brief()).toBe("");
+    });
+
     it("reports a whole stopped engine group once, by group, not again as a wedged engine", () => {
       rows = stoppedEngine;
-      engine({}, 10 * MIN);
+      engine({}, 50 * MIN);
       checkAt(0);
       checkAt(6);
       expect(brief()).toContain("process group 700");
