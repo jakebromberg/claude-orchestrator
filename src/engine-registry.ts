@@ -1,5 +1,6 @@
+import { mkdirSync, rmSync } from "node:fs";
+import { writeFileAtomic } from "./atomic-write.js";
 import { psField } from "./ps.js";
-import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { EngineInfo, EngineRegistry } from "./types.js";
 
@@ -29,9 +30,7 @@ export function createFileEngineRegistry(options: FileEngineRegistryOptions): En
   const write = (record: object): void => {
     try {
       mkdirSync(join(options.dir, "engines"), { recursive: true });
-      const tmp = `${file}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify(record), { mode: 0o600 });
-      renameSync(tmp, file);
+      writeFileAtomic(file, JSON.stringify(record));
     } catch {}
   };
 
