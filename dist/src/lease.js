@@ -335,12 +335,14 @@ function attempt(opts, meta, waitedMs, ticketId) {
                 const free = capacity - live.length;
                 const gated = meta.gated === true;
                 // A ticket counts as ahead only while its owner could be admitted: it has a slot by its own capacity and its gates passed at its last poll.
-                // The gates are machine-wide, so for a gated waiter an older gated ticket is ahead whatever its last poll said: FIFO holds among gated tickets.
                 const others = line.filter((t) => t.eligible && t.id !== ticketId && (ticketId === undefined || t.seq < seq) && (t.capacity ?? Infinity) > live.length);
-                const ahead = others.filter((t) => t.ready !== false || (gated && t.gated)).length;
+                const ahead = others.filter((t) => t.ready !== false).length;
+                // The gates are machine-wide, so a gated waiter waits for every older gated ticket that could be admitted, however many slots are free:
+                // FIFO holds among gated tickets, and the next gated start's 20 s spacing goes to the oldest.
+                const behindGated = gated && others.some((t) => t.gated);
                 // No-wedge: with nothing live, the oldest gated ticket is admitted past its gates, except at step 0 (capacity 0 already refuses there; the clause keeps the rule true if a policy ever gives step 0 a slot).
                 const ready = !gated || gatesPass(opts, live, nowMs) || (live.length === 0 && snap.step > 0 && !others.some((t) => t.gated));
-                if (ready && ahead < (ticketId === undefined ? Math.min(free, 1) : free)) {
+                if (ready && !behindGated && ahead < (ticketId === undefined ? Math.min(free, 1) : free)) {
                     if (gated)
                         writeFileAtomic(join(opts.dir, "lastAdmit"), "", { mtimeMs: nowMs });
                     r = { kind: "admitted", handle: createHolder(opts, meta, command, admission) };
@@ -354,7 +356,7 @@ function attempt(opts, meta, waitedMs, ticketId) {
                 }
                 else {
                     if (ticketId !== undefined)
-                        writeTicket(opts, { seq, id: ticketId, pid: process.pid, label: command, gated, capacity, ready });
+                        writeTicket(opts, { seq, id: ticketId, pid: process.pid, label: command, gated, capacity, ready: ready && !behindGated });
                     r = { kind: "full", ...snap };
                 }
             }
