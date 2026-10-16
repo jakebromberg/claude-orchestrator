@@ -21,6 +21,8 @@ export interface Engine {
     fresh: boolean;
     /** The pid has a row in the scan. */
     alive: boolean;
+    /** The record's mtime: how long ago the engine last refreshed it. */
+    mtimeMs: number;
 }
 /** One thing to tell the owner. `once` findings are emitted in one cycle per `key` while the thing they describe lasts. */
 export interface Finding {
