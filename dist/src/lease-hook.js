@@ -56,6 +56,7 @@ const DEFAULT_PATTERNS = [
     ["deno test", "deno test"],
     [`make${END}`, "make"],
     ["scripts/test", "scripts/test[\\w-]*\\.sh"],
+    [`scripts/ci${END}`, "scripts/ci"],
     // Pre-push hooks. The option-value alternatives start with different characters, so a failed match cannot backtrack exponentially.
     ["git.*push", "git(?: -[Cc] (?:'[^']*'|\"[^\"]*\"|[^\\s'\"](?:[^\\s'\"]|'[^']*'|\"[^\"]*\")*))* push"],
 ];
