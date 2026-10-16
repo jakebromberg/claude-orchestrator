@@ -15,6 +15,13 @@ export interface RunArgs {
     label?: string;
     argv?: string[];
     shell?: string;
+    /** Front-end options (heavy-queue); no CLI flag sets them. Any one of the three skips the ancestor hook-slot borrow. */
+    gated?: boolean;
+    /** Runs the command as `taskpolicy -b` in its own process group; signals go to the group after a SIGCONT. */
+    background?: boolean;
+    /** Marks the holder as one the front end may suspend, unless `noSuspend` or `HEAVY_QUEUE_NO_SUSPEND=1` in `deps.env`. */
+    suspendable?: boolean;
+    noSuspend?: boolean;
 }
 export type LeaseArgs = RunArgs | {
     kind: "status";
@@ -35,6 +42,7 @@ export interface LeaseCliDeps {
     ancestors(): number[];
     spawn(file: string, args: string[], opts: {
         env: NodeJS.ProcessEnv;
+        detached?: boolean;
     }): LeaseChild;
     env: NodeJS.ProcessEnv;
     cwd: string;

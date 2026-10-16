@@ -140,6 +140,16 @@ describe("lease", () => {
       expect(leaseStatus(opts()).live).toEqual([]);
     });
 
+    it("records the suspendable mark and the command's process group on the holder", () => {
+      const h = tryAcquireLease(opts(), { ...meta, suspendable: true })!;
+      h.setChildPid(777, 778);
+      expect(readHolder(h)).toMatchObject({ childPid: 777, pgid: 778, suspendable: true });
+      const plain = tryAcquireLease(opts(), meta)!;
+      plain.setChildPid(779, 0);
+      expect(readHolder(plain)).not.toHaveProperty("pgid");
+      expect(readHolder(plain)).not.toHaveProperty("suspendable");
+    });
+
     it.each([0, -1, NaN, 1.5])("ignores setChildPid(%s), so its own live holder is not reaped as corrupt", (pid) => {
       const one = opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } });
       const h = tryAcquireLease(one, meta)!;

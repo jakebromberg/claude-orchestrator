@@ -120,12 +120,18 @@ export interface HolderMeta {
   detached?: { id: string; sessionPid: number; expiresAt: number };
   /** Admit only while heavy-queue's gates pass (CPU under 0.75, nothing suspended, 20 s since the last gated start), or when nothing is live. Set only by the heavy-queue front end. */
   gated?: boolean;
+  /** Marks a holder whose front end owns its process group and may suspend it under overload. Set only by the heavy-queue front end. */
+  suspendable?: boolean;
 }
 
 interface HolderRecord {
   id: string;
   pid: number;
   childPid?: number;
+  /** The command's own process group, when its front end started it in one (for the watchdog and the suspender). */
+  pgid?: number;
+  /** The front end may suspend this holder's group. */
+  suspendable?: true;
   command: string;
   cwd: string;
   startedAt: number;
@@ -170,7 +176,7 @@ export interface LeaseHandle {
    * even when this one is blocked or killed (up to the 2 h orphan bound). Ignored after release, for a value that is
    * not a positive integer, and once the holder has been reaped: a reaped holder's file is not recreated.
    */
-  setChildPid(pid: number): void;
+  setChildPid(pid: number, pgid?: number): void;
   release(outcome?: { exitCode?: number }): void;
 }
 
@@ -395,6 +401,7 @@ function createHolder(opts: LeaseOptions, meta: HolderMeta, command: string, adm
   const rec: HolderRecord = { id, pid: detached?.sessionPid ?? process.pid, command, cwd: meta.cwd, startedAt: now(), level: admission.level };
   if (detached) rec.expiresAt = detached.expiresAt;
   if (admission.override) rec.override = true;
+  if (meta.suspendable) rec.suspendable = true;
   const write = (): void => writeFileAtomic(file, JSON.stringify(rec));
   write();
   let released = false;
@@ -416,9 +423,10 @@ function createHolder(opts: LeaseOptions, meta: HolderMeta, command: string, adm
     leased: true,
     admission,
     childEnv: () => ({ CO_LEASE_HOLDER: id }),
-    setChildPid(pid) {
+    setChildPid(pid, pgid) {
       if (released || !isPid(pid)) return;
       rec.childPid = pid;
+      if (pgid !== undefined && isPid(pgid)) rec.pgid = pgid;
       try {
         // Only a file still there is replaced; a reap between this check and the rename is not detected.
         if (unlessGone(() => statSync(file))) write();
