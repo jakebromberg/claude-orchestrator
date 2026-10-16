@@ -50,4 +50,16 @@ describe("engine registry lifecycle", () => {
 
     expect(run).toHaveBeenCalledOnce();
   });
+
+  it("runs the work when the registry throws from start or stop", async () => {
+    const { orchestrator } = setUp([makeIssue(1)]);
+    (orchestrator as unknown as { deps: Deps }).deps.engineRegistry = {
+      start() { throw new Error("start"); },
+      stop() { throw new Error("stop"); },
+    };
+    const run = vi.fn(async () => {});
+    await expect(orchestrator.runRegistered("run-1", run)).resolves.toBeUndefined();
+    expect(run).toHaveBeenCalledOnce();
+    expect(() => orchestrator.stopEngineRegistry()).not.toThrow();
+  });
 });

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { EngineInfo, EngineRegistry } from "./types.js";
 
@@ -7,15 +7,16 @@ export interface FileEngineRegistryOptions {
   /** The lease directory; records live in `<dir>/engines/<pid>.json`. */
   dir: string;
   pid?: number;
-  /** Reads the process group id; a throw records `null`. */
+  /** Reads the process group id; a throw or a non-integer result records `null`. */
   pgid?: (pid: number) => number;
   now?: () => Date;
 }
 
 const REFRESH_MS = 30_000;
 
+/** Bounded like the lease's own `ps` calls (2 s, stderr ignored): a hung `ps` must not slow engine start. */
 const psPgid = (pid: number): number =>
-  Number(execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf-8" }).trim());
+  Number(execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf-8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] }).trim());
 
 /**
  * File-backed registry: writes `engines/<pid>.json` at `start`, rewrites it every 30 s on an unref'd timer
@@ -29,14 +30,19 @@ export function createFileEngineRegistry(options: FileEngineRegistryOptions): En
   const write = (record: object): void => {
     try {
       mkdirSync(join(options.dir, "engines"), { recursive: true });
-      writeFileSync(file, JSON.stringify(record));
+      const tmp = `${file}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify(record), { mode: 0o600 });
+      renameSync(tmp, file);
     } catch {}
   };
 
   return {
     start(info: EngineInfo) {
       let pgid: number | null = null;
-      try { pgid = (options.pgid ?? psPgid)(pid); } catch {}
+      try {
+        const read = (options.pgid ?? psPgid)(pid);
+        if (Number.isInteger(read)) pgid = read;
+      } catch {}
       const record = { pid, pgid, ...info, startedAt: (options.now?.() ?? new Date()).toISOString() };
       write(record);
       timer = setInterval(() => write(record), REFRESH_MS);

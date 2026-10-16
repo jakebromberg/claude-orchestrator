@@ -107,21 +107,25 @@ export class Orchestrator {
 
   /** Runs `run` with this engine recorded in `deps.engineRegistry`, removing the record when it ends or throws. */
   async runRegistered(runId: string, run: () => Promise<void>): Promise<void> {
-    this.deps.engineRegistry?.start({
-      runId,
-      logDir: path.join(this.config.configDir, "logs"),
-      stallTimeout: Math.max(0, ...this.config.issues.map((i) => i.stallTimeout ?? this.config.stallTimeout)),
-    });
+    try {
+      this.deps.engineRegistry?.start({
+        runId,
+        logDir: path.join(this.config.configDir, "logs"),
+        stallTimeout: Math.max(0, ...this.config.issues.map((i) => i.stallTimeout ?? this.config.stallTimeout)),
+      });
+    } catch {} // a registry failure never fails a run
     try {
       await run();
     } finally {
-      this.deps.engineRegistry?.stop();
+      this.stopEngineRegistry();
     }
   }
 
   /** Drops the engine's registry record; for the signal handler, which exits without unwinding `runRegistered`. */
   stopEngineRegistry(): void {
-    this.deps.engineRegistry?.stop();
+    try {
+      this.deps.engineRegistry?.stop();
+    } catch {} // a registry failure never fails a run
   }
 
   async handleInterrupt(): Promise<void> {

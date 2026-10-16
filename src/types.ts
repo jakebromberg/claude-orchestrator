@@ -328,7 +328,7 @@ export interface MetadataStore {
 export interface EngineInfo {
   runId: string;
   logDir: string;
-  /** Largest effective stall timeout (s) across the engine's issues. */
+  /** Largest effective stall timeout (s) across the engine's issues. `0` means stall detection is disabled: a watchdog must not apply a silence check. */
   stallTimeout: number;
 }
 
