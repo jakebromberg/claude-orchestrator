@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseSuspensionArgs, runSuspension, type SuspensionDeps } from "../src/suspensions.js";
 import { ps } from "../src/ps.js";
+import { psText } from "./helpers/ps-text.js";
 
 const NOW = Date.parse("2026-10-16T12:00:00Z");
 // The caller is pid 500 under parents 400 and 300. None of them leads its own group (groups 450, 350, 300 is led
@@ -19,7 +20,7 @@ const TABLE: [number, number, number, number, string][] = [
   [801, 800, 800, 0, "root-member"],
   [911, 1, 910, 501, "orphan-member"],
 ];
-const table = (rows = TABLE) => rows.map((r) => r.join(" ")).join("\n");
+const table = (rows = TABLE) => psText(rows.map(([pid, ppid, pgid, uid, command]) => ({ pid, ppid, pgid, uid, command })));
 
 describe("suspend and resume", () => {
   let dir: string;

@@ -1,7 +1,8 @@
 import { type HeadroomSampler } from "./headroom-sampler.js";
 import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
 import { type MemorySignals, type PressureLevel, type PressurePolicy, type PressureSampler } from "./memory-pressure.js";
-export { ensureOwnSubdir, isOwnDir };
+import { isPid } from "./ps.js";
+export { ensureOwnSubdir, isOwnDir, isPid };
 /** The longest a detached holder may be set to live: the largest Bash call timeout (10 min) plus hook mode's 60 s grace. */
 export declare const DETACHED_TTL_MAX_MS = 660000;
 type ReapReason = "stale-heartbeat" | "orphan-bound" | "corrupt" | "dead-session" | "expired";
@@ -160,8 +161,6 @@ export interface LeaseRefusal {
     level: PressureLevel;
     live: number;
 }
-/** A PID that `kill(pid, 0)` checks as one process: `0` and negatives address a group, or every process, and `process.kill` rejects 2^31 and above. */
-export declare const isPid: (n: unknown) => boolean;
 /** The one default diagnostics writer, shared with the event sink. Messages carry their own `lease:` prefix. */
 export declare function defaultWarn(msg: string): void;
 /** A single non-blocking attempt: a handle, or `null` when not admitted this poll. Throws a `TypeError` on an invalid detached id, session PID or `expiresAt`. */

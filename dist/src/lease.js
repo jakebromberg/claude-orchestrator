@@ -19,7 +19,8 @@ import { defaultHeadroomSampler, levelView } from "./headroom-sampler.js";
 import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
 import { leaseEventSink } from "./lease-events.js";
 import { heavyCapacity, leaseDirectory, pressurePolicyFromEnv, } from "./memory-pressure.js";
-export { ensureOwnSubdir, isOwnDir };
+import { isPid } from "./ps.js";
+export { ensureOwnSubdir, isOwnDir, isPid };
 const MUTEX_STALE_MS = 10_000;
 const ORPHAN_MAX_MS = 2 * 60 * 60_000;
 const HEARTBEAT_MS = 30_000;
@@ -106,8 +107,6 @@ function unlessGone(read) {
         throw err;
     }
 }
-/** A PID that `kill(pid, 0)` checks as one process: `0` and negatives address a group, or every process, and `process.kill` rejects 2^31 and above. */
-export const isPid = (n) => Number.isInteger(n) && n > 0 && n < 2 ** 31;
 function parseHolder(text) {
     try {
         const rec = JSON.parse(text);

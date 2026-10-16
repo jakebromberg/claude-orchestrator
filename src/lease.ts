@@ -27,8 +27,9 @@ import {
   type PressurePolicy,
   type PressureSampler,
 } from "./memory-pressure.js";
+import { isPid } from "./ps.js";
 
-export { ensureOwnSubdir, isOwnDir };
+export { ensureOwnSubdir, isOwnDir, isPid };
 
 const MUTEX_STALE_MS = 10_000;
 const ORPHAN_MAX_MS = 2 * 60 * 60_000;
@@ -249,9 +250,6 @@ function unlessGone<T>(read: () => T): T | undefined {
     throw err;
   }
 }
-
-/** A PID that `kill(pid, 0)` checks as one process: `0` and negatives address a group, or every process, and `process.kill` rejects 2^31 and above. */
-export const isPid = (n: unknown): boolean => Number.isInteger(n) && (n as number) > 0 && (n as number) < 2 ** 31;
 
 function parseHolder(text: string): HolderRecord | null {
   try {

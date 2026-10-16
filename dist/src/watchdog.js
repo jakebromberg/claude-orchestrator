@@ -9,8 +9,7 @@ import { join } from "node:path";
 import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
 import { isOwnDir, writeLeaseRecord } from "./lease-dir.js";
-import { isPid } from "./lease.js";
-import { ps } from "./ps.js";
+import { ancestry, isPid, parsePsTable, ps, PS_TABLE_ARGS } from "./ps.js";
 import { readSuspensions } from "./suspensions.js";
 const EX_USAGE = 64;
 const USAGE = "usage: claude-orchestrator-watchdog check | brief";
@@ -45,18 +44,7 @@ const deadEngine = (c) => c.engines
 /** The rules, in report order. A rule reads the context and returns findings; the reporters never change. */
 export const RULES = [unrecordedStoppedGroup, stalledEngine, deadEngine];
 /** The default scan: one bounded `ps`, 60 s because it can be slow at background priority. A throw skips the cycle. */
-export const scanProcessTable = () => ps(["-axo", "pid=,ppid=,pgid=,uid=,stat=,etime=,command="], { timeoutMs: 60_000 });
-/** `ps` `etime`, `[[dd-]hh:]mm:ss`, in milliseconds; NaN for any other shape. */
-export function parseElapsed(etime) {
-    const m = /^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$/.exec(etime);
-    return m ? (((Number(m[1] ?? 0) * 24 + Number(m[2] ?? 0)) * 60 + Number(m[3])) * 60 + Number(m[4])) * 1000 : NaN;
-}
-function parseTable(text) {
-    return text.split("\n").flatMap((line) => {
-        const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+\d+\s+(\S+)\s+(\S+)\s+(.*)$/.exec(line);
-        return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), stat: m[4], elapsedMs: parseElapsed(m[5]), command: m[6] }] : [];
-    });
-}
+export const scanProcessTable = () => ps(PS_TABLE_ARGS, { timeoutMs: 60_000 });
 /** Whether `row` can be the process that wrote a record started at `startedAt`: one that started later holds a reused pid. An unreadable time on either side keeps the row. */
 function isSameProcess(row, startedAt, now) {
     const started = typeof startedAt === "string" ? Date.parse(startedAt) : NaN;
@@ -92,14 +80,8 @@ function readEngines(dir, now, procs) {
 }
 /** Groups whose every member is stopped (`stat` starts with `T`) and that contain or descend from a `claude` process, or belong to a live registered engine. */
 function stoppedGroups(procs, engines) {
-    const byPid = new Map(procs.map((p) => [p.pid, p]));
     const isClaude = (p) => /(^|[\s/])claude(\s|$)/.test(p.command);
-    const underClaude = (p) => {
-        for (let cur = p, n = 0; cur && n < 64; cur = byPid.get(cur.ppid), n++)
-            if (isClaude(cur))
-                return true;
-        return false;
-    };
+    const underClaude = (p) => ancestry(procs, p.pid, 64).chain.some(isClaude);
     const enginePgids = new Set(engines.filter((e) => e.alive).map((e) => e.pgid));
     const groups = new Map();
     for (const p of procs)
@@ -143,7 +125,7 @@ export function check(d) {
     const prev = readState(d.dir);
     let procs;
     try {
-        procs = parseTable(d.scan());
+        procs = parsePsTable(d.scan());
         if (procs.length === 0)
             throw new Error("empty process table");
     }
