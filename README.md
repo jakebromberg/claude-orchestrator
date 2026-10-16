@@ -130,6 +130,24 @@ claude-orchestrator-lease resume <pgid>
 - Both refuse (exit 1, nothing written, no signal): a pgid that is not a pid, 0 and 1, the caller's own group, the group of any ancestor of the caller (walked through the same scan's `ppid` column; a link missing from the scan, or a chain that does not reach pid 1 within 64 steps, refuses, so a cut-short scan never lets a session stop its own tree), and a group with any member owned by another user. `suspend` also refuses a group with no live members and a group that already has a record.
 - Ancestry, group membership, ownership and the leader's command come from one bounded `ps -axo pid=,ppid=,pgid=,uid=,command=` scan; `kill(-pgid, 0)` is never used as a probe. `ps`, the signals and the clock are injected (`src/suspensions.ts`), so the tests signal only `sleep` children they spawned.
 
+#### Watchdog (`claude-orchestrator-watchdog`)
+
+A stopped engine takes its in-tree stall monitor with it, so the report has to come from outside every tree. The watchdog is a separate bin that sends no signal (its dependencies are `ps`, the clock and the file system):
+
+```bash
+claude-orchestrator-watchdog check   # scan once; update watchdog.json, watchdog.log and watchdog.brief
+claude-orchestrator-watchdog brief   # print watchdog.brief (nothing when all is well)
+```
+
+Its state lives in the lease directory (`CO_LEASE_DIR`): `watchdog.json` (first-seen-stopped times and the latest findings) and `watchdog.brief` (one line, empty when all is well; a status line can read it on every refresh) are written atomically; `watchdog.log` is appended (regular files only, symlinks not followed). `check` never creates the lease directory and writes nothing when it is missing, a symlink or another user's. Run it from a scheduler; installing one is a separate step.
+
+- **Scan.** One `ps -axo pid=,ppid=,pgid=,uid=,stat=,etime=,command=` per run through `ps.ts`, with a 60 s timeout. A scan that throws or returns no rows skips the cycle: the previous state stays and the skip is logged.
+- **Scope.** A stopped group (every member's `stat` starts with `T`) that contains or descends from a `claude` process, or belongs to a registered engine. A job stopped with Ctrl-Z outside those trees is not reported.
+- **Unrecorded stopped group.** Reported 5 minutes after it was first seen stopped (5 to 7 minutes after the stop at a 2-minute interval), unless `suspensions/<pgid>.json` exists.
+- **Engine registry.** A record in `engines/` is fresh while its mtime is within 3 refresh periods (90 s) of the clock. A stale record whose pid has no row in the scan is a dead engine, reported once per `runId`; the record is left in place (it belongs to the engine's directory). A stale record whose pid is alive is a stopped or wedged engine and is reported through the stopped-group rule, by its `pgid` (or the scan's `pgid` for its pid when the record holds `null`).
+
+The rules are a list (`RULES` in `watchdog.ts`) of functions from the scan to findings, so a new rule needs no change to the reporters.
+
 #### Hook mode (`claude-orchestrator-lease hook`)
 
 Agents run most heavy commands through the Bash tool, where prompt text cannot enforce a machine-wide limit. `hook` is the command for a user-level Claude Code `PreToolUse`/`PostToolUse`/`PostToolUseFailure` hook on `Bash`: it reads the hook's JSON from stdin (`hook_event_name`, `tool_name`, `tool_use_id`, `cwd`, and `tool_input`'s `command`, `timeout` and `run_in_background`; nothing else) and the environment variables `CO_LEASE_HOOK`, `CO_LEASE_SESSION_PID`, `BASH_DEFAULT_TIMEOUT_MS` and the lease's own, and decides whether the command is heavy. It never rewrites the command. Unparseable input, a non-Bash tool, or any error exits 0 silently (hook mode builds its lease options with a silent writer, so a bad `CO_LEASE_SLOTS`, a failed pressure read or an unwritable lease directory prints nothing).
