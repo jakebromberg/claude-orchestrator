@@ -112,6 +112,20 @@ claude-orchestrator-lease status
 - **Exit 78**: the lease is misconfigured (for example a relative `CO_LEASE_DIR`); the command is not run. Usage errors exit 64. If the lease directory is unusable the command runs unleased after one warning.
 - `status` prints `{ level, capacity, live: [{ pid, command, ageSec }] }` as JSON (`override: true` on a holder admitted while `CO_PRESSURE_OVERRIDE` actually turned a `critical` reading into `warning`). It never creates the lease directory; in an existing one, reading the pressure level refreshes `level.json`.
 
+#### Suspension records (`claude-orchestrator-lease suspend` / `resume`)
+
+A deliberate stop needs a record a watchdog outside the stopped tree can read, so a recorded stop is told apart from an unexplained one. These are manual commands, for a person or for a session acting on the owner's explicit request; nothing calls them automatically.
+
+```
+claude-orchestrator-lease suspend <pgid> --by <who> --reason <why> [--remind <n>m|<n>h] [--record-only]
+claude-orchestrator-lease resume <pgid>
+```
+
+- `suspend` writes `<lease dir>/suspensions/<pgid>.json` (`{ pgid, by, reason, at, remindAt, leader }`, mode 0600; the directory is created at 0700 under the lease's directory rule, so a symlinked or foreign `suspensions/` is refused) and then sends `SIGSTOP` to the group. `remindAt` is `at` plus `--remind` (a positive integer with an `m` or `h` unit, default `2h`; anything else exits 64). `leader` is the command of the member whose pid is the pgid, or `null` when the leader has exited. `--record-only` writes the record and sends no signal, for a group that is already stopped. If the signal fails the record is removed again.
+- `resume` sends `SIGCONT` to the group and then removes the record. With no record it still sends the signal and prints that no record existed; a group that is gone (`ESRCH`) has its record removed.
+- Both refuse (exit 1, nothing written, no signal): a pgid that is not a pid, 0 and 1, the caller's own group, the group of any ancestor of the caller (`psAncestors(process.ppid, 32)`), and a group with any member owned by another user. `suspend` also refuses a group with no live members and a group that already has a record.
+- Group membership, ownership and the leader's command come from one bounded `ps -axo pid=,pgid=,uid=,command=` scan; `kill(-pgid, 0)` is never used as a probe. `ps`, the signals and the clock are injected (`src/suspensions.ts`), so the tests signal only `sleep` children they spawned.
+
 #### Hook mode (`claude-orchestrator-lease hook`)
 
 Agents run most heavy commands through the Bash tool, where prompt text cannot enforce a machine-wide limit. `hook` is the command for a user-level Claude Code `PreToolUse`/`PostToolUse`/`PostToolUseFailure` hook on `Bash`: it reads the hook's JSON from stdin (`hook_event_name`, `tool_name`, `tool_use_id`, `cwd`, and `tool_input`'s `command`, `timeout` and `run_in_background`; nothing else) and the environment variables `CO_LEASE_HOOK`, `CO_LEASE_SESSION_PID`, `BASH_DEFAULT_TIMEOUT_MS` and the lease's own, and decides whether the command is heavy. It never rewrites the command. Unparseable input, a non-Bash tool, or any error exits 0 silently (hook mode builds its lease options with a silent writer, so a bad `CO_LEASE_SLOTS`, a failed pressure read or an unwritable lease directory prints nothing).

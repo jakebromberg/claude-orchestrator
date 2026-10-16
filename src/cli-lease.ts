@@ -7,6 +7,8 @@
  *   claude-orchestrator-lease [--max-wait <sec>] [--label <text>] --shell '<command line>'
  *   claude-orchestrator-lease status
  *   claude-orchestrator-lease hook [--print-settings-entry]
+ *   claude-orchestrator-lease suspend <pgid> --by <who> --reason <why> [--remind 2h] [--record-only]
+ *   claude-orchestrator-lease resume <pgid>
  *
  * The slot is held for exactly as long as the command lives, and the command's
  * exit code is passed through. Exit 75 means no slot within the wait cap
@@ -20,6 +22,7 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { formatAdmitted, formatNoSlot } from "./lease-messages.js";
 import { runHook } from "./lease-hook.js";
+import { runSuspensionCli } from "./suspensions.js";
 import { cliLeaseDeps, parseLeaseArgs, runLeased, runStatus, type LeaseArgs } from "./lease-run.js";
 
 export { formatAdmitted, formatNoSlot };
@@ -41,6 +44,7 @@ async function readStdin(): Promise<string> {
 async function main(argv: string[]): Promise<number> {
   // Before the usage and configuration exits: hook mode never fails a Bash call.
   if (argv[0] === "hook") return runHook(argv.slice(1), { env: process.env, readStdin, out: (text) => void process.stdout.write(text) });
+  if (argv[0] === "suspend" || argv[0] === "resume") return runSuspensionCli(argv);
   let args: LeaseArgs;
   try {
     args = parseLeaseArgs(argv);

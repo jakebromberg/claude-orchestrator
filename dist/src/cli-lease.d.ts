@@ -7,6 +7,8 @@
  *   claude-orchestrator-lease [--max-wait <sec>] [--label <text>] --shell '<command line>'
  *   claude-orchestrator-lease status
  *   claude-orchestrator-lease hook [--print-settings-entry]
+ *   claude-orchestrator-lease suspend <pgid> --by <who> --reason <why> [--remind 2h] [--record-only]
+ *   claude-orchestrator-lease resume <pgid>
  *
  * The slot is held for exactly as long as the command lives, and the command's
  * exit code is passed through. Exit 75 means no slot within the wait cap
