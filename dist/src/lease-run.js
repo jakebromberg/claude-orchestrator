@@ -6,10 +6,11 @@
  * Pure helpers (`parseLeaseArgs`, `runLeased`, `runStatus`) take every external
  * interaction through `LeaseCliDeps`; `cliLeaseDeps` wires real I/O.
  */
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { acquireLease, defaultLeaseOptions, leaseStatus } from "./lease.js";
 import { formatAdmitted, formatNoSlot, seconds } from "./lease-messages.js";
+import { psAncestors } from "./ps.js";
 const DEFAULT_MAX_WAIT_SEC = 100;
 const ANCESTOR_DEPTH = 32;
 const GRACE_MS = 10_000;
@@ -91,20 +92,6 @@ function ancestorHookSlot(opts, d) {
         return undefined;
     }
 }
-/** Walks `ps -o ppid=` up from `process.ppid`, at most `ANCESTOR_DEPTH` levels; any failure ends the walk with what it has found (`[]` if the first call fails). */
-function psAncestors() {
-    const found = [];
-    try {
-        for (let pid = process.ppid; found.length < ANCESTOR_DEPTH && Number.isInteger(pid) && pid > 1; pid = Number(execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] }).trim())) {
-            found.push(pid);
-        }
-    }
-    catch {
-        // A failed lookup means no borrow, never an error.
-    }
-    return found;
-}
-/** Prints the holders as JSON; returns the exit code. */
 export function runStatus(d) {
     const opts = optionsOrReport(d);
     if (!opts)
@@ -229,7 +216,7 @@ export function cliLeaseDeps(err, base = {}) {
         leaseOptions: () => defaultLeaseOptions(env, { warn: err, level }),
         acquire: acquireLease,
         leaseStatus,
-        ancestors: psAncestors,
+        ancestors: () => psAncestors(process.ppid, ANCESTOR_DEPTH),
         spawn: (file, fileArgs, opts) => spawn(file, fileArgs, { stdio: "inherit", env: opts.env }),
         env,
         cwd: process.cwd(),

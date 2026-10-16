@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { psField } from "./ps.js";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { EngineInfo, EngineRegistry } from "./types.js";
@@ -14,9 +14,8 @@ export interface FileEngineRegistryOptions {
 
 const REFRESH_MS = 30_000;
 
-/** Bounded like the lease's own `ps` calls (2 s, stderr ignored): a hung `ps` must not slow engine start. */
-const psPgid = (pid: number): number =>
-  Number(execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf-8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] }).trim());
+/** The bounded `ps` reader (see `ps.ts`): a hung `ps` must not slow engine start. */
+const psPgid = (pid: number): number => Number(psField(pid, "pgid"));
 
 /**
  * File-backed registry: writes `engines/<pid>.json` at `start`, rewrites it every 30 s on an unref'd timer

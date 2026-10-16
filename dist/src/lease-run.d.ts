@@ -49,7 +49,6 @@ export interface LeaseCliDeps {
     };
 }
 export declare function parseLeaseArgs(argv: string[]): LeaseArgs;
-/** Prints the holders as JSON; returns the exit code. */
 export declare function runStatus(d: LeaseCliDeps): number;
 /** Waits for a slot, runs the command with it held, and returns the exit code to pass through. */
 export declare function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>;
