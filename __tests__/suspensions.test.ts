@@ -7,17 +7,19 @@ import { parseSuspensionArgs, runSuspension, type SuspensionDeps } from "../src/
 import { ps } from "../src/ps.js";
 
 const NOW = Date.parse("2026-10-16T12:00:00Z");
-// The caller is pid 500 in its own group, under parents 400 (group 400) and 300 (group 300).
-const TABLE: [number, number, number, string][] = [
-  [500, 500, 501, "node cli-lease.js suspend"],
-  [400, 400, 501, "claude"],
-  [300, 300, 501, "zsh"],
-  [900, 900, 501, "sleep 100"],
-  [901, 900, 501, "sleep 101"],
-  [800, 800, 501, "mine-leader"],
-  [801, 800, 0, "root-member"],
-  [911, 910, 501, "orphan-member"],
+// The caller is pid 500 under parents 400 and 300. None of them leads its own group (groups 450, 350, 300 is led
+// by zsh), so a check that compared the target with their pids instead of their pgids would fail the refusal rows.
+const TABLE: [number, number, number, number, string][] = [
+  [500, 400, 450, 501, "node cli-lease.js suspend"],
+  [400, 300, 350, 501, "claude"],
+  [300, 1, 300, 501, "zsh"],
+  [900, 1, 900, 501, "sleep 100"],
+  [901, 900, 900, 501, "sleep 101"],
+  [800, 1, 800, 501, "mine-leader"],
+  [801, 800, 800, 0, "root-member"],
+  [911, 1, 910, 501, "orphan-member"],
 ];
+const table = (rows = TABLE) => rows.map((r) => r.join(" ")).join("\n");
 
 describe("suspend and resume", () => {
   let dir: string;
@@ -29,15 +31,13 @@ describe("suspend and resume", () => {
   const records = () => (existsSync(join(dir, "suspensions")) ? readdirSync(join(dir, "suspensions")) : []);
   const deps = (over: Partial<SuspensionDeps> = {}): SuspensionDeps => ({
     dir,
-    ps: () => TABLE.map((r) => r.join(" ")).join("\n"),
-    ancestors: () => [400, 300],
+    ps: () => table(),
     kill: (pid, signal) => {
       atKill();
       kills.push([pid, signal]);
     },
     now: () => NOW,
     pid: 500,
-    ppid: 400,
     uid: 501,
     out: (line) => out.push(line),
     err: (line) => err.push(line),
@@ -61,8 +61,8 @@ describe("suspend and resume", () => {
       ["pid 1", "1", "not a process group"],
       ["a non-pid", "abc", "not a process group"],
       ["a pid past 2^31", "2147483648", "not a process group"],
-      ["the caller's own group", "500", "own or an ancestor's"],
-      ["a parent's group", "400", "own or an ancestor's"],
+      ["the caller's own group", "450", "own or an ancestor's"],
+      ["a parent's group", "350", "own or an ancestor's"],
       ["a further ancestor's group", "300", "own or an ancestor's"],
       ["a group with a member owned by another user", "800", "another user"],
     ];
@@ -112,6 +112,14 @@ describe("suspend and resume", () => {
       }
     });
 
+    it.each(["suspend", "resume"])("%s refuses when the table cannot show the caller's whole ancestry (fails closed)", (verb) => {
+      const gap = TABLE.filter(([pid]) => pid !== 400);
+      expect(run([verb, "900", ...(verb === "suspend" ? ["--by", "o", "--reason", "r"] : [])], { ps: () => table(gap) })).toBe(1);
+      expect(err.join("\n")).toContain("ancestry");
+      expect(kills).toEqual([]);
+      expect(records()).toEqual([]);
+    });
+
     it("refuses when the process table cannot be read", () => {
       const broken = () => {
         throw new Error("ps timed out");
@@ -131,7 +139,7 @@ describe("suspend and resume", () => {
       ["an unknown flag", ["suspend", "900", "--by", "o", "--reason", "r", "--force"]],
       ["resume with no pgid", ["resume"]],
       ["resume with suspend's flags", ["resume", "900", "--by", "o"]],
-      ...["0m", "2d", "1.5h", "h", "-1h", "2", "02h", "2 h"].map((v): [string, string[]] => [`--remind ${JSON.stringify(v)}`, suspend(900, "--remind", v)]),
+      ...["0m", "2d", "1.5h", "h", "-1h", "2", "02h", "2 h", "721h", "43201m", "99999999999h"].map((v): [string, string[]] => [`--remind ${JSON.stringify(v)}`, suspend(900, "--remind", v)]),
     ])("exits 64 for %s", (_name, argv) => {
       expect(run(argv)).toBe(64);
       expect(err.join("\n")).toContain("usage:");
@@ -143,6 +151,7 @@ describe("suspend and resume", () => {
       ["90m", 90 * 60_000],
       ["2h", 2 * 3_600_000],
       ["1m", 60_000],
+      ["720h", 720 * 3_600_000],
       [undefined, 2 * 3_600_000],
     ])("parses --remind %s", (value, ms) => {
       const parsed = parseSuspensionArgs(suspend(900, ...(value ? ["--remind", value] : [])));
@@ -234,11 +243,9 @@ describe("suspend and resume", () => {
     const real = (): SuspensionDeps => ({
       dir,
       ps,
-      ancestors: () => [],
       kill: (pid, signal) => void process.kill(pid, signal),
       now: () => NOW,
       pid: process.pid,
-      ppid: process.ppid,
       uid: process.getuid?.(),
       out: (line) => out.push(line),
       err: (line) => err.push(line),

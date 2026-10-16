@@ -16,12 +16,11 @@ export interface SuspensionDeps {
     /** The lease directory; records live in `<dir>/suspensions/<pgid>.json`. */
     dir: string;
     ps: (args: string[]) => string;
-    ancestors: (startPid: number, depth: number) => number[];
     /** Signals a process group (a negative pid). */
     kill: (pid: number, signal: "SIGSTOP" | "SIGCONT") => void;
     now: () => number;
+    /** This process; it and every ancestor up to pid 1 must appear in the `ps` scan, or the command refuses. */
     pid: number;
-    ppid: number;
     /** Undefined on a platform without uids, which skips the ownership check. */
     uid: number | undefined;
     out: (line: string) => void;
