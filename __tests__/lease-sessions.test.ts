@@ -4,7 +4,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as barrel from "../src/index.js";
-import { acquireLease, acquireSessionLease, leaseStatus, type HolderMeta, type LeaseHandle, type LeaseOptions, type LeaseRefusal } from "../src/lease.js";
+import { acquireLease, acquireSessionLease, leaseStatus, type HolderMeta, type LeaseHandle, type LeaseOptions, type LeaseRefusal, type LeaseStatus } from "../src/lease.js";
 import type { HeadroomReading } from "../src/headroom-sampler.js";
 import type { PressureLevel, PressurePolicy } from "../src/memory-pressure.js";
 import { scriptedHeadroomSampler } from "../src/testing.js";
@@ -137,6 +137,27 @@ describe("session holder class", () => {
       expect(status).toMatchObject({ level: "normal", capacity: 1, step: 1, sessions: { capacity: 1 } });
       expect(names("holders")).toEqual([`${heavy.id}.json`]);
       expect(names("sessions")).toEqual([`${session.id}.json`]);
+      heavy.release();
+      session.release();
+    });
+
+    it("shows a session acquire's stopWhen and onWait the session pool as capacity and live, on the first and the confirming read", async () => {
+      const o = opts(2, { headroom: scriptedHeadroomSampler(reading(2), { fresh: () => reading(3) }), policy: { ...sessionPolicy(1), heavyCeiling: 4 } });
+      const heavy = (await acquireLease(o, meta)) as LeaseHandle;
+      const session = (await acquireSessionLease(o, meta)) as LeaseHandle;
+      const stopWhen = vi.fn((_s: LeaseStatus) => true);
+      expect(await acquireSessionLease(o, meta, { stopWhen })).toMatchObject({ refused: "stopped", live: 1 });
+      const [first, confirmed] = stopWhen.mock.calls.map(([s]) => s as LeaseStatus);
+      expect(first).toMatchObject({ step: 2, capacity: 1, sessions: { capacity: 1 } });
+      expect(confirmed).toMatchObject({ step: 3, capacity: 1, sessions: { capacity: 1 } });
+      for (const s of [first!, confirmed!]) {
+        expect(s.live.map((h) => h.id)).toEqual([session.id]);
+        expect(s.sessions.live.map((h) => h.id)).toEqual([session.id]);
+      }
+      const onWait = vi.fn();
+      await acquireSessionLease(o, meta, { maxWaitMs: 1, onWait });
+      expect(onWait).toHaveBeenCalledWith(expect.objectContaining({ capacity: 1, live: [expect.objectContaining({ id: session.id })] }));
+      expect(leaseStatus(o)).toMatchObject({ capacity: 2, live: [expect.objectContaining({ id: heavy.id })], sessions: { capacity: 1 } });
       heavy.release();
       session.release();
     });
