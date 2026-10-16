@@ -2,7 +2,7 @@
  * The watchdog's scan-and-classify core: one bounded `ps` scan, a list of rules over it, and reporters that write
  * `watchdog.json`, `watchdog.brief` and `watchdog.log` in the lease directory. It runs outside every engine tree, so a
  * stopped tree cannot silence it. It sends no signal: its dependencies are `ps`, the clock and the file system, and an
- * engine's liveness is whether its pid has a row in the scan.
+ * engine's liveness is whether its pid has a row in the scan for a process that started no later than the record.
  */
 import { appendFileSync, closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -18,7 +18,7 @@ const USAGE = "usage: claude-orchestrator-watchdog check | brief";
 export const STOPPED_AFTER_MS = 5 * 60_000;
 /** An engine record is fresh for three refresh periods, the lease's heartbeat rule. */
 export const ENGINE_FRESH_MS = 3 * REFRESH_MS;
-/** A stale engine record with a live pid is reported once it is older than the engine's `stallTimeout` plus this. */
+/** A stale engine record whose pid is alive and running is reported once it is older than the engine's `stallTimeout` plus this. */
 export const STALLED_MARGIN_MS = 10 * 60_000;
 // A planted symlink is not followed and a planted FIFO is not waited on.
 const LOG_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK;
@@ -47,6 +47,8 @@ export interface Engine {
   alive: boolean;
   /** The record's mtime: how long ago the engine last refreshed it. */
   mtimeMs: number;
+  /** The engine's own scan row has a `stat` starting with `T`. */
+  stopped: boolean;
 }
 
 /** One thing to tell the owner. `once` findings are emitted in one cycle per `key` while the thing they describe lasts. */
@@ -79,12 +81,16 @@ const unrecordedStoppedGroup: Rule = (c) =>
     .map(([pgid, since]) => ({ key: `stopped:${pgid}`, message: `process group ${pgid} stopped ${minutes(c.now - since)}m, no suspension record` }));
 
 // A stale record whose pid is alive is a stopped or wedged engine. Its sessions share its group, so the group is
-// rarely stopped throughout: report the engine itself once its record is older than its stallTimeout + 10 minutes (a
-// healthy engine stops refreshing while a long synchronous command blocks its event loop), until the stopped-group
-// rule reports its group, and never for a group with a suspension record.
+// rarely stopped throughout, and the engine is reported on its own: on the stopped-group bound when its own stat is T,
+// and otherwise (running, but not refreshing) only past its stallTimeout + 10 minutes, since a healthy engine stops
+// refreshing while a long synchronous command blocks its event loop. At stallTimeout 0 (no silence check) a running
+// engine is never reported. The report yields once the stopped-group rule reports the group, and a group with a
+// suspension record is skipped.
+const stalledAfterMs = (e: Engine): number => (e.stopped ? STOPPED_AFTER_MS : e.stallTimeout > 0 ? e.stallTimeout * 1000 + STALLED_MARGIN_MS : Infinity);
+
 const stalledEngine: Rule = (c) =>
   c.engines
-    .filter((e) => !e.fresh && e.alive && c.now - e.mtimeMs >= e.stallTimeout * 1000 + STALLED_MARGIN_MS)
+    .filter((e) => !e.fresh && e.alive && c.now - e.mtimeMs >= stalledAfterMs(e))
     .filter((e) => e.pgid === null || !(c.suspended.has(e.pgid) || c.now - (c.stoppedSince.get(e.pgid) ?? c.now) >= STOPPED_AFTER_MS))
     .map((e) => ({ key: `stalled:${e.runId}`, message: `engine ${e.runId} (pid ${e.pid}) has not refreshed its record for ${minutes(c.now - e.mtimeMs)}m and is still alive: stopped or wedged` }));
 
@@ -158,7 +164,7 @@ function readEngines(dir: string, now: number, procs: Proc[]): Engine[] {
     if (!isPid(r?.pid) || typeof r.runId !== "string") return [];
     const row = procs.find((p) => p.pid === r.pid);
     // A null pgid (ps failed at engine start) falls back to the scan's.
-    return [{ ...r, pgid: Number.isInteger(r.pgid) ? r.pgid : (row?.pgid ?? null), fresh: isWithinWindow(mtimeMs, now, ENGINE_FRESH_MS), alive: row !== undefined && isSameProcess(row, r.startedAt, now), mtimeMs, stallTimeout: Number.isFinite(r.stallTimeout) && r.stallTimeout >= 0 ? r.stallTimeout : 0 }];
+    return [{ ...r, pgid: Number.isInteger(r.pgid) ? r.pgid : (row?.pgid ?? null), fresh: isWithinWindow(mtimeMs, now, ENGINE_FRESH_MS), alive: row !== undefined && isSameProcess(row, r.startedAt, now), mtimeMs, stopped: row?.stat.startsWith("T") ?? false, stallTimeout: Number.isFinite(r.stallTimeout) && r.stallTimeout >= 0 ? r.stallTimeout : 0 }];
   });
 }
 
