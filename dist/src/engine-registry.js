@@ -1,13 +1,14 @@
-import { mkdirSync, rmSync } from "node:fs";
-import { writeFileAtomic } from "./atomic-write.js";
-import { psField } from "./ps.js";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { writeFileAtomic } from "./atomic-write.js";
+import { ensureOwnSubdir } from "./lease.js";
+import { psField } from "./ps.js";
 const REFRESH_MS = 30_000;
 /** The bounded `ps` reader (see `ps.ts`): a hung `ps` must not slow engine start. */
 const psPgid = (pid) => Number(psField(pid, "pgid"));
 /**
  * File-backed registry: writes `engines/<pid>.json` at `start`, rewrites it every 30 s on an unref'd timer
- * (its mtime tells a reader a live engine from a dead one) and removes it at `stop`. I/O errors are swallowed.
+ * (its mtime tells a reader a live engine from a dead one) and removes it at `stop`. `engines/` follows the lease's directory rule (`ensureOwnSubdir`); I/O errors, a refused directory included, are swallowed.
  */
 export function createFileEngineRegistry(options) {
     const pid = options.pid ?? process.pid;
@@ -15,7 +16,7 @@ export function createFileEngineRegistry(options) {
     let timer;
     const write = (record) => {
         try {
-            mkdirSync(join(options.dir, "engines"), { recursive: true });
+            ensureOwnSubdir(options.dir, "engines");
             writeFileAtomic(file, JSON.stringify(record));
         }
         catch { }

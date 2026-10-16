@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,6 +68,43 @@ describe("createFileEngineRegistry", () => {
     } finally {
       chmodSync(dir, 0o700);
     }
+  });
+
+  describe("the lease's directory rule", () => {
+    const mode = (p: string) => statSync(p).mode & 0o777;
+
+    it.each([
+      ["creates engines/ at 0700", (_d: string) => {}, (d: string) => mode(join(d, "engines")) === 0o700],
+      ["tightens an existing engines/ to 0700", (d: string) => { mkdirSync(join(d, "engines"), { mode: 0o755 }); chmodSync(join(d, "engines"), 0o755); }, (d: string) => mode(join(d, "engines")) === 0o700],
+      ["tightens an existing lease directory to 0700", (d: string) => chmodSync(d, 0o755), (d: string) => mode(d) === 0o700],
+    ])("%s", (_name, arrange, ok) => {
+      arrange(dir);
+      make().start(info);
+      expect(ok(dir)).toBe(true);
+      expect(read().pid).toBe(4242);
+    });
+
+    it("creates a missing lease directory at 0700", () => {
+      const missing = join(dir, "lease");
+      make({ dir: missing }).start(info);
+      expect(mode(missing)).toBe(0o700);
+      expect(mode(join(missing, "engines"))).toBe(0o700);
+      expect(existsSync(join(missing, "engines", "4242.json"))).toBe(true);
+    });
+
+    it.each([
+      ["a symlink", (target: string, link: string) => symlinkSync(target, link)],
+      ["not a directory", (_target: string, link: string) => writeFileSync(link, "x")],
+    ])("refuses engines/ that is %s, writes nothing through it and does not throw", (_name, plant) => {
+      const target = mkdtempSync(join(tmpdir(), "co-engine-target-"));
+      try {
+        plant(target, join(dir, "engines"));
+        expect(() => make().start(info)).not.toThrow();
+        expect(readdirSync(target)).toEqual([]);
+      } finally {
+        rmSync(target, { recursive: true, force: true });
+      }
+    });
   });
 
   it("swallows a remove failure", () => {

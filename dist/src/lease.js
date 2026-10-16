@@ -221,12 +221,12 @@ function borrowedHandle(id, level, capacity, live) {
     return { id, leased: true, admission: { waitedMs: 0, level, live, capacity }, childEnv: () => ({ CO_LEASE_HOLDER: id }), setChildPid() { }, release() { } };
 }
 /**
- * Creates the lease, holders and waiting directories (mode 0700), tightens one this user owns to 0700, and throws
- * (an I/O error) on one that is a symlink, not a directory, or another user's. A platform without uids
- * (Windows) skips the ownership check.
+ * The lease's directory rule, applied to the lease directory and its subdirectory `name`: each is created with mode
+ * 0700, one this user owns is tightened to 0700, and one that is a symlink, not a directory, or another user's throws
+ * (an I/O error). A platform without uids (Windows) skips the ownership check.
  */
-function ensureOwnDirs(dir) {
-    for (const d of [dir, holdersDir(dir), waitingDir(dir)]) {
+export function ensureOwnSubdir(dir, name) {
+    for (const d of [dir, join(dir, name)]) {
         mkdirSync(d, { recursive: true, mode: 0o700 });
         const st = lstatSync(d);
         if (!isOwnDir(st))
@@ -254,7 +254,8 @@ function attempt(opts, meta, waitedMs, ticketId) {
     const reaped = [];
     let r;
     try {
-        ensureOwnDirs(opts.dir);
+        ensureOwnSubdir(opts.dir, "holders");
+        ensureOwnSubdir(opts.dir, "waiting");
         const scan = scanHolders(opts);
         if (opts.inheritedHolderId && scan.live.some((h) => h.id === opts.inheritedHolderId)) {
             return { kind: "admitted", handle: borrowedHandle(opts.inheritedHolderId, level, capacity, scan.live.length) };
