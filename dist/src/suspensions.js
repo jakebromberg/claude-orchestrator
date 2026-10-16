@@ -3,9 +3,13 @@ import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
 import { ensureOwnSubdir, isPid } from "./lease.js";
 import { leaseDirectory } from "./memory-pressure.js";
-import { ps, psAncestors } from "./ps.js";
+import { ps } from "./ps.js";
 const EX_USAGE = 64;
 const EX_CONFIG = 78;
+/** The longest `--remind`: 30 days. */
+const MAX_REMIND_MS = 30 * 24 * 3_600_000;
+/** How far the ancestry walk climbs before it gives up and refuses. */
+const MAX_ANCESTRY = 64;
 const USAGE = "usage: claude-orchestrator-lease suspend <pgid> --by <who> --reason <why> [--remind <n>m|<n>h] [--record-only] | resume <pgid>";
 /** Parses `suspend <pgid> --by --reason [--remind] [--record-only]` or `resume <pgid>`; throws a usage error. A pgid that is not a number parses to NaN, which `runSuspension` refuses. */
 export function parseSuspensionArgs(argv) {
@@ -37,24 +41,37 @@ export function parseSuspensionArgs(argv) {
     if (!flags["--by"] || !flags["--reason"])
         throw new Error("suspend needs --by and --reason");
     const remind = /^([1-9]\d*)([mh])$/.exec(flags["--remind"] ?? "2h");
-    if (!remind)
-        throw new Error(`--remind takes a positive integer with an m or h unit, got ${JSON.stringify(flags["--remind"])}`);
-    return { kind: "suspend", raw, pgid, by: flags["--by"], reason: flags["--reason"], remindMs: Number(remind[1]) * (remind[2] === "h" ? 3_600_000 : 60_000), recordOnly };
+    const remindMs = remind ? Number(remind[1]) * (remind[2] === "h" ? 3_600_000 : 60_000) : NaN;
+    if (!(remindMs <= MAX_REMIND_MS))
+        throw new Error(`--remind takes a positive integer with an m or h unit, at most 720h, got ${JSON.stringify(flags["--remind"])}`);
+    return { kind: "suspend", raw, pgid, by: flags["--by"], reason: flags["--reason"], remindMs, recordOnly };
 }
 /** One bounded scan of the process table: group membership, liveness, ownership and leader command all come from it. */
 function readTable(d) {
-    return d.ps(["-axo", "pid=,pgid=,uid=,command="]).split("\n").flatMap((line) => {
-        const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/.exec(line);
-        return m ? [{ pid: Number(m[1]), pgid: Number(m[2]), uid: Number(m[3]), command: m[4] }] : [];
+    return d.ps(["-axo", "pid=,ppid=,pgid=,uid=,command="]).split("\n").flatMap((line) => {
+        const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+        return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), uid: Number(m[4]), command: m[5] }] : [];
     });
+}
+/** The groups of this process and every ancestor, walked through the scan itself. Fails closed: a link missing from the scan, or a chain that never reaches pid 1, refuses rather than guarding a partial list. */
+function guardedGroups(table, d) {
+    const byPid = new Map(table.map((m) => [m.pid, m]));
+    const groups = [];
+    for (let pid = d.pid; pid > 1;) {
+        const m = byPid.get(pid);
+        if (!m || groups.length >= MAX_ANCESTRY)
+            throw new Error(`cannot read this command's whole ancestry (stopped at pid ${pid}); refusing`);
+        groups.push(m.pgid);
+        pid = m.ppid;
+    }
+    return groups;
 }
 /** Throws unless `args.pgid` is a group this tool may touch, and returns its live members. */
 function checkGroup(args, d) {
     if (!isPid(args.pgid) || args.pgid === 1)
         throw new Error(`${args.raw} is not a process group this tool will touch`);
     const table = readTable(d);
-    const guarded = [d.pid, ...d.ancestors(d.ppid, 32)].map((pid) => table.find((m) => m.pid === pid)?.pgid);
-    if (guarded.includes(args.pgid))
+    if (guardedGroups(table, d).includes(args.pgid))
         throw new Error(`process group ${args.pgid} is this command's own or an ancestor's`);
     const members = table.filter((m) => m.pgid === args.pgid);
     if (d.uid !== undefined && members.some((m) => m.uid !== d.uid))
@@ -127,11 +144,9 @@ export function runSuspensionCli(argv) {
     return runSuspension(argv, {
         dir,
         ps,
-        ancestors: psAncestors,
         kill: (pid, signal) => void process.kill(pid, signal),
         now: Date.now,
         pid: process.pid,
-        ppid: process.ppid,
         uid: process.getuid?.(),
         out: (line) => void process.stdout.write(`${line}\n`),
         err,
