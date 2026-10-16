@@ -1178,9 +1178,12 @@ describe("lease", () => {
         ["an older gated ticket that passed its gates, with 3 slots free", { capacity: 4, ready: true }, false],
         ["an older gated ticket whose own capacity leaves it no slot", { capacity: 1, ready: true }, true],
         ["a stale older gated ticket", { capacity: 4, ready: false, ageMs: TICKET_FRESH_MS + 1_000 }, true],
-      ])("with %s, a gated waiter is admitted only past tickets that cannot be", async (_name, ticket, admitted) => {
-        plantHolder("4242-live", {}, 0);
-        alive.add(4242);
+        ["an older gated ticket and nothing live", { capacity: 4, ready: true, nothingLive: true }, false],
+      ])("with %s, a gated waiter is admitted only past tickets that cannot be", async (_name, { nothingLive, ...ticket }, admitted) => {
+        if (!nothingLive) {
+          plantHolder("4242-live", {}, 0);
+          alive.add(4242);
+        }
         plantTicket("g", 1, { gated: true, ...ticket });
         expect(await attemptGated(gated, wide)).toBe(admitted);
       });
