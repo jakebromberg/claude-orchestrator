@@ -1,5 +1,6 @@
+import { mkdirSync, rmSync } from "node:fs";
+import { writeFileAtomic } from "./atomic-write.js";
 import { psField } from "./ps.js";
-import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const REFRESH_MS = 30_000;
 /** The bounded `ps` reader (see `ps.ts`): a hung `ps` must not slow engine start. */
@@ -15,9 +16,7 @@ export function createFileEngineRegistry(options) {
     const write = (record) => {
         try {
             mkdirSync(join(options.dir, "engines"), { recursive: true });
-            const tmp = `${file}.${process.pid}.tmp`;
-            writeFileSync(tmp, JSON.stringify(record), { mode: 0o600 });
-            renameSync(tmp, file);
+            writeFileAtomic(file, JSON.stringify(record));
         }
         catch { }
     };

@@ -8,8 +8,9 @@
  * except at `critical`, where nothing new starts. It never spins.
  */
 import { randomBytes } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync, type Stats } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, utimesSync, type Stats } from "node:fs";
 import { join } from "node:path";
+import { writeFileAtomic } from "./atomic-write.js";
 import { isWithinWindow, tryLockOnce } from "./file-lock.js";
 import { leaseEventSink } from "./lease-events.js";
 import {
@@ -257,10 +258,7 @@ function scanTickets(opts: LeaseOptions): (Ticket & { eligible: boolean })[] {
 /** Writes or refreshes a ticket, dating it on the lease clock before the rename so a reader never sees it with another mtime. */
 function writeTicket(opts: LeaseOptions, t: Ticket): void {
   const file = join(waitingDir(opts.dir), `${t.id}.json`);
-  writeFileSync(`${file}.tmp`, JSON.stringify(t), { mode: 0o600 });
-  const at = (opts.now ?? Date.now)() / 1000;
-  utimesSync(`${file}.tmp`, at, at);
-  renameSync(`${file}.tmp`, file);
+  writeFileAtomic(file, JSON.stringify(t), { mtimeMs: (opts.now ?? Date.now)() });
 }
 
 const removeTicket = (opts: LeaseOptions, id: string): void => rmSync(join(waitingDir(opts.dir), `${id}.json`), { force: true });
@@ -285,10 +283,7 @@ function createHolder(opts: LeaseOptions, meta: HolderMeta, command: string, adm
   const rec: HolderRecord = { id, pid: detached?.sessionPid ?? process.pid, command, cwd: meta.cwd, startedAt: now(), level: admission.level };
   if (detached) rec.expiresAt = detached.expiresAt;
   if (admission.override) rec.override = true;
-  const write = (): void => {
-    writeFileSync(`${file}.tmp`, JSON.stringify(rec), { mode: 0o600 });
-    renameSync(`${file}.tmp`, file);
-  };
+  const write = (): void => writeFileAtomic(file, JSON.stringify(rec));
   write();
   let released = false;
   // A detached holder gets no heartbeat: its session PID and `expiresAt` keep it live.
