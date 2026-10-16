@@ -1,7 +1,7 @@
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
-import { ensureOwnSubdir } from "./lease.js";
+import { ensureOwnSubdir } from "./lease-dir.js";
 import { psField } from "./ps.js";
 const REFRESH_MS = 30_000;
 /** The bounded `ps` reader (see `ps.ts`): a hung `ps` must not slow engine start. */
