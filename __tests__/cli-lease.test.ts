@@ -568,7 +568,7 @@ describe("runLeased", () => {
     it("does not borrow an ancestor hook slot, but honours an inherited holder", async () => {
       const ancestors = vi.fn(() => [1]);
       const live = { ...holder({ id: "hook-x", pid: 1 }), expiresAt: 1 };
-      const status = () => ({ level: "normal" as const, capacity: 1, step: 1, signals: null, live: [live] });
+      const status = () => ({ level: "normal" as const, capacity: 1, step: 1, signals: null, live: [live], sessions: { capacity: 1, live: [] } });
       const seen: LeaseOptions[] = [];
       const acq = (async (o: LeaseOptions) => (seen.push(o), outcome)) as unknown as typeof acquireLease;
       const base = { ancestors, leaseStatus: status, acquire: acq };
