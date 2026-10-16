@@ -9,6 +9,6 @@ export interface FileEngineRegistryOptions {
 }
 /**
  * File-backed registry: writes `engines/<pid>.json` at `start`, rewrites it every 30 s on an unref'd timer
- * (its mtime tells a reader a live engine from a dead one) and removes it at `stop`. I/O errors are swallowed.
+ * (its mtime tells a reader a live engine from a dead one) and removes it at `stop`. `engines/` follows the lease's directory rule (`ensureOwnSubdir`); I/O errors, a refused directory included, are swallowed.
  */
 export declare function createFileEngineRegistry(options: FileEngineRegistryOptions): EngineRegistry;
