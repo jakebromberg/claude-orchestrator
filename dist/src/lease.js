@@ -4,7 +4,8 @@
  * holder count is under the heavy capacity of the headroom step (`headroomCapacity(step, policy)`;
  * `heavyCapacity(level, policy)` when only a `level` sampler is given). Liveness is a live
  * heartbeat (the holder file's mtime, refreshed every 30 s) or a live child PID,
- * so a crashed or killed holder cannot leak a slot. A detached holder (hook mode) is live while its session PID is
+ * so a crashed or killed holder cannot leak a slot. A second holder class, `sessions/`, bounds implementer sessions machine-wide
+ * with heartbeat-only liveness and its own capacity row (`acquireSessionLease`). A detached holder (hook mode) is live while its session PID is
  * alive and its `expiresAt` has not passed. The lease fails open on I/O errors and a long-busy mutex,
  * except at `critical`, where nothing new starts. It never spins.
  */
@@ -18,7 +19,7 @@ import { headroomCapacity, MAX_STEP } from "./headroom.js";
 import { defaultHeadroomSampler, levelView } from "./headroom-sampler.js";
 import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
 import { leaseEventSink } from "./lease-events.js";
-import { heavyCapacity, leaseDirectory, pressurePolicyFromEnv, } from "./memory-pressure.js";
+import { DEFAULT_SESSION_CEILING, heavyCapacity, leaseDirectory, pressurePolicyFromEnv, } from "./memory-pressure.js";
 import { isPid } from "./ps.js";
 export { ensureOwnSubdir, isOwnDir, isPid };
 const MUTEX_STALE_MS = 10_000;
@@ -50,18 +51,36 @@ export function osCpuTicks() {
     }
     return { idle, total };
 }
-/** The machine step and its capacity; with no `headroom` sampler, today's level-only rule, and a step derived from the level. `fresh` bypasses every cache. */
+const HEAVY = {
+    holders: "holders",
+    waiting: "waiting",
+    heartbeatOnly: false,
+    ceiling: (p) => p.heavyCeiling,
+    capacity: (step, ceiling) => headroomCapacity(step, { heavyCeiling: ceiling }),
+    slots: (s) => s.capacity,
+};
+/** Implementer sessions by step 0 to 3; step 4 gets the whole ceiling. */
+const SESSION_ROW = [0, 1, 2, 4];
+const SESSIONS = {
+    holders: "sessions",
+    waiting: "sessions-waiting",
+    heartbeatOnly: true,
+    ceiling: (p) => p.sessionCeiling ?? DEFAULT_SESSION_CEILING,
+    capacity: (step, ceiling) => (step >= MAX_STEP ? ceiling : Math.min(ceiling, SESSION_ROW[step] ?? 0)),
+    slots: (s) => s.sessions,
+};
+/** The machine step and each class's capacity; with no `headroom` sampler, today's level-only rule for heavy, and a step derived from the level. `fresh` bypasses every cache. */
 function snapshot(opts, fresh = false) {
-    if (opts.headroom) {
-        const reading = fresh ? opts.headroom.fresh() : opts.headroom();
-        return { ...reading, capacity: headroomCapacity(reading.step, opts.policy) };
-    }
+    const { policy } = opts;
+    const at = (reading, capacity = HEAVY.capacity(reading.step, policy.heavyCeiling)) => ({ ...reading, capacity, sessions: SESSIONS.capacity(reading.step, SESSIONS.ceiling(policy)) });
+    if (opts.headroom)
+        return at(fresh ? opts.headroom.fresh() : opts.headroom());
     const level = fresh ? opts.level.fresh() : opts.level();
-    const step = level === "critical" ? 0 : level === "warning" ? Math.min(MAX_STEP, opts.policy.heavyWarning) : MAX_STEP;
-    return { level, step, signals: null, capacity: heavyCapacity(level, opts.policy) };
+    const step = level === "critical" ? 0 : level === "warning" ? Math.min(MAX_STEP, policy.heavyWarning) : MAX_STEP;
+    return at({ level, step, signals: null }, heavyCapacity(level, policy));
 }
-const holdersDir = (dir) => join(dir, "holders");
-const waitingDir = (dir) => join(dir, "waiting");
+const holdersDir = (dir, cls) => join(dir, cls.holders);
+const waitingDir = (dir, cls) => join(dir, cls.waiting);
 function pidAlive(pid) {
     try {
         process.kill(pid, 0);
@@ -79,10 +98,10 @@ function pidAlive(pid) {
  * session PID (`pid`) is alive, and `dead-session` when not. Any other holder is live while its heartbeat is
  * fresh: `mtimeMs` within 90 s of `nowMs`, in either direction (the mutex's rule, so a small backward clock
  * step cannot reap a live holder, while a heartbeat dated further ahead is stale). Otherwise it is live only
- * while its child PID is alive and within the 2 h orphan bound, and else reaped as `stale-heartbeat`. The
+ * while its child PID is alive and within the 2 h orphan bound (never for a `heartbeatOnly` class), and else reaped as `stale-heartbeat`. The
  * wrapper PID is never consulted, so a recycled one cannot pin a slot. `null` is a file that is not a holder record.
  */
-function verdict(rec, mtimeMs, nowMs, alive) {
+function verdict(rec, mtimeMs, nowMs, alive, heartbeatOnly) {
     if (!rec)
         return "corrupt";
     if (rec.expiresAt !== undefined) {
@@ -92,7 +111,7 @@ function verdict(rec, mtimeMs, nowMs, alive) {
     }
     if (isWithinWindow(mtimeMs, nowMs, HEARTBEAT_STALE_MS))
         return "live";
-    if (rec.childPid && alive(rec.childPid))
+    if (!heartbeatOnly && rec.childPid && alive(rec.childPid))
         return Math.abs(nowMs - rec.startedAt) > ORPHAN_MAX_MS ? "orphan-bound" : "live";
     return "stale-heartbeat";
 }
@@ -117,9 +136,9 @@ function parseHolder(text) {
     }
 }
 /** Throws on an I/O error; a file released since the `readdir` is skipped, and only an unparseable or malformed one is corrupt. */
-function scanHolders(opts) {
+function scanHolders(opts, cls) {
     const { isAlive = pidAlive, now = Date.now } = opts;
-    const dir = holdersDir(opts.dir);
+    const dir = holdersDir(opts.dir, cls);
     const found = { live: [], dead: [] };
     const names = unlessGone(() => readdirSync(dir)) ?? [];
     const nowMs = now();
@@ -131,7 +150,7 @@ function scanHolders(opts) {
         const mtimeMs = unlessGone(() => statSync(join(dir, name)).mtimeMs);
         if (mtimeMs === undefined)
             continue;
-        const v = verdict(rec, mtimeMs, nowMs, isAlive);
+        const v = verdict(rec, mtimeMs, nowMs, isAlive, cls.heartbeatOnly);
         if (v === "live")
             found.live.push({ ...rec, ageSec: Math.round((nowMs - rec.startedAt) / 1000) });
         else
@@ -142,7 +161,10 @@ function scanHolders(opts) {
 function parseTicket(text) {
     try {
         const t = JSON.parse(text);
-        return Number.isFinite(t?.seq) && typeof t.id === "string" && isPid(t.pid) ? t : null;
+        if (!(Number.isFinite(t?.seq) && typeof t.id === "string" && isPid(t.pid)))
+            return null;
+        const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+        return { ...t, capacity: num(t.capacity), step: num(t.step), ceiling: num(t.ceiling), ready: typeof t.ready === "boolean" ? t.ready : undefined, override: t.override === true ? true : undefined };
     }
     catch {
         return null;
@@ -153,9 +175,9 @@ function parseTicket(text) {
  * `eligible` while its mtime is within 15 s of the clock; a stale one (its waiter was stopped) is passed over, not reaped,
  * and keeps its `seq` for when the waiter resumes.
  */
-function scanTickets(opts) {
+function scanTickets(opts, cls) {
     const { isAlive = pidAlive, now = Date.now } = opts;
-    const dir = waitingDir(opts.dir);
+    const dir = waitingDir(opts.dir, cls);
     const nowMs = now();
     const found = [];
     for (const name of (unlessGone(() => readdirSync(dir)) ?? []).filter((n) => n.endsWith(".json"))) {
@@ -172,8 +194,8 @@ function scanTickets(opts) {
     return found;
 }
 /** Writes or refreshes a ticket, dating it on the lease clock before the rename so a reader never sees it with another mtime. */
-function writeTicket(opts, t) {
-    const file = join(waitingDir(opts.dir), `${t.id}.json`);
+function writeTicket(opts, cls, t) {
+    const file = join(waitingDir(opts.dir, cls), `${t.id}.json`);
     writeFileAtomic(file, JSON.stringify(t), { mtimeMs: (opts.now ?? Date.now)() });
 }
 function parseCpuReading(text) {
@@ -217,7 +239,13 @@ function gatesPass(opts, live, nowMs) {
     const spaced = markedAt === undefined || markedAt > nowMs || nowMs - markedAt >= GATE_SPACING_MS;
     return cpu && spaced && !live.some((h) => h.suspended);
 }
-const removeTicket = (opts, id) => rmSync(join(waitingDir(opts.dir), `${id}.json`), { force: true });
+const removeTicket = (opts, cls, id) => rmSync(join(waitingDir(opts.dir, cls), `${id}.json`), { force: true });
+/** What a ticket's owner could be admitted under now: its recorded ceiling at the machine step, its own override applied only if it has one. A ticket without the inputs keeps its recorded capacity, or counts. */
+function ticketCapacity(cls, t, machineStep) {
+    if (t.ceiling === undefined)
+        return t.capacity ?? Infinity;
+    return cls.capacity(t.override && machineStep === 0 ? 1 : machineStep, t.ceiling);
+}
 // Paste-safety for `status` output and the event log, not a security boundary: the lease does no shell parsing. Nothing
 // after the first `=` or `://` is recorded, whatever the quoting, so `NAME=value` credentials and `user:token@` URLs are
 // cut off. Secrets with neither marker before them (`-p pass`, `Authorization:` headers) are not; such callers pass a label.
@@ -229,11 +257,11 @@ function recordedCommand({ command, label }) {
     const cut = CUT.exec(command);
     return (cut ? `${command.slice(0, cut.index + cut[0].length)}…` : command).slice(0, COMMAND_MAX);
 }
-function createHolder(opts, meta, command, admission) {
+function createHolder(opts, cls, meta, command, admission) {
     const now = opts.now ?? Date.now;
     const { detached } = meta;
     const id = detached?.id ?? `${process.pid}-${randomBytes(4).toString("hex")}`;
-    const file = join(holdersDir(opts.dir), `${id}.json`);
+    const file = join(holdersDir(opts.dir, cls), `${id}.json`);
     const rec = { id, pid: detached?.sessionPid ?? process.pid, command, cwd: meta.cwd, startedAt: now(), level: admission.level };
     if (detached)
         rec.expiresAt = detached.expiresAt;
@@ -297,23 +325,24 @@ function borrowedHandle(id, level, capacity, live) {
     return { id, leased: true, admission: { waitedMs: 0, level, live, capacity }, childEnv: () => ({ CO_LEASE_HOLDER: id }), setChildPid() { }, release() { } };
 }
 /**
- * One admission attempt: sample the level, then count and write holders under the mutex. Admission is FIFO: a waiter
- * (`ticketId` set) is admitted when fewer eligible tickets are ahead of its own than there are free slots, and a refused
+ * One admission attempt for a holder class: sample the level, then count and write holders under the mutex. Admission is FIFO: a waiter
+ * (`ticketId` set) is admitted when fewer tickets that count as ahead of its own than there are free slots, and a refused
  * one writes or refreshes its ticket. Without a `ticketId` (`tryAcquireLease`) it is admitted only when a slot is free
- * and no eligible ticket waits, and writes none. Caller code (`warn`, `onEvent`) runs only after the mutex is released,
+ * and no ticket counts as ahead, and writes none. Caller code (`warn`, `onEvent`) runs only after the mutex is released,
  * so a slow callback cannot outlive its staleness window.
  */
-function attempt(opts, meta, waitedMs, ticketId) {
+function attempt(opts, cls, meta, waitedMs, ticketId) {
     const snap = snapshot(opts);
-    const { level, capacity } = snap;
+    const { level } = snap;
+    const capacity = cls.slots(snap);
     const overridden = (opts.headroom ?? opts.level).overridden?.() === true;
     const command = recordedCommand(meta);
     const reaped = [];
     let r;
     try {
-        ensureOwnSubdir(opts.dir, "holders");
-        ensureOwnSubdir(opts.dir, "waiting");
-        const scan = scanHolders(opts);
+        ensureOwnSubdir(opts.dir, cls.holders);
+        ensureOwnSubdir(opts.dir, cls.waiting);
+        const scan = scanHolders(opts, cls);
         if (opts.inheritedHolderId && scan.live.some((h) => h.id === opts.inheritedHolderId)) {
             return { kind: "admitted", handle: borrowedHandle(opts.inheritedHolderId, level, capacity, scan.live.length) };
         }
@@ -321,9 +350,9 @@ function attempt(opts, meta, waitedMs, ticketId) {
         if (!lock)
             return { kind: "busy", ...snap };
         try {
-            const { live, dead } = scanHolders(opts);
+            const { live, dead } = scanHolders(opts, cls);
             for (const d of dead) {
-                rmSync(join(holdersDir(opts.dir), `${d.id}.json`), { force: true });
+                rmSync(join(holdersDir(opts.dir, cls), `${d.id}.json`), { force: true });
                 reaped.push(d);
             }
             const admission = { waitedMs, level, live: live.length + 1, capacity, ...(overridden && { override: true }) };
@@ -331,27 +360,28 @@ function attempt(opts, meta, waitedMs, ticketId) {
             if (meta.detached && live.some((h) => h.id === meta.detached.id))
                 r = { kind: "admitted", handle: borrowedHandle(meta.detached.id, level, capacity, live.length), borrowed: true };
             else {
-                const line = scanTickets(opts);
+                const line = scanTickets(opts, cls);
                 const mine = line.find((t) => t.id === ticketId);
                 const seq = mine?.seq ?? Math.max(0, ...line.map((t) => t.seq)) + 1;
                 const nowMs = (opts.now ?? Date.now)();
                 const free = capacity - live.length;
                 const gated = meta.gated === true;
-                // A ticket counts as ahead only while its owner could be admitted: it has a slot by its own capacity and its gates passed at its last poll.
-                const others = line.filter((t) => t.eligible && t.id !== ticketId && (ticketId === undefined || t.seq < seq) && (t.capacity ?? Infinity) > live.length);
+                // A ticket counts as ahead only while its owner could be admitted: it has a slot by its own ceiling at the current machine step (an override lifts step 0 to 1 only for its owner) and its gates passed at its last poll.
+                const machineStep = overridden ? 0 : snap.step;
+                const others = line.filter((t) => t.eligible && t.id !== ticketId && (ticketId === undefined || t.seq < seq) && ticketCapacity(cls, t, machineStep) > live.length);
                 const ahead = others.filter((t) => t.ready !== false).length;
                 // The gates are machine-wide, so a gated waiter waits for every older gated ticket that could be admitted, however many slots are free:
                 // FIFO holds among gated tickets, and the next gated start's 20 s spacing goes to the oldest.
                 const behindGated = gated && others.some((t) => t.gated);
                 // No-wedge: with nothing live, the oldest gated ticket is admitted past its gates, except at step 0 (capacity 0 already refuses there; the clause keeps the rule true if a policy ever gives step 0 a slot).
-                const ready = !gated || gatesPass(opts, live, nowMs) || (live.length === 0 && snap.step > 0 && !others.some((t) => t.gated));
+                const ready = !gated || gatesPass(opts, live, nowMs) || (live.length === 0 && snap.step > 0);
                 if (ready && !behindGated && ahead < (ticketId === undefined ? Math.min(free, 1) : free)) {
                     if (gated)
                         writeFileAtomic(join(opts.dir, "lastAdmit"), "", { mtimeMs: nowMs });
-                    r = { kind: "admitted", handle: createHolder(opts, meta, command, admission) };
+                    r = { kind: "admitted", handle: createHolder(opts, cls, meta, command, admission) };
                     try {
                         if (mine)
-                            removeTicket(opts, mine.id);
+                            removeTicket(opts, cls, mine.id);
                     }
                     catch {
                         // The holder exists, so the admission stands; a ticket that stays is removed when the waiter returns, or reaped once it exits.
@@ -359,7 +389,7 @@ function attempt(opts, meta, waitedMs, ticketId) {
                 }
                 else {
                     if (ticketId !== undefined)
-                        writeTicket(opts, { seq, id: ticketId, pid: process.pid, label: command, gated, capacity, ready: ready && !behindGated });
+                        writeTicket(opts, cls, { seq, id: ticketId, pid: process.pid, label: command, gated, capacity, ready: ready && !behindGated, step: snap.step, ceiling: cls.ceiling(opts.policy), ...(overridden && { override: true }) });
                     r = { kind: "full", ...snap };
                 }
             }
@@ -420,19 +450,23 @@ function checkDetached(meta) {
 /** A single non-blocking attempt: a handle, or `null` when not admitted this poll. Throws a `TypeError` on an invalid detached id, session PID or `expiresAt`. */
 export function tryAcquireLease(opts, meta) {
     checkDetached(meta);
-    const r = attempt(opts, meta, 0);
+    const r = attempt(opts, HEAVY, meta, 0);
     if (r.kind === "admitted")
         return r.handle;
     return r.kind === "error" && r.level !== "critical" ? failOpen(opts, r.level, r.capacity, 0, "io-error", r.error) : null;
 }
-/** Live holders, or none when the directory cannot be read. */
-function statusOf(opts, { level, capacity, step, signals }) {
-    try {
-        return { level, capacity, step, signals, live: scanHolders(opts).live };
-    }
-    catch {
-        return { level, capacity, step, signals, live: [] };
-    }
+/** Live holders of `cls` (and of the session pool), or none when a directory cannot be read. */
+function statusOf(opts, cls, snap) {
+    const live = (of) => {
+        try {
+            return scanHolders(opts, of).live;
+        }
+        catch {
+            return [];
+        }
+    };
+    const { level, step, signals } = snap;
+    return { level, capacity: cls.slots(snap), step, signals, live: live(cls), sessions: { capacity: snap.sessions, live: live(SESSIONS) } };
 }
 /**
  * Polls (3 s ± 1 s, never spinning) until admitted, in the order waiters arrived: each waits behind a ticket in
@@ -441,45 +475,54 @@ function statusOf(opts, { level, capacity, step, signals }) {
  * that neither admits nor refuses, and also receives `waitedMs`: the wait so far, measured on `LeaseOptions.now` the
  * same way as an admission's or refusal's `waitedMs`, so a progress line can throttle on it without a clock of its own.
  */
-export async function acquireLease(opts, meta, wait = {}) {
+export const acquireLease = (opts, meta, wait = {}) => acquireIn(HEAVY, opts, meta, wait);
+/**
+ * `acquireLease` for the machine-wide implementer-session pool: holders in `<dir>/sessions/`, FIFO tickets in
+ * `<dir>/sessions-waiting/`, capacity from the session row of the shared step (6, 4, 2, 1, 0 at steps 4 to 0, capped by
+ * `CO_LEASE_SESSION_SLOTS`). A holder is live only while its heartbeat is, so a stopped engine frees its slots 90 s later;
+ * no child PID extends it. There are no gates and no detached holders: `meta.gated` and `meta.detached` are ignored.
+ * The caller's `stopWhen` sees the session pool as `capacity` and `live`.
+ */
+export const acquireSessionLease = (opts, meta, wait = {}) => acquireIn(SESSIONS, opts, { ...meta, gated: false, detached: undefined }, wait);
+async function acquireIn(cls, opts, meta, wait) {
     checkDetached(meta);
     const ticketId = meta.detached?.id ?? `${process.pid}-${randomBytes(4).toString("hex")}`;
     try {
-        return await pollForLease(opts, meta, wait, ticketId);
+        return await pollForLease(opts, cls, meta, wait, ticketId);
     }
     finally {
         try {
-            removeTicket(opts, ticketId);
+            removeTicket(opts, cls, ticketId);
         }
         catch {
             // A ticket that stays is reaped once this process exits.
         }
     }
 }
-async function pollForLease(opts, meta, wait, ticketId) {
+async function pollForLease(opts, cls, meta, wait, ticketId) {
     const { now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), pollMs = POLL_MS } = opts;
     const start = now();
     let busySince;
     for (;;) {
         const waitedMs = now() - start;
-        const r = attempt(opts, meta, waitedMs, ticketId);
+        const r = attempt(opts, cls, meta, waitedMs, ticketId);
         if (r.kind === "admitted")
             return r.handle;
         busySince = r.kind === "busy" ? (busySince ?? now()) : undefined;
         if (r.level !== "critical") {
             if (r.kind === "error")
-                return failOpen(opts, r.level, r.capacity, waitedMs, "io-error", r.error);
+                return failOpen(opts, r.level, cls.slots(r), waitedMs, "io-error", r.error);
             if (busySince !== undefined && now() - busySince >= FAIL_OPEN_MS)
-                return failOpen(opts, r.level, r.capacity, waitedMs, "mutex-busy");
+                return failOpen(opts, r.level, cls.slots(r), waitedMs, "mutex-busy");
         }
-        const status = r.kind === "error" ? { level: r.level, capacity: r.capacity, step: r.step, signals: r.signals, live: [] } : statusOf(opts, r);
+        const status = r.kind === "error" ? { level: r.level, capacity: cls.slots(r), step: r.step, signals: r.signals, live: [], sessions: { capacity: r.sessions, live: [] } } : statusOf(opts, cls, r);
         const refuse = (refused, level, live) => {
             emit(opts, { type: "timeout", refused, waitedMs, ...(refused === "stopped" && { level }) });
             return { refused, waitedMs, level, live };
         };
         if (wait.stopWhen?.(status)) {
-            const confirmed = snapshot(opts, true);
-            if (wait.stopWhen({ ...status, ...confirmed }))
+            const confirmed = statusOf(opts, cls, snapshot(opts, true));
+            if (wait.stopWhen(confirmed))
                 return refuse("stopped", confirmed.level, status.live.length);
         }
         if (wait.maxWaitMs !== undefined && waitedMs >= wait.maxWaitMs)
@@ -499,7 +542,7 @@ async function pollForLease(opts, meta, wait, ticketId) {
 export function releaseHolder(opts, id) {
     if (!HOLDER_ID.test(id))
         return false;
-    const dir = holdersDir(opts.dir);
+    const dir = holdersDir(opts.dir, HEAVY);
     const ownDir = (d) => {
         const st = unlessGone(() => lstatSync(d));
         return st !== undefined && isOwnDir(st);
@@ -516,7 +559,7 @@ export function releaseHolder(opts, id) {
 }
 /** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. */
 export function leaseStatus(opts) {
-    return statusOf(opts, snapshot(opts));
+    return statusOf(opts, HEAVY, snapshot(opts));
 }
 /**
  * Production wiring: the real lease directory, the engine's own sampler and policy, and the `events.jsonl` sink. Creates nothing on disk.
