@@ -79,7 +79,9 @@ export {
   stopAtCritical,
 } from "./memory-pressure.js";
 export type { MemorySignals, PressureLevel, PressurePolicy, PressureSampler } from "./memory-pressure.js";
-export { DEFAULT_STEP_TABLE, headroomStep } from "./headroom.js";
+export { DEFAULT_STEP_TABLE, headroomCapacity, headroomStep } from "./headroom.js";
+export { defaultHeadroomSampler, levelView } from "./headroom-sampler.js";
+export type { HeadroomReading, HeadroomSampler } from "./headroom-sampler.js";
 export type { HeadroomState, StepBand, StepTable } from "./headroom.js";
 export { acquireLease, tryAcquireLease, leaseStatus, defaultLeaseOptions, releaseHolder } from "./lease.js";
 export { createFileEngineRegistry } from "./engine-registry.js";

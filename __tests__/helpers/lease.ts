@@ -94,6 +94,8 @@ export function scriptedLease(
     opts: (over = {}) => {
       const opts: LeaseOptions = {
         dir,
+        // Present, so a spread over `defaultLeaseOptions()` drops its real headroom sampler instead of reading the real sysctl.
+        headroom: undefined,
         level: scriptedPressureSampler(init.level ?? "normal", init.fresh ? { fresh: init.fresh } : {}),
         policy: init.policy ?? { heavyCeiling: 1, heavyWarning: 1 },
         isAlive: (pid) => alive.has(pid),

@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const built = vi.hoisted(() => ({ deps: [] as ({ log?: (msg: string) => void } | undefined)[] }));
-vi.mock("../src/memory-pressure.js", async (importOriginal) => {
-  const real = await importOriginal<typeof import("../src/memory-pressure.js")>();
+vi.mock("../src/headroom-sampler.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/headroom-sampler.js")>();
   return {
     ...real,
-    defaultPressureSampler: (env: NodeJS.ProcessEnv, deps?: { log?: (msg: string) => void }) => {
+    defaultHeadroomSampler: (env: NodeJS.ProcessEnv, deps?: { log?: (msg: string) => void }) => {
       built.deps.push(deps);
-      return real.defaultPressureSampler(env, deps);
+      return real.defaultHeadroomSampler(env, deps);
     },
   };
 });
@@ -35,7 +35,18 @@ describe("defaultLeaseOptions sampler wiring", () => {
   it("builds no sampler when the caller supplies one", () => {
     built.deps.length = 0;
     const level = scriptedPressureSampler("normal", { overridden: false });
-    expect(defaultLeaseOptions({ CO_LEASE_DIR: dir }, { level }).level).toBe(level);
+    const o = defaultLeaseOptions({ CO_LEASE_DIR: dir }, { level });
+    expect(o.level).toBe(level);
+    expect(o.headroom).toBeUndefined();
     expect(built.deps).toEqual([]);
+  });
+
+  it("derives level and level.fresh as views over the one headroom sampler it builds", () => {
+    built.deps.length = 0;
+    const o = defaultLeaseOptions({ CO_LEASE_DIR: dir });
+    expect(built.deps).toHaveLength(1);
+    expect(o.headroom).toBeDefined();
+    expect(typeof o.level.fresh).toBe("function");
+    expect(typeof o.level.overridden).toBe("function");
   });
 });

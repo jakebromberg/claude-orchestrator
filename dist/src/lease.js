@@ -1,7 +1,8 @@
 /**
  * Machine-wide lease for heavy commands (full test suites, `tsc`, `npm ci`).
  * Holders are files in `<dir>/holders/`; a request is admitted while the live
- * holder count is under `heavyCapacity(level, policy)`. Liveness is a live
+ * holder count is under the heavy capacity of the headroom step (`headroomCapacity(step, policy)`;
+ * `heavyCapacity(level, policy)` when only a `level` sampler is given). Liveness is a live
  * heartbeat (the holder file's mtime, refreshed every 30 s) or a live child PID,
  * so a crashed or killed holder cannot leak a slot. A detached holder (hook mode) is live while its session PID is
  * alive and its `expiresAt` has not passed. The lease fails open on I/O errors and a long-busy mutex,
@@ -12,9 +13,11 @@ import { lstatSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, uti
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
 import { isWithinWindow, tryLockOnce } from "./file-lock.js";
+import { headroomCapacity, MAX_STEP } from "./headroom.js";
+import { defaultHeadroomSampler, levelView } from "./headroom-sampler.js";
 import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
 import { leaseEventSink } from "./lease-events.js";
-import { defaultPressureSampler, heavyCapacity, leaseDirectory, pressurePolicyFromEnv, } from "./memory-pressure.js";
+import { heavyCapacity, leaseDirectory, pressurePolicyFromEnv, } from "./memory-pressure.js";
 export { ensureOwnSubdir, isOwnDir };
 const MUTEX_STALE_MS = 10_000;
 const ORPHAN_MAX_MS = 2 * 60 * 60_000;
@@ -29,6 +32,16 @@ const TICKET_FRESH_MS = 15_000;
 export const DETACHED_TTL_MAX_MS = 660_000;
 /** A detached holder's id, and the only ids `releaseHolder` accepts, so neither can name a path outside `holders/` or overrun a file name. */
 const HOLDER_ID = /^[\w-]{1,160}$/;
+/** The machine step and its capacity; with no `headroom` sampler, today's level-only rule, and a step derived from the level. `fresh` bypasses every cache. */
+function snapshot(opts, fresh = false) {
+    if (opts.headroom) {
+        const reading = fresh ? opts.headroom.fresh() : opts.headroom();
+        return { ...reading, capacity: headroomCapacity(reading.step, opts.policy) };
+    }
+    const level = fresh ? opts.level.fresh() : opts.level();
+    const step = level === "critical" ? 0 : level === "warning" ? Math.min(MAX_STEP, opts.policy.heavyWarning) : MAX_STEP;
+    return { level, step, signals: null, capacity: heavyCapacity(level, opts.policy) };
+}
 const holdersDir = (dir) => join(dir, "holders");
 const waitingDir = (dir) => join(dir, "waiting");
 function pidAlive(pid) {
@@ -230,9 +243,9 @@ function borrowedHandle(id, level, capacity, live) {
  * so a slow callback cannot outlive its staleness window.
  */
 function attempt(opts, meta, waitedMs, ticketId) {
-    const level = opts.level();
-    const overridden = opts.level.overridden?.() === true;
-    const capacity = heavyCapacity(level, opts.policy);
+    const snap = snapshot(opts);
+    const { level, capacity } = snap;
+    const overridden = (opts.headroom ?? opts.level).overridden?.() === true;
     const command = recordedCommand(meta);
     const reaped = [];
     let r;
@@ -245,7 +258,7 @@ function attempt(opts, meta, waitedMs, ticketId) {
         }
         const lock = tryLockOnce(join(opts.dir, ".mutex"), { staleAfterMs: MUTEX_STALE_MS, now: opts.now });
         if (!lock)
-            return { kind: "busy", level, capacity };
+            return { kind: "busy", ...snap };
         try {
             const { live, dead } = scanHolders(opts);
             for (const d of dead) {
@@ -270,7 +283,7 @@ function attempt(opts, meta, waitedMs, ticketId) {
                 else {
                     if (ticketId !== undefined)
                         writeTicket(opts, { seq, id: ticketId, pid: process.pid, label: command, gated: false });
-                    r = { kind: "full", level, capacity };
+                    r = { kind: "full", ...snap };
                 }
             }
         }
@@ -279,7 +292,7 @@ function attempt(opts, meta, waitedMs, ticketId) {
         }
     }
     catch (error) {
-        r = { kind: "error", level, capacity, error };
+        r = { kind: "error", ...snap, error };
     }
     for (const { id, reason } of reaped) {
         if (reason === "orphan-bound")
@@ -287,7 +300,7 @@ function attempt(opts, meta, waitedMs, ticketId) {
         emit(opts, { type: "reap", id, reason });
     }
     if (r.kind === "admitted" && !r.borrowed)
-        emit(opts, { type: "acquire", id: r.handle.id, ...r.handle.admission });
+        emit(opts, { type: "acquire", id: r.handle.id, ...r.handle.admission, step: snap.step });
     return r;
 }
 /** The one default diagnostics writer, shared with the event sink. Messages carry their own `lease:` prefix. */
@@ -336,13 +349,12 @@ export function tryAcquireLease(opts, meta) {
     return r.kind === "error" && r.level !== "critical" ? failOpen(opts, r.level, r.capacity, 0, "io-error", r.error) : null;
 }
 /** Live holders, or none when the directory cannot be read. */
-function statusOf(opts, level) {
-    const capacity = heavyCapacity(level, opts.policy);
+function statusOf(opts, { level, capacity, step, signals }) {
     try {
-        return { level, capacity, live: scanHolders(opts).live };
+        return { level, capacity, step, signals, live: scanHolders(opts).live };
     }
     catch {
-        return { level, capacity, live: [] };
+        return { level, capacity, step, signals, live: [] };
     }
 }
 /**
@@ -383,15 +395,15 @@ async function pollForLease(opts, meta, wait, ticketId) {
             if (busySince !== undefined && now() - busySince >= FAIL_OPEN_MS)
                 return failOpen(opts, r.level, r.capacity, waitedMs, "mutex-busy");
         }
-        const status = r.kind === "error" ? { level: r.level, capacity: r.capacity, live: [] } : statusOf(opts, r.level);
+        const status = r.kind === "error" ? { level: r.level, capacity: r.capacity, step: r.step, signals: r.signals, live: [] } : statusOf(opts, r);
         const refuse = (refused, level, live) => {
             emit(opts, { type: "timeout", refused, waitedMs, ...(refused === "stopped" && { level }) });
             return { refused, waitedMs, level, live };
         };
         if (wait.stopWhen?.(status)) {
-            const level = opts.level.fresh();
-            if (wait.stopWhen({ ...status, level, capacity: heavyCapacity(level, opts.policy) }))
-                return refuse("stopped", level, status.live.length);
+            const confirmed = snapshot(opts, true);
+            if (wait.stopWhen({ ...status, ...confirmed }))
+                return refuse("stopped", confirmed.level, status.live.length);
         }
         if (wait.maxWaitMs !== undefined && waitedMs >= wait.maxWaitMs)
             return refuse("max-wait", r.level, status.live.length);
@@ -427,11 +439,11 @@ export function releaseHolder(opts, id) {
 }
 /** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. */
 export function leaseStatus(opts) {
-    return statusOf(opts, opts.level());
+    return statusOf(opts, snapshot(opts));
 }
 /**
  * Production wiring: the real lease directory, the engine's own sampler and policy, and the `events.jsonl` sink. Creates nothing on disk.
- * `overrides.level` replaces the sampler (none is built), and `overrides.warn` is the one writer for the lease, the sink,
+ * `overrides.level` replaces the sampler (none is built, so the lease sizes capacity from that level alone), and `overrides.warn` is the one writer for the lease, the sink,
  * the policy and the sampler it builds; without it each keeps its stderr default.
  * The writer is wrapped once so it cannot change what the lease does: a writer that throws is silenced (the line is dropped and nothing reports it), so pass a bound function,
  * and the returned `warn` is that wrapper, not the caller's function.
@@ -450,9 +462,13 @@ export function defaultLeaseOptions(env = process.env, overrides = {}) {
     const warn = inject && safe;
     const tagged = warn && ((msg) => warn(`memory-pressure: ${msg}`));
     const dir = leaseDirectory(env);
+    // One sampler is the source of truth: `level` (and `level.fresh`) is a view over it, unless the caller supplies its own level.
+    const headroom = overrides.level ? undefined : defaultHeadroomSampler(env, { log: tagged });
+    const level = overrides.level ?? levelView(headroom);
     return {
         dir,
-        level: overrides.level ?? defaultPressureSampler(env, { log: tagged }),
+        level,
+        ...(headroom && { headroom }),
         policy: pressurePolicyFromEnv(env, tagged),
         inheritedHolderId: env.CO_LEASE_HOLDER || undefined,
         onEvent: leaseEventSink(dir, { warn }),

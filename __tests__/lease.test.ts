@@ -16,7 +16,8 @@ import {
 } from "../src/lease.js";
 import * as barrel from "../src/index.js";
 import type { PressureLevel } from "../src/memory-pressure.js";
-import { scriptedPressureSampler } from "../src/testing.js";
+import { scriptedHeadroomSampler, scriptedPressureSampler } from "../src/testing.js";
+import type { HeadroomReading } from "../src/headroom-sampler.js";
 import { scriptedLease, unwritableLeaseDir, type FakeLeaseClock, type ScriptedLease } from "./helpers/lease.js";
 
 const meta: HolderMeta = { command: "npm test", cwd: "/work" };
@@ -616,7 +617,7 @@ describe("lease", () => {
       const lease = join(tmp, "never");
       const o = defaultLeaseOptions({ CO_LEASE_DIR: lease, HOME: tmp });
       expect(o.dir).toBe(lease);
-      leaseStatus({ ...o, level: scriptedPressureSampler("normal") });
+      leaseStatus({ ...o, level: scriptedPressureSampler("normal"), headroom: scriptedHeadroomSampler({ level: "normal", step: 4, signals: null }) });
       expect(existsSync(lease)).toBe(false);
     });
 
@@ -1008,6 +1009,99 @@ describe("lease", () => {
         { type: "fail-open", reason: "io-error", waitedMs: 0, code: "ENOTDIR", message: expect.any(String) },
         { type: "fail-open", reason: "mutex-busy", waitedMs: expect.any(Number) },
       ]);
+    });
+  });
+
+  describe("headroom", () => {
+    const reading = (step: number, level: PressureLevel = "normal", signals: HeadroomReading["signals"] = null): HeadroomReading => ({ level, step, signals });
+    const wide = { heavyCeiling: 6, heavyWarning: 1 };
+
+    it.each([
+      [4, 6],
+      [3, 3],
+      [2, 2],
+      [1, 1],
+      [0, 0],
+    ])("admits %i-step capacity %i, then refuses the next", (step, capacity) => {
+      const o = opts({ headroom: scriptedHeadroomSampler(reading(step)), policy: wide });
+      expect(leaseStatus(o)).toMatchObject({ step, capacity });
+      for (let i = 0; i < capacity; i++) expect(tryAcquireLease(o, meta)).not.toBeNull();
+      expect(tryAcquireLease(o, meta)).toBeNull();
+    });
+
+    it("sizes capacity from the step, not the level, when both are given", () => {
+      level = "critical";
+      expect(tryAcquireLease(opts({ headroom: scriptedHeadroomSampler(reading(4)) }), meta)).not.toBeNull();
+    });
+
+    it("reports the step and signals beside the unchanged level, capacity and live", () => {
+      const signals = { level: "warning" as const, freePct: 35 };
+      expect(leaseStatus(opts({ headroom: scriptedHeadroomSampler(reading(2, "warning", signals)), policy: wide }))).toEqual({
+        level: "warning",
+        capacity: 2,
+        step: 2,
+        signals,
+        live: [],
+      });
+    });
+
+    it.each<[PressureLevel, number, number]>([
+      ["normal", 4, 2],
+      ["warning", 1, 1],
+      ["critical", 0, 0],
+    ])("derives the step from a lone %s level as %i, with no signals", (lv, step, capacity) => {
+      level = lv;
+      expect(leaseStatus(opts())).toEqual({ level: lv, capacity, step, signals: null, live: [] });
+    });
+
+    it("records the step on the acquire event, from either source", () => {
+      tryAcquireLease(opts({ headroom: scriptedHeadroomSampler(reading(3)), policy: wide }), meta)!.release();
+      level = "warning";
+      tryAcquireLease(opts(), meta)!.release();
+      expect(events.filter((e) => e.type === "acquire").map((e) => (e as { step: number }).step)).toEqual([3, 1]);
+    });
+
+    it("marks an admission overridden from the headroom sampler's flag", () => {
+      const h = tryAcquireLease(opts({ headroom: scriptedHeadroomSampler(reading(1), { overridden: true }) }), meta)!;
+      expect(h.admission.override).toBe(true);
+    });
+
+    it("confirms a stop through headroom.fresh(), so a stale shared step delays it", async () => {
+      const stale = scriptedHeadroomSampler(reading(0, "critical"), { fresh: () => reading(4) });
+      const stopWhen = vi.fn((s) => s.step === 0);
+      const r = await acquireLease(opts({ headroom: stale }), meta, { stopWhen, maxWaitMs: 4_000 });
+      expect(r).toMatchObject({ refused: "max-wait" });
+      expect(stopWhen).toHaveBeenCalledWith(expect.objectContaining({ level: "normal", step: 4, capacity: 2 }));
+    });
+
+    it("refuses a stop that headroom.fresh() confirms", async () => {
+      const r = await acquireLease(opts({ headroom: scriptedHeadroomSampler(reading(0, "critical")) }), meta, { stopWhen: (s) => s.level === "critical" });
+      expect(r).toEqual({ refused: "stopped", waitedMs: 0, level: "critical", live: 0 });
+    });
+
+    describe("from defaultLeaseOptions", () => {
+      const share = (record: Record<string, unknown>) => {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "headroom.json"), JSON.stringify({ at: Date.now(), risingSince: null, ...record }));
+      };
+
+      it("gives two option sets on one directory the same step, level view and capacity", () => {
+        share({ signals: { level: "warning", freePct: 35 }, step: 2 });
+        const a = defaultLeaseOptions({ CO_LEASE_DIR: dir });
+        const b = defaultLeaseOptions({ CO_LEASE_DIR: dir });
+        const expected = { level: "warning", step: 2, capacity: 2, signals: { level: "warning", freePct: 35 } };
+        expect(leaseStatus(a)).toMatchObject(expected);
+        expect(leaseStatus(b)).toMatchObject(expected);
+        expect(a.level()).toBe("warning");
+      });
+
+      it("reads step 0 as 1 in the overriding process only, and never writes the 1", () => {
+        share({ signals: { level: "critical", freePct: 3 }, step: 0 });
+        const before = readFileSync(join(dir, "headroom.json"), "utf8");
+        expect(leaseStatus(defaultLeaseOptions({ CO_LEASE_DIR: dir, CO_PRESSURE_OVERRIDE: "critical-as-warning" }))).toMatchObject({ level: "warning", step: 1, capacity: 1 });
+        expect(leaseStatus(defaultLeaseOptions({ CO_LEASE_DIR: dir }))).toMatchObject({ level: "critical", step: 0, capacity: 0 });
+        expect(readFileSync(join(dir, "headroom.json"), "utf8")).toBe(before);
+      });
     });
   });
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { DEFAULT_STEP_TABLE, headroomStep, type HeadroomState, type StepTable } from "../src/headroom.js";
+import { DEFAULT_STEP_TABLE, headroomCapacity, headroomStep, type HeadroomState, type StepTable } from "../src/headroom.js";
 import type { MemorySignals, PressureLevel } from "../src/memory-pressure.js";
 import * as barrel from "../src/index.js";
 
@@ -43,6 +43,43 @@ describe("headroomStep under the Q1 table", () => {
     ["a fall mid-hold clears the hold", { level: "warning", freePct: 20 }, { step: 2, risingSince: NOW - 5_000 }, { step: 1, risingSince: null }],
   ])("%s", (_name, signals, previous, expected) => {
     expect(headroomStep(signals, previous, NOW, Q1)).toEqual(expected);
+  });
+});
+
+describe("headroomStep with a previous it cannot trust", () => {
+  const normal: MemorySignals = { level: "normal", freePct: 50 };
+  const warning: MemorySignals = { level: "warning", freePct: 35 };
+
+  it.each<[string, unknown]>([
+    ["a NaN step", Number.NaN],
+    ["a step of 7", 7],
+    ["a step of -1", -1],
+    ["a string step", "3"],
+    ["a fractional step", 2.5],
+  ])("treats %s as absent and starts at the target", (_name, step) => {
+    const previous = { step, risingSince: null } as unknown as HeadroomState;
+    expect(headroomStep(warning, previous, NOW, Q1)).toEqual({ step: 2, risingSince: null });
+    expect(headroomStep(normal, previous, NOW, Q1)).toEqual({ step: 4, risingSince: null });
+  });
+
+  it.each<[string, unknown]>([
+    ["a NaN risingSince", Number.NaN],
+    ["an infinite risingSince", Number.POSITIVE_INFINITY],
+    ["a negative infinite risingSince", Number.NEGATIVE_INFINITY],
+    ["a string risingSince", "5"],
+  ])("restarts the hold on %s", (_name, risingSince) => {
+    const previous = { step: 2, risingSince } as unknown as HeadroomState;
+    expect(headroomStep(normal, previous, NOW, Q1)).toEqual({ step: 2, risingSince: NOW });
+  });
+});
+
+describe("headroomStep with a mistyped table", () => {
+  it.each<[string, number, number]>([
+    ["a band above the ceiling is clamped to 4", 7, 4],
+    ["a negative band is clamped to 0", -2, 0],
+  ])("%s", (_name, bandStep, expected) => {
+    const table: StepTable = { warning: [{ minFreePct: 0, step: bandStep }], riseHoldMs: 0 };
+    expect(headroomStep({ level: "warning", freePct: 10 }, undefined, NOW, table).step).toBe(expected);
   });
 });
 
@@ -102,10 +139,26 @@ describe("replay of the 2026-10-14 recording", () => {
   });
 });
 
+describe("headroomCapacity", () => {
+  it.each<[step: number, ceiling: number, expected: number]>([
+    [4, 4, 4],
+    [4, 6, 6],
+    [3, 6, 3],
+    [2, 6, 2],
+    [1, 6, 1],
+    [0, 6, 0],
+    [3, 2, 2],
+  ])("step %i under a ceiling of %i gives %i slots", (step, heavyCeiling, expected) => {
+    expect(headroomCapacity(step, { heavyCeiling, heavyWarning: 1 })).toBe(expected);
+  });
+});
+
 describe("barrel", () => {
   it("exports the headroom step and the signals reader", () => {
     expect(barrel.headroomStep).toBe(headroomStep);
     expect(barrel.DEFAULT_STEP_TABLE).toBe(DEFAULT_STEP_TABLE);
     expect(typeof barrel.readMemorySignals).toBe("function");
+    expect(barrel.headroomCapacity).toBe(headroomCapacity);
+    expect(typeof barrel.defaultHeadroomSampler).toBe("function");
   });
 });
