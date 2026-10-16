@@ -3,7 +3,7 @@ export interface FileEngineRegistryOptions {
     /** The lease directory; records live in `<dir>/engines/<pid>.json`. */
     dir: string;
     pid?: number;
-    /** Reads the process group id; a throw records `null`. */
+    /** Reads the process group id; a throw or a non-integer result records `null`. */
     pgid?: (pid: number) => number;
     now?: () => Date;
 }

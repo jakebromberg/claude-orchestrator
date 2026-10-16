@@ -74,7 +74,7 @@ Amazon Bedrock and Google Vertex backends are not supported: their `CLAUDE_CODE_
 
 ### Engine registry
 
-In the modes that launch sessions, each engine records itself in `engines/<pid>.json` under the lease directory (`CO_LEASE_DIR`), as `{ pid, pgid, runId, logDir, stallTimeout, startedAt }`, where `stallTimeout` is the largest effective stall timeout (seconds) across the run's issues. The file is written at start, rewritten every 30 s (its mtime separates a live engine from a dead one; the timer does not keep the process alive) and removed at exit, on a failed run and on SIGINT/SIGTERM. A SIGKILLed engine leaves its file behind. Write and remove failures never fail a run. The `Deps.engineRegistry` seam takes a fake in tests; older builds ignore `engines/`.
+In the modes that launch sessions, each engine records itself in `engines/<pid>.json` under the lease directory (`CO_LEASE_DIR`), as `{ pid, pgid, runId, logDir, stallTimeout, startedAt }`, where `stallTimeout` is the largest effective stall timeout (seconds) across the run's issues (`0` means stall detection is disabled, so a watchdog applies no silence check). The file is written at start, rewritten every 30 s (its mtime separates a live engine from a dead one; the timer does not keep the process alive) and removed at exit, on a failed run and on SIGINT/SIGTERM. A SIGKILLed engine leaves its file behind. Write and remove failures never fail a run. The `Deps.engineRegistry` seam takes a fake in tests; older builds ignore `engines/`.
 
 ### Adaptive session launches
 

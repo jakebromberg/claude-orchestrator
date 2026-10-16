@@ -1,8 +1,11 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileEngineRegistry } from "../src/engine-registry.js";
+
+vi.mock("node:child_process", async (orig) => ({ ...(await orig<typeof import("node:child_process")>()), execFileSync: vi.fn() }));
 
 const info = { runId: "run-1", logDir: "/tmp/c/logs", stallTimeout: 1800 };
 
@@ -57,14 +60,52 @@ describe("createFileEngineRegistry", () => {
     expect(read().pgid).toBeNull();
   });
 
-  it("swallows write and remove failures", () => {
+  it("swallows a write failure", () => {
     chmodSync(dir, 0o500);
     try {
-      const registry = make();
-      expect(() => registry.start(info)).not.toThrow();
-      expect(() => registry.stop()).not.toThrow();
+      expect(() => make().start(info)).not.toThrow();
+      expect(existsSync(join(dir, "engines"))).toBe(false);
     } finally {
       chmodSync(dir, 0o700);
     }
+  });
+
+  it("swallows a remove failure", () => {
+    const registry = make();
+    registry.start(info);
+    chmodSync(join(dir, "engines"), 0o500);
+    try {
+      expect(() => registry.stop()).not.toThrow();
+      expect(existsSync(file())).toBe(true); // the unlink really failed
+    } finally {
+      chmodSync(join(dir, "engines"), 0o700);
+    }
+  });
+
+  it("writes atomically with mode 0600 and leaves no temp file", () => {
+    const registry = make();
+    registry.start(info);
+    vi.advanceTimersByTime(30_000);
+    expect(readdirSync(join(dir, "engines"))).toEqual(["4242.json"]);
+    expect(statSync(file()).mode & 0o777).toBe(0o600);
+    registry.stop();
+  });
+
+  describe("default pgid reader", () => {
+    const ps = vi.mocked(execFileSync);
+    const startDefault = () => createFileEngineRegistry({ dir, pid: 4242 }).start(info);
+
+    it("runs ps with a 2 s timeout and ignored stderr", () => {
+      ps.mockReturnValueOnce("  4000\n");
+      startDefault();
+      expect(read().pgid).toBe(4000);
+      expect(ps).toHaveBeenCalledWith("ps", ["-o", "pgid=", "-p", "4242"], expect.objectContaining({ timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] }));
+    });
+
+    it.each([["throws", () => { throw new Error("timed out"); }], ["prints garbage", () => "oops"]])("records a null pgid when ps %s", (_n, impl) => {
+      ps.mockImplementationOnce(impl as () => string);
+      startDefault();
+      expect(read().pgid).toBeNull();
+    });
   });
 });
