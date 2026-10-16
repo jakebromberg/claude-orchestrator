@@ -240,6 +240,8 @@ function createHolder(opts, meta, command, admission) {
         rec.expiresAt = detached.expiresAt;
     if (admission.override)
         rec.override = true;
+    if (meta.suspendable)
+        rec.suspendable = true;
     const write = () => writeFileAtomic(file, JSON.stringify(rec));
     write();
     let released = false;
@@ -262,10 +264,12 @@ function createHolder(opts, meta, command, admission) {
         leased: true,
         admission,
         childEnv: () => ({ CO_LEASE_HOLDER: id }),
-        setChildPid(pid) {
+        setChildPid(pid, pgid) {
             if (released || !isPid(pid))
                 return;
             rec.childPid = pid;
+            if (pgid !== undefined && isPid(pgid))
+                rec.pgid = pgid;
             try {
                 // Only a file still there is replaced; a reap between this check and the rename is not detected.
                 if (unlessGone(() => statSync(file)))

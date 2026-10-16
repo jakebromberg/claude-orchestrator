@@ -16,6 +16,7 @@ const ANCESTOR_DEPTH = 32;
 const GRACE_MS = 10_000;
 const PROGRESS_MS = 60_000;
 const FORWARDED = ["SIGINT", "SIGTERM", "SIGHUP"];
+const TASKPOLICY = "/usr/sbin/taskpolicy";
 const EX_TEMPFAIL = 75;
 const EX_CONFIG = 78;
 function parseSeconds(text) {
@@ -112,7 +113,23 @@ export async function runLeased(args, d) {
         d.err(`lease: ignoring invalid CO_LEASE_MAX_WAIT=${JSON.stringify(envWait)}; using ${DEFAULT_MAX_WAIT_SEC}s`);
     }
     const maxWaitMs = (args.maxWaitSec ?? fromEnv ?? DEFAULT_MAX_WAIT_SEC) * 1000;
-    const [file, fileArgs] = args.shell !== undefined ? ["/bin/sh", ["-c", args.shell]] : [args.argv[0], args.argv.slice(1)];
+    const [cmd, cmdArgs] = args.shell !== undefined ? ["/bin/sh", ["-c", args.shell]] : [args.argv[0], args.argv.slice(1)];
+    const [file, fileArgs] = args.background ? [TASKPOLICY, ["-b", cmd, ...cmdArgs]] : [cmd, cmdArgs];
+    const ownHolder = args.gated || args.background || args.suspendable;
+    const suspendable = args.suspendable && !args.noSuspend && d.env.HEAVY_QUEUE_NO_SUSPEND !== "1";
+    // A background child leads its own group (pid = pgid), so a signal goes to the group, continued first in case it is stopped.
+    const signalChild = (sig) => {
+        if (!args.background || child.pid === undefined)
+            return void child.kill(sig);
+        for (const s of ["SIGCONT", sig]) {
+            try {
+                d.signals.kill(-child.pid, s);
+            }
+            catch {
+                // The group is gone.
+            }
+        }
+    };
     // Installed before acquiring: a signal's default action would otherwise kill the wrapper between the holder file's
     // write and the spawn, leaving a slot that no child holds. A handler can only run while waiting (nothing is held, so
     // the signal is re-raised to kill the wrapper as before) or once the child exists, never in between.
@@ -128,9 +145,9 @@ export async function runLeased(args, d) {
                 return;
             }
             signalled ??= constants.signals[sig];
-            child.kill(sig);
+            signalChild(sig);
             grace ??= setTimeout(() => {
-                child.kill("SIGKILL");
+                signalChild("SIGKILL");
                 finish(128 + signalled);
             }, GRACE_MS);
         };
@@ -139,9 +156,9 @@ export async function runLeased(args, d) {
     });
     const unhook = () => handlers.forEach(([sig, forward]) => d.signals.off(sig, forward));
     // A hook slot the session already holds is borrowed through `inheritedHolderId`, never waited for a second time.
-    const hookSlot = opts.inheritedHolderId ? undefined : ancestorHookSlot(opts, d);
+    const hookSlot = opts.inheritedHolderId || ownHolder ? undefined : ancestorHookSlot(opts, d);
     let lastProgress = 0;
-    const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command: args.shell ?? args.argv.join(" "), label: args.label, cwd: d.cwd }, {
+    const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command: args.shell ?? args.argv.join(" "), label: args.label, cwd: d.cwd, gated: args.gated, suspendable }, {
         maxWaitMs,
         onWait: (s) => {
             if (s.waitedMs - lastProgress < PROGRESS_MS)
@@ -176,7 +193,7 @@ export async function runLeased(args, d) {
         };
         try {
             // Same env merge as `runShellAsync`: `childEnv()` is only the holder-id delta.
-            child = d.spawn(file, fileArgs, { env: { ...d.env, ...got.childEnv() } });
+            child = d.spawn(file, fileArgs, { env: { ...d.env, ...got.childEnv() }, ...(args.background && { detached: true }) });
         }
         catch (e) {
             // Node throws, rather than emitting 'error', for an empty program name and most errnos (ENOEXEC, ENOTDIR, ELOOP).
@@ -193,7 +210,10 @@ export async function runLeased(args, d) {
         if (child.pid === undefined)
             return;
         try {
-            got.setChildPid(child.pid);
+            if (args.background)
+                got.setChildPid(child.pid, child.pid);
+            else
+                got.setChildPid(child.pid);
         }
         catch (e) {
             child.kill("SIGKILL");
@@ -217,7 +237,7 @@ export function cliLeaseDeps(err, base = {}) {
         acquire: acquireLease,
         leaseStatus,
         ancestors: () => psAncestors(process.ppid, ANCESTOR_DEPTH),
-        spawn: (file, fileArgs, opts) => spawn(file, fileArgs, { stdio: "inherit", env: opts.env }),
+        spawn: (file, fileArgs, opts) => spawn(file, fileArgs, { stdio: "inherit", env: opts.env, detached: opts.detached }),
         env,
         cwd: process.cwd(),
         out: (text) => process.stdout.write(text),

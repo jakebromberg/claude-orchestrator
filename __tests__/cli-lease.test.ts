@@ -505,6 +505,86 @@ describe("runLeased", () => {
     });
   });
 
+  describe("front-end options (gated, background, suspendable)", () => {
+    const meta = () => acquired[0]!.meta as Record<string, unknown>;
+    const killed = () => signals.kill.mock.calls.map((c) => c.join(":"));
+
+    it("marks the ticket gated and the holder suspendable", async () => {
+      const done = run({ gated: true, suspendable: true });
+      await finishWith(0);
+      await done;
+      expect(meta()).toMatchObject({ gated: true, suspendable: true });
+    });
+
+    it.each<[string, Partial<RunArgs>, NodeJS.ProcessEnv]>([
+      ["--no-suspend", { noSuspend: true }, {}],
+      ["HEAVY_QUEUE_NO_SUSPEND=1 in the injected env", {}, { HEAVY_QUEUE_NO_SUSPEND: "1" }],
+    ])("is not suspendable under %s", async (_n, args, extra) => {
+      const saved = process.env.HEAVY_QUEUE_NO_SUSPEND;
+      process.env.HEAVY_QUEUE_NO_SUSPEND = extra.HEAVY_QUEUE_NO_SUSPEND === "1" ? "" : "1";
+      try {
+        const done = run({ suspendable: true, ...args }, { env: { ...env, ...extra } });
+        await finishWith(0);
+        await done;
+        expect(meta().suspendable).toBeFalsy();
+      } finally {
+        if (saved === undefined) delete process.env.HEAVY_QUEUE_NO_SUSPEND;
+        else process.env.HEAVY_QUEUE_NO_SUSPEND = saved;
+      }
+    });
+
+    it("leaves a plain run ungated, unsuspendable and in the caller's group", async () => {
+      const done = run();
+      await finishWith(0);
+      await done;
+      expect(meta()).toMatchObject({ gated: undefined, suspendable: undefined });
+      expect(spawned[0]).toMatchObject({ file: "npm" });
+    });
+
+    it("spawns background through taskpolicy -b in its own group and records the pgid", async () => {
+      let opts: { detached?: boolean } | undefined;
+      const done = run({ background: true, argv: ["npm", "test"] }, {
+        spawn: (f, a, o) => (spawned.push({ file: f, args: a, env: o.env }), (opts = o), child),
+      });
+      await finishWith(0);
+      await done;
+      expect(spawned[0]).toMatchObject({ file: "/usr/sbin/taskpolicy", args: ["-b", "npm", "test"] });
+      expect(opts?.detached).toBe(true);
+      expect(handle.setChildPid).toHaveBeenCalledExactlyOnceWith(4321, 4321);
+    });
+
+    it.each(["SIGINT", "SIGTERM", "SIGHUP"] as const)("forwards %s to the background group after a SIGCONT", async (sig) => {
+      const done = run({ background: true });
+      await vi.waitFor(() => expect(spawned).toHaveLength(1));
+      signals.emit(sig);
+      expect(killed()).toEqual(["-4321:SIGCONT", `-4321:${sig}`]);
+      expect(child.kill).not.toHaveBeenCalled();
+      child.emit("close", null, sig);
+      await done;
+    });
+
+    it("does not borrow an ancestor hook slot, but honours an inherited holder", async () => {
+      const ancestors = vi.fn(() => [1]);
+      const live = { ...holder({ id: "hook-x", pid: 1 }), expiresAt: 1 };
+      const status = () => ({ level: "normal" as const, capacity: 1, step: 1, signals: null, live: [live] });
+      const seen: LeaseOptions[] = [];
+      const acq = (async (o: LeaseOptions) => (seen.push(o), outcome)) as unknown as typeof acquireLease;
+      const base = { ancestors, leaseStatus: status, acquire: acq };
+      for (const args of [{ gated: true }, { background: true }, { suspendable: true }]) {
+        const done = run(args, base);
+        await finishWith(0);
+        await done;
+        spawned.length = 0;
+      }
+      expect(ancestors).not.toHaveBeenCalled();
+      expect(seen.map((o) => o.inheritedHolderId)).toEqual([undefined, undefined, undefined]);
+      const done = run({ gated: true }, { ...base, leaseOptions: () => ({ dir: "/lease", inheritedHolderId: "inh" }) as LeaseOptions });
+      await finishWith(0);
+      await done;
+      expect(seen[3]!.inheritedHolderId).toBe("inh");
+    });
+  });
+
   describe("a configuration error", () => {
     it("exits 78 naming CO_LEASE_DIR, without acquiring or running", async () => {
       const bad = { leaseOptions: () => defaultLeaseOptions({ CO_LEASE_DIR: "relative/dir" }) };
