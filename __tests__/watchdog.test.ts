@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REFRESH_MS } from "../src/engine-registry.js";
-import { runWatchdog, type WatchdogDeps } from "../src/watchdog.js";
+import { parseElapsed, runWatchdog, type WatchdogDeps } from "../src/watchdog.js";
 
 const T0 = Date.parse("2026-10-16T12:00:00Z");
 const MIN = 60_000;
@@ -161,29 +161,32 @@ describe("watchdog", () => {
       expect(brief()).toContain("died");
     });
 
-    it("reports a stale record with a live pid as a stopped group, not dead", () => {
+    it("reports a stale record with a live pid as stopped, then by group, never as dead", () => {
       rows = stoppedEngine;
+      // Its own stat is T and its record is 5 minutes stale: reported as an engine before the group rule's own 5 minutes pass.
       engine({}, 5 * MIN);
       checkAt(0);
-      expect(brief()).toBe("");
+      expect(brief()).toContain("stopped or wedged");
+      expect(brief()).not.toContain("died");
       checkAt(6);
+      expect(brief()).not.toContain("wedged");
       expect(brief()).toContain("process group 700");
       expect(brief()).not.toContain("died");
     });
 
     // Sessions share the engine's group (spawned without detached), so a stale record with a live pid is reported on
-    // its own, whatever the group's stat says: a pid-only stop, or an engine wedged while still running. The threshold
-    // is the engine's stallTimeout + 10 minutes (40 at 1800 s), so a healthy engine blocked in a long synchronous
-    // command is not reported.
+    // its own, whatever the group's stat says. An engine whose own stat is T is stopped and is reported on the
+    // stopped-group bound; one that is running is reported only past its stallTimeout + 10 minutes (40 at 1800 s), so
+    // a healthy engine blocked in a long synchronous command is not, and never at stallTimeout 0 (no silence check).
     it.each([
-      ["stopped by pid while its session in the same group runs", [[700, 1, 700, "T", "node run.js"], [701, 700, 700, "S", "claude -p"]] as Row[]],
-      ["running but wedged", [[700, 1, 700, "S", "node run.js"]] as Row[]],
-    ])("reports a stale record with a live pid when the engine is %s, after stallTimeout + 10 minutes", (_name, scan) => {
+      ["stopped by pid while its session in the same group runs", [[700, 1, 700, "T", "node run.js"], [701, 700, 700, "S", "claude -p"]] as Row[], 4, 6],
+      ["running but wedged", [[700, 1, 700, "S", "node run.js"]] as Row[], 39, 41],
+    ])("reports a stale record with a live pid when the engine is %s", (_name, scan, quiet, loud) => {
       rows = scan;
-      engine({}, 39 * MIN);
+      engine({}, quiet * MIN);
       checkAt(0);
       expect(brief()).toBe("");
-      engine({}, 41 * MIN);
+      engine({}, loud * MIN);
       checkAt(0);
       expect(brief()).toContain("engine run-1 (pid 700)");
       expect(brief()).toContain("stopped or wedged");
@@ -192,13 +195,15 @@ describe("watchdog", () => {
     });
 
     it.each([
-      [0, 9, 11],
-      [600, 19, 21],
-    ])("with stallTimeout %i s is quiet at %i minutes stale and reports at %i", (stallTimeout, quiet, loud) => {
-      rows = [[700, 1, 700, "S", "node run.js"]];
+      ["running, stallTimeout 600", "S", 600, 19, 21],
+      ["stopped, stallTimeout 0", "T", 0, 4, 6],
+      ["running, stallTimeout 0", "S", 0, 600, null],
+    ])("times an engine that is %s from its own stat and stallTimeout", (_name, stat, stallTimeout, quiet, loud) => {
+      rows = [[700, 1, 700, stat, "node run.js"], [701, 700, 700, "S", "claude -p"]];
       engine({ stallTimeout }, quiet * MIN);
       checkAt(0);
       expect(brief()).toBe("");
+      if (loud === null) return;
       engine({ stallTimeout }, loud * MIN);
       checkAt(0);
       expect(brief()).toContain("stopped or wedged");
@@ -264,6 +269,21 @@ describe("watchdog", () => {
       checkAt(0);
       checkAt(30);
       expect(brief()).toBe("");
+    });
+  });
+
+  describe("parseElapsed", () => {
+    it.each([
+      ["00:07", 7_000],
+      ["05:00", 5 * MIN],
+      ["02:00:00", 120 * MIN],
+      ["1-00:00:00", 24 * 60 * MIN],
+      ["3-02:03:04", ((3 * 24 + 2) * 60 + 3) * MIN + 4_000],
+      ["", NaN],
+      ["1-05:00", NaN],
+      ["abc", NaN],
+    ])("parses %j as %d ms", (etime, ms) => {
+      expect(parseElapsed(etime)).toBe(ms);
     });
   });
 

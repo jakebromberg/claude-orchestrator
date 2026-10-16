@@ -2,7 +2,7 @@
 export declare const STOPPED_AFTER_MS: number;
 /** An engine record is fresh for three refresh periods, the lease's heartbeat rule. */
 export declare const ENGINE_FRESH_MS: number;
-/** A stale engine record with a live pid is reported once it is older than the engine's `stallTimeout` plus this. */
+/** A stale engine record whose pid is alive and running is reported once it is older than the engine's `stallTimeout` plus this. */
 export declare const STALLED_MARGIN_MS: number;
 export interface Proc {
     pid: number;
@@ -27,6 +27,8 @@ export interface Engine {
     alive: boolean;
     /** The record's mtime: how long ago the engine last refreshed it. */
     mtimeMs: number;
+    /** The engine's own scan row has a `stat` starting with `T`. */
+    stopped: boolean;
 }
 /** One thing to tell the owner. `once` findings are emitted in one cycle per `key` while the thing they describe lasts. */
 export interface Finding {
