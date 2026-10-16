@@ -14,7 +14,8 @@ export interface FileEngineRegistryOptions {
   now?: () => Date;
 }
 
-const REFRESH_MS = 30_000;
+/** How often a live engine rewrites its record; the watchdog derives its freshness window from it. */
+export const REFRESH_MS = 30_000;
 
 /** The bounded `ps` reader (see `ps.ts`): a hung `ps` must not slow engine start. */
 const psPgid = (pid: number): number => Number(psField(pid, "pgid"));

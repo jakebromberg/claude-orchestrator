@@ -7,6 +7,8 @@ export interface FileEngineRegistryOptions {
     pgid?: (pid: number) => number;
     now?: () => Date;
 }
+/** How often a live engine rewrites its record; the watchdog derives its freshness window from it. */
+export declare const REFRESH_MS = 30000;
 /**
  * File-backed registry: writes `engines/<pid>.json` at `start`, rewrites it every 30 s on an unref'd timer
  * (its mtime tells a reader a live engine from a dead one) and removes it at `stop`. `engines/` follows the lease's directory rule (`ensureOwnSubdir`); I/O errors, a refused directory included, are swallowed.
