@@ -1,7 +1,14 @@
 /** The step at `normal` (and `unknown`): today's ceiling. */
 export const MAX_STEP = 4;
-/** Today's capacities: `normal` 4, `warning` 1, `critical` 0, and a rise at once. */
-export const DEFAULT_STEP_TABLE = { warning: [{ minFreePct: 0, step: 1 }], riseHoldMs: 0 };
+/** The owner's Q1 table: `normal` 4, `warning` 3 at 40% free or more, 2 at 30 to 39%, 1 under 30%, `critical` 0, and a rise of one step per 60 s. */
+export const DEFAULT_STEP_TABLE = {
+    warning: [
+        { minFreePct: 40, step: 3 },
+        { minFreePct: 30, step: 2 },
+        { minFreePct: 0, step: 1 },
+    ],
+    riseHoldMs: 60_000,
+};
 /** Heavy-command slots at `step`: step 4 gets the whole ceiling, a lower step at most that many, step 0 none. */
 export function headroomCapacity(step, policy) {
     return step >= MAX_STEP ? policy.heavyCeiling : Math.min(policy.heavyCeiling, step);

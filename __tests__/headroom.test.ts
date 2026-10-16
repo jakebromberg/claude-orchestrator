@@ -4,15 +4,8 @@ import { DEFAULT_STEP_TABLE, headroomCapacity, headroomStep, type HeadroomState,
 import type { MemorySignals, PressureLevel } from "../src/memory-pressure.js";
 import * as barrel from "../src/index.js";
 
-/** The owner's Q1 table (2026-10-15); tests pass it explicitly because the default is today's. */
-const Q1: StepTable = {
-  warning: [
-    { minFreePct: 40, step: 3 },
-    { minFreePct: 30, step: 2 },
-    { minFreePct: 0, step: 1 },
-  ],
-  riseHoldMs: 60_000,
-};
+/** The owner's Q1 table (2026-10-15), the default. */
+const Q1: StepTable = DEFAULT_STEP_TABLE;
 const NOW = 1_000_000;
 const HOLD = Q1.riseHoldMs;
 const swap = { swapUsedBytes: 8e9, swapAllocatedBytes: 9e9, swapinsTotal: 0 };
@@ -84,15 +77,19 @@ describe("headroomStep with a mistyped table", () => {
 });
 
 describe("headroomStep under the default table", () => {
-  const levels: [PressureLevel, number][] = [["normal", 4], ["warning", 1], ["critical", 0], ["unknown", 4]];
+  const cases: [PressureLevel, number, number][] = [
+    ["normal", 10, 4], ["unknown", 10, 4], ["critical", 90, 0],
+    ["warning", 100, 3], ["warning", 40, 3], ["warning", 39, 2], ["warning", 30, 2], ["warning", 29, 1], ["warning", 0, 1],
+  ];
 
-  it.each(levels.flatMap(([level, step]) => [0, 29, 30, 40, 100].map((freePct) => [level, freePct, step] as const)))(
-    "%s at %i%% free is step %i, and a rise from 0 is immediate",
-    (level, freePct, step) => {
-      expect(headroomStep({ level, freePct }, { step: 4, risingSince: null }, NOW, DEFAULT_STEP_TABLE)).toEqual({ step, risingSince: null });
-      expect(headroomStep({ level, freePct }, { step: 0, risingSince: null }, NOW, DEFAULT_STEP_TABLE).step).toBe(step);
-    },
-  );
+  it.each(cases)("%s at %i%% free is step %i", (level, freePct, step) => {
+    expect(headroomStep({ level, freePct }, { step: 4, risingSince: null }, NOW, DEFAULT_STEP_TABLE).step).toBe(step);
+  });
+
+  it("holds a rise for 60 s", () => {
+    expect(DEFAULT_STEP_TABLE.riseHoldMs).toBe(60_000);
+    expect(headroomStep({ level: "normal", freePct: 90 }, { step: 0, risingSince: null }, NOW, DEFAULT_STEP_TABLE).step).toBe(0);
+  });
 });
 
 describe("replay of the 2026-10-14 recording", () => {
@@ -131,11 +128,6 @@ describe("replay of the 2026-10-14 recording", () => {
     expect(steps[back]).toBe(2);
     expect(steps.at(-1)).toBe(4);
     expect(steps.slice(back).every((s, i, all) => i === 0 || (s - all[i - 1]! >= 0 && s - all[i - 1]! <= 1))).toBe(true);
-  });
-
-  it("holds step 1 at every warning sample under the default table", () => {
-    const steps = replay(DEFAULT_STEP_TABLE);
-    rows.forEach((row, i) => expect(steps[i]).toBe(row.level === "warning" ? 1 : 4));
   });
 });
 

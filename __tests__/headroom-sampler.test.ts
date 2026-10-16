@@ -8,6 +8,8 @@ import type { MemorySignals } from "../src/memory-pressure.js";
 import { scriptedHeadroomSampler } from "../src/testing.js";
 
 const HOLD: StepTable = { warning: [{ minFreePct: 0, step: 1 }], riseHoldMs: 60_000 };
+/** One warning band and no rise hold: these suites test the sampler, not the default table. */
+const FLAT: StepTable = { warning: [{ minFreePct: 0, step: 1 }], riseHoldMs: 0 };
 const OVERRIDE = { CO_PRESSURE_OVERRIDE: "critical-as-warning" };
 
 describe("defaultHeadroomSampler", () => {
@@ -17,7 +19,7 @@ describe("defaultHeadroomSampler", () => {
   let reads: number;
   let log: ReturnType<typeof vi.fn>;
 
-  const make = (extra: NodeJS.ProcessEnv = {}, table?: StepTable, over: { dir?: string } = {}) => {
+  const make = (extra: NodeJS.ProcessEnv = {}, table: StepTable = FLAT, over: { dir?: string } = {}) => {
     const read = () => (reads++, signals);
     return defaultHeadroomSampler({ CO_LEASE_DIR: over.dir ?? dir, ...extra }, { read, now: () => t, log, table });
   };

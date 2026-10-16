@@ -44,7 +44,8 @@ export interface LeaseOptions {
     level: PressureSampler;
     /**
      * The machine-wide headroom step. When set, heavy capacity is `headroomCapacity(step, policy)` and `level` is only a
-     * view of it (`defaultLeaseOptions` builds both from one sampler); when absent, capacity comes from `level` alone.
+     * view of it (`defaultLeaseOptions` builds both from one sampler); when absent, capacity comes from `level` alone
+     * (`warning` → `policy.heavyWarning`), a path for tests and callers that inject `level`; production callers always have it.
      */
     headroom?: HeadroomSampler;
     policy: PressurePolicy;
