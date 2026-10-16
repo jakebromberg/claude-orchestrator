@@ -62,7 +62,7 @@ Amazon Bedrock and Google Vertex backends are not supported: their `CLAUDE_CODE_
 
 ## Memory pressure
 
-`src/memory-pressure.ts` reads the macOS memory-pressure level (`sysctl kern.memorystatus_vm_pressure_level`) and owns the one threshold table later consumers share. The engine's session launches and retries follow it (below); the heavy-command lease is not wired yet. Environment variables:
+`src/memory-pressure.ts` reads the macOS memory-pressure level (`sysctl kern.memorystatus_vm_pressure_level`) and owns the one threshold table later consumers share. The engine's session launches and retries follow it (below), and the heavy-command lease sizes its slots from the headroom step derived from it (see Headroom step). Environment variables:
 
 - `CO_LEASE_SLOTS` — heavy-command slot ceiling at `normal` pressure (positive integer, default `4`). An invalid value keeps the default and is reported once on stderr.
 - `CO_PRESSURE_OVERRIDE` — set to exactly `critical-as-warning` to make this process (and what it starts) read `critical` as `warning`. Any other value is ignored with a warning.

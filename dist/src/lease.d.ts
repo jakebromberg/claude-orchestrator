@@ -174,7 +174,7 @@ export declare function releaseHolder(opts: LeaseOptions, id: string): boolean;
 export declare function leaseStatus(opts: LeaseOptions): LeaseStatus;
 /**
  * Production wiring: the real lease directory, the engine's own sampler and policy, and the `events.jsonl` sink. Creates nothing on disk.
- * `overrides.level` replaces the sampler (none is built, so the lease sizes capacity from that level alone), and `overrides.warn` is the one writer for the lease, the sink,
+ * `overrides.level` replaces the sampler (none is built, so the lease sizes capacity from that level alone: warning gives `heavyWarning`, 1, not the default step table's 3 or 2; a test-only path, and every production caller passes no `level`), and `overrides.warn` is the one writer for the lease, the sink,
  * the policy and the sampler it builds; without it each keeps its stderr default.
  * The writer is wrapped once so it cannot change what the lease does: a writer that throws is silenced (the line is dropped and nothing reports it), so pass a bound function,
  * and the returned `warn` is that wrapper, not the caller's function.

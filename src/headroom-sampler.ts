@@ -61,7 +61,7 @@ function validSignals(s: unknown): s is MemorySignals {
 
 /**
  * The one production sampler: shares the step through `headroom.json` while it is under 10 s old, else reads
- * `sysctl`, steps from the stored `step` and `risingSince`, and rewrites the file and `level.json`. A failed guarded read
+ * `sysctl`, steps from the stored `step` and `risingSince` (a record as old as a full climb, `riseHoldMs` × `MAX_STEP`, is ignored, so the step starts at the target), and rewrites the file and `level.json`. A failed guarded read
  * steps from the last good reading under 60 s old (in-process, else `level.json`), and otherwise from `critical`; it is
  * not shared. `CO_PRESSURE_OVERRIDE=critical-as-warning` maps `critical` to `warning` and step 0 to 1 in this process
  * only. Throws when `leaseDirectory(env)` does. `deps` exists for tests.
@@ -114,8 +114,11 @@ export function defaultHeadroomSampler(
       const candidate = [lastGood, level && { signals: { level: level.level }, at: level.at }].find((r) => r && isFresh(r.at, at, FALLBACK_MAX_AGE_MS));
       effective = candidate?.signals ?? { level: "critical" };
     }
+    // A step no process has refreshed for as long as a full climb takes says nothing about now: start at the target.
+    const climbMs = table.riseHoldMs * MAX_STEP;
     const p = stored();
-    const state = headroomStep(effective, (p && validState(p)) ?? last, at, table);
+    const fromDisk = p && typeof p.at === "number" && isFresh(p.at, at, climbMs) ? validState(p) : undefined;
+    const state = headroomStep(effective, fromDisk ?? (last && isFresh(last.at, at, climbMs) ? last : undefined), at, table);
     last = { at, level: effective.level, signals, ...state };
     if (signals && signals.level !== "unknown") {
       try {

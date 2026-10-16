@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultHeadroomSampler, levelView } from "../src/headroom-sampler.js";
-import type { StepTable } from "../src/headroom.js";
+import { DEFAULT_STEP_TABLE, MAX_STEP, type StepTable } from "../src/headroom.js";
 import type { MemorySignals } from "../src/memory-pressure.js";
 import { scriptedHeadroomSampler } from "../src/testing.js";
 
@@ -35,6 +35,23 @@ describe("defaultHeadroomSampler", () => {
     log = vi.fn();
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("uses the default table when none is passed: warning at 35% free is step 2", () => {
+    signals = { level: "warning", freePct: 35 };
+    expect(defaultHeadroomSampler({ CO_LEASE_DIR: dir }, { read: () => signals, now: () => t, log })().step).toBe(2);
+  });
+
+  it.each([
+    ["inside a full climb, still holds the stored step", DEFAULT_STEP_TABLE.riseHoldMs * MAX_STEP - 1, 0],
+    ["as old as a full climb, starts at the target", DEFAULT_STEP_TABLE.riseHoldMs * MAX_STEP, 4],
+    ["hours old, starts at the target", 8 * 3_600_000, 4],
+  ])("a stored step %s", (_n, gap, want) => {
+    signals = { level: "critical", freePct: 3 };
+    expect(make({}, DEFAULT_STEP_TABLE)().step).toBe(0);
+    t += gap;
+    signals = { level: "normal", freePct: 70 };
+    expect(make({}, DEFAULT_STEP_TABLE)().step).toBe(want);
+  });
 
   it("samples, returns the level, step and signals, and writes headroom.json beside level.json", () => {
     signals = { level: "warning", freePct: 35, swapUsedBytes: 5 };
