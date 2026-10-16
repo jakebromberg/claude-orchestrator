@@ -49,6 +49,11 @@ const DEFAULT_ALLOWED_TOOLS = [
   "Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Task",
 ];
 
+/** The stall timeout a registry record carries: the largest effective one, or 0 (no silence check) when any issue disables stall detection, since 0 means "never stalled", not "the shortest timeout". */
+function registryStallTimeout(timeouts: number[]): number {
+  return timeouts.includes(0) ? 0 : Math.max(0, ...timeouts);
+}
+
 export class Orchestrator {
   private config: OrchestratorConfig;
   private deps: Deps;
@@ -111,7 +116,7 @@ export class Orchestrator {
       this.deps.engineRegistry?.start({
         runId,
         logDir: path.join(this.config.configDir, "logs"),
-        stallTimeout: Math.max(0, ...this.config.issues.map((i) => i.stallTimeout ?? this.config.stallTimeout)),
+        stallTimeout: registryStallTimeout(this.config.issues.map((i) => i.stallTimeout ?? this.config.stallTimeout)),
       });
     } catch {} // a registry failure never fails a run
     try {

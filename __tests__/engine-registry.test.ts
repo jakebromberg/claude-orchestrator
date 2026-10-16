@@ -35,6 +35,13 @@ describe("engine registry lifecycle", () => {
     ]);
   });
 
+  it("records stallTimeout 0 when any issue disables stall detection, so a watchdog applies no silence check", async () => {
+    const { orchestrator, registry } = setUp([makeIssue(1, 1800), makeIssue(2, 0)]);
+    await orchestrator.runRegistered("run-1", async () => {});
+
+    expect(registry.calls[0]).toEqual(["start", { runId: "run-1", logDir: "/tmp/c/logs", stallTimeout: 0 }]);
+  });
+
   it("stops after a failed run and rethrows", async () => {
     const { orchestrator, registry } = setUp([makeIssue(1)]);
     await expect(orchestrator.runRegistered("run-1", async () => { throw new Error("boom"); })).rejects.toThrow("boom");
