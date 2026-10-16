@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REFRESH_MS } from "../src/engine-registry.js";
-import { parseElapsed, runWatchdog, type WatchdogDeps } from "../src/watchdog.js";
+import { runWatchdog, type WatchdogDeps } from "../src/watchdog.js";
+import { psText } from "./helpers/ps-text.js";
 
 const T0 = Date.parse("2026-10-16T12:00:00Z");
 const MIN = 60_000;
@@ -11,7 +12,7 @@ const suspension = (pgid: number) => ({ pgid, by: "owner", reason: "r", at: "202
 
 // `etime` defaults to two hours, so a row's process started before every engine record's `startedAt` (11:00).
 type Row = [pid: number, ppid: number, pgid: number, stat: string, command: string, etime?: string];
-const table = (rows: Row[]) => rows.map(([pid, ppid, pgid, stat, command, etime = "02:00:00"]) => `${pid} ${ppid} ${pgid} 501 ${stat} ${etime} ${command}`).join("\n");
+const table = (rows: Row[]) => psText(rows.map(([pid, ppid, pgid, stat, command, etime]) => ({ pid, ppid, pgid, stat, command, etime })));
 
 // A stopped session: claude leads group 100 and its child shares it.
 const SESSION: Row[] = [
@@ -270,21 +271,6 @@ describe("watchdog", () => {
       checkAt(0);
       checkAt(30);
       expect(brief()).toBe("");
-    });
-  });
-
-  describe("parseElapsed", () => {
-    it.each([
-      ["00:07", 7_000],
-      ["05:00", 5 * MIN],
-      ["02:00:00", 120 * MIN],
-      ["1-00:00:00", 24 * 60 * MIN],
-      ["3-02:03:04", ((3 * 24 + 2) * 60 + 3) * MIN + 4_000],
-      ["", NaN],
-      ["1-05:00", NaN],
-      ["abc", NaN],
-    ])("parses %j as %d ms", (etime, ms) => {
-      expect(parseElapsed(etime)).toBe(ms);
     });
   });
 

@@ -1,10 +1,9 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
-import { isOwnDir } from "./lease-dir.js";
-import { ensureOwnSubdir, isPid } from "./lease.js";
+import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
 import { leaseDirectory } from "./memory-pressure.js";
-import { ps } from "./ps.js";
+import { ancestry, isPid, parsePsTable, ps, PS_TABLE_ARGS, type ProcRow } from "./ps.js";
 
 const EX_USAGE = 64;
 const EX_CONFIG = 78;
@@ -61,39 +60,18 @@ export function parseSuspensionArgs(argv: string[]): SuspensionArgs {
   return { kind: "suspend", raw, pgid, by: flags["--by"], reason: flags["--reason"], remindMs, recordOnly };
 }
 
-interface Member {
-  pid: number;
-  ppid: number;
-  pgid: number;
-  uid: number;
-  command: string;
-}
-
-/** One bounded scan of the process table: group membership, liveness, ownership and leader command all come from it. */
-function readTable(d: SuspensionDeps): Member[] {
-  return d.ps(["-axo", "pid=,ppid=,pgid=,uid=,command="]).split("\n").flatMap((line) => {
-    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/.exec(line);
-    return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), uid: Number(m[4]), command: m[5] }] : [];
-  });
-}
-
 /** The groups of this process and every ancestor, walked through the scan itself. Fails closed: a link missing from the scan, or a chain that never reaches pid 1, refuses rather than guarding a partial list. */
-function guardedGroups(table: Member[], d: SuspensionDeps): number[] {
-  const byPid = new Map(table.map((m) => [m.pid, m]));
-  const groups: number[] = [];
-  for (let pid = d.pid; pid > 1; ) {
-    const m = byPid.get(pid);
-    if (!m || groups.length >= MAX_ANCESTRY) throw new Error(`cannot read this command's whole ancestry (stopped at pid ${pid}); refusing`);
-    groups.push(m.pgid);
-    pid = m.ppid;
-  }
-  return groups;
+function guardedGroups(table: ProcRow[], d: SuspensionDeps): number[] {
+  const { chain, complete } = ancestry(table, d.pid, MAX_ANCESTRY);
+  if (!complete) throw new Error(`cannot read this command's whole ancestry (stopped at pid ${chain.at(-1)?.ppid ?? d.pid}); refusing`);
+  return chain.map((r) => r.pgid);
 }
 
 /** Throws unless `args.pgid` is a group this tool may touch, and returns its live members. */
-function checkGroup(args: SuspensionArgs, d: SuspensionDeps): Member[] {
+function checkGroup(args: SuspensionArgs, d: SuspensionDeps): ProcRow[] {
   if (!isPid(args.pgid) || args.pgid === 1) throw new Error(`${args.raw} is not a process group this tool will touch`);
-  const table = readTable(d);
+  // One bounded scan: group membership, liveness, ownership and leader command all come from it.
+  const table = parsePsTable(d.ps(PS_TABLE_ARGS));
   if (guardedGroups(table, d).includes(args.pgid)) throw new Error(`process group ${args.pgid} is this command's own or an ancestor's`);
   const members = table.filter((m) => m.pgid === args.pgid);
   if (d.uid !== undefined && members.some((m) => m.uid !== d.uid)) throw new Error(`process group ${args.pgid} has a member owned by another user`);

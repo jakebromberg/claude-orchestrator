@@ -9,8 +9,7 @@ import { join } from "node:path";
 import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
 import { isOwnDir, writeLeaseRecord } from "./lease-dir.js";
-import { isPid } from "./lease.js";
-import { ps } from "./ps.js";
+import { ancestry, isPid, parsePsTable, ps, PS_TABLE_ARGS, type ProcRow } from "./ps.js";
 import { readSuspensions } from "./suspensions.js";
 
 const EX_USAGE = 64;
@@ -23,16 +22,6 @@ export const ENGINE_FRESH_MS = 3 * REFRESH_MS;
 export const STALLED_MARGIN_MS = 10 * 60_000;
 // A planted symlink is not followed and a planted FIFO is not waited on.
 const LOG_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK;
-
-export interface Proc {
-  pid: number;
-  ppid: number;
-  pgid: number;
-  stat: string;
-  /** Time since the process started (`ps` `etime`), or NaN when the column cannot be read. */
-  elapsedMs: number;
-  command: string;
-}
 
 /** An `engines/<pid>.json` record (see `engine-registry.ts`) with the verdicts the rules need. */
 export interface Engine {
@@ -62,7 +51,7 @@ export interface Finding {
 /** What a rule sees: the scan, the registry and the suspension records, all read once per cycle. */
 export interface Context {
   now: number;
-  procs: Proc[];
+  procs: ProcRow[];
   engines: Engine[];
   /** Groups with a valid suspension record (`readSuspensions`). */
   suspended: Set<number>;
@@ -104,7 +93,7 @@ const deadEngine: Rule = (c) =>
 export const RULES: Rule[] = [unrecordedStoppedGroup, stalledEngine, deadEngine];
 
 /** The default scan: one bounded `ps`, 60 s because it can be slow at background priority. A throw skips the cycle. */
-export const scanProcessTable = (): string => ps(["-axo", "pid=,ppid=,pgid=,uid=,stat=,etime=,command="], { timeoutMs: 60_000 });
+export const scanProcessTable = (): string => ps(PS_TABLE_ARGS, { timeoutMs: 60_000 });
 
 export interface WatchdogDeps {
   /** The lease directory. */
@@ -123,21 +112,8 @@ interface State {
   findings: Finding[];
 }
 
-/** `ps` `etime`, `[[dd-]hh:]mm:ss`, in milliseconds; NaN for any other shape. */
-export function parseElapsed(etime: string): number {
-  const m = /^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$/.exec(etime);
-  return m ? (((Number(m[1] ?? 0) * 24 + Number(m[2] ?? 0)) * 60 + Number(m[3])) * 60 + Number(m[4])) * 1000 : NaN;
-}
-
-function parseTable(text: string): Proc[] {
-  return text.split("\n").flatMap((line) => {
-    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+\d+\s+(\S+)\s+(\S+)\s+(.*)$/.exec(line);
-    return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), stat: m[4], elapsedMs: parseElapsed(m[5]), command: m[6] }] : [];
-  });
-}
-
 /** Whether `row` can be the process that wrote a record started at `startedAt`: one that started later holds a reused pid. An unreadable time on either side keeps the row. */
-function isSameProcess(row: Proc, startedAt: unknown, now: number): boolean {
+function isSameProcess(row: ProcRow, startedAt: unknown, now: number): boolean {
   const started = typeof startedAt === "string" ? Date.parse(startedAt) : NaN;
   return !(now - row.elapsedMs > started + START_SLACK_MS);
 }
@@ -160,7 +136,7 @@ function readRecords(dir: string, sub: string): { name: string; record: any; mti
   });
 }
 
-function readEngines(dir: string, now: number, procs: Proc[]): Engine[] {
+function readEngines(dir: string, now: number, procs: ProcRow[]): Engine[] {
   return readRecords(dir, "engines").flatMap(({ record: r, mtimeMs }) => {
     if (!isPid(r?.pid) || typeof r.runId !== "string") return [];
     const row = procs.find((p) => p.pid === r.pid);
@@ -170,15 +146,11 @@ function readEngines(dir: string, now: number, procs: Proc[]): Engine[] {
 }
 
 /** Groups whose every member is stopped (`stat` starts with `T`) and that contain or descend from a `claude` process, or belong to a live registered engine. */
-function stoppedGroups(procs: Proc[], engines: Engine[]): number[] {
-  const byPid = new Map(procs.map((p) => [p.pid, p]));
-  const isClaude = (p: Proc): boolean => /(^|[\s/])claude(\s|$)/.test(p.command);
-  const underClaude = (p: Proc): boolean => {
-    for (let cur: Proc | undefined = p, n = 0; cur && n < 64; cur = byPid.get(cur.ppid), n++) if (isClaude(cur)) return true;
-    return false;
-  };
+function stoppedGroups(procs: ProcRow[], engines: Engine[]): number[] {
+  const isClaude = (p: ProcRow): boolean => /(^|[\s/])claude(\s|$)/.test(p.command);
+  const underClaude = (p: ProcRow): boolean => ancestry(procs, p.pid, 64).chain.some(isClaude);
   const enginePgids = new Set(engines.filter((e) => e.alive).map((e) => e.pgid));
-  const groups = new Map<number, Proc[]>();
+  const groups = new Map<number, ProcRow[]>();
   for (const p of procs) groups.set(p.pgid, [...(groups.get(p.pgid) ?? []), p]);
   return [...groups].filter(([pgid, members]) => members.every((p) => p.stat.startsWith("T")) && (enginePgids.has(pgid) || members.some(underClaude))).map(([pgid]) => pgid);
 }
@@ -215,9 +187,9 @@ export function check(d: WatchdogDeps): void {
   if (!st || !isOwnDir(st)) return;
   const now = d.now();
   const prev = readState(d.dir);
-  let procs: Proc[];
+  let procs: ProcRow[];
   try {
-    procs = parseTable(d.scan());
+    procs = parsePsTable(d.scan());
     if (procs.length === 0) throw new Error("empty process table");
   } catch (err) {
     appendLog(d.dir, now, `scan skipped: ${(err as Error).message}`);
