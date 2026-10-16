@@ -74,10 +74,13 @@ export {
   leaseDirectory,
   pressurePolicyFromEnv,
   readMemoryPressure,
+  readMemorySignals,
   sessionCapacity,
   stopAtCritical,
 } from "./memory-pressure.js";
-export type { PressureLevel, PressurePolicy, PressureSampler } from "./memory-pressure.js";
+export type { MemorySignals, PressureLevel, PressurePolicy, PressureSampler } from "./memory-pressure.js";
+export { DEFAULT_STEP_TABLE, headroomStep } from "./headroom.js";
+export type { HeadroomState, StepBand, StepTable } from "./headroom.js";
 export { acquireLease, tryAcquireLease, leaseStatus, defaultLeaseOptions, releaseHolder } from "./lease.js";
 export { leaseEventSink } from "./lease-events.js";
 export { isHeavyCommand } from "./lease-hook.js";

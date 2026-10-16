@@ -19,6 +19,26 @@ export declare function readMemoryPressure(deps?: {
     platform?: NodeJS.Platform;
     sysctl?: (name: string) => string;
 }): PressureLevel | null;
+/** What the kernel publishes about memory: the pressure level, the free percentage and, when readable, swap use. */
+export interface MemorySignals {
+    level: PressureLevel;
+    /** `kern.memorystatus_level`; absent only when the level is `unknown`. */
+    freePct?: number;
+    swapUsedBytes?: number;
+    swapAllocatedBytes?: number;
+    swapinsTotal?: number;
+}
+/**
+ * Reads the level and free percentage in one guarded `sysctl` call: `null` means
+ * it failed, timed out or returned an unrecognised value, as for `readMemoryPressure`.
+ * The swap values come from a separate call that only ever leaves them absent,
+ * because `sysctl -n` with one unknown name exits 1 and would turn a renamed oid
+ * into a failed guarded read.
+ */
+export declare function readMemorySignals(deps?: {
+    platform?: NodeJS.Platform;
+    sysctl?: (...names: string[]) => string;
+}): MemorySignals | null;
 /** Heavy-command slots at a level; `critical` is always 0. */
 export declare function heavyCapacity(level: PressureLevel, policy: PressurePolicy): number;
 /** Concurrent engine sessions at a level. In the engine this bounds pipelines, not only live `claude` processes: a pipeline keeps its slot through its post-session check and retries. */

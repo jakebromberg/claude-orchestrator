@@ -25,7 +25,8 @@ src/
 ├── run-history.ts        # Run record persistence
 ├── dependency-files.ts   # Dependency file detection
 ├── report.ts             # Post-run report generation (`ran`/`sessionIds` per row, from `Orchestrator.launchedSessions()`)
-├── memory-pressure.ts    # Memory-pressure level reader, heavy/session capacity tables, stop rule, cached sampler
+├── memory-pressure.ts    # Memory-pressure level reader, readMemorySignals() (level + free % in one guarded sysctl call, swap values from a separate optional one), heavy/session capacity tables, stop rule, cached sampler
+├── headroom.ts           # headroomStep(signals, previous, nowMs, table) → { step, risingSince }: pure 0–4 step from the pressure level and free %, StepTable (warning bands + riseHoldMs; DEFAULT_STEP_TABLE reproduces today's 4/1/0, rise at once); no caller yet
 ├── capacity-governor.ts  # createCapacityGovernor() — pressure readings → launch capacity (bounds pipelines), 60 s hysteresis, transition logging
 ├── lease.ts              # Machine-wide heavy-command lease: holder files, 30 s mtime heartbeat (90 s staleness) + child-PID liveness, admission, fail-open, detached holders (`HolderMeta.detached`: session PID + `expiresAt`, no heartbeat; `dead-session`/`expired` reaps; `releaseHolder` by id; an acquire of an id whose holder is live is admitted at once with a borrowed handle; id `{1,160}`, session PID and `expiresAt` validated) (acquireLease, leaseStatus)
 ├── lease-events.ts       # leaseEventSink(): JSONL sink for the lease's onEvent seam — <lease dir>/events.jsonl, 5 MB rotation to events.jsonl.1, write failures swallowed

@@ -10,6 +10,7 @@ import {
   leaseDirectory,
   pressurePolicyFromEnv,
   readMemoryPressure,
+  readMemorySignals,
   sessionCapacity,
   stopAtCritical,
   type PressureLevel,
@@ -43,6 +44,62 @@ describe("readMemoryPressure", () => {
   it("returns unknown without calling sysctl on other platforms", () => {
     const sysctl = vi.fn(() => "4");
     expect(readMemoryPressure({ platform: "linux", sysctl })).toBe("unknown");
+    expect(sysctl).not.toHaveBeenCalled();
+  });
+});
+
+describe("readMemorySignals", () => {
+  const GUARDED = ["kern.memorystatus_vm_pressure_level", "kern.memorystatus_level"];
+  const SWAP = ["vm.compressor.swapper.used_bytes", "vm.compressor.swapper.allocated_bytes", "vm.compressor.swapper.swapins_total"];
+  const reply = (guarded: string | Error, swap: string | Error) => (...names: string[]): string => {
+    const out = names[0] === GUARDED[0] ? guarded : swap;
+    if (out instanceof Error) throw out;
+    return out;
+  };
+
+  it("reads the two guarded names in one call and the swap names in a separate one", () => {
+    const sysctl = vi.fn(reply("2\n41\n", "8258519040\n9663676416\n12\n"));
+    expect(readMemorySignals({ platform: "darwin", sysctl })).toEqual({
+      level: "warning",
+      freePct: 41,
+      swapUsedBytes: 8258519040,
+      swapAllocatedBytes: 9663676416,
+      swapinsTotal: 12,
+    });
+    expect(sysctl.mock.calls).toEqual([GUARDED, SWAP]);
+  });
+
+  it.each([
+    ["a throw", new Error("ETIMEDOUT")],
+    ["an unrecognised level", "3\n41\n"],
+    ["a missing free percentage", "1\n"],
+    ["an unparseable free percentage", "1\nabc\n"],
+    ["a free percentage over 100", "1\n101\n"],
+    ["empty output", ""],
+  ])("returns null on %s from the guarded read", (_name, guarded) => {
+    expect(readMemorySignals({ platform: "darwin", sysctl: reply(guarded, "1\n2\n3\n") })).toBeNull();
+  });
+
+  it.each([
+    ["a throw (a renamed oid)", new Error("unknown oid")],
+    ["empty output", ""],
+    ["unparseable values", "x\ny\nz\n"],
+  ])("leaves the swap fields absent and the guarded values intact on %s from the optional read", (_name, swap) => {
+    expect(readMemorySignals({ platform: "darwin", sysctl: reply("1\n59\n", swap) })).toEqual({ level: "normal", freePct: 59 });
+  });
+
+  it("keeps the swap values that parse when others do not", () => {
+    expect(readMemorySignals({ platform: "darwin", sysctl: reply("1\n59\n", "5\n\n7\n") })).toEqual({
+      level: "normal",
+      freePct: 59,
+      swapUsedBytes: 5,
+      swapinsTotal: 7,
+    });
+  });
+
+  it("reports unknown without calling sysctl on other platforms", () => {
+    const sysctl = vi.fn(() => "1");
+    expect(readMemorySignals({ platform: "linux", sysctl })).toEqual({ level: "unknown" });
     expect(sysctl).not.toHaveBeenCalled();
   });
 });
