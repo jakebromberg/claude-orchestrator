@@ -7,6 +7,7 @@ import { parseElapsed, runWatchdog, type WatchdogDeps } from "../src/watchdog.js
 
 const T0 = Date.parse("2026-10-16T12:00:00Z");
 const MIN = 60_000;
+const suspension = (pgid: number) => ({ pgid, by: "owner", reason: "r", at: "2026-10-16T12:00:00.000Z", remindAt: "2026-10-16T14:00:00.000Z", leader: null });
 
 // `etime` defaults to two hours, so a row's process started before every engine record's `startedAt` (11:00).
 type Row = [pid: number, ppid: number, pgid: number, stat: string, command: string, etime?: string];
@@ -94,7 +95,7 @@ describe("watchdog", () => {
     });
 
     it("skips a group with a suspension record", () => {
-      writeRecord("suspensions", "100.json", { pgid: 100, by: "owner" });
+      writeRecord("suspensions", "100.json", suspension(100));
       checkAt(0);
       checkAt(30);
       expect(brief()).toBe("");
@@ -240,7 +241,7 @@ describe("watchdog", () => {
     it("skips a stalled engine whose group has a suspension record", () => {
       rows = [[700, 1, 700, "S", "node run.js"]];
       engine({}, 60 * MIN);
-      writeRecord("suspensions", "700.json", { pgid: 700 });
+      writeRecord("suspensions", "700.json", suspension(700));
       checkAt(0);
       expect(brief()).toBe("");
     });
@@ -265,7 +266,7 @@ describe("watchdog", () => {
     it("skips a registered engine's group that has a suspension record", () => {
       rows = stoppedEngine;
       engine({}, 5 * MIN);
-      writeRecord("suspensions", "700.json", { pgid: 700 });
+      writeRecord("suspensions", "700.json", suspension(700));
       checkAt(0);
       checkAt(30);
       expect(brief()).toBe("");

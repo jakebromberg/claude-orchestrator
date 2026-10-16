@@ -1,6 +1,7 @@
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
+import { isOwnDir } from "./lease-dir.js";
 import { ensureOwnSubdir, isPid } from "./lease.js";
 import { leaseDirectory } from "./memory-pressure.js";
 import { ps } from "./ps.js";
@@ -99,6 +100,58 @@ function checkGroup(args: SuspensionArgs, d: SuspensionDeps): Member[] {
   return members;
 }
 
+/** What `suspend` records for a process group, in `<lease dir>/suspensions/<pgid>.json`. `at` and `remindAt` are ISO timestamps; `leader` is the command of the member whose pid is the pgid, or `null` when it has exited. */
+export interface SuspensionRecord {
+  pgid: number;
+  by: string;
+  reason: string;
+  at: string;
+  remindAt: string;
+  leader: string | null;
+}
+
+/** The record file of a process group: the one place that names the `suspensions/` path. */
+export function suspensionFile(dir: string, pgid: number): string {
+  return join(dir, "suspensions", `${pgid}.json`);
+}
+
+/** Writes `record` through the lease's directory rule; throws when the group already has one. */
+export function writeSuspension(dir: string, record: SuspensionRecord): void {
+  ensureOwnSubdir(dir, "suspensions");
+  const file = suspensionFile(dir, record.pgid);
+  if (existsSync(file)) throw new Error(`process group ${record.pgid} already has a suspension record (${file})`);
+  writeFileAtomic(file, JSON.stringify(record));
+}
+
+/** Removes the record of `pgid`; returns whether one existed. */
+export function removeSuspension(dir: string, pgid: number): boolean {
+  ensureOwnSubdir(dir, "suspensions");
+  const file = suspensionFile(dir, pgid);
+  const had = existsSync(file);
+  rmSync(file, { force: true });
+  return had;
+}
+
+/** The valid records in `<dir>/suspensions`: a name whose stem is not a pid, a temp file, an unreadable or invalid body, or a body whose pgid is not its name is skipped. Creates nothing; a missing, symlinked or foreign directory reads as empty. */
+export function readSuspensions(dir: string): SuspensionRecord[] {
+  try {
+    if (!isOwnDir(lstatSync(join(dir, "suspensions")))) return [];
+    return readdirSync(join(dir, "suspensions")).flatMap((name) => {
+      const stem = /^(\d+)\.json$/.exec(name)?.[1];
+      if (stem === undefined || !isPid(Number(stem))) return [];
+      try {
+        const r = JSON.parse(readFileSync(suspensionFile(dir, Number(stem)), "utf-8"));
+        const ok = r?.pgid === Number(stem) && [r.by, r.reason, r.at, r.remindAt].every((v) => typeof v === "string") && (r.leader === null || typeof r.leader === "string");
+        return ok ? [{ pgid: r.pgid, by: r.by, reason: r.reason, at: r.at, remindAt: r.remindAt, leader: r.leader }] : [];
+      } catch {
+        return [];
+      }
+    });
+  } catch {
+    return [];
+  }
+}
+
 /** Runs `suspend` or `resume` (`argv[0]`): exit 0 done, 1 refused or failed, 64 usage. A suspend writes the record before the signal; a resume signals before it removes the record. */
 export function runSuspension(argv: string[], d: SuspensionDeps): number {
   let args: SuspensionArgs;
@@ -111,7 +164,7 @@ export function runSuspension(argv: string[], d: SuspensionDeps): number {
   try {
     const members = checkGroup(args, d);
     ensureOwnSubdir(d.dir, "suspensions");
-    const file = join(d.dir, "suspensions", `${args.pgid}.json`);
+    const file = suspensionFile(d.dir, args.pgid);
     if (args.kind === "resume") {
       try {
         d.kill(-args.pgid, "SIGCONT");
@@ -119,21 +172,19 @@ export function runSuspension(argv: string[], d: SuspensionDeps): number {
         // A group that is gone has nothing to continue; its record can still go.
         if ((err as NodeJS.ErrnoException).code !== "ESRCH") throw err;
       }
-      const had = existsSync(file);
-      rmSync(file, { force: true });
+      const had = removeSuspension(d.dir, args.pgid);
       d.out(`lease: resumed process group ${args.pgid}${had ? `; removed ${file}` : "; no record existed"}`);
       return 0;
     }
     if (members.length === 0) throw new Error(`process group ${args.pgid} has no live members`);
-    if (existsSync(file)) throw new Error(`process group ${args.pgid} already has a suspension record (${file})`);
     const at = d.now();
     const leader = members.find((m) => m.pid === args.pgid)?.command ?? null;
-    writeFileAtomic(file, JSON.stringify({ pgid: args.pgid, by: args.by, reason: args.reason, at: new Date(at).toISOString(), remindAt: new Date(at + args.remindMs).toISOString(), leader }));
+    writeSuspension(d.dir, { pgid: args.pgid, by: args.by, reason: args.reason, at: new Date(at).toISOString(), remindAt: new Date(at + args.remindMs).toISOString(), leader });
     if (!args.recordOnly) {
       try {
         d.kill(-args.pgid, "SIGSTOP");
       } catch (err) {
-        rmSync(file, { force: true });
+        removeSuspension(d.dir, args.pgid);
         throw err;
       }
     }

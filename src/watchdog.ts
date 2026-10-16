@@ -11,6 +11,7 @@ import { isWithinWindow } from "./file-lock.js";
 import { isOwnDir, writeLeaseRecord } from "./lease-dir.js";
 import { isPid } from "./lease.js";
 import { ps } from "./ps.js";
+import { readSuspensions } from "./suspensions.js";
 
 const EX_USAGE = 64;
 const USAGE = "usage: claude-orchestrator-watchdog check | brief";
@@ -224,7 +225,7 @@ export function check(d: WatchdogDeps): void {
   }
   const engines = readEngines(d.dir, now, procs);
   const stoppedSince = new Map(stoppedGroups(procs, engines).map((pgid) => [pgid, prev.stoppedSince[pgid] ?? now]));
-  const suspended = new Set(readRecords(d.dir, "suspensions").map(({ name }) => Number(name.slice(0, -".json".length))));
+  const suspended = new Set(readSuspensions(d.dir).map((r) => r.pgid));
   const found = RULES.flatMap((rule) => rule({ now, procs, engines, suspended, stoppedSince }));
   const findings = found.filter((f) => !(f.once && prev.reported.includes(f.key)));
   const state: State = { stoppedSince: Object.fromEntries(stoppedSince), reported: found.filter((f) => f.once).map((f) => f.key), findings };
