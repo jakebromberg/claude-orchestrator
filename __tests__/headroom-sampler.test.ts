@@ -53,6 +53,18 @@ describe("defaultHeadroomSampler", () => {
     expect(make({}, DEFAULT_STEP_TABLE)().step).toBe(want);
   });
 
+  it.each([
+    ["inside a full climb, still holds the in-process step", DEFAULT_STEP_TABLE.riseHoldMs * MAX_STEP - 1, 0],
+    ["as old as a full climb, starts at the target", DEFAULT_STEP_TABLE.riseHoldMs * MAX_STEP, 4],
+  ])("with no file to share, an in-process step %s", (_n, gap, want) => {
+    const s = make({}, DEFAULT_STEP_TABLE, { dir: join(dir, "absent") });
+    signals = { level: "critical", freePct: 3 };
+    expect(s().step).toBe(0);
+    t += gap;
+    signals = { level: "normal", freePct: 70 };
+    expect(s().step).toBe(want);
+  });
+
   it("samples, returns the level, step and signals, and writes headroom.json beside level.json", () => {
     signals = { level: "warning", freePct: 35, swapUsedBytes: 5 };
     expect(make()()).toEqual({ level: "warning", step: 1, signals });
