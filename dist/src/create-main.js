@@ -17,6 +17,7 @@ import { renderPlanPreview } from "./plan-preview.js";
 import { shellQuote } from "./shell-quote.js";
 import { authBanner, claudeExecOptions } from "./claude-env.js";
 import { defaultLeaseOptions } from "./lease.js";
+import { createFileEngineRegistry } from "./engine-registry.js";
 /** Exported for testing. Builds the `gh issue create` command string with shell-safe quoting. */
 export function buildGhIssueCreateCommand(repo, title) {
     return `gh issue create --repo ${shellQuote(repo)} --title ${shellQuote(title)} --body-file -`;
@@ -111,7 +112,7 @@ function dispatchDeps(mode) {
     if (!DISPATCH_MODES.has(mode))
         return {};
     const lease = defaultLeaseOptions(process.env, { warn: consoleLogger.warn });
-    return { lease, memoryPressure: lease.level };
+    return { lease, memoryPressure: lease.level, engineRegistry: createFileEngineRegistry({ dir: lease.dir }) };
 }
 export async function createMain(options) {
     const { configs } = options;
@@ -444,6 +445,7 @@ export async function createMain(options) {
     }
     // Set up signal handler (writes run record before exiting)
     const handleSignal = async () => {
+        orchestrator.stopEngineRegistry();
         await orchestrator.handleInterrupt();
         collectAndWriteRunRecord();
         process.exit(130);
@@ -452,18 +454,20 @@ export async function createMain(options) {
     process.on("SIGTERM", handleSignal);
     // Dispatch
     try {
-        if (args.mode === "retry-failed") {
-            await orchestrator.retryFailed();
-        }
-        else if (args.mode === "run-specific") {
-            await orchestrator.runSpecific(args.issues);
-        }
-        else if (args.wave !== undefined) {
-            await orchestrator.runWave(args.wave);
-        }
-        else {
-            await orchestrator.runAllWaves();
-        }
+        await orchestrator.runRegistered(startedAt.toISOString().replace(/:/g, "-"), async () => {
+            if (args.mode === "retry-failed") {
+                await orchestrator.retryFailed();
+            }
+            else if (args.mode === "run-specific") {
+                await orchestrator.runSpecific(args.issues);
+            }
+            else if (args.wave !== undefined) {
+                await orchestrator.runWave(args.wave);
+            }
+            else {
+                await orchestrator.runAllWaves();
+            }
+        });
     }
     finally {
         collectAndWriteRunRecord();

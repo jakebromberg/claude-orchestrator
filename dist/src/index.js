@@ -31,6 +31,7 @@ export { authBanner, claudeExecOptions, claudeSessionEnv, usesApiKeyBilling, API
 export { applyPressureOverride, cachedPressureSampler, defaultPressureSampler, heavyCapacity, leaseDirectory, pressurePolicyFromEnv, readMemoryPressure, readMemorySignals, sessionCapacity, stopAtCritical, } from "./memory-pressure.js";
 export { DEFAULT_STEP_TABLE, headroomStep } from "./headroom.js";
 export { acquireLease, tryAcquireLease, leaseStatus, defaultLeaseOptions, releaseHolder } from "./lease.js";
+export { createFileEngineRegistry } from "./engine-registry.js";
 export { leaseEventSink } from "./lease-events.js";
 export { isHeavyCommand } from "./lease-hook.js";
 export { createMain } from "./create-main.js";

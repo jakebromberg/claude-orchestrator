@@ -22,6 +22,10 @@ export declare class Orchestrator {
     private recordLaunch;
     checkPrerequisites(): void;
     resetStaleStatuses(): Promise<void>;
+    /** Runs `run` with this engine recorded in `deps.engineRegistry`, removing the record when it ends or throws. */
+    runRegistered(runId: string, run: () => Promise<void>): Promise<void>;
+    /** Drops the engine's registry record; for the signal handler, which exits without unwinding `runRegistered`. */
+    stopEngineRegistry(): void;
     handleInterrupt(): Promise<void>;
     runWave(wave: number): Promise<void>;
     runAllWaves(): Promise<void>;

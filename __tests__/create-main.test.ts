@@ -69,6 +69,7 @@ describe("createRealDeps lease wiring", () => {
     expect(lease.defaultLeaseOptions).toHaveBeenCalledTimes(1);
     expect(deps.lease).toBeDefined();
     expect(deps.memoryPressure).toBe(deps.lease!.level);
+    expect(deps.engineRegistry).toBeDefined();
   });
 
   it.each(["status", "plan"] as const)("builds no lease options for the read-only %s mode", (mode) => {
@@ -77,6 +78,7 @@ describe("createRealDeps lease wiring", () => {
 
     expect(deps.lease).toBeUndefined();
     expect(deps.memoryPressure).toBeUndefined();
+    expect(deps.engineRegistry).toBeUndefined();
     expect(lease.defaultLeaseOptions).not.toHaveBeenCalled();
   });
 
