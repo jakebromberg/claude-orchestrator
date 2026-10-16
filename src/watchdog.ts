@@ -41,6 +41,8 @@ export interface Engine {
   fresh: boolean;
   /** The pid has a row in the scan. */
   alive: boolean;
+  /** The record's mtime: how long ago the engine last refreshed it. */
+  mtimeMs: number;
 }
 
 /** One thing to tell the owner. `once` findings are emitted in one cycle per `key` while the thing they describe lasts. */
@@ -70,14 +72,21 @@ const unrecordedStoppedGroup: Rule = (c) =>
     .filter(([pgid, since]) => !c.suspended.has(pgid) && c.now - since >= STOPPED_AFTER_MS)
     .map(([pgid, since]) => ({ key: `stopped:${pgid}`, message: `process group ${pgid} stopped ${minutes(c.now - since)}m, no suspension record` }));
 
-// A stale record whose pid is alive is a stopped or wedged engine; the stopped-group rule reports it by group.
+// A stale record whose pid is alive is a stopped or wedged engine. Its sessions share its group, so the group is
+// rarely stopped throughout: report the engine itself once its record is STOPPED_AFTER_MS old, unless the group is
+// already tracked by the stopped-group rule (which then reports it), or the group has a suspension record.
+const stalledEngine: Rule = (c) =>
+  c.engines
+    .filter((e) => !e.fresh && e.alive && c.now - e.mtimeMs >= STOPPED_AFTER_MS && !(e.pgid !== null && (c.stoppedSince.has(e.pgid) || c.suspended.has(e.pgid))))
+    .map((e) => ({ key: `stalled:${e.runId}`, message: `engine ${e.runId} (pid ${e.pid}) has not refreshed its record for ${minutes(c.now - e.mtimeMs)}m and is still alive: stopped or wedged` }));
+
 const deadEngine: Rule = (c) =>
   c.engines
     .filter((e) => !e.fresh && !e.alive)
     .map((e) => ({ key: `dead:${e.runId}`, message: `engine ${e.runId} (pid ${e.pid}) died, its record is left in engines/`, once: true }));
 
 /** The rules, in report order. A rule reads the context and returns findings; the reporters never change. */
-export const RULES: Rule[] = [unrecordedStoppedGroup, deadEngine];
+export const RULES: Rule[] = [unrecordedStoppedGroup, stalledEngine, deadEngine];
 
 /** The default scan: one bounded `ps`, 60 s because it can be slow at background priority. A throw skips the cycle. */
 export const scanProcessTable = (): string => ps(["-axo", "pid=,ppid=,pgid=,uid=,stat=,etime=,command="], { timeoutMs: 60_000 });
@@ -129,7 +138,7 @@ function readEngines(dir: string, now: number, procs: Proc[]): Engine[] {
     if (!isPid(r?.pid) || typeof r.runId !== "string") return [];
     const row = procs.find((p) => p.pid === r.pid);
     // A null pgid (ps failed at engine start) falls back to the scan's.
-    return [{ ...r, pgid: Number.isInteger(r.pgid) ? r.pgid : (row?.pgid ?? null), fresh: isWithinWindow(mtimeMs, now, ENGINE_FRESH_MS), alive: row !== undefined }];
+    return [{ ...r, pgid: Number.isInteger(r.pgid) ? r.pgid : (row?.pgid ?? null), fresh: isWithinWindow(mtimeMs, now, ENGINE_FRESH_MS), alive: row !== undefined, mtimeMs }];
   });
 }
 

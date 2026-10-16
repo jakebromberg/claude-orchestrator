@@ -170,6 +170,33 @@ describe("watchdog", () => {
       expect(brief()).not.toContain("died");
     });
 
+    // Sessions share the engine's group (spawned without detached), so a stale record with a live pid is reported on
+    // its own, whatever the group's stat says: a pid-only stop, or an engine wedged while still running.
+    it.each([
+      ["stopped by pid while its session in the same group runs", [[700, 1, 700, "T", "node run.js"], [701, 700, 700, "S", "claude -p"]] as Row[]],
+      ["running but wedged", [[700, 1, 700, "S", "node run.js"]] as Row[]],
+    ])("reports a stale record with a live pid when the engine is %s", (_name, scan) => {
+      rows = scan;
+      engine({}, 4 * MIN);
+      checkAt(0);
+      expect(brief()).toBe("");
+      engine({}, 6 * MIN);
+      checkAt(0);
+      expect(brief()).toContain("engine run-1 (pid 700)");
+      expect(brief()).toContain("stopped or wedged");
+      expect(brief()).not.toContain("died");
+      expect(brief()).not.toContain("process group 700");
+    });
+
+    it("reports a whole stopped engine group once, by group, not again as a wedged engine", () => {
+      rows = stoppedEngine;
+      engine({}, 10 * MIN);
+      checkAt(0);
+      checkAt(6);
+      expect(brief()).toContain("process group 700");
+      expect(brief()).not.toContain("wedged");
+    });
+
     it("matches a record with pgid null through the scan", () => {
       rows = [[50, 1, 50, "S", "zsh"], [700, 50, 650, "T", "node run.js"]];
       engine({ pgid: null }, 5 * MIN);
