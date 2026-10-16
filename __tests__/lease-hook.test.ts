@@ -17,6 +17,8 @@ const HEAVY = [
   "pytest -q", "uv run --no-sync pytest -q", "uv run mypy .", ".venv/bin/pytest", "./.venv/bin/pytest", "mypy src", "uv sync", "uv pip install -r r.txt",
   "xcodebuild test -scheme WXYC", "swift build", "xcrun swift test", "cargo build", "./gradlew test", "go vet ./...", "deno test", "make", "make test",
   "scripts/test-all.sh", "./scripts/test.sh", "git push origin HEAD",
+  // The repo-declared local CI convention: an executable scripts/ci at the repo root.
+  "scripts/ci", "./scripts/ci", "cd app && scripts/ci", "bash -c 'scripts/ci'",
   "cd app && npm test", "git add . ; npm ci", "ruff check . || pytest -q", "echo hi | npm test", "echo hi\nnpm test", `cat x \\\n && npm test`, "git -C /path/to/wt \\\n  push -u origin HEAD",
   // Every separator starts a segment: & ( ) { } and backticks too.
   "(npm test)", "{ npm test; }", "echo a & npm test", "echo hi 2>&1 | npm test", "npm test 2>&1",
@@ -68,6 +70,10 @@ const NOT_HEAVY = [
   "npm run dev", "npm view left-pad", "npm testing", "node server.js", "makefile", "ls scripts/test.sh", 'echo "$(ls)"', "cat <<'EOF'\nhello\nEOF", "",
   // A pattern word as a directory or file name.
   "./make/foo.sh", "tools/jest/run.sh", "vitest.config.ts",
+  // scripts/ci only as the exact command word: read, edited, or a longer name.
+  "cat scripts/ci", "ls scripts/ci", "vim scripts/ci", "scripts/ci.sh", "scripts/cidr", "scripts/ci-lint",
+  // Known limit: an interpreter with no -c is the command word, so run scripts/ci directly.
+  "sh scripts/ci",
   // A stripped tail leaves only what follows it.
   "echo $(date)/x", "X=$(pwd)/src ls", 'FOO="a;b" ls', "cd $(pwd) && ls",
   // Only `)`, `}` and a backtick glue a tail: a word after `|` or a newline is a command word.
@@ -305,7 +311,7 @@ describe("settingsEntries", () => {
 
   it.each([
     "git status", "git diff", "git log --oneline", "git pull", "ls node_modules", "cat tsconfig.json", "ls", "cat package.json", "cat Makefile", "ls scripts", "echo hi",
-    "go run main.go", "uv --version", "node server.js", "swift --version", "cargo fmt",
+    "go run main.go", "uv --version", "node server.js", "swift --version", "cargo fmt", "ls scripts/cidr",
   ])("does not filter in %j, on any event", (command) => {
     for (const payload of payloads(command)) expect(prefilter(payload), JSON.stringify(payload)).toBe(false);
   });
