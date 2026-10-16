@@ -17,17 +17,23 @@ const USAGE = "usage: claude-orchestrator-watchdog check | brief";
 export const STOPPED_AFTER_MS = 5 * 60_000;
 /** An engine record is fresh for three refresh periods, the lease's heartbeat rule. */
 export const ENGINE_FRESH_MS = 3 * REFRESH_MS;
+/** A stale engine record with a live pid is reported once it is older than the engine's `stallTimeout` plus this. */
+export const STALLED_MARGIN_MS = 10 * 60_000;
 // A planted symlink is not followed and a planted FIFO is not waited on.
 const LOG_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 const minutes = (ms) => Math.floor(ms / 60_000);
+/** Slack on the pid-reuse check: `etime` has one-second resolution and the registry stamps `startedAt` just after the engine starts. */
+const START_SLACK_MS = 5_000;
 const unrecordedStoppedGroup = (c) => [...c.stoppedSince]
     .filter(([pgid, since]) => !c.suspended.has(pgid) && c.now - since >= STOPPED_AFTER_MS)
     .map(([pgid, since]) => ({ key: `stopped:${pgid}`, message: `process group ${pgid} stopped ${minutes(c.now - since)}m, no suspension record` }));
 // A stale record whose pid is alive is a stopped or wedged engine. Its sessions share its group, so the group is
-// rarely stopped throughout: report the engine itself once its record is STOPPED_AFTER_MS old, unless the group is
-// already tracked by the stopped-group rule (which then reports it), or the group has a suspension record.
+// rarely stopped throughout: report the engine itself once its record is older than its stallTimeout + 10 minutes (a
+// healthy engine stops refreshing while a long synchronous command blocks its event loop), until the stopped-group
+// rule reports its group, and never for a group with a suspension record.
 const stalledEngine = (c) => c.engines
-    .filter((e) => !e.fresh && e.alive && c.now - e.mtimeMs >= STOPPED_AFTER_MS && !(e.pgid !== null && (c.stoppedSince.has(e.pgid) || c.suspended.has(e.pgid))))
+    .filter((e) => !e.fresh && e.alive && c.now - e.mtimeMs >= e.stallTimeout * 1000 + STALLED_MARGIN_MS)
+    .filter((e) => e.pgid === null || !(c.suspended.has(e.pgid) || c.now - (c.stoppedSince.get(e.pgid) ?? c.now) >= STOPPED_AFTER_MS))
     .map((e) => ({ key: `stalled:${e.runId}`, message: `engine ${e.runId} (pid ${e.pid}) has not refreshed its record for ${minutes(c.now - e.mtimeMs)}m and is still alive: stopped or wedged` }));
 const deadEngine = (c) => c.engines
     .filter((e) => !e.fresh && !e.alive)
@@ -36,11 +42,21 @@ const deadEngine = (c) => c.engines
 export const RULES = [unrecordedStoppedGroup, stalledEngine, deadEngine];
 /** The default scan: one bounded `ps`, 60 s because it can be slow at background priority. A throw skips the cycle. */
 export const scanProcessTable = () => ps(["-axo", "pid=,ppid=,pgid=,uid=,stat=,etime=,command="], { timeoutMs: 60_000 });
+/** `ps` `etime`, `[[dd-]hh:]mm:ss`, in milliseconds; NaN for any other shape. */
+export function parseElapsed(etime) {
+    const m = /^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$/.exec(etime);
+    return m ? (((Number(m[1] ?? 0) * 24 + Number(m[2] ?? 0)) * 60 + Number(m[3])) * 60 + Number(m[4])) * 1000 : NaN;
+}
 function parseTable(text) {
     return text.split("\n").flatMap((line) => {
-        const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+\d+\s+(\S+)\s+\S+\s+(.*)$/.exec(line);
-        return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), stat: m[4], command: m[5] }] : [];
+        const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+\d+\s+(\S+)\s+(\S+)\s+(.*)$/.exec(line);
+        return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), stat: m[4], elapsedMs: parseElapsed(m[5]), command: m[6] }] : [];
     });
+}
+/** Whether `row` can be the process that wrote a record started at `startedAt`: one that started later holds a reused pid. An unreadable time on either side keeps the row. */
+function isSameProcess(row, startedAt, now) {
+    const started = typeof startedAt === "string" ? Date.parse(startedAt) : NaN;
+    return !(now - row.elapsedMs > started + START_SLACK_MS);
 }
 /** The `*.json` files of `<dir>/<sub>` (a temp file of `writeFileAtomic` ends in `.tmp`), parsed; one that is gone or unparsable is skipped. */
 function readRecords(dir, sub) {
@@ -67,7 +83,7 @@ function readEngines(dir, now, procs) {
             return [];
         const row = procs.find((p) => p.pid === r.pid);
         // A null pgid (ps failed at engine start) falls back to the scan's.
-        return [{ ...r, pgid: Number.isInteger(r.pgid) ? r.pgid : (row?.pgid ?? null), fresh: isWithinWindow(mtimeMs, now, ENGINE_FRESH_MS), alive: row !== undefined, mtimeMs }];
+        return [{ ...r, pgid: Number.isInteger(r.pgid) ? r.pgid : (row?.pgid ?? null), fresh: isWithinWindow(mtimeMs, now, ENGINE_FRESH_MS), alive: row !== undefined && isSameProcess(row, r.startedAt, now), mtimeMs, stallTimeout: Number.isFinite(r.stallTimeout) && r.stallTimeout >= 0 ? r.stallTimeout : 0 }];
     });
 }
 /** Groups whose every member is stopped (`stat` starts with `T`) and that contain or descend from a `claude` process, or belong to a live registered engine. */

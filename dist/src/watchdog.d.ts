@@ -2,11 +2,15 @@
 export declare const STOPPED_AFTER_MS: number;
 /** An engine record is fresh for three refresh periods, the lease's heartbeat rule. */
 export declare const ENGINE_FRESH_MS: number;
+/** A stale engine record with a live pid is reported once it is older than the engine's `stallTimeout` plus this. */
+export declare const STALLED_MARGIN_MS: number;
 export interface Proc {
     pid: number;
     ppid: number;
     pgid: number;
     stat: string;
+    /** Time since the process started (`ps` `etime`), or NaN when the column cannot be read. */
+    elapsedMs: number;
     command: string;
 }
 /** An `engines/<pid>.json` record (see `engine-registry.ts`) with the verdicts the rules need. */
@@ -19,7 +23,7 @@ export interface Engine {
     startedAt: string;
     /** The record's mtime is within `ENGINE_FRESH_MS` of the clock. */
     fresh: boolean;
-    /** The pid has a row in the scan. */
+    /** The pid has a row in the scan, for a process that started no later than the record's `startedAt` (a later one holds a reused pid). */
     alive: boolean;
     /** The record's mtime: how long ago the engine last refreshed it. */
     mtimeMs: number;
@@ -53,6 +57,8 @@ export interface WatchdogDeps {
     out: (line: string) => void;
     err: (line: string) => void;
 }
+/** `ps` `etime`, `[[dd-]hh:]mm:ss`, in milliseconds; NaN for any other shape. */
+export declare function parseElapsed(etime: string): number;
 /**
  * One cycle: scan, run every rule, then write `watchdog.json`, `watchdog.brief` (the one-line summary, empty when all
  * is well) and `watchdog.log` (each newly emitted finding). Writes nothing unless the lease directory passes the
