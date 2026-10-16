@@ -4,7 +4,8 @@
  */
 import { appendFileSync, closeSync, constants, fstatSync, lstatSync, openSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { defaultWarn, isOwnDir, type LeaseEvent } from "./lease.js";
+import { isOwnDir } from "./lease-dir.js";
+import { defaultWarn, type LeaseEvent } from "./lease.js";
 
 const MAX_BYTES = 5 * 1024 * 1024;
 // A planted symlink is not followed and a planted FIFO is not waited on.

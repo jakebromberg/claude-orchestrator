@@ -8,10 +8,11 @@
  * except at `critical`, where nothing new starts. It never spins.
  */
 import { randomBytes } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, utimesSync, type Stats } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
 import { isWithinWindow, tryLockOnce } from "./file-lock.js";
+import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
 import { leaseEventSink } from "./lease-events.js";
 import {
   defaultPressureSampler,
@@ -22,6 +23,8 @@ import {
   type PressurePolicy,
   type PressureSampler,
 } from "./memory-pressure.js";
+
+export { ensureOwnSubdir, isOwnDir };
 
 const MUTEX_STALE_MS = 10_000;
 const ORPHAN_MAX_MS = 2 * 60 * 60_000;
@@ -330,25 +333,6 @@ function createHolder(opts: LeaseOptions, meta: HolderMeta, command: string, adm
 
 function borrowedHandle(id: string, level: PressureLevel, capacity: number, live: number): LeaseHandle {
   return { id, leased: true, admission: { waitedMs: 0, level, live, capacity }, childEnv: () => ({ CO_LEASE_HOLDER: id }), setChildPid() {}, release() {} };
-}
-
-/**
- * The lease's directory rule, applied to the lease directory and its subdirectory `name`: each is created with mode
- * 0700, one this user owns is tightened to 0700, and one that is a symlink, not a directory, or another user's throws
- * (an I/O error). A platform without uids (Windows) skips the ownership check.
- */
-export function ensureOwnSubdir(dir: string, name: string): void {
-  for (const d of [dir, join(dir, name)]) {
-    mkdirSync(d, { recursive: true, mode: 0o700 });
-    const st = lstatSync(d);
-    if (!isOwnDir(st)) throw new Error(`lease: ${d} is not a directory this user owns`);
-    if (st.mode & 0o077) chmodSync(d, 0o700);
-  }
-}
-
-/** The lease's directory rule, given `lstat` stats: a real directory (not a symlink) this user owns. A platform without uids (Windows) skips the ownership check. */
-export function isOwnDir(st: Stats): boolean {
-  return st.isDirectory() && !(process.getuid && st.uid !== process.getuid());
 }
 
 /**

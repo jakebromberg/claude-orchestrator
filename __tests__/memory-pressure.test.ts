@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -279,6 +279,18 @@ describe("defaultPressureSampler", () => {
     // A write in place keeps the inode; only a rename onto the path gives it a new one.
     expect(statSync(join(dir, "level.json")).ino).not.toBe(before);
     expect(readdirSync(dir)).toEqual(["level.json"]);
+  });
+
+  it("does not write level.json through a symlinked lease directory", () => {
+    const real = mkdtempSync(join(tmpdir(), "mp-real-"));
+    const link = join(dir, "link");
+    symlinkSync(real, link);
+    try {
+      expect(make({ CO_LEASE_DIR: link })()).toBe("normal");
+      expect(readdirSync(real)).toEqual([]);
+    } finally {
+      rmSync(real, { recursive: true, force: true });
+    }
   });
 
   it("routes an invalid CO_PRESSURE_OVERRIDE warning to the injected log, never to stderr, and tells each writer once", () => {

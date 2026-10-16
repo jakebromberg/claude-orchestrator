@@ -1,5 +1,6 @@
-import { type Stats } from "node:fs";
+import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
 import { type PressureLevel, type PressurePolicy, type PressureSampler } from "./memory-pressure.js";
+export { ensureOwnSubdir, isOwnDir };
 /** The longest a detached holder may be set to live: the largest Bash call timeout (10 min) plus hook mode's 60 s grace. */
 export declare const DETACHED_TTL_MAX_MS = 660000;
 type ReapReason = "stale-heartbeat" | "orphan-bound" | "corrupt" | "dead-session" | "expired";
@@ -130,14 +131,6 @@ export interface LeaseRefusal {
 }
 /** A PID that `kill(pid, 0)` checks as one process: `0` and negatives address a group, or every process, and `process.kill` rejects 2^31 and above. */
 export declare const isPid: (n: unknown) => boolean;
-/**
- * The lease's directory rule, applied to the lease directory and its subdirectory `name`: each is created with mode
- * 0700, one this user owns is tightened to 0700, and one that is a symlink, not a directory, or another user's throws
- * (an I/O error). A platform without uids (Windows) skips the ownership check.
- */
-export declare function ensureOwnSubdir(dir: string, name: string): void;
-/** The lease's directory rule, given `lstat` stats: a real directory (not a symlink) this user owns. A platform without uids (Windows) skips the ownership check. */
-export declare function isOwnDir(st: Stats): boolean;
 /** The one default diagnostics writer, shared with the event sink. Messages carry their own `lease:` prefix. */
 export declare function defaultWarn(msg: string): void;
 /** A single non-blocking attempt: a handle, or `null` when not admitted this poll. Throws a `TypeError` on an invalid detached id, session PID or `expiresAt`. */
@@ -178,4 +171,3 @@ export declare function defaultLeaseOptions(env?: NodeJS.ProcessEnv, overrides?:
     level?: PressureSampler;
     warn?: (msg: string) => void;
 }): LeaseOptions;
-export {};

@@ -4,8 +4,8 @@
  * preflight), so their thresholds cannot drift.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { writeFileAtomic } from "./atomic-write.js";
+import { readFileSync } from "node:fs";
+import { writeLeaseRecord } from "./lease-dir.js";
 import { userInfo } from "node:os";
 import { isAbsolute, join } from "node:path";
 const SYSCTL_NAME = "kern.memorystatus_vm_pressure_level";
@@ -180,13 +180,14 @@ export function defaultPressureSampler(env = process.env, deps = {}) {
             emit(msg);
         }
     };
-    const file = join(leaseDirectory(env), "level.json");
+    const dir = leaseDirectory(env);
+    const file = join(dir, "level.json");
     let lastGood;
     const persist = (reading) => {
-        if (reading.level === "unknown" || !existsSync(leaseDirectory(env)))
+        if (reading.level === "unknown")
             return;
         try {
-            writeFileAtomic(file, JSON.stringify(reading));
+            writeLeaseRecord(dir, "level.json", JSON.stringify(reading));
         }
         catch {
             // Persistence is best-effort; the in-process reading still serves.
