@@ -41,7 +41,7 @@ export interface Context {
     now: number;
     procs: Proc[];
     engines: Engine[];
-    /** Groups with a `suspensions/<pgid>.json` record. */
+    /** Groups with a valid suspension record (`readSuspensions`). */
     suspended: Set<number>;
     /** In-scope stopped groups, with the time each was first seen stopped. */
     stoppedSince: Map<number, number>;

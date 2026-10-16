@@ -132,16 +132,18 @@ export function removeSuspension(dir: string, pgid: number): boolean {
   return had;
 }
 
-/** The valid records in `<dir>/suspensions`: a name whose stem is not a pid, a temp file, an unreadable or invalid body, or a body whose pgid is not its name is skipped. Creates nothing; a missing, symlinked or foreign directory reads as empty. */
+/** The valid records in `<dir>/suspensions`: a name that is not a canonical `<pid>.json` (no leading zero), a temp file, an unreadable or invalid body (`at` and `remindAt` must parse as dates), or a body whose pgid is not its name is skipped. Creates nothing; a missing, symlinked or foreign directory reads as empty. */
 export function readSuspensions(dir: string): SuspensionRecord[] {
   try {
     if (!isOwnDir(lstatSync(join(dir, "suspensions")))) return [];
     return readdirSync(join(dir, "suspensions")).flatMap((name) => {
-      const stem = /^(\d+)\.json$/.exec(name)?.[1];
+      // Only the canonical `<pgid>.json` spelling: a leading zero would name another group's file.
+      const stem = /^([1-9]\d*)\.json$/.exec(name)?.[1];
       if (stem === undefined || !isPid(Number(stem))) return [];
       try {
-        const r = JSON.parse(readFileSync(suspensionFile(dir, Number(stem)), "utf-8"));
-        const ok = r?.pgid === Number(stem) && [r.by, r.reason, r.at, r.remindAt].every((v) => typeof v === "string") && (r.leader === null || typeof r.leader === "string");
+        const r = JSON.parse(readFileSync(join(dir, "suspensions", name), "utf-8"));
+        const isDate = (v: unknown) => typeof v === "string" && Number.isFinite(Date.parse(v));
+        const ok = r?.pgid === Number(stem) && typeof r.by === "string" && typeof r.reason === "string" && isDate(r.at) && isDate(r.remindAt) && (r.leader === null || typeof r.leader === "string");
         return ok ? [{ pgid: r.pgid, by: r.by, reason: r.reason, at: r.at, remindAt: r.remindAt, leader: r.leader }] : [];
       } catch {
         return [];
