@@ -285,6 +285,18 @@ export interface MetadataStore {
      */
     remove?(ref: string): void;
 }
+/** What an engine tells its registry; the registry adds `pid`, `pgid` and `startedAt`. */
+export interface EngineInfo {
+    runId: string;
+    logDir: string;
+    /** Largest effective stall timeout (s) across the engine's issues. */
+    stallTimeout: number;
+}
+/** Makes a running engine discoverable by a watchdog outside its process tree. Failures never fail a run. */
+export interface EngineRegistry {
+    start(info: EngineInfo): void;
+    stop(): void;
+}
 export interface Deps {
     statusStore: StatusStore;
     metadataStore: MetadataStore;
@@ -308,6 +320,8 @@ export interface Deps {
     memoryPressure?: PressureSampler;
     /** Machine-wide heavy-command lease for post-session checks; absent means checks run unleased with no lease I/O. */
     lease?: LeaseOptions;
+    /** Engine registry (`engines/<pid>.json` under the lease directory); absent means the engine records nothing. */
+    engineRegistry?: EngineRegistry;
 }
 export interface RunRecord {
     id: string;

@@ -1,4 +1,4 @@
-export type { Status, IssueSpec, Issue, RawOrchestratorConfig, OrchestratorConfig, MergePolicy, RunOptions, PostCheckResult, OrchestratorHooks, PostSessionCheckContext, ParsedMode, ParsedArgs, StatusStore, ProcessHandle, ProcessRunner, Logger, IssueMetadata, FailureReason, StopStage, MetadataStore, Deps, RunRecord, IssueCommentsConfig, LabelSyncConfig, RetryOnCheckFailureConfig, } from "./types.js";
+export type { Status, IssueSpec, Issue, RawOrchestratorConfig, OrchestratorConfig, MergePolicy, RunOptions, PostCheckResult, OrchestratorHooks, PostSessionCheckContext, ParsedMode, ParsedArgs, StatusStore, ProcessHandle, ProcessRunner, Logger, IssueMetadata, FailureReason, StopStage, MetadataStore, Deps, EngineInfo, EngineRegistry, RunRecord, IssueCommentsConfig, LabelSyncConfig, RetryOnCheckFailureConfig, } from "./types.js";
 export { Orchestrator, cleanUpMergedIssues } from "./engine.js";
 export { validateConfig } from "./schema.js";
 export type { ValidateConfigOptions } from "./schema.js";
@@ -35,6 +35,8 @@ export type { MemorySignals, PressureLevel, PressurePolicy, PressureSampler } fr
 export { DEFAULT_STEP_TABLE, headroomStep } from "./headroom.js";
 export type { HeadroomState, StepBand, StepTable } from "./headroom.js";
 export { acquireLease, tryAcquireLease, leaseStatus, defaultLeaseOptions, releaseHolder } from "./lease.js";
+export { createFileEngineRegistry } from "./engine-registry.js";
+export type { FileEngineRegistryOptions } from "./engine-registry.js";
 export { leaseEventSink } from "./lease-events.js";
 export { isHeavyCommand } from "./lease-hook.js";
 export type { HolderInfo, HolderMeta, LeaseEvent, LeaseHandle, LeaseOptions, LeaseRefusal, LeaseStatus } from "./lease.js";
