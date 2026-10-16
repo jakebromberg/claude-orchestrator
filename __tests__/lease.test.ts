@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -850,10 +851,10 @@ describe("lease", () => {
     const ticketFile = (id: string): string => join(dir, "waiting", `${id}.json`);
     const tickets = (): string[] => (existsSync(join(dir, "waiting")) ? readdirSync(join(dir, "waiting")).sort() : []);
     /** A ticket for a waiter in another process: `pid` is alive unless `dead`, and its last refresh was `ageMs` before the injected clock. */
-    const plantTicket = (id: string, seq: number, { ageMs = 0, dead = false }: { ageMs?: number; dead?: boolean } = {}): void => {
+    const plantTicket = (id: string, seq: number, { ageMs = 0, dead = false, ...extra }: { ageMs?: number; dead?: boolean; gated?: boolean; capacity?: number; ready?: boolean } = {}): void => {
       const pid = 5000 + seq;
       mkdirSync(join(dir, "waiting"), { recursive: true, mode: 0o700 });
-      writeFileSync(ticketFile(id), JSON.stringify({ seq, id, pid, label: "other", gated: false }));
+      writeFileSync(ticketFile(id), JSON.stringify({ seq, id, pid, label: "other", gated: false, ...extra }));
       const at = (fake.ms - ageMs) / 1000;
       utimesSync(ticketFile(id), at, at);
       if (!dead) alive.add(pid);
@@ -936,6 +937,67 @@ describe("lease", () => {
       expect(tickets()).toEqual([]);
     });
 
+    it.each<[string, number, { capacity?: number; ready?: boolean }, number, boolean]>([
+      ["an owner at critical (capacity 0) that can never be admitted", 0, { capacity: 0 }, 1, true],
+      ["an owner with fewer slots, none left for it", 1, { capacity: 1 }, 2, true],
+      ["an owner whose slot count could take the free slot", 1, { capacity: 2 }, 2, false],
+      ["a ticket from a build that records no capacity", 1, {}, 2, false],
+      ["a gated owner whose gates failed at its last poll", 1, { capacity: 2, ready: false }, 2, true],
+      ["a gated owner whose gates passed at its last poll", 1, { capacity: 2, ready: true }, 2, false],
+    ])("with a ticket ahead of %s", async (_name, holders, ticket, ceiling, admitted) => {
+      for (let i = 0; i < holders; i++) plantHolder(`4242-live${i}`, {}, 0);
+      alive.add(4242);
+      plantTicket("a", 1, { gated: ticket.ready !== undefined, ...ticket });
+      const r = await acquireLease(opts({ policy: { heavyCeiling: ceiling, heavyWarning: ceiling } }), meta, { maxWaitMs: 0 });
+      expect(isHandle(r)).toBe(admitted);
+    });
+
+    it("returns the admission when removing the admitted ticket fails, and leaves no holder behind", async () => {
+      const holder = tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta)!;
+      fake.onSleep = () => holder.release();
+      const real = fs.rmSync;
+      vi.spyOn(fs, "rmSync").mockImplementation((path, options) => {
+        if (String(path).includes("/waiting/")) throw Object.assign(new Error("boom"), { code: "EIO" });
+        return real(path, options);
+      });
+      syncBuiltinESMExports();
+      try {
+        const r = await acquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta);
+        expect(r).toMatchObject({ leased: true });
+        (r as LeaseHandle).release();
+        expect(readdirSync(join(dir, "holders"))).toEqual([]);
+      } finally {
+        vi.restoreAllMocks();
+        syncBuiltinESMExports();
+      }
+    });
+
+    describe("leaves no ticket behind", () => {
+      const full = { policy: { heavyCeiling: 1, heavyWarning: 1 } };
+      it.each<[string, () => Promise<unknown>]>([
+        ["a stop rule", () => (level = "critical", acquireLease(opts(), meta, { stopWhen: () => true }))],
+        ["a busy mutex that fails open", () => (busyMutex(), acquireLease(opts(), meta))],
+        [
+          "an I/O error",
+          () => {
+            tryAcquireLease(opts(full), meta);
+            fake.onSleep = () => (rmSync(join(dir, "holders"), { recursive: true }), symlinkSync(tmp, join(dir, "holders")));
+            return acquireLease(opts(full), meta);
+          },
+        ],
+        [
+          "a throw from onWait",
+          () => {
+            tryAcquireLease(opts(full), meta);
+            return acquireLease(opts(full), meta, { onWait: () => { throw new Error("progress line failed"); } }).catch(() => undefined);
+          },
+        ],
+      ])("after %s", async (_name, run) => {
+        await run();
+        expect(tickets()).toEqual([]);
+      });
+    });
+
     it("refuses tryAcquireLease while an eligible ticket waits, and writes no ticket", () => {
       tryAcquireLease(opts(), meta)!.release();
       plantTicket("a", 1);
@@ -967,6 +1029,158 @@ describe("lease", () => {
       const again = await acquireLease(opts(full), detached, { maxWaitMs: 0 });
       expect(again).toMatchObject({ leased: true, id: "hook-1" });
       expect(tickets()).toEqual(["a.json"]);
+    });
+
+    describe("gated tickets", () => {
+      const gated: HolderMeta = { ...meta, gated: true };
+      const cpuFile = (): string => join(dir, "cpu.json");
+      const markFile = (): string => join(dir, "lastAdmit");
+      const waiting = (id: string): string => join(dir, "waiting", `${id}.json`);
+      let ticks: { idle: number; total: number };
+      let cpuTimes: LeaseOptions["cpuTimes"];
+      const gatedOpts = (over: Partial<LeaseOptions> = {}): LeaseOptions => opts({ cpuTimes, ...over });
+      const attemptGated = async (m: HolderMeta = gated, over: Partial<LeaseOptions> = {}): Promise<boolean> => {
+        const r = await acquireLease(gatedOpts(over), m, { maxWaitMs: 0 });
+        if (isHandle(r)) r.release();
+        return isHandle(r);
+      };
+      /** A reading `ageMs` old whose tick counters make the machine `busy` busy since then; `stored` is the busy it records. */
+      const plantCpu = (ageMs: number, busy: number, stored: number | null = busy): void => {
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        const total = 1_000;
+        writeFileSync(cpuFile(), JSON.stringify({ at: fake.ms - ageMs, ticks: { idle: ticks.idle - Math.round((1 - busy) * total), total: ticks.total - total }, busy: stored }));
+      };
+      const plantMark = (agoMs: number): void => {
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        writeFileSync(markFile(), "");
+        utimesSync(markFile(), (fake.ms - agoMs) / 1000, (fake.ms - agoMs) / 1000);
+      };
+      const suspendedHolder = (): void => {
+        plantHolder("4242-live", { suspended: true }, 0);
+        alive.add(4242);
+      };
+
+      beforeEach(() => {
+        ticks = { idle: 10_000, total: 20_000 };
+        cpuTimes = () => ticks;
+        plantCpu(5_000, 0.1);
+      });
+
+      it.each<[string, () => void, boolean]>([
+        ["CPU busy just under 0.75", () => plantCpu(5_000, 0.74), true],
+        ["CPU busy at 0.75", () => plantCpu(5_000, 0.75), false],
+        ["CPU busy at 0.95", () => plantCpu(5_000, 0.95), false],
+        ["a reading 2 s old, which gets a delta", () => plantCpu(2_000, 0.5), true],
+        ["a reading under 2 s old, gated on its stored busy (low)", () => plantCpu(1_999, 0.99, 0.1), true],
+        ["a reading under 2 s old, gated on its stored busy (high)", () => plantCpu(1_999, 0.1, 0.9), false],
+        ["a reading 10 s old, which still gets a delta", () => plantCpu(10_000, 0.5), true],
+        ["a reading over 10 s old, which fails this poll", () => plantCpu(10_001, 0.1), false],
+        ["a reading from the future, which fails this poll", () => plantCpu(-1_000, 0.1), false],
+        ["no reading, which fails this poll", () => rmSync(cpuFile()), false],
+        ["an unreadable reading, which fails this poll", () => writeFileSync(cpuFile(), "{"), false],
+        ["a tick read that throws, which passes", () => (cpuTimes = () => { throw new Error("no cpus"); }), true],
+        ["no tick reader, which passes", () => (cpuTimes = undefined), true],
+        ["a live holder that is not suspended", () => (plantHolder("4242-live", {}, 0), alive.add(4242)), true],
+        ["a live holder that is suspended", suspendedHolder, false],
+        ["no earlier gated admission", () => rmSync(markFile(), { force: true }), true],
+        ["a gated admission 19.999 s ago", () => plantMark(19_999), false],
+        ["a gated admission 20 s ago", () => plantMark(20_000), true],
+        ["a gated admission dated in the future", () => plantMark(-60_000), true],
+      ])("with %s", async (_name, setUp, admitted) => {
+        plantHolder("4242-live", {}, 0); // something runs, so the no-wedge rule stays out of it
+        alive.add(4242);
+        setUp();
+        expect(await attemptGated()).toBe(admitted);
+      });
+
+      it.each<[string, () => void, boolean]>([
+        ["a busy CPU and nothing live", () => plantCpu(5_000, 0.95), true],
+        ["no CPU reading and nothing live", () => rmSync(cpuFile()), true],
+        ["a recent gated admission and nothing live", () => plantMark(1_000), true],
+        ["a busy CPU with a holder live", () => (plantCpu(5_000, 0.95), plantHolder("4242-live", {}, 0), alive.add(4242)), false],
+        ["a recent admission with a suspended holder live", () => (plantMark(1_000), suspendedHolder()), false],
+        ["an older gated ticket waiting, though nothing is live", () => (plantCpu(5_000, 0.95), plantTicket("old", 1, { gated: true, capacity: 2 })), false],
+        ["an older ungated ticket waiting, though nothing is live", () => (plantCpu(5_000, 0.95), plantTicket("old", 1)), true],
+      ])("applies the no-wedge rule with %s", async (_name, setUp, admitted) => {
+        setUp();
+        expect(await attemptGated()).toBe(admitted);
+      });
+
+      it("never applies the no-wedge rule at step 0", async () => {
+        plantCpu(5_000, 0.95);
+        const step0 = scriptedHeadroomSampler({ level: "critical", step: 0, signals: null });
+        expect(await attemptGated(gated, { headroom: step0, policy: { heavyCeiling: 2, heavyWarning: 1 } })).toBe(false);
+      });
+
+      it("computes busy from the delta and rewrites cpu.json on the lease clock", async () => {
+        plantCpu(5_000, 0.5);
+        expect(await attemptGated()).toBe(true);
+        expect(JSON.parse(readFileSync(cpuFile(), "utf8"))).toEqual({ at: fake.ms, ticks, busy: 0.5 });
+      });
+
+      it("stores its ticks and fails a cold poll, then admits the next on a real delta", async () => {
+        rmSync(cpuFile());
+        plantMark(60_000);
+        plantHolder("4242-live", {}, 0);
+        alive.add(4242);
+        expect(await attemptGated()).toBe(false);
+        expect(JSON.parse(readFileSync(cpuFile(), "utf8"))).toMatchObject({ at: fake.ms, ticks, busy: null });
+        fake.ms += 3_000;
+        ticks = { idle: ticks.idle + 900, total: ticks.total + 1_000 };
+        expect(await attemptGated()).toBe(true);
+      });
+
+      it("marks the admission in lastAdmit on the lease clock, so the next gated start waits 20 s", async () => {
+        const first = (await acquireLease(gatedOpts(), gated, { maxWaitMs: 0 })) as LeaseHandle;
+        expect(first.leased).toBe(true);
+        expect(Math.abs(statSync(markFile()).mtimeMs - fake.ms)).toBeLessThan(2);
+        plantCpu(5_000, 0.1);
+        expect(await attemptGated()).toBe(false);
+        fake.ms += 20_000;
+        plantCpu(5_000, 0.1);
+        expect(await attemptGated()).toBe(true);
+        first.release();
+      });
+
+      it("never gates an ungated waiter and writes neither record for it", async () => {
+        rmSync(cpuFile());
+        plantMark(1_000);
+        suspendedHolder();
+        const before = statSync(markFile()).mtimeMs;
+        expect(await attemptGated(meta)).toBe(true);
+        expect(existsSync(cpuFile())).toBe(false);
+        expect(statSync(markFile()).mtimeMs).toBe(before);
+      });
+
+      it.each<[string, { ready?: boolean }, boolean]>([
+        ["a gated ticket ahead that failed its gates", { ready: false }, true],
+        ["a gated ticket ahead that passed its gates", { ready: true }, false],
+      ])("admits an ungated waiter past %s only when it does not block", async (_name, ticket, admitted) => {
+        plantHolder("4242-live", {}, 0);
+        alive.add(4242);
+        plantTicket("g", 1, { gated: true, capacity: 2, ...ticket });
+        expect(await attemptGated(meta)).toBe(admitted);
+      });
+
+      it("records the owner's capacity, gate state and gated flag on its ticket", async () => {
+        plantCpu(5_000, 0.95);
+        plantHolder("4242-live", {}, 0);
+        alive.add(4242);
+        let seen: unknown;
+        await acquireLease(gatedOpts(), gated, {
+          maxWaitMs: 1,
+          onWait: () => (seen = JSON.parse(readFileSync(waiting(readdirSync(join(dir, "waiting"))[0].slice(0, -5)), "utf8"))),
+        });
+        expect(seen).toMatchObject({ gated: true, capacity: 2, ready: false, label: "npm test" });
+      });
+
+      it("reads the CPU on every poll, so a gated waiter that capacity holds back keeps a valid delta", async () => {
+        plantHolder("4242-live", {}, 0);
+        alive.add(4242);
+        plantHolder("4242-live2", {}, 0);
+        expect(await attemptGated()).toBe(false);
+        expect(JSON.parse(readFileSync(cpuFile(), "utf8")).at).toBe(fake.ms);
+      });
     });
   });
 
