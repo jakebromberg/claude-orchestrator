@@ -22,7 +22,7 @@ export interface HeadroomState {
     step: number;
     risingSince: number | null;
 }
-/** Today's capacities: `normal` 4, `warning` 1, `critical` 0, and a rise at once. */
+/** The owner's Q1 table: `normal` 4, `warning` 3 at 40% free or more, 2 at 30 to 39%, 1 under 30%, `critical` 0, and a rise of one step per 60 s. */
 export declare const DEFAULT_STEP_TABLE: StepTable;
 /** Heavy-command slots at `step`: step 4 gets the whole ceiling, a lower step at most that many, step 0 none. */
 export declare function headroomCapacity(step: number, policy: PressurePolicy): number;

@@ -633,6 +633,14 @@ describe("lease", () => {
   describe("defaultLeaseOptions overrides", () => {
     const sampler = scriptedPressureSampler("normal", { overridden: false });
 
+    it.each<[string, Record<string, string>]>([
+      ["an empty environment", {}],
+      ["a slot ceiling", { CO_LEASE_SLOTS: "2" }],
+      ["the pressure override", { CO_PRESSURE_OVERRIDE: "critical-as-warning" }],
+    ])("always sets a headroom sampler without a level override (%s)", (_name, env) => {
+      expect(typeof defaultLeaseOptions({ CO_LEASE_DIR: dir, ...env }).headroom).toBe("function");
+    });
+
     it("uses the caller's sampler instead of building a second one", () => {
       expect(defaultLeaseOptions({ CO_LEASE_DIR: dir }, { level: sampler }).level).toBe(sampler);
     });
