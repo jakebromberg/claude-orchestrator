@@ -836,6 +836,131 @@ describe("lease", () => {
     });
   });
 
+  describe("FIFO tickets", () => {
+    const TICKET_FRESH_MS = 15_000;
+    const ticketFile = (id: string): string => join(dir, "waiting", `${id}.json`);
+    const tickets = (): string[] => (existsSync(join(dir, "waiting")) ? readdirSync(join(dir, "waiting")).sort() : []);
+    /** A ticket for a waiter in another process: `pid` is alive unless `dead`, and its last refresh was `ageMs` before the injected clock. */
+    const plantTicket = (id: string, seq: number, { ageMs = 0, dead = false }: { ageMs?: number; dead?: boolean } = {}): void => {
+      const pid = 5000 + seq;
+      mkdirSync(join(dir, "waiting"), { recursive: true, mode: 0o700 });
+      writeFileSync(ticketFile(id), JSON.stringify({ seq, id, pid, label: "other", gated: false }));
+      const at = (fake.ms - ageMs) / 1000;
+      utimesSync(ticketFile(id), at, at);
+      if (!dead) alive.add(pid);
+    };
+    /** Sleeps `yields` macrotasks before the fake sleep, so a waiter that started earlier polls later. Keep it small: the shared clock moves 3 s per sleep, and a waiter idle for 15 s of it goes stale. */
+    const slowSleep = (yields: number): LeaseOptions["sleep"] => async (ms) => {
+      for (let i = 0; i < yields; i++) await new Promise((r) => setImmediate(r));
+      await fake.sleep(ms);
+    };
+
+    it.each<[string, number, { id: string; seq: number; ageMs?: number; dead?: boolean }[], boolean, string[]]>([
+      ["no tickets and a free slot", 0, [], true, []],
+      ["the one eligible ticket ahead, with two free slots", 0, [{ id: "a", seq: 1 }], true, ["a.json"]],
+      ["two eligible tickets ahead, with two free slots", 0, [{ id: "a", seq: 1 }, { id: "b", seq: 2 }], false, ["a.json", "b.json"]],
+      ["an eligible ticket ahead, with one free slot", 1, [{ id: "a", seq: 1 }], false, ["a.json"]],
+      ["no tickets and no free slot", 2, [], false, []],
+      ["a stale ticket (its waiter stopped), passed over and kept", 1, [{ id: "a", seq: 1, ageMs: TICKET_FRESH_MS + 1_000 }], true, ["a.json"]],
+      ["a ticket from the future beyond the window, passed over and kept", 1, [{ id: "a", seq: 1, ageMs: -(TICKET_FRESH_MS + 1_000) }], true, ["a.json"]],
+      ["a ticket just inside the window", 1, [{ id: "a", seq: 1, ageMs: TICKET_FRESH_MS - 1_000 }], false, ["a.json"]],
+      ["a dead waiter's ticket, reaped", 1, [{ id: "a", seq: 1, dead: true }], true, []],
+    ])("with %s", async (_name, holders, planted, admitted, left) => {
+      for (let i = 0; i < holders; i++) plantHolder(`4242-live${i}`, {}, 0);
+      alive.add(4242);
+      for (const t of planted) plantTicket(t.id, t.seq, t);
+      const r = await acquireLease(opts(), meta, { maxWaitMs: 0 });
+      expect(isHandle(r)).toBe(admitted);
+      if (isHandle(r)) r.release();
+      expect(tickets()).toEqual(left);
+    });
+
+    it("assigns one more than the highest existing seq, stale or not, and refreshes the ticket on every poll", async () => {
+      plantHolder("4242-live", {}, 0);
+      alive.add(4242);
+      plantTicket("a", 7, { ageMs: TICKET_FRESH_MS + 1_000 });
+      const seen: { ticket: unknown; mtimeMs: number }[] = [];
+      const one = opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } });
+      await acquireLease(one, meta, {
+        maxWaitMs: 7_000,
+        onWait: () => {
+          const file = ticketFile(tickets().find((n) => n !== "a.json")!.slice(0, -".json".length));
+          seen.push({ ticket: JSON.parse(readFileSync(file, "utf8")), mtimeMs: statSync(file).mtimeMs });
+        },
+      });
+      expect(seen.length).toBeGreaterThan(1);
+      expect(seen[0].ticket).toMatchObject({ seq: 8, pid: process.pid, label: "npm test", gated: false });
+      for (const s of seen) expect(s.ticket).toMatchObject({ seq: 8 });
+      expect(seen[1].mtimeMs).toBeGreaterThan(seen[0].mtimeMs);
+      expect(Math.abs(seen.at(-1)!.mtimeMs - (fake.ms - fake.sleeps.at(-1)!))).toBeLessThan(2);
+      expect(tickets()).toEqual(["a.json"]);
+    });
+
+    it("admits three waiters in the order they arrived, even when the last to arrive polls first", async () => {
+      const holder = tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta)!;
+      fake.onSleep = () => holder.release();
+      const order: string[] = [];
+      const waiter = (name: string, yields: number): Promise<void> =>
+        acquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 }, sleep: slowSleep(yields) }), meta).then((r) => {
+          order.push(name);
+          (r as LeaseHandle).release();
+        });
+      await Promise.all([waiter("A", 2), waiter("B", 1), waiter("C", 0)]);
+      expect(order).toEqual(["A", "B", "C"]);
+      expect(tickets()).toEqual([]);
+    });
+
+    it("admits the two oldest waiters in one cycle when two slots free up", async () => {
+      const holders = [tryAcquireLease(opts(), meta)!, tryAcquireLease(opts(), meta)!];
+      fake.onSleep = () => holders.splice(0).forEach((h) => h.release());
+      const admitted: string[] = [];
+      const waiter = (name: string, yields: number, maxWaitMs?: number): Promise<unknown> =>
+        acquireLease(opts({ sleep: slowSleep(yields) }), meta, { maxWaitMs }).then((r) => {
+          if (isHandle(r)) admitted.push(name);
+          return r;
+        });
+      const [a, b, c] = await Promise.all([waiter("A", 2), waiter("B", 1), waiter("C", 0, 60_000)]);
+      expect(admitted.sort()).toEqual(["A", "B"]);
+      expect(c).toMatchObject({ refused: "max-wait" });
+      (a as LeaseHandle).release();
+      (b as LeaseHandle).release();
+      expect(tickets()).toEqual([]);
+    });
+
+    it("refuses tryAcquireLease while an eligible ticket waits, and writes no ticket", () => {
+      tryAcquireLease(opts(), meta)!.release();
+      plantTicket("a", 1);
+      expect(tryAcquireLease(opts(), meta)).toBeNull();
+      expect(tickets()).toEqual(["a.json"]);
+    });
+
+    it("admits tryAcquireLease past a stale ticket", () => {
+      tryAcquireLease(opts(), meta)!.release();
+      plantTicket("a", 1, { ageMs: TICKET_FRESH_MS + 1_000 });
+      expect(tryAcquireLease(opts(), meta)?.leased).toBe(true);
+      expect(tickets()).toEqual(["a.json"]);
+    });
+
+    it("admits a nested acquire naming a live holder past waiting tickets, without queueing", async () => {
+      const full = { policy: { heavyCeiling: 1, heavyWarning: 1 } };
+      const a = tryAcquireLease(opts(full), meta)!;
+      plantTicket("a", 1);
+      const nested = await acquireLease(opts({ ...full, inheritedHolderId: a.id! }), meta, { maxWaitMs: 0 });
+      expect(nested).toMatchObject({ leased: true, id: a.id });
+      expect(tickets()).toEqual(["a.json"]);
+    });
+
+    it("admits a second acquire for a live detached id past waiting tickets, without queueing", async () => {
+      const full = { policy: { heavyCeiling: 1, heavyWarning: 1 } };
+      const detached = { command: "npm test", cwd: "/work", detached: { id: "hook-1", sessionPid: process.pid, expiresAt: fake.ms + 60_000 } };
+      tryAcquireLease(opts(full), detached)!;
+      plantTicket("a", 1);
+      const again = await acquireLease(opts(full), detached, { maxWaitMs: 0 });
+      expect(again).toMatchObject({ leased: true, id: "hook-1" });
+      expect(tickets()).toEqual(["a.json"]);
+    });
+  });
+
   describe("pressure override", () => {
     it.each([
       [true, "warning", true],
