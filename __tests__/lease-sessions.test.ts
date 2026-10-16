@@ -44,6 +44,7 @@ describe("session holder class", () => {
     ({ clock: fake, alive } = lease);
   });
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     syncBuiltinESMExports();
     rmSync(tmp, { recursive: true, force: true });
@@ -188,6 +189,12 @@ describe("session holder class", () => {
       expect(names("sessions")).toEqual([]);
     });
 
+    it("records no suspendable mark on a session holder", async () => {
+      const h = (await acquireSessionLease(opts(4), { ...meta, suspendable: true })) as LeaseHandle;
+      expect(JSON.parse(readFileSync(join(dir, "sessions", `${h.id}.json`), "utf8"))).not.toHaveProperty("suspendable");
+      h.release();
+    });
+
     it("exports acquireSessionLease from the barrel", () => {
       expect(barrel.acquireSessionLease).toBe(acquireSessionLease);
     });
@@ -204,6 +211,23 @@ describe("session holder class", () => {
       expect(isHandle(r)).toBe(true);
       expect(lease.events).toContainEqual({ type: "reap", id: "e-1", reason: "stale-heartbeat" });
       expect(names("sessions")).toEqual([`${(r as LeaseHandle).id}.json`]);
+    });
+
+    it("writes a holder reaped after a stall back on its next beat, so the resumed engine counts again and new admissions wait", async () => {
+      vi.useFakeTimers();
+      const o = opts(4, { policy: sessionPolicy(1) });
+      const a = (await acquireSessionLease(o, meta, { maxWaitMs: 0 })) as LeaseHandle;
+      fake.ms += HEARTBEAT_STALE_MS + 1_000; // its event loop missed every beat
+      const b = (await acquireSessionLease(o, meta, { maxWaitMs: 0 })) as LeaseHandle;
+      expect(lease.events).toContainEqual({ type: "reap", id: a.id, reason: "stale-heartbeat" });
+      vi.advanceTimersByTime(30_000);
+      fake.ms += 30_000;
+      expect(leaseStatus(o).sessions.live.map((h) => h.id).sort()).toEqual([a.id, b.id].sort());
+      expect(await acquireSessionLease(o, meta, { maxWaitMs: 0 })).toMatchObject({ refused: "max-wait", live: 2 });
+      a.release();
+      b.release();
+      vi.advanceTimersByTime(30_000);
+      expect(names("sessions")).toEqual([]);
     });
   });
 
@@ -246,6 +270,14 @@ describe("session holder class", () => {
       expect(names(cls.waiting)).toEqual([]);
     });
 
+    it("confirms a stop on a fresh step read over the first scan's holders, so a holder written during the read does not undo it", async () => {
+      const fresh = (): HeadroomReading => (plantHolder(cls.holders, "late"), reading(0));
+      const stopWhen = vi.fn((s: LeaseStatus) => s.level === "critical" && s.live.length === 0);
+      const options = o(0, 4, { headroom: scriptedHeadroomSampler(reading(0), { fresh }) });
+      expect(await cls.acquire(options, meta, { stopWhen, maxWaitMs: 0 })).toMatchObject({ refused: "stopped", live: 0 });
+      expect(stopWhen).toHaveBeenCalledTimes(2);
+    });
+
     it("records the inputs of its capacity on a refused waiter's ticket", async () => {
       plantHolder(cls.holders, "live0");
       let seen: Record<string, unknown> | undefined;
@@ -258,14 +290,15 @@ describe("session holder class", () => {
     });
 
     describe("re-evaluates a ticket's capacity at the current step", () => {
-      it.each<[string, Record<string, unknown>, number, number, boolean]>([
-        ["a rise since the owner's poll does not let a younger waiter take the new slot first", { capacity: 1, step: 1, ceiling: 4 }, 2, 4, false],
-        ["a ticket from a build without the inputs keeps its recorded capacity", { capacity: 1 }, 2, 4, true],
-        ["a ticket that records no capacity at all counts", {}, 2, 4, false],
-        ["a lower ceiling does not hold up a waiter with a higher one", { capacity: 1, step: 4, ceiling: 1 }, 4, 4, true],
-        ["a ceiling above the row reaches the ahead and free counts", { capacity: 3, step: 3, ceiling: 6 }, 3, 6, true],
-      ])("%s", async (_name, planted, step, ceiling, admitted) => {
-        plantHolder(cls.holders, "live0");
+      it.each<[string, Record<string, unknown>, number, number, number, boolean]>([
+        ["a rise since the owner's poll does not let a younger waiter take the new slot first", { capacity: 1, step: 1, ceiling: 4 }, 2, 4, 1, false],
+        ["a ticket from a build without the inputs keeps its recorded capacity", { capacity: 1 }, 2, 4, 1, true],
+        ["a ticket that records no capacity at all counts", {}, 2, 4, 1, false],
+        // Three live at ceiling 4 leave one free slot, so the row fails if the ticket is judged with the reader's ceiling.
+        ["a lower ceiling does not hold up a waiter with a higher one", { capacity: 1, step: 4, ceiling: 1 }, 4, 4, 3, true],
+        ["a ceiling above the row reaches the ahead and free counts", { capacity: 3, step: 3, ceiling: 6 }, 3, 6, 1, true],
+      ])("%s", async (_name, planted, step, ceiling, holders, admitted) => {
+        for (let i = 0; i < holders; i++) plantHolder(cls.holders, `live${i}`);
         plantTicket(cls.waiting, "a", 1, planted);
         expect(await tryOnce(o(step, ceiling))).toBe(admitted);
       });

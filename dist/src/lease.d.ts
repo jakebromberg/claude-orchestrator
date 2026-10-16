@@ -183,7 +183,8 @@ export declare const acquireLease: (opts: LeaseOptions, meta: HolderMeta, wait?:
  * `acquireLease` for the machine-wide implementer-session pool: holders in `<dir>/sessions/`, FIFO tickets in
  * `<dir>/sessions-waiting/`, capacity from the session row of the shared step (6, 4, 2, 1, 0 at steps 4 to 0, capped by
  * `CO_LEASE_SESSION_SLOTS`). A holder is live only while its heartbeat is, so a stopped engine frees its slots 90 s later;
- * no child PID extends it. There are no gates and no detached holders: `meta.gated` and `meta.detached` are ignored.
+ * no child PID extends it, and a holder reaped after a stall is written back on its next beat. There are no gates, no
+ * detached holders and no suspendable mark: `meta.gated`, `meta.detached` and `meta.suspendable` are ignored.
  * The caller's `stopWhen` sees the session pool as `capacity` and `live`.
  */
 export declare const acquireSessionLease: (opts: LeaseOptions, meta: HolderMeta, wait?: LeaseWait) => Promise<LeaseHandle | LeaseRefusal>;

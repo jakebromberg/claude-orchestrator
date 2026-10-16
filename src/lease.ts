@@ -456,14 +456,22 @@ function createHolder(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, com
   let released = false;
   // A detached holder gets no heartbeat: its session PID and `expiresAt` keep it live.
   // Unref'd, so it never keeps the process alive. A file found gone was reaped: its heartbeat went stale (this event
-  // loop stalled past 90 s, or the wall clock jumped) with no live child recorded. Such a holder stays out of the count
-  // for the rest of its run, so neither the beat (utimes never creates) nor setChildPid recreates the file.
+  // loop stalled past 90 s, or the wall clock jumped) with no live child recorded. A heavy holder stays out of the count
+  // for the rest of its run, so neither the beat (utimes never creates) nor setChildPid recreates the file. A
+  // heartbeat-only holder (a session) is long-lived and its process resumed, so the beat writes it back, outside the
+  // mutex: the pool may run over until it drains, and new admissions wait meanwhile.
   const beat = detached ? undefined : setInterval(() => {
     try {
       const at = now() / 1000;
       utimesSync(file, at, at);
-    } catch {
-      // Reaped, which is final, or unwritable for now, which the next beat retries.
+    } catch (err) {
+      // Reaped, or unwritable for now, which the next beat retries.
+      if (!cls.heartbeatOnly || released || (err as NodeJS.ErrnoException).code !== "ENOENT") return;
+      try {
+        writeFileAtomic(file, JSON.stringify(rec), { mtimeMs: now() });
+      } catch {
+        // The next beat retries.
+      }
     }
   }, HEARTBEAT_MS);
   beat?.unref();
@@ -648,11 +656,12 @@ export const acquireLease = (opts: LeaseOptions, meta: HolderMeta, wait: LeaseWa
  * `acquireLease` for the machine-wide implementer-session pool: holders in `<dir>/sessions/`, FIFO tickets in
  * `<dir>/sessions-waiting/`, capacity from the session row of the shared step (6, 4, 2, 1, 0 at steps 4 to 0, capped by
  * `CO_LEASE_SESSION_SLOTS`). A holder is live only while its heartbeat is, so a stopped engine frees its slots 90 s later;
- * no child PID extends it. There are no gates and no detached holders: `meta.gated` and `meta.detached` are ignored.
+ * no child PID extends it, and a holder reaped after a stall is written back on its next beat. There are no gates, no
+ * detached holders and no suspendable mark: `meta.gated`, `meta.detached` and `meta.suspendable` are ignored.
  * The caller's `stopWhen` sees the session pool as `capacity` and `live`.
  */
 export const acquireSessionLease = (opts: LeaseOptions, meta: HolderMeta, wait: LeaseWait = {}): Promise<LeaseHandle | LeaseRefusal> =>
-  acquireIn(SESSIONS, opts, { ...meta, gated: false, detached: undefined }, wait);
+  acquireIn(SESSIONS, opts, { ...meta, gated: false, detached: undefined, suspendable: undefined }, wait);
 
 async function acquireIn(cls: LeaseClass, opts: LeaseOptions, meta: HolderMeta, wait: LeaseWait): Promise<LeaseHandle | LeaseRefusal> {
   checkDetached(meta);
@@ -689,7 +698,9 @@ async function pollForLease(opts: LeaseOptions, cls: LeaseClass, meta: HolderMet
       return { refused, waitedMs, level, live };
     };
     if (wait.stopWhen?.(status)) {
-      const confirmed = statusOf(opts, cls, snapshot(opts, true));
+      // The fresh read replaces the step and capacities only; the holders are the first scan's.
+      const fresh = snapshot(opts, true);
+      const confirmed: LeaseStatus = { ...status, level: fresh.level, step: fresh.step, signals: fresh.signals, capacity: cls.slots(fresh), sessions: { ...status.sessions, capacity: fresh.sessions } };
       if (wait.stopWhen(confirmed)) return refuse("stopped", confirmed.level, status.live.length);
     }
     if (wait.maxWaitMs !== undefined && waitedMs >= wait.maxWaitMs) return refuse("max-wait", r.level, status.live.length);
