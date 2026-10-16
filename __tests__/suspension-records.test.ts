@@ -24,10 +24,14 @@ describe("suspension records", () => {
     ["a stem the body disagrees with", () => put("4243.json", REC), []],
     ["malformed JSON", () => put("4242.json", "{nope"), []],
     ["a body that fails validation", () => put("4242.json", { ...REC, remindAt: 5 }), []],
+    ["a remindAt that is not a date", () => put("4242.json", { ...REC, remindAt: "soon" }), []],
+    ["a leading-zero stem beside the canonical record", () => { put("4242.json", REC); put("04242.json", "{nope"); }, [REC]],
+    ["a leading-zero stem alone", () => put("04242.json", REC), []],
     ["a writeFileAtomic temp name", () => put("4242.json.1.ab.tmp", REC), []],
     ["a missing directory", () => {}, []],
     ["a symlinked suspensions/", () => {
-      const real = mkdtempSync(join(tmpdir(), "suspension-real-"));
+      const real = join(dir, "real");
+      mkdirSync(real);
       writeFileSync(join(real, "4242.json"), JSON.stringify(REC));
       symlinkSync(real, join(dir, "suspensions"));
     }, []],
