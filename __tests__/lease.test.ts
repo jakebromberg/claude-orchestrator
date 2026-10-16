@@ -1172,6 +1172,31 @@ describe("lease", () => {
         expect(await attemptGated()).toBe(false);
       });
 
+      const wide = { policy: { heavyCeiling: 4, heavyWarning: 1 } };
+      it.each<[string, Record<string, unknown>, boolean]>([
+        ["an older gated ticket that failed its gates, with 3 slots free", { capacity: 4, ready: false }, false],
+        ["an older gated ticket that passed its gates, with 3 slots free", { capacity: 4, ready: true }, false],
+        ["an older gated ticket whose own capacity leaves it no slot", { capacity: 1, ready: true }, true],
+        ["a stale older gated ticket", { capacity: 4, ready: false, ageMs: TICKET_FRESH_MS + 1_000 }, true],
+      ])("with %s, a gated waiter is admitted only past tickets that cannot be", async (_name, ticket, admitted) => {
+        plantHolder("4242-live", {}, 0);
+        alive.add(4242);
+        plantTicket("g", 1, { gated: true, ...ticket });
+        expect(await attemptGated(gated, wide)).toBe(admitted);
+      });
+
+      it("records a gated waiter held behind an older gated ticket as not ready, so ungated waiters pass it", async () => {
+        plantHolder("4242-live", {}, 0);
+        alive.add(4242);
+        plantTicket("g", 1, { gated: true, capacity: 4, ready: true });
+        let seen: unknown;
+        await acquireLease(gatedOpts(wide), gated, {
+          maxWaitMs: 1,
+          onWait: () => (seen = JSON.parse(readFileSync(waiting(readdirSync(join(dir, "waiting")).find((n) => n !== "g.json")!.slice(0, -5)), "utf8"))),
+        });
+        expect(seen).toMatchObject({ gated: true, ready: false });
+      });
+
       it("records the owner's capacity, gate state and gated flag on its ticket", async () => {
         plantCpu(5_000, 0.95);
         plantHolder("4242-live", {}, 0);
