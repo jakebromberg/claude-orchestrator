@@ -39,6 +39,13 @@ export type LeaseEvent = {
     code?: string;
     message?: string;
 };
+/** Cumulative CPU tick counters over all cores. */
+export interface CpuTicks {
+    idle: number;
+    total: number;
+}
+/** `LeaseOptions.cpuTimes` in production: the `os.cpus()` counters, so no process is spawned. */
+export declare function osCpuTicks(): CpuTicks;
 export interface LeaseOptions {
     dir: string;
     level: PressureSampler;
@@ -57,6 +64,8 @@ export interface LeaseOptions {
     now?(): number;
     sleep?(ms: number): Promise<void>;
     pollMs?: number;
+    /** Reads the CPU tick counters for the gated tickets' CPU gate; absent, or a throw or empty read, means the CPU is unknown and passes. */
+    cpuTimes?(): CpuTicks;
     /** The `CO_LEASE_HOLDER` id this process inherited; a live one admits a nested acquire at once. */
     inheritedHolderId?: string;
     /** A throw is warned about once per callback and never changes what the lease does. */
@@ -80,6 +89,8 @@ export interface HolderMeta {
         sessionPid: number;
         expiresAt: number;
     };
+    /** Admit only while heavy-queue's gates pass (CPU under 0.75, nothing suspended, 20 s since the last gated start), or when nothing is live. Set only by the heavy-queue front end. */
+    gated?: boolean;
 }
 interface HolderRecord {
     id: string;
@@ -92,6 +103,8 @@ interface HolderRecord {
     expiresAt?: number;
     level: PressureLevel;
     override?: true;
+    /** Set while the holder's group is stopped; a gated ticket is not admitted while any live holder has it. */
+    suspended?: true;
 }
 /** A live holder as `leaseStatus` reports it. */
 export interface HolderInfo extends HolderRecord {

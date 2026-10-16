@@ -10,6 +10,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, utimesSync } from "node:fs";
+import { cpus } from "node:os";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
 import { isWithinWindow, tryLockOnce } from "./file-lock.js";
@@ -40,6 +41,12 @@ const COMMAND_MAX = 200;
 const TICKET_FRESH_MS = 15_000;
 /** The longest a detached holder may be set to live: the largest Bash call timeout (10 min) plus hook mode's 60 s grace. */
 export const DETACHED_TTL_MAX_MS = 660_000;
+/** A gated ticket is admitted only while CPU busy is under this, nothing is suspended and the last gated start was this long ago (heavy-queue's gates). */
+const GATE_CPU_BUSY = 0.75;
+const GATE_SPACING_MS = 20_000;
+/** A stored CPU reading younger than this is gated on as it is; one up to `CPU_DELTA_MAX_MS` old is the base of a new delta; an older one is replaced and fails the poll. */
+const CPU_REUSE_MS = 2_000;
+const CPU_DELTA_MAX_MS = 10_000;
 /** A detached holder's id, and the only ids `releaseHolder` accepts, so neither can name a path outside `holders/` or overrun a file name. */
 const HOLDER_ID = /^[\w-]{1,160}$/;
 
@@ -53,6 +60,23 @@ export type LeaseEvent =
   | { type: "timeout"; refused: "max-wait" | "stopped"; waitedMs: number; level?: PressureLevel }
   /** `code` and `message` describe the I/O error; a busy mutex has neither. */
   | { type: "fail-open"; reason: "mutex-busy" | "io-error"; waitedMs: number; code?: string; message?: string };
+
+/** Cumulative CPU tick counters over all cores. */
+export interface CpuTicks {
+  idle: number;
+  total: number;
+}
+
+/** `LeaseOptions.cpuTimes` in production: the `os.cpus()` counters, so no process is spawned. */
+export function osCpuTicks(): CpuTicks {
+  let idle = 0;
+  let total = 0;
+  for (const { times } of cpus()) {
+    idle += times.idle;
+    total += Object.values(times).reduce((a, b) => a + b, 0);
+  }
+  return { idle, total };
+}
 
 export interface LeaseOptions {
   dir: string;
@@ -72,6 +96,8 @@ export interface LeaseOptions {
   now?(): number;
   sleep?(ms: number): Promise<void>;
   pollMs?: number;
+  /** Reads the CPU tick counters for the gated tickets' CPU gate; absent, or a throw or empty read, means the CPU is unknown and passes. */
+  cpuTimes?(): CpuTicks;
   /** The `CO_LEASE_HOLDER` id this process inherited; a live one admits a nested acquire at once. */
   inheritedHolderId?: string;
   /** A throw is warned about once per callback and never changes what the lease does. */
@@ -92,6 +118,8 @@ export interface HolderMeta {
   label?: string;
   cwd: string;
   detached?: { id: string; sessionPid: number; expiresAt: number };
+  /** Admit only while heavy-queue's gates pass (CPU under 0.75, nothing suspended, 20 s since the last gated start), or when nothing is live. Set only by the heavy-queue front end. */
+  gated?: boolean;
 }
 
 interface HolderRecord {
@@ -105,6 +133,8 @@ interface HolderRecord {
   expiresAt?: number;
   level: PressureLevel;
   override?: true;
+  /** Set while the holder's group is stopped; a gated ticket is not admitted while any live holder has it. */
+  suspended?: true;
 }
 
 /** A live holder as `leaseStatus` reports it. */
@@ -246,13 +276,19 @@ function scanHolders(opts: LeaseOptions): { live: HolderInfo[]; dead: { id: stri
   return found;
 }
 
-/** A heavy waiter's place in line; `gated` is always false until the heavy-queue front end sets it. */
+/**
+ * A heavy waiter's place in line. `capacity` is what its owner last computed and `ready` whether its gates passed then;
+ * a ticket whose owner could not be admitted does not hold up the line. Builds that predate the two fields write neither,
+ * and such a ticket counts.
+ */
 interface Ticket {
   seq: number;
   id: string;
   pid: number;
   label: string;
   gated: boolean;
+  capacity?: number;
+  ready?: boolean;
 }
 
 function parseTicket(text: string): Ticket | null {
@@ -289,6 +325,52 @@ function scanTickets(opts: LeaseOptions): (Ticket & { eligible: boolean })[] {
 function writeTicket(opts: LeaseOptions, t: Ticket): void {
   const file = join(waitingDir(opts.dir), `${t.id}.json`);
   writeFileAtomic(file, JSON.stringify(t), { mtimeMs: (opts.now ?? Date.now)() });
+}
+
+interface CpuReading {
+  at: number;
+  ticks: CpuTicks;
+  busy: number | null;
+}
+
+function parseCpuReading(text: string): CpuReading | null {
+  try {
+    const r = JSON.parse(text);
+    return Number.isFinite(r?.at) && Number.isFinite(r.ticks?.idle) && Number.isFinite(r.ticks.total) && (r.busy === null || Number.isFinite(r.busy)) ? r : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The CPU gate, under the mutex. Busy is 1 minus the idle share of the ticks since the reading in `cpu.json`: a reading
+ * under 2 s old is gated on as stored, one 2 to 10 s old is the base of a new delta (and is replaced), and an older,
+ * future-dated or missing one is replaced and fails this poll, so the next has a delta. Unknown CPU passes.
+ */
+function cpuAdmits(opts: LeaseOptions, nowMs: number): boolean {
+  let ticks: CpuTicks | undefined;
+  try {
+    ticks = opts.cpuTimes?.();
+  } catch {
+    return true;
+  }
+  if (!ticks || !(ticks.total > 0)) return true;
+  const file = join(opts.dir, "cpu.json");
+  const prev = unlessGone(() => parseCpuReading(readFileSync(file, "utf8")));
+  const age = prev ? nowMs - prev.at : -1;
+  if (prev && age >= 0 && age < CPU_REUSE_MS) return prev.busy !== null && prev.busy < GATE_CPU_BUSY;
+  const span = prev ? ticks.total - prev.ticks.total : 0;
+  const busy = prev && age >= 0 && age <= CPU_DELTA_MAX_MS && span > 0 ? 1 - (ticks.idle - prev.ticks.idle) / span : null;
+  writeFileAtomic(file, JSON.stringify({ at: nowMs, ticks, busy }));
+  return busy !== null && busy < GATE_CPU_BUSY;
+}
+
+/** The gates of a gated ticket. `cpuAdmits` always runs, since each poll keeps `cpu.json`'s delta fresh; a `lastAdmit` mark from the future reads as elapsed. */
+function gatesPass(opts: LeaseOptions, live: HolderInfo[], nowMs: number): boolean {
+  const cpu = cpuAdmits(opts, nowMs);
+  const markedAt = unlessGone(() => statSync(join(opts.dir, "lastAdmit")).mtimeMs);
+  const spaced = markedAt === undefined || markedAt > nowMs || nowMs - markedAt >= GATE_SPACING_MS;
+  return cpu && spaced && !live.some((h) => h.suspended);
 }
 
 const removeTicket = (opts: LeaseOptions, id: string): void => rmSync(join(waitingDir(opts.dir), `${id}.json`), { force: true });
@@ -398,13 +480,24 @@ function attempt(opts: LeaseOptions, meta: HolderMeta, waitedMs: number, ticketI
         const line = scanTickets(opts);
         const mine = line.find((t) => t.id === ticketId);
         const seq = mine?.seq ?? Math.max(0, ...line.map((t) => t.seq)) + 1;
-        const ahead = line.filter((t) => t.eligible && t.id !== ticketId && (ticketId === undefined || t.seq < seq)).length;
+        const nowMs = (opts.now ?? Date.now)();
         const free = capacity - live.length;
-        if (ahead < (ticketId === undefined ? Math.min(free, 1) : free)) {
+        // A ticket counts as ahead only while its owner could be admitted: it has a slot by its own capacity and its gates passed at its last poll.
+        const others = line.filter((t) => t.eligible && t.id !== ticketId && (ticketId === undefined || t.seq < seq) && (t.capacity ?? Infinity) > live.length);
+        const ahead = others.filter((t) => t.ready !== false).length;
+        const gated = meta.gated === true;
+        // No-wedge: with nothing live, the oldest gated ticket is admitted past its gates, except at step 0.
+        const ready = !gated || gatesPass(opts, live, nowMs) || (live.length === 0 && snap.step > 0 && !others.some((t) => t.gated));
+        if (ready && ahead < (ticketId === undefined ? Math.min(free, 1) : free)) {
+          if (gated) writeFileAtomic(join(opts.dir, "lastAdmit"), "", { mtimeMs: nowMs });
           r = { kind: "admitted", handle: createHolder(opts, meta, command, admission) };
-          if (mine) removeTicket(opts, mine.id);
+          try {
+            if (mine) removeTicket(opts, mine.id);
+          } catch {
+            // The holder exists, so the admission stands; a ticket that stays is removed when the waiter returns, or reaped once it exits.
+          }
         } else {
-          if (ticketId !== undefined) writeTicket(opts, { seq, id: ticketId, pid: process.pid, label: command, gated: false });
+          if (ticketId !== undefined) writeTicket(opts, { seq, id: ticketId, pid: process.pid, label: command, gated, capacity, ready });
           r = { kind: "full", ...snap };
         }
       }
@@ -588,6 +681,7 @@ export function defaultLeaseOptions(
     ...(headroom && { headroom }),
     policy: pressurePolicyFromEnv(env, tagged),
     inheritedHolderId: env.CO_LEASE_HOLDER || undefined,
+    cpuTimes: osCpuTicks,
     onEvent: leaseEventSink(dir, { warn }),
     warn,
   };
