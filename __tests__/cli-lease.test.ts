@@ -39,7 +39,7 @@ describe("lease messages", () => {
     ["none", [], "0 live: none"],
   ])("formats the no-slot line exactly with %s", (_name, live, tail) => {
     const refusal: LeaseRefusal = { refused: "max-wait", waitedMs: 450_400, level: "warning", live: live.length };
-    expect(formatNoSlot(refusal, { level: "warning", capacity: 1, live })).toBe(
+    expect(formatNoSlot(refusal, { level: "warning", capacity: 1, step: 1, signals: null, live })).toBe(
       `lease: no slot after 450s (pressure=warning, capacity 1, ${tail}); rerun the command — this is not a test failure`,
     );
   });
@@ -111,7 +111,7 @@ describe("runLeased", () => {
       acquired.push({ meta, wait });
       return outcome;
     }) as unknown as typeof acquireLease,
-    leaseStatus: () => ({ level: "warning", capacity: 1, live: [holder()] }),
+    leaseStatus: () => ({ level: "warning", capacity: 1, step: 1, signals: null, live: [holder()] }),
     ancestors: () => [],
     spawn: (file, args, o) => {
       spawned.push({ file, args, env: o.env });
@@ -299,7 +299,7 @@ describe("runLeased", () => {
     it("prints one progress line per minute while waiting", async () => {
       const waiting = deps({
         acquire: (async (_o: LeaseOptions, _m: unknown, wait: { onWait?(s: LeaseStatus & { waitedMs: number }): void }) => {
-          for (let waitedMs = 0; waitedMs <= 125_000; waitedMs += 5_000) wait.onWait?.({ level: "warning", capacity: 1, live: [holder()], waitedMs });
+          for (let waitedMs = 0; waitedMs <= 125_000; waitedMs += 5_000) wait.onWait?.({ level: "warning", capacity: 1, step: 1, signals: null, live: [holder()], waitedMs });
           return handle;
         }) as unknown as typeof acquireLease,
       });
@@ -527,7 +527,7 @@ describe("runLeased", () => {
   describe("status", () => {
     it("prints level, capacity and live holders as pid/command/ageSec, plus override when set", () => {
       const status = deps({
-        leaseStatus: () => ({ level: "warning", capacity: 1, live: [holder(), holder({ pid: 12, command: "tsc", ageSec: 3, override: true })] }),
+        leaseStatus: () => ({ level: "warning", capacity: 1, step: 1, signals: null, live: [holder(), holder({ pid: 12, command: "tsc", ageSec: 3, override: true })] }),
       });
       expect(runStatus(status)).toBe(0);
       expect(JSON.parse(out.join(""))).toEqual({

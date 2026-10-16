@@ -1,9 +1,11 @@
 /**
  * The headroom step: a 0-to-4 admission step computed from the kernel's memory
  * signals and a data table, so retuning the bands is a one-line change. Pure;
- * nothing calls it yet.
+ * `headroom-sampler.ts` shares its result machine-wide.
  */
-import type { MemorySignals } from "./memory-pressure.js";
+import type { MemorySignals, PressurePolicy } from "./memory-pressure.js";
+/** The step at `normal` (and `unknown`): today's ceiling. */
+export declare const MAX_STEP = 4;
 /** `step` applies while free memory is at least `minFreePct`; the best band met wins, so order does not matter. */
 export interface StepBand {
     minFreePct: number;
@@ -22,11 +24,14 @@ export interface HeadroomState {
 }
 /** Today's capacities: `normal` 4, `warning` 1, `critical` 0, and a rise at once. */
 export declare const DEFAULT_STEP_TABLE: StepTable;
+/** Heavy-command slots at `step`: step 4 gets the whole ceiling, a lower step at most that many, step 0 none. */
+export declare function headroomCapacity(step: number, policy: PressurePolicy): number;
 /**
  * The step for `signals` after `previous` (absent: start at the target). A lower
  * target applies at once and `critical` is always 0. A higher one applies one
  * step per call, each after `table.riseHoldMs` with a higher target holding
- * (`previous.risingSince`; one dated after `nowMs` restarts the hold). With a
- * zero hold a rise reaches its target at once.
+ * (`previous.risingSince`; one dated after `nowMs`, or not finite, restarts the
+ * hold). With a zero hold a rise reaches its target at once. A `previous.step`
+ * that is not an integer from 0 to `MAX_STEP` is treated as absent, as `previous` may come from disk.
  */
 export declare function headroomStep(signals: MemorySignals, previous: HeadroomState | undefined, nowMs: number, table: StepTable): HeadroomState;

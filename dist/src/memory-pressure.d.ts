@@ -11,6 +11,9 @@ export interface PressureSampler {
     /** True when the last level returned was mapped from `critical` by `CO_PRESSURE_OVERRIDE`; absent means never. */
     overridden?(): boolean;
 }
+/** How old the last good reading may be when a guarded read fails; shared with the headroom sampler. */
+export declare const FALLBACK_MAX_AGE_MS = 60000;
+export declare const warnOnce: (msg: string) => void;
 /**
  * Reads the macOS pressure level. `null` means the darwin read failed, timed
  * out or returned an unrecognised value; `"unknown"` means no signal here.
@@ -22,7 +25,7 @@ export declare function readMemoryPressure(deps?: {
 /** What the kernel publishes about memory: the pressure level, the free percentage and, when readable, swap use. */
 export interface MemorySignals {
     level: PressureLevel;
-    /** `kern.memorystatus_level`; absent only when the level is `unknown`. */
+    /** `kern.memorystatus_level`; present whenever the level was read (a failed guarded read returns `null`, not signals without it), absent only when the level is `unknown`. */
     freePct?: number;
     swapUsedBytes?: number;
     swapAllocatedBytes?: number;
@@ -67,6 +70,16 @@ export declare function applyPressureOverride(level: PressureLevel, env?: NodeJS
  * against the cwd.
  */
 export declare function leaseDirectory(env?: NodeJS.ProcessEnv, accountHome?: () => string): string;
+/** Best-effort write of `<dir>/level.json` (`{ level, at }`); an `unknown` level is never written. */
+export declare function persistLevel(dir: string, reading: {
+    level: PressureLevel;
+    at: number;
+}): void;
+/** The reading `persistLevel` left in `<dir>/level.json`, or `undefined` when it is missing or malformed. */
+export declare function persistedLevel(dir: string): {
+    level: PressureLevel;
+    at: number;
+} | undefined;
 /**
  * The one production sampler: cached sysctl reading, override applied. A failed
  * darwin read falls back to the last good reading under 60 s old (in-process,

@@ -13,7 +13,8 @@ const FREE_PCT_NAME = "kern.memorystatus_level";
 const SWAP_NAMES = ["vm.compressor.swapper.used_bytes", "vm.compressor.swapper.allocated_bytes", "vm.compressor.swapper.swapins_total"];
 const LEVELS_BY_VALUE = { "1": "normal", "2": "warning", "4": "critical" };
 const SAMPLE_TTL_MS = 10_000;
-const FALLBACK_MAX_AGE_MS = 60_000;
+/** How old the last good reading may be when a guarded read fails; shared with the headroom sampler. */
+export const FALLBACK_MAX_AGE_MS = 60_000;
 const DEFAULT_POLICY = { heavyCeiling: 4, heavyWarning: 1 };
 const OVERRIDE_VALUE = "critical-as-warning";
 const stderrWarn = (msg) => {
@@ -21,7 +22,7 @@ const stderrWarn = (msg) => {
 };
 /** Reports each distinct message once per process. */
 const seen = new Set();
-const warnOnce = (msg) => {
+export const warnOnce = (msg) => {
     if (seen.has(msg))
         return;
     seen.add(msg);
@@ -164,6 +165,29 @@ export function leaseDirectory(env = process.env, accountHome = () => userInfo()
         throw new Error("cannot resolve the lease directory: no absolute XDG_STATE_HOME or HOME");
     return join(home, ".local", "state", "claude-orchestrator", "lease");
 }
+/** Best-effort write of `<dir>/level.json` (`{ level, at }`); an `unknown` level is never written. */
+export function persistLevel(dir, reading) {
+    if (reading.level === "unknown")
+        return;
+    try {
+        writeLeaseRecord(dir, "level.json", JSON.stringify(reading));
+    }
+    catch {
+        // Persistence is best-effort; the in-process reading still serves.
+    }
+}
+/** The reading `persistLevel` left in `<dir>/level.json`, or `undefined` when it is missing or malformed. */
+export function persistedLevel(dir) {
+    try {
+        const parsed = JSON.parse(readFileSync(join(dir, "level.json"), "utf8"));
+        return Object.values(LEVELS_BY_VALUE).includes(parsed.level) && typeof parsed.at === "number"
+            ? { level: parsed.level, at: parsed.at }
+            : undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
 /**
  * The one production sampler: cached sysctl reading, override applied. A failed
  * darwin read falls back to the last good reading under 60 s old (in-process,
@@ -181,39 +205,17 @@ export function defaultPressureSampler(env = process.env, deps = {}) {
         }
     };
     const dir = leaseDirectory(env);
-    const file = join(dir, "level.json");
     let lastGood;
-    const persist = (reading) => {
-        if (reading.level === "unknown")
-            return;
-        try {
-            writeLeaseRecord(dir, "level.json", JSON.stringify(reading));
-        }
-        catch {
-            // Persistence is best-effort; the in-process reading still serves.
-        }
-    };
-    const persisted = () => {
-        try {
-            const parsed = JSON.parse(readFileSync(file, "utf8"));
-            return Object.values(LEVELS_BY_VALUE).includes(parsed.level) && typeof parsed.at === "number"
-                ? { level: parsed.level, at: parsed.at }
-                : undefined;
-        }
-        catch {
-            return undefined;
-        }
-    };
     const raw = () => {
         const level = read();
         const at = now();
         if (level !== null) {
             lastGood = { level, at };
-            persist(lastGood);
+            persistLevel(dir, lastGood);
             return level;
         }
         log("read failed; using the last good reading, else critical");
-        const candidate = [lastGood, persisted()].find((r) => r && isFresh(r.at, at, FALLBACK_MAX_AGE_MS));
+        const candidate = [lastGood, persistedLevel(dir)].find((r) => r && isFresh(r.at, at, FALLBACK_MAX_AGE_MS));
         return candidate?.level ?? "critical";
     };
     let overridden = false;

@@ -65,8 +65,8 @@ describe("leaseEventSink", () => {
   });
 
   it.each<[string, LeaseEvent]>([
-    ["acquire", { type: "acquire", id: "1-ab", waitedMs: 40, level: "warning", live: 2, capacity: 2 }],
-    ["acquire with override", { type: "acquire", id: "1-ab", waitedMs: 0, level: "warning", live: 1, capacity: 1, override: true }],
+    ["acquire", { type: "acquire", id: "1-ab", waitedMs: 40, level: "warning", step: 1, live: 2, capacity: 2 }],
+    ["acquire with override", { type: "acquire", id: "1-ab", waitedMs: 0, level: "warning", step: 1, live: 1, capacity: 1, override: true }],
     ["release", { type: "release", id: "1-ab", heldMs: 900, exitCode: 0 }],
     ["max-wait timeout", { type: "timeout", refused: "max-wait", waitedMs: 5_000 }],
     ["stopped timeout", { type: "timeout", refused: "stopped", waitedMs: 3_000, level: "critical" }],
@@ -203,7 +203,7 @@ describe("leaseEventSink", () => {
     ["another user's", () => (vi.spyOn(process as Required<NodeJS.Process>, "getuid").mockReturnValue(statSync(dir).uid + 1), dir)],
   ])("writes nothing when the lease directory is %s, and the acquire still proceeds", (_name, plant) => {
     const leaseDir = plant();
-    const h = tryAcquireLease({ ...defaultLeaseOptions({ CO_LEASE_DIR: leaseDir }), level: normal, warn: () => {} }, { command: "npm test", cwd: "/w" });
+    const h = tryAcquireLease({ ...defaultLeaseOptions({ CO_LEASE_DIR: leaseDir }), level: normal, headroom: undefined, warn: () => {} }, { command: "npm test", cwd: "/w" });
     expect(h).toMatchObject({ leased: false, id: null });
     expect(readdirSync(dir)).toEqual([]);
   });
@@ -216,7 +216,7 @@ describe("leaseEventSink", () => {
   describe("wiring", () => {
     it("defaultLeaseOptions records the lease's own events once the directory exists", () => {
       const o = defaultLeaseOptions({ CO_LEASE_DIR: dir });
-      const h = tryAcquireLease({ ...o, level: scriptedPressureSampler("normal") }, { command: "npm test", cwd: "/w" })!;
+      const h = tryAcquireLease({ ...o, level: scriptedPressureSampler("normal"), headroom: undefined }, { command: "npm test", cwd: "/w" })!;
       h.release({ exitCode: 0 });
       expect((lines() as { type: string }[]).map((l) => l.type)).toEqual(["acquire", "release"]);
     });
@@ -224,7 +224,7 @@ describe("leaseEventSink", () => {
     it("an unwritable log never fails an acquire", () => {
       mkdirSync(join(dir, "events.jsonl"));
       const o = defaultLeaseOptions({ CO_LEASE_DIR: dir });
-      const h = tryAcquireLease({ ...o, level: scriptedPressureSampler("normal") }, { command: "npm test", cwd: "/w" });
+      const h = tryAcquireLease({ ...o, level: scriptedPressureSampler("normal"), headroom: undefined }, { command: "npm test", cwd: "/w" });
       expect(h?.leased).toBe(true);
       h!.release();
     });
@@ -233,7 +233,7 @@ describe("leaseEventSink", () => {
       execFileSync("mkfifo", [join(dir, "events.jsonl")]);
       let h: ReturnType<typeof tryAcquireLease> = null;
       const ms = await timedBesideFifo(join(dir, "events.jsonl"), () => {
-        h = tryAcquireLease({ ...defaultLeaseOptions({ CO_LEASE_DIR: dir }), level: normal }, { command: "npm test", cwd: "/w" });
+        h = tryAcquireLease({ ...defaultLeaseOptions({ CO_LEASE_DIR: dir }), level: normal, headroom: undefined }, { command: "npm test", cwd: "/w" });
       });
       expect(ms).toBeLessThan(1000);
       expect(h).toMatchObject({ leased: true });

@@ -1,5 +1,6 @@
+import { type HeadroomSampler } from "./headroom-sampler.js";
 import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
-import { type PressureLevel, type PressurePolicy, type PressureSampler } from "./memory-pressure.js";
+import { type MemorySignals, type PressureLevel, type PressurePolicy, type PressureSampler } from "./memory-pressure.js";
 export { ensureOwnSubdir, isOwnDir };
 /** The longest a detached holder may be set to live: the largest Bash call timeout (10 min) plus hook mode's 60 s grace. */
 export declare const DETACHED_TTL_MAX_MS = 660000;
@@ -9,6 +10,7 @@ export type LeaseEvent = {
     id: string;
     waitedMs: number;
     level: PressureLevel;
+    step: number;
     live: number;
     capacity: number;
     override?: true;
@@ -40,6 +42,11 @@ export type LeaseEvent = {
 export interface LeaseOptions {
     dir: string;
     level: PressureSampler;
+    /**
+     * The machine-wide headroom step. When set, heavy capacity is `headroomCapacity(step, policy)` and `level` is only a
+     * view of it (`defaultLeaseOptions` builds both from one sampler); when absent, capacity comes from `level` alone.
+     */
+    headroom?: HeadroomSampler;
     policy: PressurePolicy;
     isAlive?(pid: number): boolean;
     /**
@@ -92,6 +99,10 @@ export interface HolderInfo extends HolderRecord {
 export interface LeaseStatus {
     level: PressureLevel;
     capacity: number;
+    /** The headroom step, 0 to 4; derived from `level` when no `headroom` sampler is set. */
+    step: number;
+    /** The kernel signals behind the step; `null` after a failed guarded read, and when no `headroom` sampler is set. */
+    signals: MemorySignals | null;
     live: HolderInfo[];
 }
 /**
@@ -162,7 +173,7 @@ export declare function releaseHolder(opts: LeaseOptions, id: string): boolean;
 export declare function leaseStatus(opts: LeaseOptions): LeaseStatus;
 /**
  * Production wiring: the real lease directory, the engine's own sampler and policy, and the `events.jsonl` sink. Creates nothing on disk.
- * `overrides.level` replaces the sampler (none is built), and `overrides.warn` is the one writer for the lease, the sink,
+ * `overrides.level` replaces the sampler (none is built, so the lease sizes capacity from that level alone), and `overrides.warn` is the one writer for the lease, the sink,
  * the policy and the sampler it builds; without it each keeps its stderr default.
  * The writer is wrapped once so it cannot change what the lease does: a writer that throws is silenced (the line is dropped and nothing reports it), so pass a bound function,
  * and the returned `warn` is that wrapper, not the caller's function.

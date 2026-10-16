@@ -1,3 +1,4 @@
+import type { HeadroomReading, HeadroomSampler } from "./headroom-sampler.js";
 import type { PressureLevel, PressureSampler } from "./memory-pressure.js";
 
 export { InMemoryStatusStore, InMemoryMetadataStore } from "./status.js";
@@ -17,6 +18,23 @@ export function scriptedPressureSampler(
   if (typeof script !== "function" && script.length === 0) throw new Error("scriptedPressureSampler needs at least one level");
   // Always a new function: `Object.assign` below must never write onto the caller's own function.
   const read = typeof script === "function" ? () => script() : () => script[Math.min(i++, script.length - 1)];
+  const { fresh = read, overridden } = options;
+  return Object.assign(read, { fresh }, overridden === undefined ? {} : { overridden: () => overridden });
+}
+
+/**
+ * A scripted `HeadroomSampler` for tests, beside `scriptedPressureSampler`. `readings` is one reading, a list (one per
+ * call, then the last one held), or a function read on every call. `fresh()` reads like the sampler unless
+ * `options.fresh` models a stale shared step; `overridden()` exists only when `options.overridden` is set.
+ */
+export function scriptedHeadroomSampler(
+  readings: HeadroomReading | readonly HeadroomReading[] | (() => HeadroomReading),
+  options: { fresh?: () => HeadroomReading; overridden?: boolean } = {},
+): HeadroomSampler {
+  let i = 0;
+  const script = Array.isArray(readings) || typeof readings === "function" ? readings : [readings];
+  if (typeof script !== "function" && script.length === 0) throw new Error("scriptedHeadroomSampler needs at least one reading");
+  const read = typeof script === "function" ? () => script() : () => script[Math.min(i++, script.length - 1)]!;
   const { fresh = read, overridden } = options;
   return Object.assign(read, { fresh }, overridden === undefined ? {} : { overridden: () => overridden });
 }
