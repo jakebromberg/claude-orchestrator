@@ -25,6 +25,8 @@ export interface PressureSampler {
 }
 
 const SYSCTL_NAME = "kern.memorystatus_vm_pressure_level";
+const FREE_PCT_NAME = "kern.memorystatus_level";
+const SWAP_NAMES = ["vm.compressor.swapper.used_bytes", "vm.compressor.swapper.allocated_bytes", "vm.compressor.swapper.swapins_total"] as const;
 const LEVELS_BY_VALUE: Record<string, PressureLevel> = { "1": "normal", "2": "warning", "4": "critical" };
 const SAMPLE_TTL_MS = 10_000;
 const FALLBACK_MAX_AGE_MS = 60_000;
@@ -59,9 +61,54 @@ export function readMemoryPressure(
   }
 }
 
+/** What the kernel publishes about memory: the pressure level, the free percentage and, when readable, swap use. */
+export interface MemorySignals {
+  level: PressureLevel;
+  /** `kern.memorystatus_level`; absent only when the level is `unknown`. */
+  freePct?: number;
+  swapUsedBytes?: number;
+  swapAllocatedBytes?: number;
+  swapinsTotal?: number;
+}
+
+const parseCount = (raw: string | undefined): number | undefined => (raw !== undefined && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : undefined);
+
+/**
+ * Reads the level and free percentage in one guarded `sysctl` call: `null` means
+ * it failed, timed out or returned an unrecognised value, as for `readMemoryPressure`.
+ * The swap values come from a separate call that only ever leaves them absent,
+ * because `sysctl -n` with one unknown name exits 1 and would turn a renamed oid
+ * into a failed guarded read.
+ */
+export function readMemorySignals(
+  deps: { platform?: NodeJS.Platform; sysctl?: (...names: string[]) => string } = {},
+): MemorySignals | null {
+  const { platform = process.platform, sysctl = defaultSysctl } = deps;
+  if (platform !== "darwin") return { level: "unknown" };
+  let signals: MemorySignals;
+  try {
+    const [rawLevel, rawFree] = sysctl(SYSCTL_NAME, FREE_PCT_NAME).split("\n");
+    const level = LEVELS_BY_VALUE[rawLevel?.trim() ?? ""];
+    const freePct = parseCount(rawFree);
+    if (!level || freePct === undefined || freePct > 100) return null;
+    signals = { level, freePct };
+  } catch {
+    return null;
+  }
+  try {
+    const [used, allocated, swapins] = sysctl(...SWAP_NAMES).split("\n").map(parseCount);
+    if (used !== undefined) signals.swapUsedBytes = used;
+    if (allocated !== undefined) signals.swapAllocatedBytes = allocated;
+    if (swapins !== undefined) signals.swapinsTotal = swapins;
+  } catch {
+    // Swap values are optional; the step never depends on them.
+  }
+  return signals;
+}
+
 /** The child's stderr is discarded: inherited, a failing `sysctl` would write to the caller's stderr past the lease's `warn` seam. */
-function defaultSysctl(name: string): string {
-  return execFileSync("/usr/sbin/sysctl", ["-n", name], { encoding: "utf8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] });
+function defaultSysctl(...names: string[]): string {
+  return execFileSync("/usr/sbin/sysctl", ["-n", ...names], { encoding: "utf8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] });
 }
 
 /** Heavy-command slots at a level; `critical` is always 0. */
