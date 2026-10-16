@@ -120,6 +120,15 @@ describe("suspend and resume", () => {
       expect(records()).toEqual([]);
     });
 
+    it.each(["suspend", "resume"])("%s refuses when the ancestry never reaches pid 1 within 64 steps", (verb) => {
+      // 300's parent is 500 again: a chain that loops is cut off by the step cap, and the cap refuses, never passes.
+      const loop = TABLE.map((r): (typeof TABLE)[number] => (r[0] === 300 ? [300, 500, 300, 501, "zsh"] : r));
+      expect(run([verb, "900", ...(verb === "suspend" ? ["--by", "o", "--reason", "r"] : [])], { ps: () => table(loop) })).toBe(1);
+      expect(err.join("\n")).toContain("ancestry");
+      expect(kills).toEqual([]);
+      expect(records()).toEqual([]);
+    });
+
     it("refuses when the process table cannot be read", () => {
       const broken = () => {
         throw new Error("ps timed out");
