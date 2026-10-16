@@ -1070,7 +1070,7 @@ describe("lease", () => {
         ["CPU busy just under 0.75", () => plantCpu(5_000, 0.74), true],
         ["CPU busy at 0.75", () => plantCpu(5_000, 0.75), false],
         ["CPU busy at 0.95", () => plantCpu(5_000, 0.95), false],
-        ["a reading 2 s old, which gets a delta", () => plantCpu(2_000, 0.5), true],
+        ["a reading 2 s old, which gets a delta, not its stored busy", () => plantCpu(2_000, 0.5, 0.9), true],
         ["a reading under 2 s old, gated on its stored busy (low)", () => plantCpu(1_999, 0.99, 0.1), true],
         ["a reading under 2 s old, gated on its stored busy (high)", () => plantCpu(1_999, 0.1, 0.9), false],
         ["a reading 10 s old, which still gets a delta", () => plantCpu(10_000, 0.5), true],
@@ -1160,6 +1160,16 @@ describe("lease", () => {
         alive.add(4242);
         plantTicket("g", 1, { gated: true, capacity: 2, ...ticket });
         expect(await attemptGated(meta)).toBe(admitted);
+      });
+
+      it.each<[string, { ready?: boolean }]>([
+        ["that failed its gates at its last poll", { ready: false }],
+        ["that passed its gates at its last poll", { ready: true }],
+      ])("keeps a gated waiter behind an older gated ticket %s, since the gates are machine-wide", async (_name, ticket) => {
+        plantHolder("4242-live", {}, 0);
+        alive.add(4242);
+        plantTicket("g", 1, { gated: true, capacity: 2, ...ticket });
+        expect(await attemptGated()).toBe(false);
       });
 
       it("records the owner's capacity, gate state and gated flag on its ticket", async () => {
