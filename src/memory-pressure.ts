@@ -15,7 +15,11 @@ export type PressureLevel = "normal" | "warning" | "critical" | "unknown";
 export interface PressurePolicy {
   heavyCeiling: number;
   heavyWarning: number;
+  /** The machine-wide implementer-session ceiling `M` (`CO_LEASE_SESSION_SLOTS`); absent means `DEFAULT_SESSION_CEILING`. */
+  sessionCeiling?: number;
 }
+
+export const DEFAULT_SESSION_CEILING = 6;
 
 /** A cached sampler; `fresh()` bypasses and refreshes the cache. */
 export interface PressureSampler {
@@ -32,7 +36,7 @@ const LEVELS_BY_VALUE: Record<string, PressureLevel> = { "1": "normal", "2": "wa
 const SAMPLE_TTL_MS = 10_000;
 /** How old the last good reading may be when a guarded read fails; shared with the headroom sampler. */
 export const FALLBACK_MAX_AGE_MS = 60_000;
-const DEFAULT_POLICY: PressurePolicy = { heavyCeiling: 4, heavyWarning: 1 };
+const DEFAULT_POLICY: PressurePolicy = { heavyCeiling: 4, heavyWarning: 1, sessionCeiling: DEFAULT_SESSION_CEILING };
 const OVERRIDE_VALUE = "critical-as-warning";
 
 const stderrWarn = (msg: string): void => {
@@ -133,16 +137,23 @@ export function stopAtCritical(level: PressureLevel, running: number): boolean {
   return level === "critical" && running === 0;
 }
 
-/** `CO_LEASE_SLOTS` overrides the heavy ceiling; an invalid value keeps the default and is reported. */
+/** `CO_LEASE_SLOTS` overrides the heavy ceiling and `CO_LEASE_SESSION_SLOTS` the session ceiling; an invalid value keeps the default and is reported. */
 export function pressurePolicyFromEnv(
   env: NodeJS.ProcessEnv = process.env,
   warn: (msg: string) => void = warnOnce,
 ): PressurePolicy {
-  const raw = env.CO_LEASE_SLOTS;
-  if (raw === undefined) return { ...DEFAULT_POLICY };
-  if (/^[1-9]\d*$/.test(raw.trim())) return { ...DEFAULT_POLICY, heavyCeiling: Number(raw.trim()) };
-  warn(`ignoring invalid CO_LEASE_SLOTS=${JSON.stringify(raw)}; keeping ${DEFAULT_POLICY.heavyCeiling}`);
-  return { ...DEFAULT_POLICY };
+  const ceiling = (name: string, fallback: number): number => {
+    const raw = env[name];
+    if (raw === undefined) return fallback;
+    if (/^[1-9]\d*$/.test(raw.trim())) return Number(raw.trim());
+    warn(`ignoring invalid ${name}=${JSON.stringify(raw)}; keeping ${fallback}`);
+    return fallback;
+  };
+  return {
+    ...DEFAULT_POLICY,
+    heavyCeiling: ceiling("CO_LEASE_SLOTS", DEFAULT_POLICY.heavyCeiling),
+    sessionCeiling: ceiling("CO_LEASE_SESSION_SLOTS", DEFAULT_SESSION_CEILING),
+  };
 }
 
 /** True when a reading taken at `at` is no older than `maxAgeMs` at `now`; a reading from the future (a clock step back) is not fresh. */

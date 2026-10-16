@@ -36,7 +36,7 @@ export { DEFAULT_STEP_TABLE, headroomCapacity, headroomStep } from "./headroom.j
 export { defaultHeadroomSampler, levelView } from "./headroom-sampler.js";
 export type { HeadroomReading, HeadroomSampler } from "./headroom-sampler.js";
 export type { HeadroomState, StepBand, StepTable } from "./headroom.js";
-export { acquireLease, tryAcquireLease, leaseStatus, defaultLeaseOptions, releaseHolder } from "./lease.js";
+export { acquireLease, acquireSessionLease, tryAcquireLease, leaseStatus, defaultLeaseOptions, releaseHolder } from "./lease.js";
 export { createFileEngineRegistry } from "./engine-registry.js";
 export type { FileEngineRegistryOptions } from "./engine-registry.js";
 export { leaseEventSink } from "./lease-events.js";

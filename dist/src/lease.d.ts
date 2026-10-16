@@ -119,12 +119,18 @@ export interface HolderInfo extends HolderRecord {
 }
 export interface LeaseStatus {
     level: PressureLevel;
+    /** Slots of the class asked about: heavy for `leaseStatus` and `acquireLease`, the session row for `acquireSessionLease`. */
     capacity: number;
     /** The headroom step, 0 to 4; derived from `level` when no `headroom` sampler is set. */
     step: number;
     /** The kernel signals behind the step; `null` after a failed guarded read, and when no `headroom` sampler is set. */
     signals: MemorySignals | null;
     live: HolderInfo[];
+    /** The machine-wide implementer-session pool, from the same reading as `capacity`. */
+    sessions: {
+        capacity: number;
+        live: HolderInfo[];
+    };
 }
 /**
  * A holder stays live only while this process's event loop runs its 30 s heartbeat, or while a child PID recorded
@@ -172,7 +178,16 @@ export declare function tryAcquireLease(opts: LeaseOptions, meta: HolderMeta): L
  * that neither admits nor refuses, and also receives `waitedMs`: the wait so far, measured on `LeaseOptions.now` the
  * same way as an admission's or refusal's `waitedMs`, so a progress line can throttle on it without a clock of its own.
  */
-export declare function acquireLease(opts: LeaseOptions, meta: HolderMeta, wait?: LeaseWait): Promise<LeaseHandle | LeaseRefusal>;
+export declare const acquireLease: (opts: LeaseOptions, meta: HolderMeta, wait?: LeaseWait) => Promise<LeaseHandle | LeaseRefusal>;
+/**
+ * `acquireLease` for the machine-wide implementer-session pool: holders in `<dir>/sessions/`, FIFO tickets in
+ * `<dir>/sessions-waiting/`, capacity from the session row of the shared step (6, 4, 2, 1, 0 at steps 4 to 0, capped by
+ * `CO_LEASE_SESSION_SLOTS`). A holder is live only while its heartbeat is, so a stopped engine frees its slots 90 s later;
+ * no child PID extends it, and a holder reaped after a stall is written back on its next beat. There are no gates, no
+ * detached holders and no suspendable mark: `meta.gated`, `meta.detached` and `meta.suspendable` are ignored.
+ * The caller's `stopWhen` sees the session pool as `capacity` and `live`.
+ */
+export declare const acquireSessionLease: (opts: LeaseOptions, meta: HolderMeta, wait?: LeaseWait) => Promise<LeaseHandle | LeaseRefusal>;
 type LeaseWait = {
     maxWaitMs?: number;
     onWait?(s: LeaseStatus & {

@@ -688,7 +688,7 @@ describe("lease", () => {
       });
       const o = defaultLeaseOptions({ CO_LEASE_DIR: dir, CO_LEASE_SLOTS: "many", CO_PRESSURE_OVERRIDE: "nope" }, { warn: w, level: sampler });
       expect(w).toHaveBeenCalled();
-      expect(o.policy).toEqual({ heavyCeiling: 4, heavyWarning: 1 });
+      expect(o.policy).toEqual({ heavyCeiling: 4, heavyWarning: 1, sessionCeiling: 6 });
       // The sink: a failed rotation makes it call the throwing writer, and the event is still appended.
       mkdirSync(join(dir, "events.jsonl.1", "occupied"), { recursive: true });
       writeFileSync(join(dir, "events.jsonl"), "x".repeat(6 * 1024 * 1024));
@@ -1312,16 +1312,17 @@ describe("lease", () => {
         step: 2,
         signals,
         live: [],
+        sessions: { capacity: 2, live: [] },
       });
     });
 
-    it.each<[PressureLevel, number, number]>([
-      ["normal", 4, 2],
-      ["warning", 1, 1],
-      ["critical", 0, 0],
-    ])("derives the step from a lone %s level as %i, with no signals", (lv, step, capacity) => {
+    it.each<[PressureLevel, number, number, number]>([
+      ["normal", 4, 2, 6],
+      ["warning", 1, 1, 1],
+      ["critical", 0, 0, 0],
+    ])("derives the step from a lone %s level as %i, with no signals", (lv, step, capacity, sessions) => {
       level = lv;
-      expect(leaseStatus(opts())).toEqual({ level: lv, capacity, step, signals: null, live: [] });
+      expect(leaseStatus(opts())).toEqual({ level: lv, capacity, step, signals: null, live: [], sessions: { capacity: sessions, live: [] } });
     });
 
     it("records the step on the acquire event, from either source", () => {

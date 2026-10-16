@@ -17,7 +17,7 @@ import {
 } from "../src/memory-pressure.js";
 import * as barrel from "../src/index.js";
 
-const policy = { heavyCeiling: 4, heavyWarning: 1 };
+const policy = { heavyCeiling: 4, heavyWarning: 1, sessionCeiling: 6 };
 const LEVELS: PressureLevel[] = ["normal", "warning", "critical", "unknown"];
 
 describe("readMemoryPressure", () => {
@@ -151,6 +151,17 @@ describe("pressurePolicyFromEnv", () => {
     const warn = vi.fn();
     expect(pressurePolicyFromEnv({ CO_LEASE_SLOTS: v }, warn)).toEqual(policy);
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("CO_LEASE_SESSION_SLOTS overrides the session ceiling and leaves the heavy policy alone", () => {
+    expect(pressurePolicyFromEnv({ CO_LEASE_SESSION_SLOTS: " 3 ", CO_LEASE_SLOTS: "2" }, vi.fn())).toEqual({ heavyCeiling: 2, heavyWarning: 1, sessionCeiling: 3 });
+  });
+
+  it.each(["0", "-1", "abc", "2.5", ""])("keeps the session default and reports for invalid CO_LEASE_SESSION_SLOTS %j", (v) => {
+    const warn = vi.fn();
+    expect(pressurePolicyFromEnv({ CO_LEASE_SESSION_SLOTS: v }, warn)).toEqual(policy);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toContain("CO_LEASE_SESSION_SLOTS");
   });
 });
 

@@ -3,7 +3,10 @@ export type PressureLevel = "normal" | "warning" | "critical" | "unknown";
 export interface PressurePolicy {
     heavyCeiling: number;
     heavyWarning: number;
+    /** The machine-wide implementer-session ceiling `M` (`CO_LEASE_SESSION_SLOTS`); absent means `DEFAULT_SESSION_CEILING`. */
+    sessionCeiling?: number;
 }
+export declare const DEFAULT_SESSION_CEILING = 6;
 /** A cached sampler; `fresh()` bypasses and refreshes the cache. */
 export interface PressureSampler {
     (): PressureLevel;
@@ -51,7 +54,7 @@ export declare function sessionCapacity(level: PressureLevel, maxParallel: numbe
  * `running` counts only other work that could finish and relieve pressure, never the caller's own slot, pipeline or lease holder: counting itself means `running` is never 0 and a wait at critical never ends.
  */
 export declare function stopAtCritical(level: PressureLevel, running: number): boolean;
-/** `CO_LEASE_SLOTS` overrides the heavy ceiling; an invalid value keeps the default and is reported. */
+/** `CO_LEASE_SLOTS` overrides the heavy ceiling and `CO_LEASE_SESSION_SLOTS` the session ceiling; an invalid value keeps the default and is reported. */
 export declare function pressurePolicyFromEnv(env?: NodeJS.ProcessEnv, warn?: (msg: string) => void): PressurePolicy;
 /** True when a reading taken at `at` is no older than `maxAgeMs` at `now`; a reading from the future (a clock step back) is not fresh. */
 export declare function isFresh(at: number, now: number, maxAgeMs: number): boolean;

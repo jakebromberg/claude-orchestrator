@@ -3,7 +3,17 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync
 import os, { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { defaultPressureSampler, leaseDirectory } from "../src/memory-pressure.js";
-import { fakeLeaseClock, installIsolatedHome, scriptedLease, unwritableLeaseDir } from "./helpers/lease.js";
+import { fakeLeaseClock, installIsolatedHome, isolatedLeaseEnv, scriptedLease, unwritableLeaseDir } from "./helpers/lease.js";
+
+describe("isolatedLeaseEnv", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("scrubs the parent's CO_LEASE_SESSION_SLOTS along with the rest of CO_LEASE_*", () => {
+    vi.stubEnv("CO_LEASE_SESSION_SLOTS", "3");
+    expect(isolatedLeaseEnv("/lease").CO_LEASE_SESSION_SLOTS).toBeUndefined();
+    expect(isolatedLeaseEnv("/lease", { CO_LEASE_SESSION_SLOTS: "2" }).CO_LEASE_SESSION_SLOTS).toBe("2");
+  });
+});
 
 describe("fakeLeaseClock().sleep", () => {
   afterEach(() => vi.useRealTimers());

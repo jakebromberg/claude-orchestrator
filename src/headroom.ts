@@ -38,7 +38,7 @@ export const DEFAULT_STEP_TABLE: StepTable = {
 };
 
 /** Heavy-command slots at `step`: step 4 gets the whole ceiling, a lower step at most that many, step 0 none. */
-export function headroomCapacity(step: number, policy: PressurePolicy): number {
+export function headroomCapacity(step: number, policy: Pick<PressurePolicy, "heavyCeiling"> & Partial<PressurePolicy>): number {
   return step >= MAX_STEP ? policy.heavyCeiling : Math.min(policy.heavyCeiling, step);
 }
 

@@ -25,7 +25,7 @@ export interface HeadroomState {
 /** The owner's Q1 table: `normal` 4, `warning` 3 at 40% free or more, 2 at 30 to 39%, 1 under 30%, `critical` 0, and a rise of one step per 60 s. */
 export declare const DEFAULT_STEP_TABLE: StepTable;
 /** Heavy-command slots at `step`: step 4 gets the whole ceiling, a lower step at most that many, step 0 none. */
-export declare function headroomCapacity(step: number, policy: PressurePolicy): number;
+export declare function headroomCapacity(step: number, policy: Pick<PressurePolicy, "heavyCeiling"> & Partial<PressurePolicy>): number;
 /**
  * The step for `signals` after `previous` (absent: start at the target). A lower
  * target applies at once and `critical` is always 0. A higher one applies one

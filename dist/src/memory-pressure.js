@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { writeLeaseRecord } from "./lease-dir.js";
 import { userInfo } from "node:os";
 import { isAbsolute, join } from "node:path";
+export const DEFAULT_SESSION_CEILING = 6;
 const SYSCTL_NAME = "kern.memorystatus_vm_pressure_level";
 const FREE_PCT_NAME = "kern.memorystatus_level";
 const SWAP_NAMES = ["vm.compressor.swapper.used_bytes", "vm.compressor.swapper.allocated_bytes", "vm.compressor.swapper.swapins_total"];
@@ -15,7 +16,7 @@ const LEVELS_BY_VALUE = { "1": "normal", "2": "warning", "4": "critical" };
 const SAMPLE_TTL_MS = 10_000;
 /** How old the last good reading may be when a guarded read fails; shared with the headroom sampler. */
 export const FALLBACK_MAX_AGE_MS = 60_000;
-const DEFAULT_POLICY = { heavyCeiling: 4, heavyWarning: 1 };
+const DEFAULT_POLICY = { heavyCeiling: 4, heavyWarning: 1, sessionCeiling: DEFAULT_SESSION_CEILING };
 const OVERRIDE_VALUE = "critical-as-warning";
 const stderrWarn = (msg) => {
     process.stderr.write(`[memory-pressure] ${msg}\n`);
@@ -104,15 +105,22 @@ export function sessionCapacity(level, maxParallel) {
 export function stopAtCritical(level, running) {
     return level === "critical" && running === 0;
 }
-/** `CO_LEASE_SLOTS` overrides the heavy ceiling; an invalid value keeps the default and is reported. */
+/** `CO_LEASE_SLOTS` overrides the heavy ceiling and `CO_LEASE_SESSION_SLOTS` the session ceiling; an invalid value keeps the default and is reported. */
 export function pressurePolicyFromEnv(env = process.env, warn = warnOnce) {
-    const raw = env.CO_LEASE_SLOTS;
-    if (raw === undefined)
-        return { ...DEFAULT_POLICY };
-    if (/^[1-9]\d*$/.test(raw.trim()))
-        return { ...DEFAULT_POLICY, heavyCeiling: Number(raw.trim()) };
-    warn(`ignoring invalid CO_LEASE_SLOTS=${JSON.stringify(raw)}; keeping ${DEFAULT_POLICY.heavyCeiling}`);
-    return { ...DEFAULT_POLICY };
+    const ceiling = (name, fallback) => {
+        const raw = env[name];
+        if (raw === undefined)
+            return fallback;
+        if (/^[1-9]\d*$/.test(raw.trim()))
+            return Number(raw.trim());
+        warn(`ignoring invalid ${name}=${JSON.stringify(raw)}; keeping ${fallback}`);
+        return fallback;
+    };
+    return {
+        ...DEFAULT_POLICY,
+        heavyCeiling: ceiling("CO_LEASE_SLOTS", DEFAULT_POLICY.heavyCeiling),
+        sessionCeiling: ceiling("CO_LEASE_SESSION_SLOTS", DEFAULT_SESSION_CEILING),
+    };
 }
 /** True when a reading taken at `at` is no older than `maxAgeMs` at `now`; a reading from the future (a clock step back) is not fresh. */
 export function isFresh(at, now, maxAgeMs) {
