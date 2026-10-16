@@ -137,18 +137,20 @@ export declare function defaultWarn(msg: string): void;
 /** A single non-blocking attempt: a handle, or `null` when not admitted this poll. Throws a `TypeError` on an invalid detached id, session PID or `expiresAt`. */
 export declare function tryAcquireLease(opts: LeaseOptions, meta: HolderMeta): LeaseHandle | null;
 /**
- * Polls (3 s ± 1 s, never spinning) until admitted. `stopWhen` is checked on every poll, and a stop is confirmed with a
+ * Polls (3 s ± 1 s, never spinning) until admitted, in the order waiters arrived: each waits behind a ticket in
+ * `<dir>/waiting/`, which it removes when it is admitted, when it gives up and when this returns or throws. `stopWhen` is checked on every poll, and a stop is confirmed with a
  * `level.fresh()` re-read before it is returned, so one stale cached sample cannot end a wave. `onWait` runs on each poll
  * that neither admits nor refuses, and also receives `waitedMs`: the wait so far, measured on `LeaseOptions.now` the
  * same way as an admission's or refusal's `waitedMs`, so a progress line can throttle on it without a clock of its own.
  */
-export declare function acquireLease(opts: LeaseOptions, meta: HolderMeta, wait?: {
+export declare function acquireLease(opts: LeaseOptions, meta: HolderMeta, wait?: LeaseWait): Promise<LeaseHandle | LeaseRefusal>;
+type LeaseWait = {
     maxWaitMs?: number;
     onWait?(s: LeaseStatus & {
         waitedMs: number;
     }): void;
     stopWhen?(s: LeaseStatus): boolean;
-}): Promise<LeaseHandle | LeaseRefusal>;
+};
 /**
  * Releases a detached holder by id from any process; idempotent. Returns whether a holder file was removed, and emits
  * one `release` event with `heldMs` only then. It removes only a valid detached record (one with `expiresAt`): a

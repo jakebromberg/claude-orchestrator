@@ -29,6 +29,8 @@ const HEARTBEAT_STALE_MS = 90_000;
 const FAIL_OPEN_MS = 30_000;
 const POLL_MS = 3_000;
 const COMMAND_MAX = 200;
+/** A waiter's ticket is eligible while its mtime is this close to the reader's clock; a waiter refreshes it on every poll. */
+const TICKET_FRESH_MS = 15_000;
 /** The longest a detached holder may be set to live: the largest Bash call timeout (10 min) plus hook mode's 60 s grace. */
 export const DETACHED_TTL_MAX_MS = 660_000;
 /** A detached holder's id, and the only ids `releaseHolder` accepts, so neither can name a path outside `holders/` or overrun a file name. */
@@ -138,6 +140,7 @@ type Attempt =
   | { kind: "error"; level: PressureLevel; capacity: number; error: unknown };
 
 const holdersDir = (dir: string): string => join(dir, "holders");
+const waitingDir = (dir: string): string => join(dir, "waiting");
 
 function pidAlive(pid: number): boolean {
   try {
@@ -212,6 +215,56 @@ function scanHolders(opts: LeaseOptions): { live: HolderInfo[]; dead: { id: stri
   return found;
 }
 
+/** A heavy waiter's place in line; `gated` is always false until the heavy-queue front end sets it. */
+interface Ticket {
+  seq: number;
+  id: string;
+  pid: number;
+  label: string;
+  gated: boolean;
+}
+
+function parseTicket(text: string): Ticket | null {
+  try {
+    const t = JSON.parse(text);
+    return Number.isFinite(t?.seq) && typeof t.id === "string" && isPid(t.pid) ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Under the mutex: removes the tickets of dead processes and unparseable files, and returns the rest. A ticket is
+ * `eligible` while its mtime is within 15 s of the clock; a stale one (its waiter was stopped) is passed over, not reaped,
+ * and keeps its `seq` for when the waiter resumes.
+ */
+function scanTickets(opts: LeaseOptions): (Ticket & { eligible: boolean })[] {
+  const { isAlive = pidAlive, now = Date.now } = opts;
+  const dir = waitingDir(opts.dir);
+  const nowMs = now();
+  const found: (Ticket & { eligible: boolean })[] = [];
+  for (const name of (unlessGone(() => readdirSync(dir)) ?? []).filter((n) => n.endsWith(".json"))) {
+    const text = unlessGone(() => readFileSync(join(dir, name), "utf8"));
+    const mtimeMs = unlessGone(() => statSync(join(dir, name)).mtimeMs);
+    if (text === undefined || mtimeMs === undefined) continue;
+    const t = parseTicket(text);
+    if (!t || !isAlive(t.pid)) rmSync(join(dir, name), { force: true });
+    else found.push({ ...t, eligible: isWithinWindow(mtimeMs, nowMs, TICKET_FRESH_MS) });
+  }
+  return found;
+}
+
+/** Writes or refreshes a ticket, dating it on the lease clock before the rename so a reader never sees it with another mtime. */
+function writeTicket(opts: LeaseOptions, t: Ticket): void {
+  const file = join(waitingDir(opts.dir), `${t.id}.json`);
+  writeFileSync(`${file}.tmp`, JSON.stringify(t), { mode: 0o600 });
+  const at = (opts.now ?? Date.now)() / 1000;
+  utimesSync(`${file}.tmp`, at, at);
+  renameSync(`${file}.tmp`, file);
+}
+
+const removeTicket = (opts: LeaseOptions, id: string): void => rmSync(join(waitingDir(opts.dir), `${id}.json`), { force: true });
+
 // Paste-safety for `status` output and the event log, not a security boundary: the lease does no shell parsing. Nothing
 // after the first `=` or `://` is recorded, whatever the quoting, so `NAME=value` credentials and `user:token@` URLs are
 // cut off. Secrets with neither marker before them (`-p pass`, `Authorization:` headers) are not; such callers pass a label.
@@ -285,12 +338,12 @@ function borrowedHandle(id: string, level: PressureLevel, capacity: number, live
 }
 
 /**
- * Creates the lease and holders directories (mode 0700), tightens one this user owns to 0700, and throws
+ * Creates the lease, holders and waiting directories (mode 0700), tightens one this user owns to 0700, and throws
  * (an I/O error) on one that is a symlink, not a directory, or another user's. A platform without uids
  * (Windows) skips the ownership check.
  */
 function ensureOwnDirs(dir: string): void {
-  for (const d of [dir, holdersDir(dir)]) {
+  for (const d of [dir, holdersDir(dir), waitingDir(dir)]) {
     mkdirSync(d, { recursive: true, mode: 0o700 });
     const st = lstatSync(d);
     if (!isOwnDir(st)) throw new Error(`lease: ${d} is not a directory this user owns`);
@@ -304,10 +357,13 @@ export function isOwnDir(st: Stats): boolean {
 }
 
 /**
- * One admission attempt: sample the level, then count and write holders under the mutex. Caller code
- * (`warn`, `onEvent`) runs only after the mutex is released, so a slow callback cannot outlive its staleness window.
+ * One admission attempt: sample the level, then count and write holders under the mutex. Admission is FIFO: a waiter
+ * (`ticketId` set) is admitted when fewer eligible tickets are ahead of its own than there are free slots, and a refused
+ * one writes or refreshes its ticket. Without a `ticketId` (`tryAcquireLease`) it is admitted only when a slot is free
+ * and no eligible ticket waits, and writes none. Caller code (`warn`, `onEvent`) runs only after the mutex is released,
+ * so a slow callback cannot outlive its staleness window.
  */
-function attempt(opts: LeaseOptions, meta: HolderMeta, waitedMs: number): Attempt {
+function attempt(opts: LeaseOptions, meta: HolderMeta, waitedMs: number, ticketId?: string): Attempt {
   const level = opts.level();
   const overridden = opts.level.overridden?.() === true;
   const capacity = heavyCapacity(level, opts.policy);
@@ -331,8 +387,20 @@ function attempt(opts: LeaseOptions, meta: HolderMeta, waitedMs: number): Attemp
       const admission = { waitedMs, level, live: live.length + 1, capacity, ...(overridden && { override: true as const }) };
       // A second hook install for the same call acquires the id the first one holds: that call is already admitted.
       if (meta.detached && live.some((h) => h.id === meta.detached!.id)) r = { kind: "admitted", handle: borrowedHandle(meta.detached.id, level, capacity, live.length), borrowed: true };
-      else if (live.length < capacity) r = { kind: "admitted", handle: createHolder(opts, meta, command, admission) };
-      else r = { kind: "full", level, capacity };
+      else {
+        const line = scanTickets(opts);
+        const mine = line.find((t) => t.id === ticketId);
+        const seq = mine?.seq ?? Math.max(0, ...line.map((t) => t.seq)) + 1;
+        const ahead = line.filter((t) => t.eligible && t.id !== ticketId && (ticketId === undefined || t.seq < seq)).length;
+        const free = capacity - live.length;
+        if (ahead < (ticketId === undefined ? Math.min(free, 1) : free)) {
+          r = { kind: "admitted", handle: createHolder(opts, meta, command, admission) };
+          if (mine) removeTicket(opts, mine.id);
+        } else {
+          if (ticketId !== undefined) writeTicket(opts, { seq, id: ticketId, pid: process.pid, label: command, gated: false });
+          r = { kind: "full", level, capacity };
+        }
+      }
     } finally {
       lock.release();
     }
@@ -403,23 +471,35 @@ function statusOf(opts: LeaseOptions, level: PressureLevel): LeaseStatus {
 }
 
 /**
- * Polls (3 s ± 1 s, never spinning) until admitted. `stopWhen` is checked on every poll, and a stop is confirmed with a
+ * Polls (3 s ± 1 s, never spinning) until admitted, in the order waiters arrived: each waits behind a ticket in
+ * `<dir>/waiting/`, which it removes when it is admitted, when it gives up and when this returns or throws. `stopWhen` is checked on every poll, and a stop is confirmed with a
  * `level.fresh()` re-read before it is returned, so one stale cached sample cannot end a wave. `onWait` runs on each poll
  * that neither admits nor refuses, and also receives `waitedMs`: the wait so far, measured on `LeaseOptions.now` the
  * same way as an admission's or refusal's `waitedMs`, so a progress line can throttle on it without a clock of its own.
  */
-export async function acquireLease(
-  opts: LeaseOptions,
-  meta: HolderMeta,
-  wait: { maxWaitMs?: number; onWait?(s: LeaseStatus & { waitedMs: number }): void; stopWhen?(s: LeaseStatus): boolean } = {},
-): Promise<LeaseHandle | LeaseRefusal> {
+export async function acquireLease(opts: LeaseOptions, meta: HolderMeta, wait: LeaseWait = {}): Promise<LeaseHandle | LeaseRefusal> {
   checkDetached(meta);
+  const ticketId = meta.detached?.id ?? `${process.pid}-${randomBytes(4).toString("hex")}`;
+  try {
+    return await pollForLease(opts, meta, wait, ticketId);
+  } finally {
+    try {
+      removeTicket(opts, ticketId);
+    } catch {
+      // A ticket that stays is reaped once this process exits.
+    }
+  }
+}
+
+type LeaseWait = { maxWaitMs?: number; onWait?(s: LeaseStatus & { waitedMs: number }): void; stopWhen?(s: LeaseStatus): boolean };
+
+async function pollForLease(opts: LeaseOptions, meta: HolderMeta, wait: LeaseWait, ticketId: string): Promise<LeaseHandle | LeaseRefusal> {
   const { now = Date.now, sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)), pollMs = POLL_MS } = opts;
   const start = now();
   let busySince: number | undefined;
   for (;;) {
     const waitedMs = now() - start;
-    const r = attempt(opts, meta, waitedMs);
+    const r = attempt(opts, meta, waitedMs, ticketId);
     if (r.kind === "admitted") return r.handle;
     busySince = r.kind === "busy" ? (busySince ?? now()) : undefined;
     if (r.level !== "critical") {
