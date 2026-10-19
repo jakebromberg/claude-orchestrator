@@ -188,7 +188,7 @@ export function installIsolatedHome(parent: string = tmpdir()): IsolatedHome {
 }
 
 /**
- * Makes `fs[name]` throw an error with `code` for any call whose first argument (a path) satisfies `match`; other calls pass
+ * Makes `fs[name]` (`openSync`, `writeFileSync`, `linkSync`, `renameSync` or `rmSync`) throw an error with `code` for any call whose first argument (a path) satisfies `match`; other calls pass
  * through. Returns the restore, which also re-syncs the ESM exports, so call it in `afterEach` or a `finally`. This is the style
  * for faults in modules that call `fs.x` through the namespace or a named import of a CJS builtin (`syncBuiltinESMExports` carries
  * the spy to the named bindings); a fault needing a hoisted hook on a name imported into an ESM module uses `vi.mock("node:fs")`.
