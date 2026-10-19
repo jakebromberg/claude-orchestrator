@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -965,20 +964,14 @@ describe("lease", () => {
     it("returns the admission when removing the admitted ticket fails, and leaves no holder behind", async () => {
       const holder = tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta)!;
       fake.onSleep = () => holder.release();
-      const real = fs.rmSync;
-      vi.spyOn(fs, "rmSync").mockImplementation((path, options) => {
-        if (String(path).includes("/waiting/")) throw Object.assign(new Error("boom"), { code: "EIO" });
-        return real(path, options);
-      });
-      syncBuiltinESMExports();
+      const restore = failFsCall("rmSync", (p) => p.includes("/waiting/"), "EIO");
       try {
         const r = await acquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta);
         expect(r).toMatchObject({ leased: true });
         (r as LeaseHandle).release();
         expect(readdirSync(join(dir, "holders"))).toEqual([]);
       } finally {
-        vi.restoreAllMocks();
-        syncBuiltinESMExports();
+        restore();
       }
     });
 
