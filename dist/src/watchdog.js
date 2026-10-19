@@ -12,7 +12,7 @@ import { isOwnDir, writeLeaseRecord } from "./lease-dir.js";
 import { ancestry, isPid, parsePsTable, ps, PS_TABLE_ARGS } from "./ps.js";
 import { readSuspensions } from "./suspensions.js";
 const EX_USAGE = 64;
-const USAGE = "usage: claude-orchestrator-watchdog check | brief";
+const USAGE = "usage: claude-orchestrator-watchdog check | brief | print-plist | print-status-line";
 /** A stopped group with no suspension record is reported this long after it was first seen stopped. */
 export const STOPPED_AFTER_MS = 5 * 60_000;
 /** An engine record is fresh for three refresh periods, the lease's heartbeat rule. */
@@ -182,11 +182,15 @@ export function check(d) {
 }
 /** Free fraction of the lease directory's volume below which `brief` reports a full disk. */
 export const DISK_FULL_FRACTION = 0.02;
+/** The disk-full line's text; `print-status-line` reuses it so the shell and `brief` say the same thing. */
+export function diskFullText(dir, pct) {
+    return `watchdog: the disk holding ${dir} is nearly full (${pct}% free); heavy commands are refused once the lease cannot write`;
+}
 /** A disk-full line when the lease directory's volume is nearly out of space, read live (a full disk fails every record write), else `""`. */
 function diskFullLine(dir) {
     try {
         const { bavail, blocks } = statfsSync(dir);
-        return blocks > 0 && bavail / blocks < DISK_FULL_FRACTION ? `watchdog: the disk holding ${dir} is nearly full (${((bavail / blocks) * 100).toFixed(1)}% free); heavy commands are refused once the lease cannot write` : "";
+        return blocks > 0 && bavail / blocks < DISK_FULL_FRACTION ? diskFullText(dir, ((bavail / blocks) * 100).toFixed(1)) : "";
     }
     catch {
         return "";

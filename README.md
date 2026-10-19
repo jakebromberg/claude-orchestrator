@@ -145,10 +145,12 @@ A stopped engine takes its in-tree stall monitor with it, so the report has to c
 
 ```bash
 claude-orchestrator-watchdog check   # scan once; update watchdog.json, watchdog.log and watchdog.brief
-claude-orchestrator-watchdog brief   # print watchdog.brief (nothing when all is well)
+claude-orchestrator-watchdog brief   # print watchdog.brief, then a disk-full line when the lease volume is under 2% free (nothing when all is well)
+claude-orchestrator-watchdog print-plist         # print the LaunchAgent plist (refuses from a git worktree)
+claude-orchestrator-watchdog print-status-line   # print the status-line shell fragment (spawns no node)
 ```
 
-Its state lives in the lease directory (`CO_LEASE_DIR`): `watchdog.json` (first-seen-stopped times and the latest findings) and `watchdog.brief` (one line, empty when all is well; a status line can read it on every refresh) are written atomically; `watchdog.log` is appended (regular files only, symlinks not followed). `check` never creates the lease directory and writes nothing when it is missing, a symlink or another user's. Run it from a scheduler; installing one is a separate step.
+Its state lives in the lease directory (`CO_LEASE_DIR`): `watchdog.json` (first-seen-stopped times and the latest findings) and `watchdog.brief` (the findings on one line, empty when all is well; a status line can read it on every refresh; `brief` adds a second, live disk-full line, written to no file) are written atomically; `watchdog.log` is appended (regular files only, symlinks not followed). `check` never creates the lease directory and writes nothing when it is missing, a symlink or another user's. Run it from a scheduler; installing one is a separate step.
 
 - **Scan.** One `ps -axo pid=,ppid=,pgid=,uid=,stat=,etime=,command=` per run through `ps.ts`, with a 60 s timeout. A scan that throws or returns no rows skips the cycle: the previous state stays and the skip is logged.
 - **Scope.** A stopped group (every member's `stat` starts with `T`) that contains or descends from a `claude` process, or belongs to a registered engine. A `claude` process is one whose executable (the first word of its command, by basename) is `claude`; an argument naming claude does not count. A job stopped with Ctrl-Z outside those trees is not reported.
@@ -157,6 +159,24 @@ Its state lives in the lease directory (`CO_LEASE_DIR`): `watchdog.json` (first-
 - **Due suspension reminder.** A valid record whose `remindAt` has passed while every member of its group is stopped, in any tree (`c.procs`, not the scope above). A due record whose group has no live members is reported once as stale; the record is left in place.
 - **Old lease suspension.** A record with `by: "lease"` whose `at` is 30 minutes or more old, whatever the group's state.
 - **Silent engine.** A fresh engine record whose activity, the newest mtime among the regular `<logDir>/*.log` files (else `startedAt`), is older than `stallTimeout` plus 10 minutes (40 at the 1800 s default); never at `stallTimeout` 0. Exclusive with the stalled-engine report, which needs a stale record.
+
+**Install runbook.** The package prints; it installs nothing. Each of the three steps below is the owner's, taken with a go-ahead at install time. Run the printers from the primary checkout (`print-plist` refuses from a git worktree, whose `dist` is removed at cleanup, and takes `node` from `process.execPath`).
+
+1. **LaunchAgent** (`check` every 120 s at background priority, stderr to `<lease dir>/watchdog.err`):
+
+   ```bash
+   node dist/src/cli-watchdog.js print-plist > ~/Library/LaunchAgents/com.jakebromberg.claude-orchestrator-watchdog.plist
+   launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.jakebromberg.claude-orchestrator-watchdog.plist
+   launchctl kickstart -k gui/$UID/com.jakebromberg.claude-orchestrator-watchdog   # then check that <lease dir>/watchdog.json is non-empty
+   ```
+
+   Remove: `launchctl bootout gui/$UID/com.jakebromberg.claude-orchestrator-watchdog && rm ~/Library/LaunchAgents/com.jakebromberg.claude-orchestrator-watchdog.plist`.
+2. **Status line:** `node dist/src/cli-watchdog.js print-status-line` prints a shell fragment that prints `watchdog.brief` and the disk-full line, each only when present, with the 2% threshold filled in and no `node`. Append it to the `statusLine` command in `~/.claude/settings.json` so it prints as a second line below the existing one; a normal status line is unchanged. Remove: delete the fragment from that command.
+3. **CLAUDE.md line:** add this to the "Machine-wide lease for heavy commands" section of `~/.claude/CLAUDE.md`. Remove: delete the line.
+
+   ```
+   To stop a process group on purpose, run `claude-orchestrator-lease suspend <pgid> --by <who> --reason <why>` and later `claude-orchestrator-lease resume <pgid>`; never `kill -STOP`, which the watchdog reports as an unexplained stop.
+   ```
 
 The rules are a list (`RULES` in `watchdog.ts`) of functions from the scan to findings, so a new rule needs no change to the reporters.
 

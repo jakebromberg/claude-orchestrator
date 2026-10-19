@@ -3,14 +3,18 @@
  * Reports stopped engine and session trees from outside every tree:
  *
  *   claude-orchestrator-watchdog check   scan once; update watchdog.json, watchdog.log and watchdog.brief
- *   claude-orchestrator-watchdog brief   print watchdog.brief (nothing when all is well)
+ *   claude-orchestrator-watchdog brief   print watchdog.brief, then a disk-full line when the lease volume is nearly full (nothing when all is well)
+ *   claude-orchestrator-watchdog print-plist         print the LaunchAgent plist (refuses from a git worktree)
+ *   claude-orchestrator-watchdog print-status-line   print the status-line shell fragment (no node)
  *
  * State lives in the lease directory. The logic is in `watchdog.ts`; this file wires the real `ps` and clock.
  * Exit 78 means the lease directory is misconfigured (a relative `CO_LEASE_DIR`).
  */
 import { realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { leaseDirectory } from "./memory-pressure.js";
+import { isGitWorktree, runPrint } from "./watchdog-install.js";
 import { runWatchdog, scanProcessTable } from "./watchdog.js";
 const EX_CONFIG = 78;
 function main(argv) {
@@ -23,7 +27,12 @@ function main(argv) {
         err(`watchdog: ${e.message}`);
         return EX_CONFIG;
     }
-    return runWatchdog(argv, { dir, scan: scanProcessTable, now: Date.now, out: (line) => void process.stdout.write(`${line}\n`), err });
+    const out = (line) => void process.stdout.write(`${line}\n`);
+    const checkout = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "../..");
+    const printed = runPrint(argv, { dir, node: process.execPath, checkout, isWorktree: isGitWorktree, out, err });
+    if (printed !== undefined)
+        return printed;
+    return runWatchdog(argv, { dir, scan: scanProcessTable, now: Date.now, out, err });
 }
 // A bin is run through a symlink (`node_modules/.bin/...`), so compare real paths.
 const entryPath = process.argv[1] ? realpathSync(process.argv[1]) : "";

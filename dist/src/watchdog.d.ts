@@ -67,5 +67,7 @@ export interface WatchdogDeps {
 export declare function check(d: WatchdogDeps): void;
 /** Free fraction of the lease directory's volume below which `brief` reports a full disk. */
 export declare const DISK_FULL_FRACTION = 0.02;
+/** The disk-full line's text; `print-status-line` reuses it so the shell and `brief` say the same thing. */
+export declare function diskFullText(dir: string, pct: string): string;
 /** Runs `check` or `brief` (`argv[0]`): exit 0 done, 64 usage. `brief` prints `watchdog.brief` (nothing when it is empty or missing), then a disk-full line when the volume is nearly full (a live `statfsSync`, no file written). */
 export declare function runWatchdog(argv: string[], d: WatchdogDeps): number;
