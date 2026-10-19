@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultHeadroomSampler, levelView } from "../src/headroom-sampler.js";
@@ -19,10 +19,11 @@ describe("defaultHeadroomSampler", () => {
   let reads: number;
   let log: ReturnType<typeof vi.fn>;
 
-  const make = (extra: NodeJS.ProcessEnv = {}, table: StepTable = FLAT, over: { dir?: string } = {}) => {
+  const make = (extra: NodeJS.ProcessEnv = {}, table: StepTable = FLAT, over: { dir?: string; heavyLive?: () => number } = {}) => {
     const read = () => (reads++, signals);
-    return defaultHeadroomSampler({ CO_LEASE_DIR: over.dir ?? dir, ...extra }, { read, now: () => t, log, table });
+    return defaultHeadroomSampler({ CO_LEASE_DIR: over.dir ?? dir, ...extra }, { read, now: () => t, log, table, heavyLive: over.heavyLive });
   };
+  const pressure = () => (existsSync(file("pressure.jsonl")) ? readFileSync(file("pressure.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
   const file = (name = "headroom.json") => join(dir, name);
   const stored = () => JSON.parse(readFileSync(file(), "utf8"));
   const plant = (record: unknown, name = "headroom.json") => writeFileSync(file(name), JSON.stringify(record));
@@ -68,9 +69,9 @@ describe("defaultHeadroomSampler", () => {
   it("samples, returns the level, step and signals, and writes headroom.json beside level.json", () => {
     signals = { level: "warning", freePct: 35, swapUsedBytes: 5 };
     expect(make()()).toEqual({ level: "warning", step: 1, signals });
-    expect(stored()).toEqual({ at: t, signals, step: 1, risingSince: null });
+    expect(stored()).toEqual({ at: t, signals, step: 1, risingSince: null, sampledAt: t });
     expect(JSON.parse(readFileSync(file("level.json"), "utf8"))).toEqual({ level: "warning", at: t });
-    expect(readdirSync(dir).sort()).toEqual(["headroom.json", "level.json"]);
+    expect(readdirSync(dir).sort()).toEqual(["headroom.json", "level.json", "pressure.jsonl"]);
   });
 
   it("serves a second sampler on the same directory from the file, so both agree without a second read", () => {
@@ -154,7 +155,7 @@ describe("defaultHeadroomSampler", () => {
     const mine = make(OVERRIDE);
     expect(mine()).toEqual({ level: "warning", step: 1, signals });
     expect(mine.overridden?.()).toBe(true);
-    expect(stored()).toEqual({ at: t, signals, step: 0, risingSince: null });
+    expect(stored()).toEqual({ at: t, signals, step: 0, risingSince: null, sampledAt: t });
     expect(JSON.parse(readFileSync(file("level.json"), "utf8")).level).toBe("critical");
     expect(make()()).toMatchObject({ level: "critical", step: 0 });
   });
@@ -247,6 +248,82 @@ describe("defaultHeadroomSampler", () => {
     s.fresh();
     expect(log).toHaveBeenCalledTimes(1);
     expect(log).toHaveBeenCalledWith(expect.stringContaining("CO_PRESSURE_OVERRIDE"));
+  });
+
+  describe("the pressure history", () => {
+    const MEMSIZE = 16 * 1024 ** 3;
+    /** Takes a fresh reading `gap` ms after the last one from a second sampler on the same directory. */
+    const next = (gap: number, to: MemorySignals) => {
+      t += gap;
+      signals = to;
+      make().fresh();
+    };
+
+    it("writes the first sample as one line of level, free %, free bytes, swap, step and heavy holders", () => {
+      signals = { level: "warning", freePct: 25, swapUsedBytes: 7, memsizeBytes: MEMSIZE };
+      make({}, FLAT, { heavyLive: () => 2 }).fresh();
+      expect(pressure()).toEqual([
+        { ts: new Date(t).toISOString(), level: "warning", freePct: 25, freeBytes: MEMSIZE / 4, swapUsedBytes: 7, step: 1, heavyLive: 2 },
+      ]);
+    });
+
+    it("omits freeBytes without memsizeBytes, and heavyLive when the count throws", () => {
+      make({}, FLAT, { heavyLive: () => { throw new Error("scan"); } }).fresh();
+      expect(pressure().map((l) => Object.keys(l))).toEqual([["ts", "level", "freePct", "step"]]);
+    });
+
+    it("writes nothing for an unchanged reading inside the heartbeat, across samplers", () => {
+      make().fresh();
+      next(10_000, { level: "normal", freePct: 50 });
+      next(49_999, { level: "normal", freePct: 50 });
+      expect(pressure()).toHaveLength(1);
+      expect(stored().sampledAt).toBe(1_000_000);
+    });
+
+    it("writes a heartbeat once sampledAt is 60 s old, and restarts the interval", () => {
+      make().fresh();
+      next(60_000, { level: "normal", freePct: 50 });
+      expect(pressure()).toHaveLength(2);
+      expect(stored().sampledAt).toBe(t);
+      next(59_999, { level: "normal", freePct: 50 });
+      expect(pressure()).toHaveLength(2);
+    });
+
+    it.each<[string, MemorySignals, number]>([
+      ["a level change", { level: "warning", freePct: 50 }, 2],
+      ["a free % move of 5 points", { level: "normal", freePct: 55 }, 2],
+      ["a free % move of 4 points", { level: "normal", freePct: 46 }, 1],
+    ])("on %s", (_n, to, lines) => {
+      make().fresh();
+      next(1_000, to);
+      expect(pressure()).toHaveLength(lines);
+    });
+
+    it("writes on a step change at the same level and free %", () => {
+      plant({ at: t - 20_000, signals: { level: "normal", freePct: 50 }, step: 1, risingSince: t - 60_000, sampledAt: t - 20_000 });
+      make({}, HOLD).fresh();
+      expect(pressure().map((l) => l.step)).toEqual([2]);
+    });
+
+    it("treats an unreadable previous record as a first sample", () => {
+      plant({ at: t, signals: { level: "bogus" }, step: 2, risingSince: null, sampledAt: t });
+      make().fresh();
+      expect(pressure()).toHaveLength(1);
+    });
+
+    it("swallows a failed append: the reading is served and headroom.json is still written", () => {
+      mkdirSync(file("pressure.jsonl"));
+      expect(make().fresh()).toMatchObject({ level: "normal", step: 4 });
+      expect(stored().at).toBe(t);
+    });
+
+    it("round-trips memsizeBytes through headroom.json to a second sampler", () => {
+      signals = { level: "normal", freePct: 50, memsizeBytes: MEMSIZE };
+      make()();
+      signals = { level: "normal", freePct: 50 };
+      expect(make()().signals).toEqual({ level: "normal", freePct: 50, memsizeBytes: MEMSIZE });
+      expect(reads).toBe(1);
+    });
   });
 
   describe("levelView", () => {

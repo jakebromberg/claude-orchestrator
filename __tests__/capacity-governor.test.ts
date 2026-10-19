@@ -4,7 +4,7 @@ import type { PressureLevel } from "../src/memory-pressure.js";
 import { scriptedPressureSampler } from "../src/testing.js";
 import type { Logger } from "../src/types.js";
 
-function setUp(levels: PressureLevel[], adaptive = true, maxParallel = 4, injectClock = true) {
+function setUp(levels: PressureLevel[], adaptive = true, maxParallel = 4, injectClock = true, extra: { runId?: string; onTransition?: (e: unknown) => void } = {}) {
   const clock = { t: 0 };
   const info = vi.fn();
   const logger = { info, warn: vi.fn(), error: vi.fn(), step: vi.fn(), header: vi.fn() } as Logger;
@@ -14,6 +14,7 @@ function setUp(levels: PressureLevel[], adaptive = true, maxParallel = 4, inject
     adaptive,
     logger,
     ...(injectClock && { now: () => clock.t }),
+    ...extra,
   });
   return { governor, clock, info };
 }
@@ -105,5 +106,26 @@ describe("createCapacityGovernor", () => {
     expect(info.mock.calls[1][0]).toContain("critical");
     expect(info.mock.calls[0][0]).toContain("launch capacity 1");
     expect(info.mock.calls[1][0]).toContain("launch capacity 0");
+  });
+
+  it("reports each transition to onTransition with the run id, levels and the new capacity", () => {
+    const onTransition = vi.fn();
+    const { governor } = setUp(["normal", "warning", "critical"], true, 4, true, { runId: "run-7", onTransition });
+    governor.tick();
+    governor.tick();
+    expect(onTransition.mock.calls).toEqual([
+      [{ type: "capacity-transition", runId: "run-7", from: "normal", to: "warning", capacity: 1 }],
+      [{ type: "capacity-transition", runId: "run-7", from: "warning", to: "critical", capacity: 0 }],
+    ]);
+  });
+
+  it("omits the run id when none was given, and reports nothing without a change", () => {
+    const onTransition = vi.fn();
+    const { governor } = setUp(["normal", "normal", "warning"], true, 4, true, { onTransition });
+    governor.tick();
+    expect(onTransition).not.toHaveBeenCalled();
+    governor.tick();
+    expect(Object.keys(onTransition.mock.calls[0][0])).toEqual(["type", "runId", "from", "to", "capacity"]);
+    expect(JSON.stringify(onTransition.mock.calls[0][0])).not.toContain("runId");
   });
 });

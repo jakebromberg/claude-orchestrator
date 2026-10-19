@@ -28,12 +28,12 @@ export { generateReport, formatReport } from "./report.js";
 // Process runner & main factory
 export { createRealProcessRunner } from "./real-process-runner.js";
 export { authBanner, claudeExecOptions, claudeSessionEnv, usesApiKeyBilling, API_CREDENTIAL_ENV_VARS, USE_API_KEY_ENV_VAR, } from "./claude-env.js";
-export { applyPressureOverride, cachedPressureSampler, defaultPressureSampler, heavyCapacity, leaseDirectory, pressurePolicyFromEnv, readMemoryPressure, readMemorySignals, sessionCapacity, reservePctFromEnv, sessionSlotsFromEnv, stopAtCritical, usableBytes, } from "./memory-pressure.js";
+export { applyPressureOverride, cachedPressureSampler, defaultPressureSampler, heavyCapacity, leaseDirectory, pressurePolicyFromEnv, readMemoryPressure, readMemorySignals, sessionCapacity, reservePctFromEnv, sessionSlotsFromEnv, stopAtCritical, usableBytes, freeBytes, } from "./memory-pressure.js";
 export { DEFAULT_STEP_TABLE, headroomCapacity, headroomStep, heavyBudget, sessionHeadroomCapacity } from "./headroom.js";
 export { defaultHeadroomSampler, levelView } from "./headroom-sampler.js";
 export { acquireLease, acquireSessionLease, tryAcquireLease, leaseStatus, defaultLeaseOptions, releaseHolder } from "./lease.js";
 export { createFileEngineRegistry } from "./engine-registry.js";
-export { leaseEventSink } from "./lease-events.js";
+export { jsonlSink, leaseEventSink } from "./lease-events.js";
 export { isHeavyCommand } from "./lease-hook.js";
 export { createMain } from "./create-main.js";
 // YAML config

@@ -150,6 +150,8 @@ export function reservePctFromEnv(env = process.env, warn = warnOnce) {
 }
 /** The bytes of `memsizeBytes` the heavy class may budget: what is left after the `reservePct` reserve. */
 export const usableBytes = (memsizeBytes, reservePct) => Math.floor((memsizeBytes * (100 - reservePct)) / 100);
+/** Free bytes as `memsizeBytes × freePct / 100`; `undefined` when either is absent, never 0. */
+export const freeBytes = (s) => s.memsizeBytes === undefined || s.freePct === undefined ? undefined : Math.floor((s.memsizeBytes * s.freePct) / 100);
 /** True when a reading taken at `at` is no older than `maxAgeMs` at `now`; a reading from the future (a clock step back) is not fresh. */
 export function isFresh(at, now, maxAgeMs) {
     const age = now - at;

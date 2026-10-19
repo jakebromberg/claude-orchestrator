@@ -67,6 +67,8 @@ export declare function sessionSlotsFromEnv(env?: NodeJS.ProcessEnv, warn?: (msg
 export declare function reservePctFromEnv(env?: NodeJS.ProcessEnv, warn?: (msg: string) => void): number;
 /** The bytes of `memsizeBytes` the heavy class may budget: what is left after the `reservePct` reserve. */
 export declare const usableBytes: (memsizeBytes: number, reservePct: number) => number;
+/** Free bytes as `memsizeBytes × freePct / 100`; `undefined` when either is absent, never 0. */
+export declare const freeBytes: (s: MemorySignals) => number | undefined;
 /** True when a reading taken at `at` is no older than `maxAgeMs` at `now`; a reading from the future (a clock step back) is not fresh. */
 export declare function isFresh(at: number, now: number, maxAgeMs: number): boolean;
 /** Wraps `read` in a TTL cache (default 10 s). A cached level from the future (the clock stepped back) has expired. */

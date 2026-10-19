@@ -3,12 +3,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const built = vi.hoisted(() => ({ deps: [] as ({ log?: (msg: string) => void } | undefined)[] }));
+const built = vi.hoisted(() => ({ deps: [] as ({ log?: (msg: string) => void; heavyLive?: () => number } | undefined)[] }));
 vi.mock("../src/headroom-sampler.js", async (importOriginal) => {
   const real = await importOriginal<typeof import("../src/headroom-sampler.js")>();
   return {
     ...real,
-    defaultHeadroomSampler: (env: NodeJS.ProcessEnv, deps?: { log?: (msg: string) => void }) => {
+    defaultHeadroomSampler: (env: NodeJS.ProcessEnv, deps?: { log?: (msg: string) => void; heavyLive?: () => number }) => {
       built.deps.push(deps);
       return real.defaultHeadroomSampler(env, deps);
     },
@@ -16,7 +16,7 @@ vi.mock("../src/headroom-sampler.js", async (importOriginal) => {
 });
 
 const { scriptedPressureSampler } = await import("../src/testing.js");
-const { defaultLeaseOptions } = await import("../src/lease.js");
+const { defaultLeaseOptions, tryAcquireLease } = await import("../src/lease.js");
 
 describe("defaultLeaseOptions sampler wiring", () => {
   let dir: string;
@@ -48,5 +48,17 @@ describe("defaultLeaseOptions sampler wiring", () => {
     expect(o.headroom).toBeDefined();
     expect(typeof o.level.fresh).toBe("function");
     expect(typeof o.level.overridden).toBe("function");
+  });
+
+  it("hands the sampler a count of the live heavy holders under this lease directory", () => {
+    const o = defaultLeaseOptions({ CO_LEASE_DIR: dir });
+    const heavyLive = built.deps.at(-1)!.heavyLive!;
+    expect(heavyLive()).toBe(0);
+    const handle = tryAcquireLease({ ...o, level: scriptedPressureSampler("normal"), headroom: undefined }, { command: "npm test", cwd: "/w" });
+    try {
+      expect(heavyLive()).toBe(1);
+    } finally {
+      if (handle && "release" in handle) handle.release();
+    }
   });
 });

@@ -37,7 +37,7 @@ export type { SummaryColumn, SummaryOptions } from "./summary.js";
 export { ProcessPool } from "./process-pool.js";
 export type { ProcessPoolOptions } from "./process-pool.js";
 export { createCapacityGovernor } from "./capacity-governor.js";
-export type { CapacityGovernor } from "./capacity-governor.js";
+export type { CapacityGovernor, CapacityTransition } from "./capacity-governor.js";
 export { StallMonitor } from "./stall-monitor.js";
 export type { StallMonitorOptions } from "./stall-monitor.js";
 
@@ -80,6 +80,7 @@ export {
   sessionSlotsFromEnv,
   stopAtCritical,
   usableBytes,
+  freeBytes,
 } from "./memory-pressure.js";
 export type { MemorySignals, PressureLevel, PressurePolicy, PressureSampler } from "./memory-pressure.js";
 export { DEFAULT_STEP_TABLE, headroomCapacity, headroomStep, heavyBudget, sessionHeadroomCapacity } from "./headroom.js";
@@ -89,7 +90,7 @@ export type { HeadroomState, StepBand, StepTable } from "./headroom.js";
 export { acquireLease, acquireSessionLease, tryAcquireLease, leaseStatus, defaultLeaseOptions, releaseHolder } from "./lease.js";
 export { createFileEngineRegistry } from "./engine-registry.js";
 export type { FileEngineRegistryOptions } from "./engine-registry.js";
-export { leaseEventSink } from "./lease-events.js";
+export { jsonlSink, leaseEventSink } from "./lease-events.js";
 export { isHeavyCommand } from "./lease-hook.js";
 export type { CpuTicks, HolderInfo, HolderMeta, LeaseEvent, LeaseHandle, LeaseOptions, LeaseRefusal, LeaseStatus, SessionMeta } from "./lease.js";
 export { createMain } from "./create-main.js";

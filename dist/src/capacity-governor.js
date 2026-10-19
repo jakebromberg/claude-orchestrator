@@ -6,10 +6,11 @@ const HYSTERESIS_MS = 60_000;
  * stays at the lower value after `warning` or `critical` until `normal` has
  * held for 60 s (a debounce, not a prediction). Without it, `warning` is
  * ignored and there is no hysteresis, but `critical` still closes capacity.
- * The first reading is taken at creation; each transition is logged once.
+ * The first reading is taken at creation; each transition is logged once and passed to `onTransition`
+ * (a callback that throws is ignored), tagged with `runId` when given.
  */
 export function createCapacityGovernor(opts) {
-    const { sampler, maxParallel, adaptive, logger, now = () => performance.now() } = opts;
+    const { sampler, maxParallel, adaptive, logger, runId, onTransition, now = () => performance.now() } = opts;
     let held = "normal";
     let calmSince;
     let shown = "normal";
@@ -35,6 +36,12 @@ export function createCapacityGovernor(opts) {
         const label = level === "unknown" ? "normal" : level;
         if (label !== shown) {
             logger.info(`Memory pressure ${shown} -> ${label}: launch capacity ${capacity}`);
+            try {
+                onTransition?.({ type: "capacity-transition", runId, from: shown, to: label, capacity });
+            }
+            catch {
+                // Recording a transition must never change what the governor does.
+            }
             shown = label;
         }
     };
