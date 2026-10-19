@@ -2,7 +2,7 @@
  * The lease directory's one rule: a real directory (not a symlink) that this user owns, at mode 0700. Every writer in
  * the lease directory goes through it. No load-time side effects.
  */
-import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, type Stats } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { isPid } from "./ps.js";
 import { writeFileAtomic, type AtomicWriteOptions } from "./atomic-write.js";
@@ -38,10 +38,14 @@ export function writeLeaseRecord(dir: string, name: string, text: string, opts?:
   return true;
 }
 
+// A planted symlink is not followed and a planted FIFO is not waited on.
+const READ_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+
 /**
  * The records of `<dir>/<sub>`, read-only: each canonical `<pid>.json` file (no leading zero; a `writeFileAtomic` temp
- * name is not one) with its text and mtime. A missing, symlinked or foreign subdirectory reads as empty, and a file
- * that cannot be read is skipped. Creates and removes nothing.
+ * name is not one) with its text and mtime. A missing, symlinked or foreign subdirectory reads as empty, and an entry
+ * that cannot be read, or is not a regular file this user owns (a symlink, FIFO, socket, directory), is skipped.
+ * Creates and removes nothing.
  */
 export function readRecordDir(dir: string, sub: string): { stem: number; text: string; mtimeMs: number }[] {
   const path = join(dir, sub);
@@ -51,7 +55,14 @@ export function readRecordDir(dir: string, sub: string): { stem: number; text: s
       const stem = Number(/^([1-9]\d*)\.json$/.exec(name)?.[1]);
       if (!isPid(stem)) return [];
       try {
-        return [{ stem, text: readFileSync(join(path, name), "utf-8"), mtimeMs: statSync(join(path, name)).mtimeMs }];
+        const fd = openSync(join(path, name), READ_FLAGS);
+        try {
+          const st = fstatSync(fd);
+          if (!st.isFile() || (process.getuid && st.uid !== process.getuid())) return [];
+          return [{ stem, text: readFileSync(fd, "utf-8"), mtimeMs: st.mtimeMs }];
+        } finally {
+          closeSync(fd);
+        }
       } catch {
         return [];
       }
