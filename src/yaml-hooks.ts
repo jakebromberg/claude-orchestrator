@@ -12,8 +12,8 @@ import { resolveRepoSettings } from "./repo-settings.js";
 import { perIssueSpawnArgs } from "./model-effort.js";
 import { shellQuote } from "./shell-quote.js";
 import { claudeExecOptions } from "./claude-env.js";
-import { acquireLease, defaultWarn, leaseStatus, type LeaseHandle, type LeaseOptions, type LeaseRefusal } from "./lease.js";
-import { formatRefusal, refusalStopReason } from "./lease-messages.js";
+import { acquireLease, defaultWarn, type LeaseHandle, type LeaseOptions, type LeaseRefusal } from "./lease.js";
+import { formatPostCheckStop, refusalStopReason } from "./lease-messages.js";
 import { stopAtCritical } from "./memory-pressure.js";
 
 const OUTPUT_TAIL_BYTES = 64 * 1024;
@@ -454,7 +454,7 @@ export function deriveHooks(
         return {
           passed: false,
           stopped: refusalStopReason(stopped),
-          summary: `Post-session check not run: ${formatRefusal(stopped, leaseStatus(ctx!.lease!))}`,
+          summary: formatPostCheckStop(stopped),
         };
       }
       return { passed: true };
