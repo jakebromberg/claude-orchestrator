@@ -26,6 +26,12 @@ export function formatDiskFull(refusal: LeaseRefusal): string {
 export const formatRefusal = (refusal: LeaseRefusal, status: LeaseStatus): string =>
   refusal.refused === "disk-full" ? formatDiskFull(refusal) : formatNoSlot(refusal, status);
 
+/** The post-check's summary for a refusal. Its memory-critical stop is terminal, so unlike `formatNoSlot` it has no `lease: no slot after` prefix and does not say to rerun. */
+export const formatPostCheckStop = (refusal: LeaseRefusal): string =>
+  refusal.refused === "disk-full"
+    ? `Post-session check not run: ${formatDiskFull(refusal)}`
+    : `post-check: skipped because memory pressure is critical (${refusal.level}, ${refusal.live} live); the check did not run and will not be retried`;
+
 /** Why a refusal stops work: `disk-full` for a full disk, else `memory-critical`. */
 export const refusalStopReason = (refusal: LeaseRefusal): "memory-critical" | "disk-full" => (refusal.refused === "disk-full" ? "disk-full" : "memory-critical");
 

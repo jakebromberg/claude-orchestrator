@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDiskFull, formatNoSlot, formatRefusal, refusalExitCode, refusalStopReason } from "../src/lease-messages.js";
+import { formatDiskFull, formatNoSlot, formatPostCheckStop, formatRefusal, refusalExitCode, refusalStopReason } from "../src/lease-messages.js";
 import type { LeaseRefusal, LeaseStatus } from "../src/lease.js";
 
 const status = { capacity: 1, live: [{ pid: 7, command: "npm test" }] } as unknown as LeaseStatus;
@@ -14,5 +14,20 @@ describe("lease refusal classifier", () => {
     expect(formatRefusal(refusal(refused), status)).toBe(text);
     expect(refusalStopReason(refusal(refused))).toBe(reason);
     expect(refusalExitCode(refusal(refused))).toBe(exit);
+  });
+});
+
+describe("formatPostCheckStop", () => {
+  it.each([
+    { refused: "max-wait" as const, text: "post-check: skipped because memory pressure is critical (warning, 1 live); the check did not run and will not be retried" },
+    { refused: "stopped" as const, text: "post-check: skipped because memory pressure is critical (warning, 1 live); the check did not run and will not be retried" },
+    { refused: "disk-full" as const, text: `Post-session check not run: ${formatDiskFull(refusal("disk-full"))}` },
+  ])("$refused: pins the summary", ({ refused, text }) => {
+    const got = formatPostCheckStop(refusal(refused));
+    expect(got).toBe(text);
+    if (refused !== "disk-full") {
+      expect(got).not.toContain("lease: no slot after");
+      expect(got).not.toContain("rerun");
+    }
   });
 });
