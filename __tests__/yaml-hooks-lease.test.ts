@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import fs, { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -133,6 +134,24 @@ describe("leased postSessionCheck", () => {
 
     expect(events[0]).toMatchObject({ type: "acquire", ...(overridden ? { override: true } : {}) });
     expect("override" in events[0]).toBe(overridden);
+  });
+
+  it("a full disk stops the check as disk-full: no command runs and the summary names the disk", async () => {
+    const real = fs.openSync;
+    vi.spyOn(fs, "openSync").mockImplementation(((path: fs.PathLike, ...rest: unknown[]) => {
+      if (String(path).endsWith(".mutex")) throw Object.assign(new Error("full"), { code: "ENOSPC" });
+      return (real as (...a: unknown[]) => number)(path, ...rest);
+    }) as typeof fs.openSync);
+    syncBuiltinESMExports();
+    try {
+      const runCommand = vi.fn(async () => "");
+      const result = await deriveHooks(makeYaml(), { runCommand }).postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions() });
+      expect(runCommand).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ passed: false, stopped: "disk-full", summary: expect.stringContaining("disk is full (ENOSPC)") });
+    } finally {
+      vi.restoreAllMocks();
+      syncBuiltinESMExports();
+    }
   });
 
   describe("at critical", () => {
