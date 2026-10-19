@@ -1,6 +1,6 @@
-import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, linkSync, lstatSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { writeFileAtomic } from "./atomic-write.js";
 import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
 import { leaseDirectory } from "./memory-pressure.js";
 import { ancestry, isPid, parsePsTable, ps, PS_TABLE_ARGS, type ProcRow } from "./ps.js";
@@ -93,12 +93,20 @@ export function suspensionFile(dir: string, pgid: number): string {
   return join(dir, "suspensions", `${pgid}.json`);
 }
 
-/** Writes `record` through the lease's directory rule; throws when the group already has one. */
+/** Writes `record` through the lease's directory rule; throws when the group already has one. The complete temp file is hard-linked to the final name, so the refusal is atomic (`EEXIST`) and a reader never sees a partial record. */
 export function writeSuspension(dir: string, record: SuspensionRecord): void {
   ensureOwnSubdir(dir, "suspensions");
   const file = suspensionFile(dir, record.pgid);
-  if (existsSync(file)) throw new Error(`process group ${record.pgid} already has a suspension record (${file})`);
-  writeFileAtomic(file, JSON.stringify(record));
+  const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(record), { mode: 0o600 });
+    linkSync(tmp, file);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`process group ${record.pgid} already has a suspension record (${file})`);
+    throw err;
+  } finally {
+    rmSync(tmp, { force: true });
+  }
 }
 
 /** Removes the record of `pgid`; returns whether one existed. */
