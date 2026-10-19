@@ -2,8 +2,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { sweepDeadTemps, writeFileAtomic } from "./atomic-write.js";
 import { ensureOwnSubdir } from "./lease-dir.js";
-import { pidAlive } from "./lease.js";
-import { psField } from "./ps.js";
+import { pidAlive, psField } from "./ps.js";
 import type { EngineInfo, EngineRegistry } from "./types.js";
 
 export interface FileEngineRegistryOptions {

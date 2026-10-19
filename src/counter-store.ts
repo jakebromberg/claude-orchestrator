@@ -173,6 +173,7 @@ function tryReapStaleLock(lockFile: string): boolean {
   }
   const pid = parseInt(raw, 10);
   if (!Number.isFinite(pid) || pid <= 0) return false;
+  // Not pidAlive: only ESRCH counts as dead here, so any other error leaves the lock alone.
   try {
     process.kill(pid, 0);
     return false; // PID is alive — lock is real

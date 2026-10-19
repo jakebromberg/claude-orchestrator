@@ -321,6 +321,7 @@ export async function createMain(options) {
             process.exit(1);
         }
         const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
+        // Not pidAlive: any error, EPERM included, reads as not running here.
         try {
             process.kill(pid, 0);
         }
@@ -356,6 +357,7 @@ export async function createMain(options) {
         // Guard against double-detach
         if (fs.existsSync(pidFile)) {
             const existingPid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
+            // Not pidAlive: any error, EPERM included, reads as a stale file here.
             try {
                 process.kill(existingPid, 0);
                 console.error(`Detached orchestrator already running (PID ${existingPid})`);

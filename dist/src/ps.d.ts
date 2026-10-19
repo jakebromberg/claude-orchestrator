@@ -10,6 +10,8 @@ export declare const psField: (pid: number, field: string, opts?: {
 export declare function psAncestors(startPid: number, depth: number): number[];
 /** A PID that `kill(pid, 0)` checks as one process: `0` and negatives address a group, or every process, and `process.kill` rejects 2^31 and above. */
 export declare const isPid: (n: unknown) => boolean;
+/** Whether `kill(pid, 0)` finds the process: it exists, or exists under another user (`EPERM`). */
+export declare function pidAlive(pid: number): boolean;
 /** `ps` `etime`, `[[dd-]hh:]mm:ss`, in milliseconds; NaN for any other shape. */
 export declare function parseElapsed(etime: string): number;
 /** The one process-table scan: `ps` arguments whose output `parsePsTable` reads. Callers keep their own `ps` (and timeout), so injected dependencies stay text-in. */

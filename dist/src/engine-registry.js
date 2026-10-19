@@ -2,8 +2,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { sweepDeadTemps, writeFileAtomic } from "./atomic-write.js";
 import { ensureOwnSubdir } from "./lease-dir.js";
-import { pidAlive } from "./lease.js";
-import { psField } from "./ps.js";
+import { pidAlive, psField } from "./ps.js";
 /** How often a live engine rewrites its record; the watchdog derives its freshness window from it. */
 export const REFRESH_MS = 30_000;
 /** The bounded `ps` reader (see `ps.ts`): a hung `ps` must not slow engine start. */

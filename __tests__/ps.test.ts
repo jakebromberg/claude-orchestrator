@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { execFileSync } from "node:child_process";
-import { ancestry, isPid, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, type ProcRow } from "../src/ps.js";
+import { execFileSync, spawnSync } from "node:child_process";
+import { ancestry, isPid, pidAlive, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, type ProcRow } from "../src/ps.js";
 import { psText } from "./helpers/ps-text.js";
 
 vi.mock("node:child_process", async (orig) => ({ ...(await orig<typeof import("node:child_process")>()), execFileSync: vi.fn() }));
@@ -117,5 +117,31 @@ describe("ancestry", () => {
 describe("isPid", () => {
   it.each([[1, true], [2 ** 31 - 1, true], [0, false], [-1, false], [2 ** 31, false], [1.5, false], ["7", false], [NaN, false]])("%j is %s", (n, ok) => {
     expect(isPid(n)).toBe(ok);
+  });
+});
+
+describe("pidAlive", () => {
+  const kill = (code?: string) =>
+    vi.spyOn(process, "kill").mockImplementation((() => {
+      if (code) throw Object.assign(new Error(code), { code });
+      return true;
+    }) as typeof process.kill);
+
+  it.each([
+    ["signal 0 succeeds", undefined, true],
+    ["ESRCH", "ESRCH", false],
+    ["EPERM (another user's process)", "EPERM", true],
+  ])("%s", (_name, code, expected) => {
+    const spy = kill(code);
+    expect(pidAlive(4242)).toBe(expected);
+    expect(spy).toHaveBeenCalledWith(4242, 0);
+    spy.mockRestore();
+  });
+
+  it("finds this process alive and a reaped child dead", () => {
+    expect(pidAlive(process.pid)).toBe(true);
+    const child = spawnSync(process.execPath, ["-e", ""]);
+    expect(child.pid).toBeGreaterThan(0);
+    expect(pidAlive(child.pid)).toBe(false);
   });
 });

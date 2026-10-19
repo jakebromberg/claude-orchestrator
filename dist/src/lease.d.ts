@@ -1,8 +1,8 @@
 import { type HeadroomSampler } from "./headroom-sampler.js";
 import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
 import { type MemorySignals, type PressureLevel, type PressurePolicy, type PressureSampler } from "./memory-pressure.js";
-import { isPid } from "./ps.js";
-export { ensureOwnSubdir, isOwnDir, isPid };
+import { isPid, pidAlive } from "./ps.js";
+export { ensureOwnSubdir, isOwnDir, isPid, pidAlive };
 /** The longest a detached holder may be set to live: the largest Bash call timeout (10 min) plus hook mode's 60 s grace. */
 export declare const DETACHED_TTL_MAX_MS = 660000;
 type ReapReason = "stale-heartbeat" | "orphan-bound" | "corrupt" | "dead-session" | "expired";
@@ -176,7 +176,6 @@ export interface LeaseRefusal {
     /** The out-of-space error code of a `disk-full` refusal. */
     code?: string;
 }
-export declare function pidAlive(pid: number): boolean;
 /**
  * The CPU busy share, under the mutex: 1 minus the idle share of the ticks since the reading in `cpu.json`. A reading
  * under 2 s old is returned as stored, one 2 to 10 s old is the base of a new delta (and is replaced), and an older,
