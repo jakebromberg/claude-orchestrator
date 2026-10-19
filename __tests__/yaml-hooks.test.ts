@@ -929,9 +929,10 @@ describe("deriveHooks", () => {
 
       describe("a member that no longer holds the output pipes", () => {
         // sh forks the last command of an && list and dies from SIGTERM, so 'close' fires at once while this member,
-        // which traps TERM and has its output redirected, lives on.
+        // which traps TERM and has its output redirected, lives on. The trailing `; :` keeps the member a forked child:
+        // dash (CI's /bin/sh) otherwise execs the last command in place, and the tests would pass with the bug back.
         const trapCmd = (pidFile: string) =>
-          `cd "${dir}" && bash -c 'echo $$ > "${pidFile}"; trap "echo t" TERM; while :; do sleep 0.1; done' > "${dir}/out.log" 2>&1`;
+          `cd "${dir}" && bash -c 'echo $$ > "${pidFile}"; trap "echo t" TERM; while :; do sleep 0.1; done' > "${dir}/out.log" 2>&1; :`;
         const readPid = async (file: string) => {
           let pid = 0;
           await vi.waitFor(() => { pid = Number(readFileSync(file, "utf-8")); expect(pid).toBeGreaterThan(0); });
