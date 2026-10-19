@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { DEFAULT_STEP_TABLE, headroomCapacity, headroomStep, type HeadroomState, type StepTable } from "../src/headroom.js";
+import { DEFAULT_STEP_TABLE, headroomCapacity, headroomStep, heavyBudget, type HeadroomState, type StepTable } from "../src/headroom.js";
 import type { MemorySignals, PressureLevel } from "../src/memory-pressure.js";
 import * as barrel from "../src/index.js";
 
@@ -140,8 +140,22 @@ describe("headroomCapacity", () => {
     [1, 6, 1],
     [0, 6, 0],
     [3, 2, 2],
-  ])("step %i under a ceiling of %i gives %i slots", (step, heavyCeiling, expected) => {
-    expect(headroomCapacity(step, { heavyCeiling, heavyWarning: 1 })).toBe(expected);
+  ])("step %i under a ceiling of %i gives %i slots", (step, ceiling, expected) => {
+    expect(headroomCapacity(step, ceiling)).toBe(expected);
+  });
+});
+
+describe("heavyBudget", () => {
+  it.each<[step: number, expected: number]>([
+    [4, 1000],
+    [3, 750],
+    [2, 500],
+    [1, 250],
+    [0, 0],
+    [7, 1000],
+    [-1, 0],
+  ])("step %i of 1000 usable bytes gives %i", (step, expected) => {
+    expect(heavyBudget(step, 1000)).toBe(expected);
   });
 });
 

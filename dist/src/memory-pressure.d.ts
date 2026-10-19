@@ -15,6 +15,8 @@ export interface PressureSampler {
 export declare const FALLBACK_MAX_AGE_MS = 60000;
 /** The machine-wide ceiling of implementer sessions at step 4. */
 export declare const DEFAULT_SESSION_SLOTS = 6;
+/** The share of `hw.memsize`, in percent, the heavy class leaves to the rest of the machine. */
+export declare const DEFAULT_RESERVE_PCT = 25;
 export declare const warnOnce: (msg: string) => void;
 /**
  * Reads the macOS pressure level. `null` means the darwin read failed, timed
@@ -32,13 +34,17 @@ export interface MemorySignals {
     swapUsedBytes?: number;
     swapAllocatedBytes?: number;
     swapinsTotal?: number;
+    /** `hw.memsize`, read once per process and carried by every later reading; absent until a read of it succeeds. */
+    memsizeBytes?: number;
 }
+/** Forgets the cached `hw.memsize`, so a test can read it again. */
+export declare function resetMemsizeCache(): void;
 /**
  * Reads the level and free percentage in one guarded `sysctl` call: `null` means
  * it failed, timed out or returned an unrecognised value, as for `readMemoryPressure`.
- * The swap values come from a separate call that only ever leaves them absent,
- * because `sysctl -n` with one unknown name exits 1 and would turn a renamed oid
- * into a failed guarded read.
+ * The swap values and `hw.memsize` (asked for until one read succeeds, then cached for the process) come
+ * from a separate call that only ever leaves them absent, because `sysctl -n` with one unknown name exits 1
+ * and would turn a renamed oid into a failed guarded read.
  */
 export declare function readMemorySignals(deps?: {
     platform?: NodeJS.Platform;
@@ -57,6 +63,10 @@ export declare function stopAtCritical(level: PressureLevel, running: number): b
 export declare function pressurePolicyFromEnv(env?: NodeJS.ProcessEnv, warn?: (msg: string) => void): PressurePolicy;
 /** `CO_LEASE_SESSION_SLOTS` replaces the session ceiling (and caps the lower steps); an invalid value keeps the default and is reported. */
 export declare function sessionSlotsFromEnv(env?: NodeJS.ProcessEnv, warn?: (msg: string) => void): number;
+/** `CO_LEASE_RESERVE_PCT`, an integer from 0 to 99; an invalid value keeps the default and is reported. */
+export declare function reservePctFromEnv(env?: NodeJS.ProcessEnv, warn?: (msg: string) => void): number;
+/** The bytes of `memsizeBytes` the heavy class may budget: what is left after the `reservePct` reserve. */
+export declare const usableBytes: (memsizeBytes: number, reservePct: number) => number;
 /** True when a reading taken at `at` is no older than `maxAgeMs` at `now`; a reading from the future (a clock step back) is not fresh. */
 export declare function isFresh(at: number, now: number, maxAgeMs: number): boolean;
 /** Wraps `read` in a TTL cache (default 10 s). A cached level from the future (the clock stepped back) has expired. */

@@ -10,6 +10,7 @@ import { userInfo } from "node:os";
 import { isAbsolute, join } from "node:path";
 const SYSCTL_NAME = "kern.memorystatus_vm_pressure_level";
 const FREE_PCT_NAME = "kern.memorystatus_level";
+const MEMSIZE_NAME = "hw.memsize";
 const SWAP_NAMES = ["vm.compressor.swapper.used_bytes", "vm.compressor.swapper.allocated_bytes", "vm.compressor.swapper.swapins_total"];
 const LEVELS_BY_VALUE = { "1": "normal", "2": "warning", "4": "critical" };
 const SAMPLE_TTL_MS = 10_000;
@@ -18,6 +19,8 @@ export const FALLBACK_MAX_AGE_MS = 60_000;
 const DEFAULT_POLICY = { heavyCeiling: 4, heavyWarning: 1 };
 /** The machine-wide ceiling of implementer sessions at step 4. */
 export const DEFAULT_SESSION_SLOTS = 6;
+/** The share of `hw.memsize`, in percent, the heavy class leaves to the rest of the machine. */
+export const DEFAULT_RESERVE_PCT = 25;
 const OVERRIDE_VALUE = "critical-as-warning";
 const stderrWarn = (msg) => {
     process.stderr.write(`[memory-pressure] ${msg}\n`);
@@ -45,13 +48,18 @@ export function readMemoryPressure(deps = {}) {
         return null;
     }
 }
+let memsize;
+/** Forgets the cached `hw.memsize`, so a test can read it again. */
+export function resetMemsizeCache() {
+    memsize = undefined;
+}
 const parseCount = (raw) => (raw !== undefined && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : undefined);
 /**
  * Reads the level and free percentage in one guarded `sysctl` call: `null` means
  * it failed, timed out or returned an unrecognised value, as for `readMemoryPressure`.
- * The swap values come from a separate call that only ever leaves them absent,
- * because `sysctl -n` with one unknown name exits 1 and would turn a renamed oid
- * into a failed guarded read.
+ * The swap values and `hw.memsize` (asked for until one read succeeds, then cached for the process) come
+ * from a separate call that only ever leaves them absent, because `sysctl -n` with one unknown name exits 1
+ * and would turn a renamed oid into a failed guarded read.
  */
 export function readMemorySignals(deps = {}) {
     const { platform = process.platform, sysctl = defaultSysctl } = deps;
@@ -70,17 +78,21 @@ export function readMemorySignals(deps = {}) {
         return null;
     }
     try {
-        const [used, allocated, swapins] = sysctl(...SWAP_NAMES).split("\n").map(parseCount);
+        const [used, allocated, swapins, size] = sysctl(...SWAP_NAMES, ...(memsize === undefined ? [MEMSIZE_NAME] : [])).split("\n").map(parseCount);
         if (used !== undefined)
             signals.swapUsedBytes = used;
         if (allocated !== undefined)
             signals.swapAllocatedBytes = allocated;
         if (swapins !== undefined)
             signals.swapinsTotal = swapins;
+        if (size)
+            memsize = size;
     }
     catch {
-        // Swap values are optional; the step never depends on them.
+        // Swap values and the memory size are optional; the step never depends on them.
     }
+    if (memsize !== undefined)
+        signals.memsizeBytes = memsize;
     return signals;
 }
 /** The child's stderr is discarded: inherited, a failing `sysctl` would write to the caller's stderr past the lease's `warn` seam. */
@@ -126,6 +138,18 @@ export function sessionSlotsFromEnv(env = process.env, warn = warnOnce) {
     warn(`ignoring invalid CO_LEASE_SESSION_SLOTS=${JSON.stringify(raw)}; keeping ${DEFAULT_SESSION_SLOTS}`);
     return DEFAULT_SESSION_SLOTS;
 }
+/** `CO_LEASE_RESERVE_PCT`, an integer from 0 to 99; an invalid value keeps the default and is reported. */
+export function reservePctFromEnv(env = process.env, warn = warnOnce) {
+    const raw = env.CO_LEASE_RESERVE_PCT;
+    if (raw === undefined)
+        return DEFAULT_RESERVE_PCT;
+    if (/^\d{1,2}$/.test(raw.trim()))
+        return Number(raw.trim());
+    warn(`ignoring invalid CO_LEASE_RESERVE_PCT=${JSON.stringify(raw)}; keeping ${DEFAULT_RESERVE_PCT}`);
+    return DEFAULT_RESERVE_PCT;
+}
+/** The bytes of `memsizeBytes` the heavy class may budget: what is left after the `reservePct` reserve. */
+export const usableBytes = (memsizeBytes, reservePct) => Math.floor((memsizeBytes * (100 - reservePct)) / 100);
 /** True when a reading taken at `at` is no older than `maxAgeMs` at `now`; a reading from the future (a clock step back) is not fresh. */
 export function isFresh(at, now, maxAgeMs) {
     const age = now - at;

@@ -3,7 +3,7 @@
  * signals and a data table, so retuning the bands is a one-line change. Pure;
  * `headroom-sampler.ts` shares its result machine-wide.
  */
-import type { MemorySignals, PressurePolicy } from "./memory-pressure.js";
+import type { MemorySignals } from "./memory-pressure.js";
 /** The step at `normal` (and `unknown`): today's ceiling. */
 export declare const MAX_STEP = 4;
 /** `step` applies while free memory is at least `minFreePct`; the best band met wins, so order does not matter. */
@@ -24,8 +24,10 @@ export interface HeadroomState {
 }
 /** The owner's Q1 table: `normal` 4, `warning` 3 at 40% free or more, 2 at 30 to 39%, 1 under 30%, `critical` 0, and a rise of one step per 60 s. */
 export declare const DEFAULT_STEP_TABLE: StepTable;
-/** Heavy-command slots at `step`: step 4 gets the whole ceiling, a lower step at most that many, step 0 none. */
-export declare function headroomCapacity(step: number, policy: PressurePolicy): number;
+/** Heavy-command slots at `step`: step 4 gets the whole `ceiling`, a lower step at most that many, step 0 none. */
+export declare function headroomCapacity(step: number, ceiling: number): number;
+/** The bytes of `usable` memory the heavy class may hold at `step`: `step / 4` of it, none at step 0. */
+export declare function heavyBudget(step: number, usable: number): number;
 /** Implementer-session slots at `step`: step 4 gets the whole `ceiling`, steps 3, 2 and 1 get 4, 2 and 1 (each capped by it), step 0 none. */
 export declare function sessionHeadroomCapacity(step: number, ceiling: number): number;
 /**

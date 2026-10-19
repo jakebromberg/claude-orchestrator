@@ -59,6 +59,8 @@ export interface LeaseOptions {
     policy: PressurePolicy;
     /** The machine-wide ceiling of implementer sessions (`CO_LEASE_SESSION_SLOTS`, default 6); steps below 4 are capped by it. */
     sessionSlots?: number;
+    /** The percentage of the machine's memory the heavy class leaves unbudgeted (`CO_LEASE_RESERVE_PCT`, default 25). */
+    reservePct?: number;
     isAlive?(pid: number): boolean;
     /**
      * Wall-clock epoch milliseconds (default `Date.now`). It dates heartbeats, which are compared with mtimes the kernel
@@ -96,6 +98,8 @@ export interface HolderMeta {
     gated?: boolean;
     /** Marks a holder whose front end owns its process group and may suspend it under overload. Set only by the heavy-queue front end. */
     suspendable?: boolean;
+    /** Heavy class only: the bytes of memory the command is expected to use. Absent, or not a positive number, takes the unmatched weight (`usable / heavyCeiling`). Ignored while the machine's memory is unknown. */
+    weight?: number;
 }
 interface HolderRecord {
     id: string;
@@ -114,6 +118,8 @@ interface HolderRecord {
     override?: true;
     /** Set while the holder's group is stopped; a gated ticket is not admitted while any live holder has it. */
     suspended?: true;
+    /** Bytes; absent means the unmatched weight. */
+    weight?: number;
 }
 /** A live holder as `leaseStatus` reports it. */
 export interface HolderInfo extends HolderRecord {

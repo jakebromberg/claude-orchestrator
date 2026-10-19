@@ -11,8 +11,11 @@ import {
   pressurePolicyFromEnv,
   readMemoryPressure,
   readMemorySignals,
+  reservePctFromEnv,
+  resetMemsizeCache,
   sessionCapacity,
   stopAtCritical,
+  usableBytes,
   type PressureLevel,
 } from "../src/memory-pressure.js";
 import * as barrel from "../src/index.js";
@@ -51,6 +54,8 @@ describe("readMemoryPressure", () => {
 describe("readMemorySignals", () => {
   const GUARDED = ["kern.memorystatus_vm_pressure_level", "kern.memorystatus_level"];
   const SWAP = ["vm.compressor.swapper.used_bytes", "vm.compressor.swapper.allocated_bytes", "vm.compressor.swapper.swapins_total"];
+  const MEMSIZE = "hw.memsize";
+  beforeEach(resetMemsizeCache);
   const reply = (guarded: string | Error, swap: string | Error) => (...names: string[]): string => {
     const out = names[0] === GUARDED[0] ? guarded : swap;
     if (out instanceof Error) throw out;
@@ -66,7 +71,35 @@ describe("readMemorySignals", () => {
       swapAllocatedBytes: 9663676416,
       swapinsTotal: 12,
     });
-    expect(sysctl.mock.calls).toEqual([GUARDED, SWAP]);
+    expect(sysctl.mock.calls).toEqual([GUARDED, [...SWAP, MEMSIZE]]);
+  });
+
+  describe("hw.memsize", () => {
+    it("is read once, in the optional call, and every later reading carries the cached value", () => {
+      const sysctl = vi.fn(reply("1\n59\n", "5\n6\n7\n25769803776\n"));
+      expect(readMemorySignals({ platform: "darwin", sysctl })).toMatchObject({ level: "normal", freePct: 59, memsizeBytes: 25769803776 });
+      sysctl.mockImplementation(reply("1\n58\n", "5\n6\n7\n"));
+      expect(readMemorySignals({ platform: "darwin", sysctl })).toMatchObject({ freePct: 58, memsizeBytes: 25769803776 });
+      expect(sysctl.mock.calls).toEqual([GUARDED, [...SWAP, MEMSIZE], GUARDED, SWAP]);
+    });
+
+    it.each([
+      ["a throw (the optional call fails)", new Error("unknown oid")],
+      ["empty output", ""],
+      ["an unparseable value", "5\n6\n7\nabc\n"],
+      ["zero", "5\n6\n7\n0\n"],
+    ])("leaves it absent and the guarded values intact on %s, and asks again next time", (_name, swap) => {
+      const sysctl = vi.fn(reply("1\n59\n", swap));
+      expect(readMemorySignals({ platform: "darwin", sysctl })).not.toHaveProperty("memsizeBytes");
+      expect(readMemorySignals({ platform: "darwin", sysctl })).toMatchObject({ level: "normal", freePct: 59 });
+      expect(sysctl.mock.calls[3]).toEqual([...SWAP, MEMSIZE]);
+    });
+
+    it("is not read when the guarded read fails", () => {
+      const sysctl = vi.fn(reply(new Error("ETIMEDOUT"), "5\n6\n7\n25769803776\n"));
+      expect(readMemorySignals({ platform: "darwin", sysctl })).toBeNull();
+      expect(sysctl).toHaveBeenCalledTimes(1);
+    });
   });
 
   it.each([
@@ -101,6 +134,31 @@ describe("readMemorySignals", () => {
     const sysctl = vi.fn(() => "1");
     expect(readMemorySignals({ platform: "linux", sysctl })).toEqual({ level: "unknown" });
     expect(sysctl).not.toHaveBeenCalled();
+  });
+});
+
+describe("the memory reserve", () => {
+  it.each<[env: Record<string, string>, pct: number, warned: boolean]>([
+    [{}, 25, false],
+    [{ CO_LEASE_RESERVE_PCT: "40" }, 40, false],
+    [{ CO_LEASE_RESERVE_PCT: " 0 " }, 0, false],
+    [{ CO_LEASE_RESERVE_PCT: "99" }, 99, false],
+    [{ CO_LEASE_RESERVE_PCT: "100" }, 25, true],
+    [{ CO_LEASE_RESERVE_PCT: "-5" }, 25, true],
+    [{ CO_LEASE_RESERVE_PCT: "2.5" }, 25, true],
+    [{ CO_LEASE_RESERVE_PCT: "" }, 25, true],
+  ])("reads CO_LEASE_RESERVE_PCT from %j as %i", (env, pct, warned) => {
+    const warn = vi.fn();
+    expect(reservePctFromEnv(env, warn)).toBe(pct);
+    expect(warn).toHaveBeenCalledTimes(warned ? 1 : 0);
+  });
+
+  it.each([
+    [24 * 2 ** 30, 25, 18 * 2 ** 30],
+    [24 * 2 ** 30, 0, 24 * 2 ** 30],
+    [100, 33, 67],
+  ])("leaves %i bytes with a %i%% reserve as %i usable", (memsize, pct, usable) => {
+    expect(usableBytes(memsize, pct)).toBe(usable);
   });
 });
 
