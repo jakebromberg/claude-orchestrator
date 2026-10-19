@@ -19,11 +19,11 @@ describe("lease refusal classifier", () => {
 
 describe("formatPostCheckStop", () => {
   it.each([
-    { refused: "max-wait" as const, text: "post-check: skipped because memory pressure is critical (warning, 1 live); the check did not run and will not be retried" },
-    { refused: "stopped" as const, text: "post-check: skipped because memory pressure is critical (warning, 1 live); the check did not run and will not be retried" },
+    { refused: "max-wait" as const, text: "post-check: skipped because memory pressure is critical (critical, 0 live); the check did not run and will not be retried" },
+    { refused: "stopped" as const, text: "post-check: skipped because memory pressure is critical (critical, 0 live); the check did not run and will not be retried" },
     { refused: "disk-full" as const, text: `Post-session check not run: ${formatDiskFull(refusal("disk-full"))}` },
   ])("$refused: pins the summary", ({ refused, text }) => {
-    const got = formatPostCheckStop(refusal(refused));
+    const got = formatPostCheckStop({ ...refusal(refused), level: "critical", live: 0 });
     expect(got).toBe(text);
     if (refused !== "disk-full") {
       expect(got).not.toContain("lease: no slot after");

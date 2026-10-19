@@ -161,6 +161,9 @@ describe("leased postSessionCheck", () => {
       expect(clock.sleeps.length).toBe(2);
       expect(runCommand).not.toHaveBeenCalled();
       expect(result).toMatchObject({ passed: false, stopped: "memory-critical" });
+      expect(result.summary).toBe("post-check: skipped because memory pressure is critical (critical, 0 live); the check did not run and will not be retried");
+      expect(result.summary).not.toContain("lease: no slot after");
+      expect(result.summary).not.toContain("rerun");
       expect(events).toMatchObject([{ type: "timeout", refused: "stopped", level: "critical" }]);
     });
 
