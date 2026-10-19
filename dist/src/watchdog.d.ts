@@ -57,6 +57,11 @@ export interface WatchdogDeps {
     now: () => number;
     out: (line: string) => void;
     err: (line: string) => void;
+    /** The volume reader behind `brief`'s disk-full line (default `statfsSync`). */
+    statfs?: (dir: string) => {
+        bavail: number;
+        blocks: number;
+    };
 }
 /**
  * One cycle: scan, run every rule, then write `watchdog.json`, `watchdog.brief` (the one-line summary, empty when all

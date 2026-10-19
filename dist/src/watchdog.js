@@ -187,9 +187,9 @@ export function diskFullText(dir, pct) {
     return `watchdog: the disk holding ${dir} is nearly full (${pct}% free); heavy commands are refused once the lease cannot write`;
 }
 /** A disk-full line when the lease directory's volume is nearly out of space, read live (a full disk fails every record write), else `""`. */
-function diskFullLine(dir) {
+function diskFullLine(dir, statfs) {
     try {
-        const { bavail, blocks } = statfsSync(dir);
+        const { bavail, blocks } = statfs(dir);
         return blocks > 0 && bavail / blocks < DISK_FULL_FRACTION ? diskFullText(dir, ((bavail / blocks) * 100).toFixed(1)) : "";
     }
     catch {
@@ -212,7 +212,7 @@ export function runWatchdog(argv, d) {
         catch { }
         if (line)
             d.out(line);
-        const full = diskFullLine(d.dir);
+        const full = diskFullLine(d.dir, d.statfs ?? statfsSync);
         if (full)
             d.out(full);
     }

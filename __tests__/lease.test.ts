@@ -19,7 +19,7 @@ import * as barrel from "../src/index.js";
 import type { PressureLevel } from "../src/memory-pressure.js";
 import { scriptedHeadroomSampler, scriptedPressureSampler } from "../src/testing.js";
 import type { HeadroomReading } from "../src/headroom-sampler.js";
-import { scriptedLease, unwritableLeaseDir, type FakeLeaseClock, type ScriptedLease } from "./helpers/lease.js";
+import { scriptedLease, failFsCall, unwritableLeaseDir, type FakeLeaseClock, type ScriptedLease } from "./helpers/lease.js";
 
 const meta: HolderMeta = { command: "npm test", cwd: "/work" };
 const HEARTBEAT_STALE_MS = 90_000;
@@ -1283,18 +1283,11 @@ describe("lease", () => {
   });
 
   describe("a failing filesystem", () => {
+    let restore = () => {};
     const failMutexOpen = (code: string) => {
-      const real = fs.openSync;
-      vi.spyOn(fs, "openSync").mockImplementation(((path: fs.PathLike, ...rest: unknown[]) => {
-        if (String(path).endsWith(".mutex")) throw Object.assign(new Error(code), { code });
-        return (real as (...a: unknown[]) => number)(path, ...rest);
-      }) as typeof fs.openSync);
-      syncBuiltinESMExports();
+      restore = failFsCall("openSync", (p) => p.endsWith(".mutex"), code);
     };
-    afterEach(() => {
-      vi.restoreAllMocks();
-      syncBuiltinESMExports();
-    });
+    afterEach(() => restore());
 
     it.each<[string, boolean]>([
       ["ENOSPC", true],

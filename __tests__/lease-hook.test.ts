@@ -1,12 +1,11 @@
 import { spawnSync } from "node:child_process";
-import fs, { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultLeaseOptions, leaseStatus, tryAcquireLease, releaseHolder, type LeaseEvent, type LeaseOptions } from "../src/lease.js";
 import { isHeavyCommand, isHeavyHookCall, runHook, settingsEntries } from "../src/lease-hook.js";
-import { isolatedLeaseEnv, scriptedLease, unwritableLeaseDir, type FakeLeaseClock, type ScriptedLease } from "./helpers/lease.js";
+import { failFsCall, isolatedLeaseEnv, scriptedLease, unwritableLeaseDir, type FakeLeaseClock, type ScriptedLease } from "./helpers/lease.js";
 
 const CLI = "/opt/co/dist/src/cli-lease.js";
 const QUOTED_CLI = '"${CO_HOME:-$HOME/Developer/claude-orchestrator}/dist/src/cli-lease.js"';
@@ -421,18 +420,12 @@ describe("hook events", () => {
     });
 
     it("denies a full disk with the do-not-rerun line, not the no-slot line", async () => {
-      const real = fs.openSync;
-      vi.spyOn(fs, "openSync").mockImplementation(((path: fs.PathLike, ...rest: unknown[]) => {
-        if (String(path).endsWith(".mutex")) throw Object.assign(new Error("full"), { code: "ENOSPC" });
-        return (real as (...a: unknown[]) => number)(path, ...rest);
-      }) as typeof fs.openSync);
-      syncBuiltinESMExports();
+      const restore = failFsCall("openSync", (p) => p.endsWith(".mutex"), "ENOSPC");
       try {
         const { out } = await run(pre());
         expect(out).toBe(denied("lease: the disk is full (ENOSPC); free space before running heavy commands — do not rerun"));
       } finally {
-        vi.restoreAllMocks();
-        syncBuiltinESMExports();
+        restore();
       }
     });
 

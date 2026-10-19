@@ -1,7 +1,8 @@
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import fs, { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os, { tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
+import { vi } from "vitest";
 import type { LeaseEvent, LeaseOptions } from "../../src/lease.js";
 import type { PressureLevel } from "../../src/memory-pressure.js";
 import { scriptedPressureSampler } from "../../src/testing.js";
@@ -183,5 +184,24 @@ export function installIsolatedHome(parent: string = tmpdir()): IsolatedHome {
       syncBuiltinESMExports();
       rmSync(home, { recursive: true, force: true });
     },
+  };
+}
+
+/**
+ * Makes `fs[name]` throw an error with `code` for any call whose first argument (a path) satisfies `match`; other calls pass
+ * through. Returns the restore, which also re-syncs the ESM exports, so call it in `afterEach` or a `finally`. This is the style
+ * for faults in modules that call `fs.x` through the namespace or a named import of a CJS builtin (`syncBuiltinESMExports` carries
+ * the spy to the named bindings); a fault needing a hoisted hook on a name imported into an ESM module uses `vi.mock("node:fs")`.
+ */
+export function failFsCall(name: "openSync" | "writeFileSync" | "linkSync" | "renameSync", match: (path: string) => boolean, code: string): () => void {
+  const real = fs[name] as (...a: unknown[]) => unknown;
+  const spy = vi.spyOn(fs, name as "openSync").mockImplementation(((path: fs.PathLike, ...rest: unknown[]) => {
+    if (match(String(path))) throw Object.assign(new Error(code), { code });
+    return real(path, ...rest);
+  }) as typeof fs.openSync);
+  syncBuiltinESMExports();
+  return () => {
+    spy.mockRestore();
+    syncBuiltinESMExports();
   };
 }
