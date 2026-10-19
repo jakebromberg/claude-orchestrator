@@ -122,7 +122,7 @@ describe("lease hook mode (integration)", () => {
     const pre = await run("/bin/sh", ["-c", entry("PreToolUse")], env, hookInput("npm test", { tool_use_id: "toolu_sh" }));
     expect(pre.code).toBe(0);
     expect(pre.stderr).toBe("");
-    expect(JSON.parse(pre.stdout).hookSpecificOutput.additionalContext).toMatch(/^lease: admitted after 0s \(pressure=\w+, 1\/1 live\)$/);
+    expect(JSON.parse(pre.stdout).hookSpecificOutput.additionalContext).toMatch(/^lease: admitted after 0s \(pressure=\w+, 1\/1 live(, weights [\d.]+\/[\d.]+ GB)?\)$/);
     expect(JSON.parse(readFileSync(holder, "utf8"))).toMatchObject({ id: "hook-toolu_sh", pid: process.pid });
     const post = await run("/bin/sh", ["-c", entry("PostToolUse")], env, hookInput("npm test", { tool_use_id: "toolu_sh", hook_event_name: "PostToolUse" }));
     expect(post).toEqual({ code: 0, stdout: "", stderr: "" });

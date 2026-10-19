@@ -67,6 +67,7 @@ describe("leaseEventSink", () => {
   it.each<[string, LeaseEvent]>([
     ["acquire", { type: "acquire", id: "1-ab", waitedMs: 40, level: "warning", step: 1, live: 2, capacity: 2 }],
     ["acquire with override", { type: "acquire", id: "1-ab", waitedMs: 0, level: "warning", step: 1, live: 1, capacity: 1, override: true }],
+    ["acquire with weights", { type: "acquire", id: "1-ab", waitedMs: 0, level: "normal", step: 3, live: 2, capacity: 3, weights: { weight: 3_221_225_472, used: 7_516_192_768, budget: 9_663_676_416 } }],
     ["release", { type: "release", id: "1-ab", heldMs: 900, exitCode: 0 }],
     ["max-wait timeout", { type: "timeout", refused: "max-wait", waitedMs: 5_000 }],
     ["stopped timeout", { type: "timeout", refused: "stopped", waitedMs: 3_000, level: "critical" }],

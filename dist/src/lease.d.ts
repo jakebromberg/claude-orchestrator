@@ -15,6 +15,9 @@ export type LeaseEvent = {
     live: number;
     capacity: number;
     override?: true;
+    weights?: Weights & {
+        weight: number;
+    };
 } | {
     type: "release";
     id: string;
@@ -125,6 +128,11 @@ interface HolderRecord {
 export interface HolderInfo extends HolderRecord {
     ageSec: number;
 }
+/** Bytes the live holders weigh and the bytes the step's budget allows; reported only while holders are weighed. */
+export interface Weights {
+    used: number;
+    budget: number;
+}
 export interface LeaseStatus {
     level: PressureLevel;
     capacity: number;
@@ -133,6 +141,8 @@ export interface LeaseStatus {
     /** The kernel signals behind the step; `null` after a failed guarded read, and when no `headroom` sampler is set. */
     signals: MemorySignals | null;
     live: HolderInfo[];
+    /** Set only in weight mode (class with a `budget`, machine memory known); count mode leaves it out. */
+    weights?: Weights;
     /** Set by `leaseStatus` only: the session class's capacity at the same reading, and its live holders. */
     sessions?: {
         capacity: number;
@@ -148,13 +158,16 @@ export interface LeaseHandle {
     /** `null` for an unleased (fail-open) handle. */
     id: string | null;
     leased: boolean;
-    /** `live` counts this holder. */
+    /** `live` counts this holder. `weights` is set in weight mode: this holder's bytes, with `used` counting it. */
     admission: {
         waitedMs: number;
         level: PressureLevel;
         live: number;
         capacity: number;
         override?: true;
+        weights?: Weights & {
+            weight: number;
+        };
     };
     /** Env for the child command; the holder id is never put in `process.env`. */
     childEnv(): Record<string, string>;

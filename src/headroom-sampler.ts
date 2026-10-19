@@ -71,14 +71,14 @@ function validSignals(s: unknown): s is MemorySignals {
  * steps from the last good reading under 60 s old (in-process, else `level.json`), and otherwise from `critical`; it is
  * not shared. `CO_PRESSURE_OVERRIDE=critical-as-warning` maps `critical` to `warning` and step 0 to 1 in this process
  * only. Each sample that changed the level, the step or free % (by 5 points) from the stored record, or that finds `sampledAt`
- * 60 s old, also appends a line to `pressure.jsonl`; `heavyLive` counts live heavy holders for it (the sampler has no lease
- * options), and a failed count or append is swallowed. Throws when `leaseDirectory(env)` does. `deps` exists for tests.
+ * 60 s old, also appends a line to `pressure.jsonl`; `heavyLive` counts live heavy holders and `heavyWeights` reports their `weights` (weight mode only) for it (the sampler has no lease
+ * options); each line has `type: "sample"`, and a failed count, weighing or append is swallowed. Throws when `leaseDirectory(env)` does. `deps` exists for tests.
  */
 export function defaultHeadroomSampler(
   env: NodeJS.ProcessEnv = process.env,
-  deps: { read?: () => MemorySignals | null; now?: () => number; log?: (msg: string) => void; table?: StepTable; heavyLive?: () => number } = {},
+  deps: { read?: () => MemorySignals | null; now?: () => number; log?: (msg: string) => void; table?: StepTable; heavyLive?: () => number; heavyWeights?: (step: number, signals: MemorySignals) => { used: number; budget: number } | undefined } = {},
 ): HeadroomSampler {
-  const { read = () => readMemorySignals(), now = Date.now, log: emit = warnOnce, table = DEFAULT_STEP_TABLE, heavyLive } = deps;
+  const { read = () => readMemorySignals(), now = Date.now, log: emit = warnOnce, table = DEFAULT_STEP_TABLE, heavyLive, heavyWeights } = deps;
   const logged = new Set<string>();
   const log = (msg: string): void => {
     if (!logged.has(msg)) {
@@ -105,7 +105,13 @@ export function defaultHeadroomSampler(
     } catch {
       // The count is optional; the line is still worth writing.
     }
-    history({ level: signals.level, freePct: signals.freePct, freeBytes: freeBytes(signals), swapUsedBytes: signals.swapUsedBytes, step, heavyLive: live });
+    let weights: { used: number; budget: number } | undefined;
+    try {
+      weights = heavyWeights?.(step, signals);
+    } catch {
+      // Optional like the count.
+    }
+    history({ type: "sample", level: signals.level, freePct: signals.freePct, freeBytes: freeBytes(signals), swapUsedBytes: signals.swapUsedBytes, step, heavyLive: live, weights });
     return at;
   };
 

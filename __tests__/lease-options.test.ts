@@ -2,13 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { MemorySignals } from "../src/memory-pressure.js";
 
-const built = vi.hoisted(() => ({ deps: [] as ({ log?: (msg: string) => void; heavyLive?: () => number } | undefined)[] }));
+const built = vi.hoisted(() => ({ deps: [] as ({ log?: (msg: string) => void; heavyLive?: () => number; heavyWeights?: (step: number, s: MemorySignals) => { used: number; budget: number } | undefined } | undefined)[] }));
 vi.mock("../src/headroom-sampler.js", async (importOriginal) => {
   const real = await importOriginal<typeof import("../src/headroom-sampler.js")>();
   return {
     ...real,
-    defaultHeadroomSampler: (env: NodeJS.ProcessEnv, deps?: { log?: (msg: string) => void; heavyLive?: () => number }) => {
+    defaultHeadroomSampler: (env: NodeJS.ProcessEnv, deps?: { log?: (msg: string) => void; heavyLive?: () => number; heavyWeights?: (step: number, s: MemorySignals) => { used: number; budget: number } | undefined }) => {
       built.deps.push(deps);
       return real.defaultHeadroomSampler(env, deps);
     },
@@ -57,6 +58,20 @@ describe("defaultLeaseOptions sampler wiring", () => {
     const handle = tryAcquireLease({ ...o, level: scriptedPressureSampler("normal"), headroom: undefined }, { command: "npm test", cwd: "/w" });
     try {
       expect(heavyLive()).toBe(1);
+    } finally {
+      if (handle && "release" in handle) handle.release();
+    }
+  });
+
+  it("hands the sampler a weigher over the live heavy holders: used and budget at the step, nothing without the machine's memory", () => {
+    const o = defaultLeaseOptions({ CO_LEASE_DIR: dir });
+    const heavyWeights = built.deps.at(-1)!.heavyWeights!;
+    const gib = 2 ** 30;
+    const signals: MemorySignals = { level: "normal", freePct: 50, memsizeBytes: 16 * gib };
+    const handle = tryAcquireLease({ ...o, level: scriptedPressureSampler("normal"), headroom: undefined }, { command: "npm test", cwd: "/w", weight: 2 * gib });
+    try {
+      expect(heavyWeights(3, signals)).toEqual({ used: 2 * gib, budget: 9 * gib });
+      expect(heavyWeights(3, { level: "normal", freePct: 50 })).toBeUndefined();
     } finally {
       if (handle && "release" in handle) handle.release();
     }
