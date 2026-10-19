@@ -1300,7 +1300,7 @@ describe("lease", () => {
       ["ENOSPC", true],
       ["EDQUOT", true],
       ["EACCES", false],
-    ])("%s %s", async (code, refused) => {
+    ])("a %s error %s the lease refuses (otherwise it fails open)", async (code, refused) => {
       failMutexOpen(code);
       const got = await acquireLease(opts(), meta);
       expect(tryAcquireLease(opts(), meta)).toSatisfy((t: unknown) => (refused ? t === null : (t as LeaseHandle).leased === false));

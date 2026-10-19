@@ -256,7 +256,7 @@ export const DISK_FULL_FRACTION = 0.02;
 function diskFullLine(dir: string): string {
   try {
     const { bavail, blocks } = statfsSync(dir);
-    return blocks > 0 && bavail / blocks < DISK_FULL_FRACTION ? `watchdog: the disk holding ${dir} is nearly full (${((bavail / blocks) * 100).toFixed(1)}% free); heavy commands are refused until space is freed` : "";
+    return blocks > 0 && bavail / blocks < DISK_FULL_FRACTION ? `watchdog: the disk holding ${dir} is nearly full (${((bavail / blocks) * 100).toFixed(1)}% free); heavy commands are refused once the lease cannot write` : "";
   } catch {
     return "";
   }
