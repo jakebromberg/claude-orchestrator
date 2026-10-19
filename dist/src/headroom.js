@@ -9,9 +9,13 @@ export const DEFAULT_STEP_TABLE = {
     ],
     riseHoldMs: 60_000,
 };
-/** Heavy-command slots at `step`: step 4 gets the whole ceiling, a lower step at most that many, step 0 none. */
-export function headroomCapacity(step, policy) {
-    return step >= MAX_STEP ? policy.heavyCeiling : Math.min(policy.heavyCeiling, step);
+/** Heavy-command slots at `step`: step 4 gets the whole `ceiling`, a lower step at most that many, step 0 none. */
+export function headroomCapacity(step, ceiling) {
+    return step >= MAX_STEP ? ceiling : Math.min(ceiling, step);
+}
+/** The bytes of `usable` memory the heavy class may hold at `step`: `step / 4` of it, none at step 0. */
+export function heavyBudget(step, usable) {
+    return (usable * Math.min(MAX_STEP, Math.max(0, step))) / MAX_STEP;
 }
 /** The session row below step 4, by step. */
 const SESSION_ROW = [0, 1, 2, 4];

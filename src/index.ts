@@ -76,11 +76,13 @@ export {
   readMemoryPressure,
   readMemorySignals,
   sessionCapacity,
+  reservePctFromEnv,
   sessionSlotsFromEnv,
   stopAtCritical,
+  usableBytes,
 } from "./memory-pressure.js";
 export type { MemorySignals, PressureLevel, PressurePolicy, PressureSampler } from "./memory-pressure.js";
-export { DEFAULT_STEP_TABLE, headroomCapacity, headroomStep, sessionHeadroomCapacity } from "./headroom.js";
+export { DEFAULT_STEP_TABLE, headroomCapacity, headroomStep, heavyBudget, sessionHeadroomCapacity } from "./headroom.js";
 export { defaultHeadroomSampler, levelView } from "./headroom-sampler.js";
 export type { HeadroomReading, HeadroomSampler } from "./headroom-sampler.js";
 export type { HeadroomState, StepBand, StepTable } from "./headroom.js";

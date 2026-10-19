@@ -28,8 +28,8 @@ export { generateReport, formatReport } from "./report.js";
 // Process runner & main factory
 export { createRealProcessRunner } from "./real-process-runner.js";
 export { authBanner, claudeExecOptions, claudeSessionEnv, usesApiKeyBilling, API_CREDENTIAL_ENV_VARS, USE_API_KEY_ENV_VAR, } from "./claude-env.js";
-export { applyPressureOverride, cachedPressureSampler, defaultPressureSampler, heavyCapacity, leaseDirectory, pressurePolicyFromEnv, readMemoryPressure, readMemorySignals, sessionCapacity, sessionSlotsFromEnv, stopAtCritical, } from "./memory-pressure.js";
-export { DEFAULT_STEP_TABLE, headroomCapacity, headroomStep, sessionHeadroomCapacity } from "./headroom.js";
+export { applyPressureOverride, cachedPressureSampler, defaultPressureSampler, heavyCapacity, leaseDirectory, pressurePolicyFromEnv, readMemoryPressure, readMemorySignals, sessionCapacity, reservePctFromEnv, sessionSlotsFromEnv, stopAtCritical, usableBytes, } from "./memory-pressure.js";
+export { DEFAULT_STEP_TABLE, headroomCapacity, headroomStep, heavyBudget, sessionHeadroomCapacity } from "./headroom.js";
 export { defaultHeadroomSampler, levelView } from "./headroom-sampler.js";
 export { acquireLease, acquireSessionLease, tryAcquireLease, leaseStatus, defaultLeaseOptions, releaseHolder } from "./lease.js";
 export { createFileEngineRegistry } from "./engine-registry.js";

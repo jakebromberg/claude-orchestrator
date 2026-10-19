@@ -1,8 +1,9 @@
 /**
  * Machine-wide lease for heavy commands (full test suites, `tsc`, `npm ci`).
  * Holders are files in `<dir>/holders/`; a request is admitted while the live
- * holder count is under the heavy capacity of the headroom step (`headroomCapacity(step, policy)`;
- * the step derived from the level when only a `level` sampler is given). Liveness is a live
+ * holder count is under the heavy capacity of the headroom step (`headroomCapacity(step, ceiling)`;
+ * the step derived from the level when only a `level` sampler is given), or, when the machine's memory is known, while the
+ * summed memory weights of the live holders and the request fit the step's byte budget (`heavyBudget`). Liveness is a live
  * heartbeat (the holder file's mtime, refreshed every 30 s) or a live child PID,
  * so a crashed or killed holder cannot leak a slot. A detached holder (hook mode) is live while its session PID is
  * alive and its `expiresAt` has not passed. The lease fails open on I/O errors and a long-busy mutex,
@@ -15,15 +16,18 @@ import { cpus } from "node:os";
 import { join } from "node:path";
 import { sweepDeadTemps, writeFileAtomic } from "./atomic-write.js";
 import { isWithinWindow, tryLockOnce } from "./file-lock.js";
-import { headroomCapacity, MAX_STEP, sessionHeadroomCapacity } from "./headroom.js";
+import { headroomCapacity, heavyBudget, MAX_STEP, sessionHeadroomCapacity } from "./headroom.js";
 import { defaultHeadroomSampler, levelView, type HeadroomReading, type HeadroomSampler } from "./headroom-sampler.js";
 import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
 import { leaseEventSink } from "./lease-events.js";
 import {
+  DEFAULT_RESERVE_PCT,
   DEFAULT_SESSION_SLOTS,
   leaseDirectory,
   pressurePolicyFromEnv,
+  reservePctFromEnv,
   sessionSlotsFromEnv,
+  usableBytes,
   type MemorySignals,
   type PressureLevel,
   type PressurePolicy,
@@ -93,6 +97,8 @@ export interface LeaseOptions {
   policy: PressurePolicy;
   /** The machine-wide ceiling of implementer sessions (`CO_LEASE_SESSION_SLOTS`, default 6); steps below 4 are capped by it. */
   sessionSlots?: number;
+  /** The percentage of the machine's memory the heavy class leaves unbudgeted (`CO_LEASE_RESERVE_PCT`, default 25). */
+  reservePct?: number;
   isAlive?(pid: number): boolean;
   /**
    * Wall-clock epoch milliseconds (default `Date.now`). It dates heartbeats, which are compared with mtimes the kernel
@@ -127,6 +133,8 @@ export interface HolderMeta {
   gated?: boolean;
   /** Marks a holder whose front end owns its process group and may suspend it under overload. Set only by the heavy-queue front end. */
   suspendable?: boolean;
+  /** Heavy class only: the bytes of memory the command is expected to use. Absent, or not a positive number, takes the unmatched weight (`usable / heavyCeiling`). Ignored while the machine's memory is unknown. */
+  weight?: number;
 }
 
 interface HolderRecord {
@@ -146,6 +154,8 @@ interface HolderRecord {
   override?: true;
   /** Set while the holder's group is stopped; a gated ticket is not admitted while any live holder has it. */
   suspended?: true;
+  /** Bytes; absent means the unmatched weight. */
+  weight?: number;
 }
 
 /** A live holder as `leaseStatus` reports it. */
@@ -207,13 +217,15 @@ type Attempt =
 /**
  * A holder class: where its holders and FIFO tickets live under the lease directory, its capacity at a step given its
  * `ceiling`, and whether liveness is the heartbeat alone (`heartbeatOnly`) or also a detached holder's `expiresAt` and
- * a recorded child PID. Everything that scans, queues and admits takes one, so the classes share one implementation.
+ * a recorded child PID. A class with a `budget` (bytes at a step, given the usable bytes) admits by summed weight when
+ * the machine's memory is known; one without counts holders. Everything that scans, queues and admits takes one, so the classes share one implementation.
  */
 interface LeaseClass {
   holders: string;
   waiting: string;
   ceiling(opts: LeaseOptions): number;
   capacity(step: number, ceiling: number): number;
+  budget?(step: number, usable: number): number;
   heartbeatOnly: boolean;
 }
 
@@ -221,8 +233,8 @@ const HEAVY: LeaseClass = {
   holders: "holders",
   waiting: "waiting",
   ceiling: (opts) => opts.policy.heavyCeiling,
-  // The step row ignores `heavyWarning`; only the level-only path would read it, and that path derives a step instead.
-  capacity: (step, ceiling) => headroomCapacity(step, { heavyCeiling: ceiling, heavyWarning: 0 }),
+  capacity: headroomCapacity,
+  budget: heavyBudget,
   heartbeatOnly: false,
 };
 
@@ -290,10 +302,12 @@ function unlessGone<T>(read: () => T): T | undefined {
   }
 }
 
+const positive = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined);
+
 function parseHolder(text: string): HolderRecord | null {
   try {
     const rec = JSON.parse(text);
-    return isPid(rec?.pid) && (rec.childPid === undefined || isPid(rec.childPid)) && typeof rec.startedAt === "number" && (rec.expiresAt === undefined || Number.isFinite(rec.expiresAt)) ? rec : null;
+    return isPid(rec?.pid) && (rec.childPid === undefined || isPid(rec.childPid)) && typeof rec.startedAt === "number" && (rec.expiresAt === undefined || Number.isFinite(rec.expiresAt)) ? { ...rec, weight: positive(rec.weight) } : null;
   } catch {
     return null;
   }
@@ -336,6 +350,8 @@ interface Ticket {
   ready?: boolean;
   ceiling?: number;
   override?: boolean;
+  /** Bytes, recorded only while the machine's memory is known; absent means the unmatched weight. */
+  weight?: number;
 }
 
 function parseTicket(text: string): Ticket | null {
@@ -344,7 +360,7 @@ function parseTicket(text: string): Ticket | null {
     if (!(Number.isFinite(t?.seq) && typeof t.id === "string" && isPid(t.pid))) return null;
     // A field of the wrong type reads as absent, so such a ticket counts instead of comparing as a string.
     const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
-    return { ...t, capacity: num(t.capacity), ceiling: num(t.ceiling), ready: typeof t.ready === "boolean" ? t.ready : undefined, override: t.override === true };
+    return { ...t, capacity: num(t.capacity), ceiling: num(t.ceiling), ready: typeof t.ready === "boolean" ? t.ready : undefined, override: t.override === true, weight: positive(t.weight) };
   } catch {
     return null;
   }
@@ -456,6 +472,7 @@ function createHolder(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, com
   if (detached) rec.expiresAt = detached.expiresAt;
   if (admission.override) rec.override = true;
   if (meta.suspendable) rec.suspendable = true;
+  if (positive(meta.weight) !== undefined) rec.weight = meta.weight;
   const write = (): void => writeFileAtomic(file, JSON.stringify(rec));
   write();
   let released = false;
@@ -507,10 +524,13 @@ function borrowedHandle(id: string, level: PressureLevel, capacity: number, live
 }
 
 /**
- * One admission attempt for a holder class: sample the step, then count and write holders under the mutex. Admission is FIFO: a waiter
- * (`ticketId` set) is admitted when fewer tickets that count as ahead of its own than there are free slots, and a refused
- * one writes or refreshes its ticket. Without a `ticketId` (`tryAcquireLease`) it is admitted only when a slot is free
- * and no ticket counts as ahead, and writes none. Caller code (`warn`, `onEvent`) runs only after the mutex is released,
+ * One admission attempt for a holder class: sample the step, then weigh and write holders under the mutex. Weights are bytes when the class
+ * has a `budget` and the reading carries the machine's memory (the unmatched weight, `usable / ceiling`, stands in for a missing one),
+ * else every weight is 1 and the budget is the capacity, which is the count rule. Admission is FIFO: a waiter (`ticketId` set) is
+ * admitted when the live weights, those of the tickets that count as ahead of its own, and its own fit the budget, or when nothing
+ * is live or ahead and the step is above 0 (a command heavier than the budget runs alone, and a head-of-line waiter blocks
+ * lighter ones behind it), and a refused one writes or refreshes its ticket. Without a `ticketId` (`tryAcquireLease`) it is admitted
+ * only when it fits and no ticket counts as ahead, and writes none. Caller code (`warn`, `onEvent`) runs only after the mutex is released,
  * so a slow callback cannot outlive its staleness window.
  */
 function attempt(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, waitedMs: number, ticketId?: string): Attempt {
@@ -537,6 +557,11 @@ function attempt(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, waitedMs
       }
       // A writer killed between its write and rename leaves a uniquely named temp file: remove those of dead writers in this class's directories and the root. Only here, under the mutex; the scanners and `leaseStatus` never delete.
       for (const d of [cls.holders, cls.waiting, ""]) sweepDeadTemps(join(opts.dir, d), opts.isAlive ?? pidAlive);
+      const memsize = positive(snap.signals?.memsizeBytes);
+      const usable = cls.budget && memsize !== undefined ? usableBytes(memsize, opts.reservePct ?? DEFAULT_RESERVE_PCT) : undefined;
+      const unmatched = usable === undefined ? 1 : usable / cls.ceiling(opts);
+      const weightOf = (x: { weight?: number }): number => (usable === undefined ? 1 : (x.weight ?? unmatched));
+      const budget = usable === undefined ? capacity : cls.budget!(snap.step, usable);
       const admission = { waitedMs, level, live: live.length + 1, capacity, ...(overridden && { override: true as const }) };
       // A second hook install for the same call acquires the id the first one holds: that call is already admitted.
       if (meta.detached && live.some((h) => h.id === meta.detached!.id)) r = { kind: "admitted", handle: borrowedHandle(meta.detached.id, level, capacity, live.length), borrowed: true };
@@ -545,20 +570,26 @@ function attempt(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, waitedMs
         const mine = line.find((t) => t.id === ticketId);
         const seq = mine?.seq ?? Math.max(0, ...line.map((t) => t.seq)) + 1;
         const nowMs = (opts.now ?? Date.now)();
-        const free = capacity - live.length;
         const gated = meta.gated === true;
-        // A ticket counts as ahead only while its owner could be admitted: it has a slot by its own capacity and its gates passed at its last poll.
+        // A ticket counts as ahead only while its owner could be admitted and its gates passed at its last poll. By count that is a slot by its own
+        // capacity; by weight it is any step above 0, since a ticket heavier than the budget runs alone and so is the head of the line, not a bystander.
         // Its capacity is re-evaluated at the machine step now (the raw step is 0 under this reader's override), with the override only when its owner has it.
         const machineStep = overridden ? 0 : snap.step;
-        const ticketCapacity = (t: Ticket): number => (t.ceiling === undefined ? (t.capacity ?? Infinity) : cls.capacity(t.override && machineStep === 0 ? 1 : machineStep, t.ceiling));
-        const others = line.filter((t) => t.eligible && t.id !== ticketId && (ticketId === undefined || t.seq < seq) && ticketCapacity(t) > live.length);
-        const ahead = others.filter((t) => t.ready !== false).length;
+        const ticketStep = (t: Ticket): number => (t.override && machineStep === 0 ? 1 : machineStep);
+        const ticketCapacity = (t: Ticket): number => (t.ceiling === undefined ? (t.capacity ?? Infinity) : cls.capacity(ticketStep(t), t.ceiling));
+        const counts = (t: Ticket): boolean => (usable === undefined ? ticketCapacity(t) > live.length : cls.budget!(ticketStep(t), usable) > 0);
+        const others = line.filter((t) => t.eligible && t.id !== ticketId && (ticketId === undefined || t.seq < seq) && counts(t));
+        const ahead = others.filter((t) => t.ready !== false);
+        const taken = [...live, ...ahead].reduce((sum, x) => sum + weightOf(x), 0);
+        const myWeight = weightOf({ weight: positive(meta.weight) });
+        // A relative slack of 1e-12 absorbs the rounding of `usable / ceiling` sums and is far below a byte.
+        const fits = taken + myWeight <= budget * (1 + 1e-12) || (usable !== undefined && live.length + ahead.length === 0 && snap.step > 0);
         // The gates are machine-wide, so a gated waiter waits for every older gated ticket that could be admitted, however many slots are free:
         // FIFO holds among gated tickets, and the next gated start's 20 s spacing goes to the oldest.
         const behindGated = gated && others.some((t) => t.gated);
         // No-wedge: with nothing live, the oldest gated ticket is admitted past its gates, except at step 0 (capacity 0 already refuses there; the clause keeps the rule true if a policy ever gives step 0 a slot).
         const ready = !gated || gatesPass(opts, live, nowMs) || (live.length === 0 && snap.step > 0);
-        if (ready && !behindGated && ahead < (ticketId === undefined ? Math.min(free, 1) : free)) {
+        if (ready && !behindGated && fits && (ticketId !== undefined || ahead.length === 0)) {
           if (gated) writeMark(opts.dir, "lastAdmit", nowMs);
           r = { kind: "admitted", handle: createHolder(opts, cls, meta, command, admission) };
           try {
@@ -567,7 +598,7 @@ function attempt(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, waitedMs
             // The holder exists, so the admission stands; a ticket that stays is removed when the waiter returns, or reaped once it exits.
           }
         } else {
-          if (ticketId !== undefined) writeTicket(opts, cls, { seq, id: ticketId, pid: process.pid, label: command, gated, capacity, ceiling: cls.ceiling(opts), ready: ready && !behindGated, ...(overridden && { override: true }) });
+          if (ticketId !== undefined) writeTicket(opts, cls, { seq, id: ticketId, pid: process.pid, label: command, gated, capacity, ceiling: cls.ceiling(opts), ready: ready && !behindGated, ...(overridden && { override: true }), ...(usable !== undefined && { weight: myWeight }) });
           r = { kind: "full", ...snap };
         }
       }
@@ -788,6 +819,7 @@ export function defaultLeaseOptions(
     ...(headroom && { headroom }),
     policy: pressurePolicyFromEnv(env, tagged),
     sessionSlots: sessionSlotsFromEnv(env, tagged),
+    reservePct: reservePctFromEnv(env, tagged),
     inheritedHolderId: env.CO_LEASE_HOLDER || undefined,
     cpuTimes: osCpuTicks,
     onEvent: leaseEventSink(dir, { warn }),
