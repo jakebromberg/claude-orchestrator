@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { refOf } from "../src/ref.js";
 import { Orchestrator } from "../src/engine.js";
 import { InMemoryStatusStore, InMemoryMetadataStore } from "../src/status.js";
@@ -550,6 +553,22 @@ describe("runningSessions", () => {
 
     expect(seen).toEqual([deps.lease]);
     expect(seen[0]).toBe(deps.lease);
+  });
+
+  it("writes the governor's transitions to pressure.jsonl in the lease directory, tagged with the run id", async () => {
+    const leaseDir = mkdtempSync(join(tmpdir(), "engine-pressure-"));
+    try {
+      const { orchestrator, deps } = setUp(1, "critical");
+      deps.lease = { dir: leaseDir, level: deps.memoryPressure!, policy: { heavyCeiling: 1, heavyWarning: 1 } };
+      await orchestrator.runRegistered("run-9", () => orchestrator.runWave(1));
+
+      const lines = readFileSync(join(leaseDir, "pressure.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      expect(lines).toEqual([
+        { ts: expect.any(String), type: "capacity-transition", runId: "run-9", from: "normal", to: "critical", capacity: 0 },
+      ]);
+    } finally {
+      rmSync(leaseDir, { recursive: true, force: true });
+    }
   });
 
   it("hands the check no lease when Deps.lease is absent", async () => {

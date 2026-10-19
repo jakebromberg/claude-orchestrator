@@ -625,9 +625,10 @@ export function defaultLeaseOptions(env = process.env, overrides = {}) {
     const tagged = warn && ((msg) => warn(`memory-pressure: ${msg}`));
     const dir = leaseDirectory(env);
     // One sampler is the source of truth: `level` (and `level.fresh`) is a view over it, unless the caller supplies its own level.
-    const headroom = overrides.level ? undefined : defaultHeadroomSampler(env, { log: tagged });
+    let opts;
+    const headroom = overrides.level ? undefined : defaultHeadroomSampler(env, { log: tagged, heavyLive: () => scanHolders(opts, HEAVY).live.length });
     const level = overrides.level ?? levelView(headroom);
-    return {
+    return (opts = {
         dir,
         level,
         ...(headroom && { headroom }),
@@ -638,6 +639,6 @@ export function defaultLeaseOptions(env = process.env, overrides = {}) {
         cpuTimes: osCpuTicks,
         onEvent: leaseEventSink(dir, { warn }),
         warn,
-    };
+    });
 }
 //# sourceMappingURL=lease.js.map

@@ -9,6 +9,7 @@ import { perIssueSpawnArgs } from "./model-effort.js";
 import { isModeNode, isCommandNode, cutoverReason, manualGateLabel } from "./mode-node.js";
 import { shellQuote } from "./shell-quote.js";
 import { createCapacityGovernor } from "./capacity-governor.js";
+import { jsonlSink } from "./lease-events.js";
 import { stopAtCritical } from "./memory-pressure.js";
 const STALL_CHECK_INTERVAL_MS = 10_000;
 /** How often live pressure is re-read to adapt the launch capacity. */
@@ -39,6 +40,8 @@ export class Orchestrator {
     adaptive;
     /** Run-scoped, so the 60 s hysteresis spans wave boundaries; created by the first launch. */
     governor;
+    /** The run id `runRegistered` was given; tags the governor's transitions in `pressure.jsonl`. */
+    runId;
     /** `claude` sessions currently running; `spawnSession` is the only writer. */
     liveSessions = 0;
     /**
@@ -81,6 +84,7 @@ export class Orchestrator {
     }
     /** Runs `run` with this engine recorded in `deps.engineRegistry`, removing the record when it ends or throws. */
     async runRegistered(runId, run) {
+        this.runId = runId;
         try {
             this.deps.engineRegistry?.start({
                 runId,
@@ -662,6 +666,8 @@ export class Orchestrator {
                 maxParallel: this.maxParallel,
                 adaptive: this.adaptive,
                 logger: this.deps.logger,
+                runId: this.runId,
+                onTransition: this.deps.lease && jsonlSink(this.deps.lease.dir, "pressure.jsonl", { warn: this.deps.lease.warn }),
             });
         return this.governor;
     }

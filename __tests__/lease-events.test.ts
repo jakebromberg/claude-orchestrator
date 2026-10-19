@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { defaultLeaseOptions, tryAcquireLease, type LeaseEvent } from "../src/lease.js";
-import { leaseEventSink } from "../src/lease-events.js";
+import { jsonlSink, leaseEventSink, ROTATE_BYTES } from "../src/lease-events.js";
 import * as barrel from "../src/index.js";
 import { scriptedPressureSampler } from "../src/testing.js";
 
@@ -81,6 +81,22 @@ describe("leaseEventSink", () => {
   ])("writes %s as it is, plus ts", (_name, event) => {
     leaseEventSink(dir, { now: () => TS })(event);
     expect(readFileSync(join(dir, "events.jsonl"), "utf8")).toBe(`${JSON.stringify({ ts: ISO, ...event })}\n`);
+  });
+
+  it("jsonlSink writes any payload to the named file and rotates that file to <name>.1", () => {
+    const sink = jsonlSink<{ n: number }>(dir, "pressure.jsonl", { now: () => TS, maxBytes: 100 });
+    sink({ n: 1 });
+    expect(lines("pressure.jsonl")).toEqual([{ ts: ISO, n: 1 }]);
+    for (let i = 0; i < 10 && !existsSync(join(dir, "pressure.jsonl.1")); i++) sink({ n: 2 });
+    expect(readdirSync(dir).sort()).toEqual(["pressure.jsonl", "pressure.jsonl.1"]);
+  });
+
+  // pressure.jsonl keeps the active file plus one generation, so after any rotation at least ROTATE_BYTES of lines remain.
+  it("keeps at least 7 days of pressure lines at the heartbeat floor of 1,440 lines a day", () => {
+    const sample = { level: "warning", freePct: 25, freeBytes: 4_294_967_296, swapUsedBytes: 1_234_567_890, step: 1, heavyLive: 2 };
+    const lineBytes = Buffer.byteLength(`${JSON.stringify({ ts: ISO, ...sample })}\n`);
+    expect(lineBytes).toBeLessThanOrEqual(200);
+    expect(ROTATE_BYTES / (lineBytes * 1_440)).toBeGreaterThanOrEqual(7);
   });
 
   it("appends one line per event", () => {
@@ -242,6 +258,7 @@ describe("leaseEventSink", () => {
 
     it("is exported from the barrel", () => {
       expect(barrel.leaseEventSink).toBe(leaseEventSink);
+      expect(barrel.jsonlSink).toBe(jsonlSink);
     });
   });
 });

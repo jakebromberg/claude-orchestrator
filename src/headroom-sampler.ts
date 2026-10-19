@@ -2,15 +2,18 @@
  * The machine-wide headroom step. `<lease dir>/headroom.json` holds `{ at, signals, step, risingSince }`, computed from
  * the raw signals with the rise hold and before any per-process override, so every process that reads it agrees and
  * no process's override reaches another. Written without a lock (the last writer wins, which can delay a rise by one
- * sample) through `writeLeaseRecord`, so a missing, symlinked or foreign lease directory gets no write.
+ * sample) through `writeLeaseRecord`, so a missing, symlinked or foreign lease directory gets no write. The record's
+ * `sampledAt` is when a line was last appended to `<lease dir>/pressure.jsonl`, the machine-wide history.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_STEP_TABLE, headroomStep, MAX_STEP, type HeadroomState, type StepTable } from "./headroom.js";
 import { writeLeaseRecord } from "./lease-dir.js";
+import { jsonlSink } from "./lease-events.js";
 import {
   applyPressureOverride,
   FALLBACK_MAX_AGE_MS,
+  freeBytes,
   isFresh,
   leaseDirectory,
   persistedLevel,
@@ -38,6 +41,9 @@ export interface HeadroomSampler {
 }
 
 const SHARE_TTL_MS = 10_000;
+/** A pressure line is due this long after the last one even when nothing moved, and when free % moves this far from the previous record. */
+const HEARTBEAT_MS = 60_000;
+const FREE_PCT_MOVE = 5;
 const LEVELS: readonly string[] = ["normal", "warning", "critical", "unknown"];
 
 /** One machine reading, before any per-process override. */
@@ -64,13 +70,15 @@ function validSignals(s: unknown): s is MemorySignals {
  * `sysctl`, steps from the stored `step` and `risingSince` (a record as old as a full climb, `riseHoldMs` × `MAX_STEP`, is ignored, so the step starts at the target), and rewrites the file and `level.json`. A failed guarded read
  * steps from the last good reading under 60 s old (in-process, else `level.json`), and otherwise from `critical`; it is
  * not shared. `CO_PRESSURE_OVERRIDE=critical-as-warning` maps `critical` to `warning` and step 0 to 1 in this process
- * only. Throws when `leaseDirectory(env)` does. `deps` exists for tests.
+ * only. Each sample that changed the level, the step or free % (by 5 points) from the stored record, or that finds `sampledAt`
+ * 60 s old, also appends a line to `pressure.jsonl`; `heavyLive` counts live heavy holders for it (the sampler has no lease
+ * options), and a failed count or append is swallowed. Throws when `leaseDirectory(env)` does. `deps` exists for tests.
  */
 export function defaultHeadroomSampler(
   env: NodeJS.ProcessEnv = process.env,
-  deps: { read?: () => MemorySignals | null; now?: () => number; log?: (msg: string) => void; table?: StepTable } = {},
+  deps: { read?: () => MemorySignals | null; now?: () => number; log?: (msg: string) => void; table?: StepTable; heavyLive?: () => number } = {},
 ): HeadroomSampler {
-  const { read = () => readMemorySignals(), now = Date.now, log: emit = warnOnce, table = DEFAULT_STEP_TABLE } = deps;
+  const { read = () => readMemorySignals(), now = Date.now, log: emit = warnOnce, table = DEFAULT_STEP_TABLE, heavyLive } = deps;
   const logged = new Set<string>();
   const log = (msg: string): void => {
     if (!logged.has(msg)) {
@@ -83,6 +91,23 @@ export function defaultHeadroomSampler(
   let lastGood: { signals: MemorySignals; at: number } | undefined;
   let last: Machine | undefined;
   let overridden = false;
+
+  const history = jsonlSink<Record<string, unknown>>(dir, "pressure.jsonl", { now, warn: log });
+  /** Appends a pressure line when `signals` moved from the stored record `p` or its `sampledAt` is old; returns the `sampledAt` to store. */
+  const record = (p: Record<string, unknown> | undefined, at: number, signals: MemorySignals, step: number): number | undefined => {
+    const before = p && validState(p) && validSignals(p.signals) ? { ...p.signals, step: validState(p)!.step } : undefined;
+    const sampledAt = typeof p?.sampledAt === "number" ? p.sampledAt : undefined;
+    const moved = !before || before.level !== signals.level || before.step !== step || (before.freePct !== undefined && signals.freePct !== undefined && Math.abs(before.freePct - signals.freePct) >= FREE_PCT_MOVE);
+    if (!moved && sampledAt !== undefined && isFresh(sampledAt, at, HEARTBEAT_MS)) return sampledAt;
+    let live: number | undefined;
+    try {
+      live = heavyLive?.();
+    } catch {
+      // The count is optional; the line is still worth writing.
+    }
+    history({ level: signals.level, freePct: signals.freePct, freeBytes: freeBytes(signals), swapUsedBytes: signals.swapUsedBytes, step, heavyLive: live });
+    return at;
+  };
 
   const stored = (): Record<string, unknown> | undefined => {
     try {
@@ -122,7 +147,7 @@ export function defaultHeadroomSampler(
     last = { at, level: effective.level, signals, ...state };
     if (signals && signals.level !== "unknown") {
       try {
-        writeLeaseRecord(dir, "headroom.json", JSON.stringify({ at, signals, ...state }));
+        writeLeaseRecord(dir, "headroom.json", JSON.stringify({ at, signals, ...state, sampledAt: record(p, at, signals, state.step) }));
       } catch {
         // Sharing is best-effort; the in-process reading still serves.
       }

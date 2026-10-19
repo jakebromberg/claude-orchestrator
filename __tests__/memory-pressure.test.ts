@@ -16,6 +16,7 @@ import {
   sessionCapacity,
   stopAtCritical,
   usableBytes,
+  freeBytes,
   type PressureLevel,
 } from "../src/memory-pressure.js";
 import * as barrel from "../src/index.js";
@@ -159,6 +160,18 @@ describe("the memory reserve", () => {
     [100, 33, 67],
   ])("leaves %i bytes with a %i%% reserve as %i usable", (memsize, pct, usable) => {
     expect(usableBytes(memsize, pct)).toBe(usable);
+  });
+});
+
+describe("freeBytes", () => {
+  it.each([
+    [{ level: "normal", freePct: 25, memsizeBytes: 16 * 2 ** 30 }, 4 * 2 ** 30],
+    [{ level: "normal", freePct: 0, memsizeBytes: 16 * 2 ** 30 }, 0],
+    [{ level: "normal", freePct: 33, memsizeBytes: 100 }, 33],
+    [{ level: "normal", freePct: 25 }, undefined],
+    [{ level: "unknown", memsizeBytes: 100 }, undefined],
+  ] as const)("reads %j as %s bytes", (signals, bytes) => {
+    expect(freeBytes({ ...signals })).toBe(bytes);
   });
 });
 

@@ -6,21 +6,23 @@ import { appendFileSync, closeSync, constants, fstatSync, lstatSync, openSync, r
 import { join } from "node:path";
 import { isOwnDir } from "./lease-dir.js";
 import { defaultWarn } from "./lease.js";
-const MAX_BYTES = 5 * 1024 * 1024;
+/** Size past which a sink rotates its file to `<file>.1`; one generation of each is kept. */
+export const ROTATE_BYTES = 5 * 1024 * 1024;
 // A planted symlink is not followed and a planted FIFO is not waited on.
 const OPEN_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 /**
- * Appends only to a lease directory the lease itself accepts (a real directory this user owns, which the lease creates
- * at its first acquire), so a read-only mode creates nothing and a directory the lease refused gets no write. Only a
- * regular `events.jsonl` is appended to, and a new one has mode 0600. Past `maxBytes` (default 5 MB) the file is
- * renamed to a single `events.jsonl.1`, replacing any previous one; when that rename fails, the event is still
+ * Appends `{ ts, ...event }` lines to `<dir>/<name>` and rotates it to `<name>.1`; `leaseEventSink` is this sink on
+ * `events.jsonl`, and `pressure.jsonl` is another. Appends only to a lease directory the lease itself accepts (a real
+ * directory this user owns, which the lease creates at its first acquire), so a read-only mode creates nothing and a
+ * directory the lease refused gets no write. Only a regular file is appended to, and a new one has mode 0600. Past
+ * `maxBytes` (default 5 MB) the file is renamed to a single `<name>.1`, replacing any previous one; when that rename fails, the event is still
  * appended and `warn` (default: stderr) is called once per sink. A rename that finds the file gone (another process
  * rotated first) is the expected race and is not reported. A write failure is swallowed: the log is a diagnostic
  * and must never fail an acquire or a release. Two processes rotating at once can drop one generation of lines.
  */
-export function leaseEventSink(dir, deps = {}) {
-    const { now = Date.now, maxBytes = MAX_BYTES, warn = defaultWarn, rename = renameSync } = deps;
-    const file = join(dir, "events.jsonl");
+export function jsonlSink(dir, name, deps = {}) {
+    const { now = Date.now, maxBytes = ROTATE_BYTES, warn = defaultWarn, rename = renameSync } = deps;
+    const file = join(dir, name);
     let warned = false;
     return (e) => {
         try {
@@ -52,4 +54,6 @@ export function leaseEventSink(dir, deps = {}) {
         }
     };
 }
+/** The lease's `onEvent` sink: `events.jsonl` under `dir`. */
+export const leaseEventSink = (dir, deps = {}) => jsonlSink(dir, "events.jsonl", deps);
 //# sourceMappingURL=lease-events.js.map

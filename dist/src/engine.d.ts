@@ -8,6 +8,8 @@ export declare class Orchestrator {
     private adaptive;
     /** Run-scoped, so the 60 s hysteresis spans wave boundaries; created by the first launch. */
     private governor?;
+    /** The run id `runRegistered` was given; tags the governor's transitions in `pressure.jsonl`. */
+    private runId?;
     /** `claude` sessions currently running; `spawnSession` is the only writer. */
     private liveSessions;
     /**

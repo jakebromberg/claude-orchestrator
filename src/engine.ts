@@ -8,7 +8,8 @@ import { encodeRefForFilename, repoOfRef } from "./ref.js";
 import { perIssueSpawnArgs } from "./model-effort.js";
 import { isModeNode, isCommandNode, cutoverReason, manualGateLabel } from "./mode-node.js";
 import { shellQuote } from "./shell-quote.js";
-import { createCapacityGovernor } from "./capacity-governor.js";
+import { createCapacityGovernor, type CapacityTransition } from "./capacity-governor.js";
+import { jsonlSink } from "./lease-events.js";
 import type { CapacityGovernor } from "./capacity-governor.js";
 import { stopAtCritical } from "./memory-pressure.js";
 import type { PressureSampler } from "./memory-pressure.js";
@@ -62,6 +63,8 @@ export class Orchestrator {
   private adaptive: boolean;
   /** Run-scoped, so the 60 s hysteresis spans wave boundaries; created by the first launch. */
   private governor?: CapacityGovernor;
+  /** The run id `runRegistered` was given; tags the governor's transitions in `pressure.jsonl`. */
+  private runId?: string;
   /** `claude` sessions currently running; `spawnSession` is the only writer. */
   private liveSessions = 0;
   /**
@@ -112,6 +115,7 @@ export class Orchestrator {
 
   /** Runs `run` with this engine recorded in `deps.engineRegistry`, removing the record when it ends or throws. */
   async runRegistered(runId: string, run: () => Promise<void>): Promise<void> {
+    this.runId = runId;
     try {
       this.deps.engineRegistry?.start({
         runId,
@@ -796,6 +800,8 @@ export class Orchestrator {
       maxParallel: this.maxParallel,
       adaptive: this.adaptive,
       logger: this.deps.logger,
+      runId: this.runId,
+      onTransition: this.deps.lease && jsonlSink<CapacityTransition>(this.deps.lease.dir, "pressure.jsonl", { warn: this.deps.lease.warn }),
     });
     return this.governor;
   }
