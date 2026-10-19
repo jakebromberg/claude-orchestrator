@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
 import { ensureOwnSubdir, readRecordDir } from "./lease-dir.js";
 import { leaseDirectory } from "./memory-pressure.js";
-import { ancestry, isPid, parsePsTable, ps, PS_TABLE_ARGS, type ProcRow } from "./ps.js";
+import { ancestry, isPid, parsePsTable, ps, PS_TABLE_ARGS, signalGroup, type ProcRow } from "./ps.js";
 
 const EX_USAGE = 64;
 const EX_CONFIG = 78;
@@ -23,7 +23,7 @@ export interface SuspensionDeps {
   dir: string;
   ps: (args: string[]) => string;
   /** Signals a process group (a negative pid). */
-  kill: (pid: number, signal: "SIGSTOP" | "SIGCONT") => void;
+  kill: (pid: number, signal: NodeJS.Signals) => void;
   now: () => number;
   /** This process; it and every ancestor up to pid 1 must appear in the `ps` scan, or the command refuses. */
   pid: number;
@@ -142,12 +142,8 @@ export function runSuspension(argv: string[], d: SuspensionDeps): number {
     ensureOwnSubdir(d.dir, "suspensions");
     const file = suspensionFile(d.dir, args.pgid);
     if (args.kind === "resume") {
-      try {
-        d.kill(-args.pgid, "SIGCONT");
-      } catch (err) {
-        // A group that is gone has nothing to continue; its record can still go.
-        if ((err as NodeJS.ErrnoException).code !== "ESRCH") throw err;
-      }
+      // A group that is gone has nothing to continue; its record can still go.
+      signalGroup(args.pgid, "SIGCONT", d.kill);
       const had = removeSuspension(d.dir, args.pgid);
       d.out(`lease: resumed process group ${args.pgid}${had ? `; removed ${file}` : "; no record existed"}`);
       return 0;
@@ -158,7 +154,8 @@ export function runSuspension(argv: string[], d: SuspensionDeps): number {
     writeSuspension(d.dir, { pgid: args.pgid, by: args.by, reason: args.reason, at: new Date(at).toISOString(), remindAt: new Date(at + args.remindMs).toISOString(), leader });
     if (!args.recordOnly) {
       try {
-        d.kill(-args.pgid, "SIGSTOP");
+        // The group vanished since the scan: report it as the signal call would have.
+        if (!signalGroup(args.pgid, "SIGSTOP", d.kill)) throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
       } catch (err) {
         removeSuspension(d.dir, args.pgid);
         throw err;

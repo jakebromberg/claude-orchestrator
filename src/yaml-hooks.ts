@@ -15,6 +15,7 @@ import { claudeExecOptions } from "./claude-env.js";
 import { acquireLease, defaultWarn, type LeaseHandle, type LeaseOptions, type LeaseRefusal } from "./lease.js";
 import { formatPostCheckStop, refusalStopReason } from "./lease-messages.js";
 import { stopAtCritical } from "./memory-pressure.js";
+import { groupAlive, signalGroup } from "./ps.js";
 
 const OUTPUT_TAIL_BYTES = 64 * 1024;
 
@@ -40,20 +41,10 @@ const liveGroups = new Set<number>();
 export function stopLiveCommandGroups(): void {
   for (const pgid of liveGroups) {
     try {
-      process.kill(-pgid, "SIGKILL");
+      signalGroup(pgid, "SIGKILL");
     } catch {
-      // ESRCH: every member has already exited.
+      // Best effort at exit: nothing to do about another error.
     }
-  }
-}
-
-/** Whether any member of process group `pgid` is still alive (EPERM means one is, owned by another user). */
-function groupAlive(pgid: number): boolean {
-  try {
-    process.kill(-pgid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
@@ -103,10 +94,10 @@ export function runShellAsync(
       stdio: ["ignore", "pipe", "pipe"],
       detached: bounded,
     });
-    const signalGroup = (signal: NodeJS.Signals) => {
+    const signalChildGroup = (signal: NodeJS.Signals) => {
       if (child.pid === undefined) return;
       try {
-        process.kill(-child.pid, signal);
+        signalGroup(child.pid, signal);
       } catch {
         // ESRCH: every member has already exited.
       }
@@ -127,8 +118,8 @@ export function runShellAsync(
     let onSpawnFailure: { error: unknown } | undefined;
     const timer = bounded
       ? setTimeout(() => {
-          signalGroup("SIGTERM");
-          graceTimer = setTimeout(() => signalGroup("SIGKILL"), killGraceMs);
+          signalChildGroup("SIGTERM");
+          graceTimer = setTimeout(() => signalChildGroup("SIGKILL"), killGraceMs);
           reject(new Error(`Command timed out after ${timeoutMs} ms\n${tail.toString("utf-8")}`));
         }, timeoutMs)
       : undefined;

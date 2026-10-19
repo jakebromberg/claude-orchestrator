@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { ancestry, isPid, pidAlive, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, type ProcRow } from "../src/ps.js";
+import { ancestry, groupAlive, signalGroup, isPid, pidAlive, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, type ProcRow } from "../src/ps.js";
 import { psText } from "./helpers/ps-text.js";
 
 vi.mock("node:child_process", async (orig) => ({ ...(await orig<typeof import("node:child_process")>()), execFileSync: vi.fn() }));
@@ -143,5 +143,40 @@ describe("pidAlive", () => {
     const child = spawnSync(process.execPath, ["-e", ""]);
     expect(child.pid).toBeGreaterThan(0);
     expect(pidAlive(child.pid)).toBe(false);
+  });
+});
+
+describe("groupAlive and signalGroup", () => {
+  const errno = (code: string) => Object.assign(new Error(code), { code });
+  const killing = (err?: Error) => vi.fn((_pid: number, _sig: any) => { if (err) throw err; });
+
+  it.each([
+    ["success", undefined, true],
+    ["ESRCH", errno("ESRCH"), false],
+    ["EPERM", errno("EPERM"), true],
+  ])("groupAlive probes -pgid with signal 0: %s", (_n, err, want) => {
+    const kill = killing(err);
+    expect(groupAlive(42, kill)).toBe(want);
+    expect(kill).toHaveBeenCalledWith(-42, 0);
+  });
+
+  it.each([
+    ["success", undefined, true],
+    ["ESRCH", errno("ESRCH"), false],
+  ])("signalGroup signals -pgid: %s", (_n, err, want) => {
+    const kill = killing(err);
+    expect(signalGroup(42, "SIGSTOP", kill)).toBe(want);
+    expect(kill).toHaveBeenCalledWith(-42, "SIGSTOP");
+  });
+
+  it("signalGroup propagates another errno", () => {
+    expect(() => signalGroup(42, "SIGSTOP", killing(errno("EPERM")))).toThrow("EPERM");
+  });
+
+  it.each([0, -5, 1.5, 2 ** 31, NaN])("refuses non-pid %s without calling kill", (pgid) => {
+    const kill = killing();
+    expect(groupAlive(pgid, kill)).toBe(false);
+    expect(signalGroup(pgid, "SIGKILL", kill)).toBe(false);
+    expect(kill).not.toHaveBeenCalled();
   });
 });

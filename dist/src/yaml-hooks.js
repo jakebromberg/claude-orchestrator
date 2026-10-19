@@ -13,6 +13,7 @@ import { claudeExecOptions } from "./claude-env.js";
 import { acquireLease, defaultWarn } from "./lease.js";
 import { formatPostCheckStop, refusalStopReason } from "./lease-messages.js";
 import { stopAtCritical } from "./memory-pressure.js";
+import { groupAlive, signalGroup } from "./ps.js";
 const OUTPUT_TAIL_BYTES = 64 * 1024;
 /** The largest delay `setTimeout` honours; Node fires a longer one after 1 ms. */
 export const MAX_TIMER_MS = 2_147_483_647;
@@ -32,21 +33,11 @@ const liveGroups = new Set();
 export function stopLiveCommandGroups() {
     for (const pgid of liveGroups) {
         try {
-            process.kill(-pgid, "SIGKILL");
+            signalGroup(pgid, "SIGKILL");
         }
         catch {
-            // ESRCH: every member has already exited.
+            // Best effort at exit: nothing to do about another error.
         }
-    }
-}
-/** Whether any member of process group `pgid` is still alive (EPERM means one is, owned by another user). */
-function groupAlive(pgid) {
-    try {
-        process.kill(-pgid, 0);
-        return true;
-    }
-    catch (error) {
-        return error.code === "EPERM";
     }
 }
 /**
@@ -89,11 +80,11 @@ export function runShellAsync(cmd, cwd, env, onSpawn, timeoutMs, killGraceMs = K
             stdio: ["ignore", "pipe", "pipe"],
             detached: bounded,
         });
-        const signalGroup = (signal) => {
+        const signalChildGroup = (signal) => {
             if (child.pid === undefined)
                 return;
             try {
-                process.kill(-child.pid, signal);
+                signalGroup(child.pid, signal);
             }
             catch {
                 // ESRCH: every member has already exited.
@@ -115,8 +106,8 @@ export function runShellAsync(cmd, cwd, env, onSpawn, timeoutMs, killGraceMs = K
         let onSpawnFailure;
         const timer = bounded
             ? setTimeout(() => {
-                signalGroup("SIGTERM");
-                graceTimer = setTimeout(() => signalGroup("SIGKILL"), killGraceMs);
+                signalChildGroup("SIGTERM");
+                graceTimer = setTimeout(() => signalChildGroup("SIGKILL"), killGraceMs);
                 reject(new Error(`Command timed out after ${timeoutMs} ms\n${tail.toString("utf-8")}`));
             }, timeoutMs)
             : undefined;

@@ -20,6 +20,32 @@ export function psAncestors(startPid, depth) {
 }
 /** A PID that `kill(pid, 0)` checks as one process: `0` and negatives address a group, or every process, and `process.kill` rejects 2^31 and above. */
 export const isPid = (n) => Number.isInteger(n) && n > 0 && n < 2 ** 31;
+/** Whether any member of process group `pgid` is alive: `kill(-pgid, 0)` finds one, or `EPERM` says one is owned by another user. A non-pid is never alive, so `-0` and negatives cannot address every process. */
+export function groupAlive(pgid, kill = process.kill) {
+    if (!isPid(pgid))
+        return false;
+    try {
+        kill(-pgid, 0);
+        return true;
+    }
+    catch (err) {
+        return err.code === "EPERM";
+    }
+}
+/** Sends `signal` to process group `pgid`; false when the group is gone (`ESRCH`) or `pgid` is not a pid (nothing is sent), any other error propagates. */
+export function signalGroup(pgid, signal, kill = process.kill) {
+    if (!isPid(pgid))
+        return false;
+    try {
+        kill(-pgid, signal);
+        return true;
+    }
+    catch (err) {
+        if (err.code === "ESRCH")
+            return false;
+        throw err;
+    }
+}
 /** Whether `kill(pid, 0)` finds the process: it exists, or exists under another user (`EPERM`). */
 export function pidAlive(pid) {
     try {
