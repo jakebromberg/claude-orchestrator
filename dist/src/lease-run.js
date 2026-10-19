@@ -8,6 +8,7 @@
  */
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
+import { weightFor } from "./lease-weights.js";
 import { acquireLease, defaultLeaseOptions, leaseStatus } from "./lease.js";
 import { formatAdmitted, formatRefusal, refusalExitCode, seconds } from "./lease-messages.js";
 import { psAncestors } from "./ps.js";
@@ -157,7 +158,9 @@ export async function runLeased(args, d) {
     // A hook slot the session already holds is borrowed through `inheritedHolderId`, never waited for a second time.
     const hookSlot = opts.inheritedHolderId || ownHolder ? undefined : ancestorHookSlot(opts, d);
     let lastProgress = 0;
-    const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command: args.shell ?? args.argv.join(" "), label: args.label, cwd: d.cwd, gated: args.gated, suspendable }, {
+    const command = args.shell ?? args.argv.join(" ");
+    const weight = weightFor(command, d.cwd, d.env, d.err);
+    const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command, label: args.label, cwd: d.cwd, gated: args.gated, suspendable, ...(weight !== undefined && { weight }) }, {
         maxWaitMs,
         onWait: (s) => {
             if (s.waitedMs - lastProgress < PROGRESS_MS)

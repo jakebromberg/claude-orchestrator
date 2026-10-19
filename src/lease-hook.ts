@@ -20,6 +20,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireLease, defaultLeaseOptions, DETACHED_TTL_MAX_MS, isPid, leaseStatus, releaseHolder, type LeaseOptions } from "./lease.js";
 import { formatAdmitted, formatRefusal } from "./lease-messages.js";
+import { weightFor } from "./lease-weights.js";
 import { shellQuote } from "./shell-quote.js";
 
 /**
@@ -266,7 +267,9 @@ async function handleEvent(stdin: string, io: HookIo): Promise<void> {
   const cwd = typeof input.cwd === "string" ? input.cwd : process.cwd();
   // `expiresAt` is a getter so it counts from admission, not from the start of a wait that can last 450 s.
   const detached = { id, sessionPid, get expiresAt() { return now() + timeoutMs + GRACE_MS; } };
-  const got = await acquireLease(opts, { command: String(input.tool_input!.command), cwd, detached }, { maxWaitMs: WAIT_MS });
+  const command = String(input.tool_input!.command);
+  const weight = weightFor(command, cwd, env, () => {});
+  const got = await acquireLease(opts, { command, cwd, detached, ...(weight !== undefined && { weight }) }, { maxWaitMs: WAIT_MS });
   if (!("leased" in got)) io.out(decision({ permissionDecision: "deny", permissionDecisionReason: formatRefusal(got, leaseStatus(opts)) }));
   else if (got.leased) io.out(decision({ additionalContext: formatAdmitted(got.admission) }));
 }

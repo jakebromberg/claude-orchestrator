@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -152,6 +152,26 @@ describe("runLeased", () => {
     expect(await done).toBe(code);
     expect(err).toEqual(["lease: admitted after 2s (pressure=warning, 1/1 live)"]);
     expect(handle.release).toHaveBeenCalledWith({ exitCode: code });
+  });
+
+  it("passes the weight of a matching rule to the holder meta in GiB bytes, and none without a match", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cli-weights-"));
+    try {
+      writeFileSync(join(dir, "w.json"), '[{"pattern":"^npm test","gb":2}]');
+      env = { ...env, CO_LEASE_WEIGHTS_FILE: join(dir, "w.json") };
+      let done = run();
+      await finishWith(0);
+      await done;
+      expect((acquired[0]!.meta as Record<string, unknown>).weight).toBe(2 * 2 ** 30);
+      spawned = [];
+      child = new FakeChild();
+      done = run({ argv: ["make"] });
+      await finishWith(0);
+      await done;
+      expect(acquired[1]!.meta).not.toHaveProperty("weight");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("spawns an argv command directly with the parent env plus CO_LEASE_HOLDER", async () => {
