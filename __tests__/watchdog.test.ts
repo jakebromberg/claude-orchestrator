@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REFRESH_MS } from "../src/engine-registry.js";
@@ -134,6 +134,14 @@ describe("watchdog", () => {
 
   describe("engine registry", () => {
     const stoppedEngine: Row[] = [[700, 1, 700, "T", "node run.js"]];
+
+    it("reads no engines through a symlinked engines/", () => {
+      engine({}, 2 * MIN);
+      renameSync(join(dir, "engines"), join(dir, "real-engines"));
+      symlinkSync(join(dir, "real-engines"), join(dir, "engines"));
+      checkAt(0);
+      expect(brief()).toBe("");
+    });
 
     it("reports a stale record whose pid has no scan row once per runId and leaves the record", () => {
       engine({}, 2 * MIN);

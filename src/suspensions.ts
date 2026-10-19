@@ -1,7 +1,7 @@
-import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
-import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
+import { ensureOwnSubdir, readRecordDir } from "./lease-dir.js";
 import { leaseDirectory } from "./memory-pressure.js";
 import { ancestry, isPid, parsePsTable, ps, PS_TABLE_ARGS, type ProcRow } from "./ps.js";
 
@@ -114,26 +114,18 @@ export function removeSuspension(dir: string, pgid: number): boolean {
   return had;
 }
 
-/** The valid records in `<dir>/suspensions`: a name that is not a canonical `<pid>.json` (no leading zero), a temp file, an unreadable or invalid body (`at` and `remindAt` must parse as dates), or a body whose pgid is not its name is skipped. Creates nothing; a missing, symlinked or foreign directory reads as empty. */
+/** The valid records in `<dir>/suspensions` (`readRecordDir`'s name and directory rule): an unreadable or invalid body (`at` and `remindAt` must parse as dates), or a body whose pgid is not its name, is skipped. */
 export function readSuspensions(dir: string): SuspensionRecord[] {
-  try {
-    if (!isOwnDir(lstatSync(join(dir, "suspensions")))) return [];
-    return readdirSync(join(dir, "suspensions")).flatMap((name) => {
-      // Only the canonical `<pgid>.json` spelling: a leading zero would name another group's file.
-      const stem = /^([1-9]\d*)\.json$/.exec(name)?.[1];
-      if (stem === undefined || !isPid(Number(stem))) return [];
-      try {
-        const r = JSON.parse(readFileSync(join(dir, "suspensions", name), "utf-8"));
-        const isDate = (v: unknown) => typeof v === "string" && Number.isFinite(Date.parse(v));
-        const ok = r?.pgid === Number(stem) && typeof r.by === "string" && typeof r.reason === "string" && isDate(r.at) && isDate(r.remindAt) && (r.leader === null || typeof r.leader === "string");
-        return ok ? [{ pgid: r.pgid, by: r.by, reason: r.reason, at: r.at, remindAt: r.remindAt, leader: r.leader }] : [];
-      } catch {
-        return [];
-      }
-    });
-  } catch {
-    return [];
-  }
+  return readRecordDir(dir, "suspensions").flatMap(({ stem, text }) => {
+    try {
+      const r = JSON.parse(text);
+      const isDate = (v: unknown) => typeof v === "string" && Number.isFinite(Date.parse(v));
+      const ok = r?.pgid === stem && typeof r.by === "string" && typeof r.reason === "string" && isDate(r.at) && isDate(r.remindAt) && (r.leader === null || typeof r.leader === "string");
+      return ok ? [{ pgid: r.pgid, by: r.by, reason: r.reason, at: r.at, remindAt: r.remindAt, leader: r.leader }] : [];
+    } catch {
+      return [];
+    }
+  });
 }
 
 /** Runs `suspend` or `resume` (`argv[0]`): exit 0 done, 1 refused or failed, 64 usage. A suspend writes the record before the signal; a resume signals before it removes the record. */

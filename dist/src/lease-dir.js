@@ -2,8 +2,9 @@
  * The lease directory's one rule: a real directory (not a symlink) that this user owns, at mode 0700. Every writer in
  * the lease directory goes through it. No load-time side effects.
  */
-import { chmodSync, lstatSync, mkdirSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { isPid } from "./ps.js";
 import { writeFileAtomic } from "./atomic-write.js";
 /**
  * The lease's directory rule, applied to the lease directory and its subdirectory `name`: each is created with mode
@@ -35,5 +36,31 @@ export function writeLeaseRecord(dir, name, text, opts) {
         return false;
     writeFileAtomic(join(dir, name), text, opts);
     return true;
+}
+/**
+ * The records of `<dir>/<sub>`, read-only: each canonical `<pid>.json` file (no leading zero; a `writeFileAtomic` temp
+ * name is not one) with its text and mtime. A missing, symlinked or foreign subdirectory reads as empty, and a file
+ * that cannot be read is skipped. Creates and removes nothing.
+ */
+export function readRecordDir(dir, sub) {
+    const path = join(dir, sub);
+    try {
+        if (!isOwnDir(lstatSync(path)))
+            return [];
+        return readdirSync(path).flatMap((name) => {
+            const stem = Number(/^([1-9]\d*)\.json$/.exec(name)?.[1]);
+            if (!isPid(stem))
+                return [];
+            try {
+                return [{ stem, text: readFileSync(join(path, name), "utf-8"), mtimeMs: statSync(join(path, name)).mtimeMs }];
+            }
+            catch {
+                return [];
+            }
+        });
+    }
+    catch {
+        return [];
+    }
 }
 //# sourceMappingURL=lease-dir.js.map
