@@ -138,8 +138,8 @@ export interface PostCheckResult {
     summary?: string;
     /** Raw command output for machine consumption (injected into retry prompts). */
     output?: string;
-    /** The check did not run because memory pressure was critical; never retried. */
-    stopped?: "memory-critical";
+    /** The check did not run because memory pressure was critical or the disk was full; never retried. */
+    stopped?: "memory-critical" | "disk-full";
 }
 export interface RetryOnCheckFailureConfig {
     maxRetries: number;
@@ -258,7 +258,7 @@ export interface Logger {
     header(message: string): void;
 }
 /** Why an issue ended without a model verdict; new values may be added. */
-export type FailureReason = "memory-critical" | "lease-wait";
+export type FailureReason = "memory-critical" | "lease-wait" | "disk-full";
 /** Where in an issue's pipeline a stop took effect. */
 export type StopStage = "launch" | "post-check" | "retry" | "session";
 export interface IssueMetadata {

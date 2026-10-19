@@ -399,6 +399,11 @@ function guarded(opts, callback, arg) {
 }
 const warn = (opts, msg) => guarded(opts, opts.warn ?? defaultWarn, msg);
 const emit = (opts, e) => guarded(opts, opts.onEvent, e);
+/** An out-of-space error: the lease refuses instead of failing open, since unleased builds are the worst load on a full disk. Nothing is written to report it. */
+const diskFullCode = (error) => {
+    const code = error?.code;
+    return code === "ENOSPC" || code === "EDQUOT" ? code : undefined;
+};
 function failOpen(opts, level, capacity, waitedMs, reason, error) {
     warn(opts, `lease: unavailable (${reason}); running unleased`);
     const { code, message } = (error ?? {});
@@ -417,12 +422,17 @@ function checkDetached(meta) {
     if (!Number.isFinite(d.expiresAt))
         throw new TypeError(`lease: detached expiresAt ${String(d.expiresAt)} is not a finite number`);
 }
-/** A single non-blocking attempt: a handle, or `null` when not admitted this poll. Throws a `TypeError` on an invalid detached id, session PID or `expiresAt`. */
+/** A single non-blocking attempt: a handle, or `null` when not admitted this poll (a full disk included: it is never failed open, and emits a `timeout` event with `refused: "disk-full"`). Throws a `TypeError` on an invalid detached id, session PID or `expiresAt`. */
 export function tryAcquireLease(opts, meta) {
     checkDetached(meta);
     const r = attempt(opts, meta, 0);
     if (r.kind === "admitted")
         return r.handle;
+    const code = r.kind === "error" ? diskFullCode(r.error) : undefined;
+    if (code !== undefined) {
+        emit(opts, { type: "timeout", refused: "disk-full", waitedMs: 0 });
+        return null;
+    }
     return r.kind === "error" && r.level !== "critical" ? failOpen(opts, r.level, r.capacity, 0, "io-error", r.error) : null;
 }
 /** Live holders, or none when the directory cannot be read. */
@@ -466,6 +476,11 @@ async function pollForLease(opts, meta, wait, ticketId) {
         if (r.kind === "admitted")
             return r.handle;
         busySince = r.kind === "busy" ? (busySince ?? now()) : undefined;
+        const code = r.kind === "error" ? diskFullCode(r.error) : undefined;
+        if (code !== undefined) {
+            emit(opts, { type: "timeout", refused: "disk-full", waitedMs });
+            return { refused: "disk-full", waitedMs, level: r.level, live: 0, code };
+        }
         if (r.level !== "critical") {
             if (r.kind === "error")
                 return failOpen(opts, r.level, r.capacity, waitedMs, "io-error", r.error);

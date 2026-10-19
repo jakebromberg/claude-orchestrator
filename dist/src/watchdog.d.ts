@@ -65,5 +65,7 @@ export interface WatchdogDeps {
  * state stays and the skip is logged. A dead engine's record is reported once per `runId` and never deleted.
  */
 export declare function check(d: WatchdogDeps): void;
-/** Runs `check` or `brief` (`argv[0]`): exit 0 done, 64 usage. `brief` prints `watchdog.brief`, and nothing when it is empty or missing. */
+/** Free fraction of the lease directory's volume below which `brief` reports a full disk. */
+export declare const DISK_FULL_FRACTION = 0.02;
+/** Runs `check` or `brief` (`argv[0]`): exit 0 done, 64 usage. `brief` prints `watchdog.brief` (nothing when it is empty or missing), then a disk-full line when the volume is nearly full (a live `statfsSync`, no file written). */
 export declare function runWatchdog(argv: string[], d: WatchdogDeps): number;
