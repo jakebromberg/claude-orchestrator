@@ -13,6 +13,12 @@ export const DEFAULT_STEP_TABLE = {
 export function headroomCapacity(step, policy) {
     return step >= MAX_STEP ? policy.heavyCeiling : Math.min(policy.heavyCeiling, step);
 }
+/** The session row below step 4, by step. */
+const SESSION_ROW = [0, 1, 2, 4];
+/** Implementer-session slots at `step`: step 4 gets the whole `ceiling`, steps 3, 2 and 1 get 4, 2 and 1 (each capped by it), step 0 none. */
+export function sessionHeadroomCapacity(step, ceiling) {
+    return step >= MAX_STEP ? ceiling : Math.min(ceiling, SESSION_ROW[step] ?? 0);
+}
 /** A band's step is clamped to 0..`MAX_STEP`, so a mistyped table cannot exceed the ceiling or go negative. */
 function targetStep({ level, freePct = 0 }, table) {
     if (level === "critical")

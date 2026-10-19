@@ -26,6 +26,8 @@ export interface HeadroomState {
 export declare const DEFAULT_STEP_TABLE: StepTable;
 /** Heavy-command slots at `step`: step 4 gets the whole ceiling, a lower step at most that many, step 0 none. */
 export declare function headroomCapacity(step: number, policy: PressurePolicy): number;
+/** Implementer-session slots at `step`: step 4 gets the whole `ceiling`, steps 3, 2 and 1 get 4, 2 and 1 (each capped by it), step 0 none. */
+export declare function sessionHeadroomCapacity(step: number, ceiling: number): number;
 /**
  * The step for `signals` after `previous` (absent: start at the target). A lower
  * target applies at once and `critical` is always 0. A higher one applies one

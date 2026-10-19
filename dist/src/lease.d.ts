@@ -57,6 +57,8 @@ export interface LeaseOptions {
      */
     headroom?: HeadroomSampler;
     policy: PressurePolicy;
+    /** The machine-wide ceiling of implementer sessions (`CO_LEASE_SESSION_SLOTS`, default 6); steps below 4 are capped by it. */
+    sessionSlots?: number;
     isAlive?(pid: number): boolean;
     /**
      * Wall-clock epoch milliseconds (default `Date.now`). It dates heartbeats, which are compared with mtimes the kernel
@@ -125,6 +127,11 @@ export interface LeaseStatus {
     /** The kernel signals behind the step; `null` after a failed guarded read, and when no `headroom` sampler is set. */
     signals: MemorySignals | null;
     live: HolderInfo[];
+    /** Set by `leaseStatus` only: the session class's capacity at the same reading, and its live holders. */
+    sessions?: {
+        capacity: number;
+        live: HolderInfo[];
+    };
 }
 /**
  * A holder stays live only while this process's event loop runs its 30 s heartbeat, or while a child PID recorded
@@ -185,6 +192,16 @@ export declare function tryAcquireLease(opts: LeaseOptions, meta: HolderMeta): L
  * same way as an admission's or refusal's `waitedMs`, so a progress line can throttle on it without a clock of its own.
  */
 export declare function acquireLease(opts: LeaseOptions, meta: HolderMeta, wait?: LeaseWait): Promise<LeaseHandle | LeaseRefusal>;
+/** What a session holder records; it is never detached, gated or suspendable. */
+export type SessionMeta = Pick<HolderMeta, "command" | "label" | "cwd">;
+/**
+ * `acquireLease` for one implementer session of an engine, from the machine-wide pool of the session row (`sessions/`,
+ * FIFO tickets in `sessions-waiting/`; 6, 4, 2, 1 and 0 sessions at steps 4 to 0, capped by `LeaseOptions.sessionSlots`).
+ * The holder lives in the calling process and stays live only while that process's 30 s heartbeat runs: a stopped engine
+ * frees its slots after 90 s, whatever its `claude` children are doing. The stop rule is `wait.stopWhen`, as for a heavy
+ * acquire, and it sees the session holders and capacity. Interactive sessions take no slot.
+ */
+export declare function acquireSessionLease(opts: LeaseOptions, meta: SessionMeta, wait?: LeaseWait): Promise<LeaseHandle | LeaseRefusal>;
 type LeaseWait = {
     maxWaitMs?: number;
     onWait?(s: LeaseStatus & {

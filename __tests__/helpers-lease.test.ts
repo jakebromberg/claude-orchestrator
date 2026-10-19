@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync
 import os, { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { defaultPressureSampler, leaseDirectory } from "../src/memory-pressure.js";
-import { fakeLeaseClock, installIsolatedHome, scriptedLease, unwritableLeaseDir } from "./helpers/lease.js";
+import { fakeLeaseClock, installIsolatedHome, isolatedLeaseEnv, scriptedLease, unwritableLeaseDir } from "./helpers/lease.js";
 
 describe("fakeLeaseClock().sleep", () => {
   afterEach(() => vi.useRealTimers());
@@ -54,6 +54,12 @@ describe("unwritableLeaseDir", () => {
 describe("installIsolatedHome", () => {
   it("is installed for this test file: the default lease directory is under the guard's temp home", () => {
     expect(leaseDirectory({})).toMatch(/\/co-home-[^/]+\/\.local\/state\/claude-orchestrator\/lease$/);
+  });
+
+  it("scrubs CO_LEASE_SESSION_SLOTS from a spawned process's env", () => {
+    vi.stubEnv("CO_LEASE_SESSION_SLOTS", "3");
+    expect(isolatedLeaseEnv("/lease").CO_LEASE_SESSION_SLOTS).toBeUndefined();
+    vi.unstubAllEnvs();
   });
 
   it("removes CO_LEASE_* and CO_PRESSURE_* from process.env and restores them on dispose", () => {
