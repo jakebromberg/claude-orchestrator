@@ -16,6 +16,8 @@ const SAMPLE_TTL_MS = 10_000;
 /** How old the last good reading may be when a guarded read fails; shared with the headroom sampler. */
 export const FALLBACK_MAX_AGE_MS = 60_000;
 const DEFAULT_POLICY = { heavyCeiling: 4, heavyWarning: 1 };
+/** The machine-wide ceiling of implementer sessions at step 4. */
+export const DEFAULT_SESSION_SLOTS = 6;
 const OVERRIDE_VALUE = "critical-as-warning";
 const stderrWarn = (msg) => {
     process.stderr.write(`[memory-pressure] ${msg}\n`);
@@ -113,6 +115,16 @@ export function pressurePolicyFromEnv(env = process.env, warn = warnOnce) {
         return { ...DEFAULT_POLICY, heavyCeiling: Number(raw.trim()) };
     warn(`ignoring invalid CO_LEASE_SLOTS=${JSON.stringify(raw)}; keeping ${DEFAULT_POLICY.heavyCeiling}`);
     return { ...DEFAULT_POLICY };
+}
+/** `CO_LEASE_SESSION_SLOTS` replaces the session ceiling (and caps the lower steps); an invalid value keeps the default and is reported. */
+export function sessionSlotsFromEnv(env = process.env, warn = warnOnce) {
+    const raw = env.CO_LEASE_SESSION_SLOTS;
+    if (raw === undefined)
+        return DEFAULT_SESSION_SLOTS;
+    if (/^[1-9]\d*$/.test(raw.trim()))
+        return Number(raw.trim());
+    warn(`ignoring invalid CO_LEASE_SESSION_SLOTS=${JSON.stringify(raw)}; keeping ${DEFAULT_SESSION_SLOTS}`);
+    return DEFAULT_SESSION_SLOTS;
 }
 /** True when a reading taken at `at` is no older than `maxAgeMs` at `now`; a reading from the future (a clock step back) is not fresh. */
 export function isFresh(at, now, maxAgeMs) {

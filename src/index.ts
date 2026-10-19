@@ -76,19 +76,20 @@ export {
   readMemoryPressure,
   readMemorySignals,
   sessionCapacity,
+  sessionSlotsFromEnv,
   stopAtCritical,
 } from "./memory-pressure.js";
 export type { MemorySignals, PressureLevel, PressurePolicy, PressureSampler } from "./memory-pressure.js";
-export { DEFAULT_STEP_TABLE, headroomCapacity, headroomStep } from "./headroom.js";
+export { DEFAULT_STEP_TABLE, headroomCapacity, headroomStep, sessionHeadroomCapacity } from "./headroom.js";
 export { defaultHeadroomSampler, levelView } from "./headroom-sampler.js";
 export type { HeadroomReading, HeadroomSampler } from "./headroom-sampler.js";
 export type { HeadroomState, StepBand, StepTable } from "./headroom.js";
-export { acquireLease, tryAcquireLease, leaseStatus, defaultLeaseOptions, releaseHolder } from "./lease.js";
+export { acquireLease, acquireSessionLease, tryAcquireLease, leaseStatus, defaultLeaseOptions, releaseHolder } from "./lease.js";
 export { createFileEngineRegistry } from "./engine-registry.js";
 export type { FileEngineRegistryOptions } from "./engine-registry.js";
 export { leaseEventSink } from "./lease-events.js";
 export { isHeavyCommand } from "./lease-hook.js";
-export type { CpuTicks, HolderInfo, HolderMeta, LeaseEvent, LeaseHandle, LeaseOptions, LeaseRefusal, LeaseStatus } from "./lease.js";
+export type { CpuTicks, HolderInfo, HolderMeta, LeaseEvent, LeaseHandle, LeaseOptions, LeaseRefusal, LeaseStatus, SessionMeta } from "./lease.js";
 export { createMain } from "./create-main.js";
 export type { ConfigFactory, MainOptions } from "./create-main.js";
 

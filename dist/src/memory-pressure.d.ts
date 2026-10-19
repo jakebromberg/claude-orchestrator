@@ -13,6 +13,8 @@ export interface PressureSampler {
 }
 /** How old the last good reading may be when a guarded read fails; shared with the headroom sampler. */
 export declare const FALLBACK_MAX_AGE_MS = 60000;
+/** The machine-wide ceiling of implementer sessions at step 4. */
+export declare const DEFAULT_SESSION_SLOTS = 6;
 export declare const warnOnce: (msg: string) => void;
 /**
  * Reads the macOS pressure level. `null` means the darwin read failed, timed
@@ -53,6 +55,8 @@ export declare function sessionCapacity(level: PressureLevel, maxParallel: numbe
 export declare function stopAtCritical(level: PressureLevel, running: number): boolean;
 /** `CO_LEASE_SLOTS` overrides the heavy ceiling; an invalid value keeps the default and is reported. */
 export declare function pressurePolicyFromEnv(env?: NodeJS.ProcessEnv, warn?: (msg: string) => void): PressurePolicy;
+/** `CO_LEASE_SESSION_SLOTS` replaces the session ceiling (and caps the lower steps); an invalid value keeps the default and is reported. */
+export declare function sessionSlotsFromEnv(env?: NodeJS.ProcessEnv, warn?: (msg: string) => void): number;
 /** True when a reading taken at `at` is no older than `maxAgeMs` at `now`; a reading from the future (a clock step back) is not fresh. */
 export declare function isFresh(at: number, now: number, maxAgeMs: number): boolean;
 /** Wraps `read` in a TTL cache (default 10 s). A cached level from the future (the clock stepped back) has expired. */
