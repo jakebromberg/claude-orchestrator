@@ -198,6 +198,17 @@ describe("leaseEventSink", () => {
     expect(readFileSync(join(tmp, "victim"), "utf8")).toBe("untouched\n");
   });
 
+  it("appends nothing to a foreign-owned events.jsonl", () => {
+    const file = join(dir, "events.jsonl");
+    writeFileSync(file, "");
+    const uid = statSync(dir).uid;
+    // the first getuid call is the directory check
+    vi.spyOn(process as Required<NodeJS.Process>, "getuid").mockReturnValueOnce(uid).mockReturnValue(uid + 1);
+    leaseEventSink(dir)(RELEASE);
+    vi.restoreAllMocks();
+    expect(readFileSync(file, "utf8")).toBe("");
+  });
+
   it.skipIf(noFifos)("writes nothing into a FIFO planted at events.jsonl", () => {
     execFileSync("mkfifo", [join(dir, "events.jsonl")]);
     const reader = openSync(join(dir, "events.jsonl"), constants.O_RDONLY | constants.O_NONBLOCK);

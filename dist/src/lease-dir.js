@@ -37,8 +37,53 @@ export function writeLeaseRecord(dir, name, text, opts) {
     writeFileAtomic(join(dir, name), text, opts);
     return true;
 }
-// A planted symlink is not followed and a planted FIFO is not waited on.
-const READ_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+/**
+ * Opens `path` with `flags` plus `O_NOFOLLOW | O_NONBLOCK` (a planted symlink is not followed and a planted FIFO is not
+ * waited on) and returns the descriptor only for a regular file this user owns; any other kind of entry is closed and
+ * reads as `undefined`. A failed open throws. The one open rule of every lease-directory read and append; the caller closes the descriptor.
+ */
+export function openOwnFile(path, flags, mode) {
+    const fd = openSync(path, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK, mode);
+    let owned = false;
+    try {
+        const st = fstatSync(fd);
+        owned = st.isFile() && !(process.getuid && st.uid !== process.getuid());
+    }
+    finally {
+        if (!owned)
+            closeSync(fd);
+    }
+    return owned ? fd : undefined;
+}
+/** The text and mtime of the record `<dir>/<name>`, or `undefined` when it is missing, unreadable, or not a regular file this user owns (a symlink, FIFO, directory, foreign file). Never blocks; the caller keeps its own body validation. */
+export function readLeaseRecord(dir, name) {
+    try {
+        const fd = openOwnFile(join(dir, name), constants.O_RDONLY);
+        if (fd === undefined)
+            return undefined;
+        try {
+            return { text: readFileSync(fd, "utf-8"), mtimeMs: fstatSync(fd).mtimeMs };
+        }
+        finally {
+            closeSync(fd);
+        }
+    }
+    catch {
+        return undefined;
+    }
+}
+/** The text of a file the user named, which may be a symlink on purpose (dotfiles). It is opened non-blocking and read only when it is a regular file; a missing, unreadable or non-regular one throws, and a FIFO is never waited on. */
+export function readRegularFile(path) {
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+        if (!fstatSync(fd).isFile())
+            throw new Error(`${path} is not a regular file`);
+        return readFileSync(fd, "utf-8");
+    }
+    finally {
+        closeSync(fd);
+    }
+}
 /**
  * The records of `<dir>/<sub>`, read-only: each canonical `<pid>.json` file (no leading zero; a `writeFileAtomic` temp
  * name is not one) with its text and mtime. A missing, symlinked or foreign subdirectory reads as empty, and an entry
@@ -52,23 +97,8 @@ export function readRecordDir(dir, sub) {
             return [];
         return readdirSync(path).flatMap((name) => {
             const stem = Number(/^([1-9]\d*)\.json$/.exec(name)?.[1]);
-            if (!isPid(stem))
-                return [];
-            try {
-                const fd = openSync(join(path, name), READ_FLAGS);
-                try {
-                    const st = fstatSync(fd);
-                    if (!st.isFile() || (process.getuid && st.uid !== process.getuid()))
-                        return [];
-                    return [{ stem, text: readFileSync(fd, "utf-8"), mtimeMs: st.mtimeMs }];
-                }
-                finally {
-                    closeSync(fd);
-                }
-            }
-            catch {
-                return [];
-            }
+            const rec = isPid(stem) ? readLeaseRecord(path, name) : undefined;
+            return rec ? [{ stem, ...rec }] : [];
         });
     }
     catch {

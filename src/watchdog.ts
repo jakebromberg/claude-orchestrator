@@ -4,11 +4,11 @@
  * stopped tree cannot silence it. It sends no signal: its dependencies are `ps`, the clock and the file system, and an
  * engine's liveness is whether its pid has a row in the scan for a process that started no later than the record.
  */
-import { appendFileSync, closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, statfsSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, constants, lstatSync, readdirSync, statfsSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
-import { isOwnDir, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
+import { isOwnDir, openOwnFile, readLeaseRecord, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
 import { ancestry, isPid, parsePsTable, ps, PS_TABLE_ARGS, type ProcRow } from "./ps.js";
 import { readSuspensions, type SuspensionRecord } from "./suspensions.js";
 
@@ -23,7 +23,7 @@ export const STALLED_MARGIN_MS = 10 * 60_000;
 /** A lease suspension (`by: "lease"`) older than this is reported. */
 export const LEASE_SUSPENSION_MAX_MS = 30 * 60_000;
 // A planted symlink is not followed and a planted FIFO is not waited on.
-const LOG_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+const LOG_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT;
 
 /** An `engines/<pid>.json` record (see `engine-registry.ts`) with the verdicts the rules need. */
 export interface Engine {
@@ -189,7 +189,7 @@ function stoppedGroups(procs: ProcRow[], engines: Engine[]): number[] {
 
 function readState(dir: string): State {
   try {
-    const s = JSON.parse(readFileSync(join(dir, "watchdog.json"), "utf-8"));
+    const s = JSON.parse(readLeaseRecord(dir, "watchdog.json")?.text ?? "{}");
     return { stoppedSince: s.stoppedSince ?? {}, reported: s.reported ?? [], findings: s.findings ?? [] };
   } catch {
     return { stoppedSince: {}, reported: [], findings: [] };
@@ -199,9 +199,10 @@ function readState(dir: string): State {
 /** Appends one line to `watchdog.log`; only a regular file is appended to, and a new one has mode 0600. A failure is swallowed: the log is a diagnostic. */
 function appendLog(dir: string, now: number, text: string): void {
   try {
-    const fd = openSync(join(dir, "watchdog.log"), LOG_FLAGS, 0o600);
+    const fd = openOwnFile(join(dir, "watchdog.log"), LOG_FLAGS, 0o600);
+    if (fd === undefined) return;
     try {
-      if (fstatSync(fd).isFile()) appendFileSync(fd, `${new Date(now).toISOString()} ${text}\n`);
+      appendFileSync(fd, `${new Date(now).toISOString()} ${text}\n`);
     } finally {
       closeSync(fd);
     }
@@ -265,10 +266,7 @@ export function runWatchdog(argv: string[], d: WatchdogDeps): number {
   }
   if (argv[0] === "check") check(d);
   else {
-    let line = "";
-    try {
-      line = readFileSync(join(d.dir, "watchdog.brief"), "utf-8");
-    } catch {}
+    const line = readLeaseRecord(d.dir, "watchdog.brief")?.text;
     if (line) d.out(line);
     const full = diskFullLine(d.dir, d.statfs ?? statfsSync);
     if (full) d.out(full);

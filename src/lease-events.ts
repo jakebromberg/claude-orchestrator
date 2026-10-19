@@ -2,15 +2,14 @@
  * JSONL sink for the lease's `onEvent` seam: one `{ ts, ...event }` line per event appended to
  * `<lease dir>/events.jsonl`. Events pass through unchanged, so a new event type or reap reason needs no change here.
  */
-import { appendFileSync, closeSync, constants, fstatSync, lstatSync, openSync, renameSync } from "node:fs";
+import { appendFileSync, closeSync, constants, lstatSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { isOwnDir } from "./lease-dir.js";
+import { isOwnDir, openOwnFile } from "./lease-dir.js";
 import { defaultWarn, type LeaseEvent } from "./lease.js";
 
 /** Size past which a sink rotates its file to `<file>.1`; one generation of each is kept. */
 export const ROTATE_BYTES = 5 * 1024 * 1024;
-// A planted symlink is not followed and a planted FIFO is not waited on.
-const OPEN_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+const OPEN_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT;
 
 type SinkDeps = { now?: () => number; maxBytes?: number; warn?: (msg: string) => void; rename?: (from: string, to: string) => void };
 
@@ -18,7 +17,7 @@ type SinkDeps = { now?: () => number; maxBytes?: number; warn?: (msg: string) =>
  * Appends `{ ts, ...event }` lines to `<dir>/<name>` and rotates it to `<name>.1`; `leaseEventSink` is this sink on
  * `events.jsonl`, and `pressure.jsonl` is another. Appends only to a lease directory the lease itself accepts (a real
  * directory this user owns, which the lease creates at its first acquire), so a read-only mode creates nothing and a
- * directory the lease refused gets no write. Only a regular file is appended to, and a new one has mode 0600. Past
+ * directory the lease refused gets no write. Only a regular file this user owns is appended to, and a new one has mode 0600. Past
  * `maxBytes` (default 5 MB) the file is renamed to a single `<name>.1`, replacing any previous one; when that rename fails, the event is still
  * appended and `warn` (default: stderr) is called once per sink. A rename that finds the file gone (another process
  * rotated first) is the expected race and is not reported. A write failure is swallowed: the log is a diagnostic
@@ -42,9 +41,10 @@ export function jsonlSink<T extends object>(dir: string, name: string, deps: Sin
           }
         }
       }
-      const fd = openSync(file, OPEN_FLAGS, 0o600);
+      const fd = openOwnFile(file, OPEN_FLAGS, 0o600);
+      if (fd === undefined) return;
       try {
-        if (fstatSync(fd).isFile()) appendFileSync(fd, `${JSON.stringify({ ts: new Date(now()).toISOString(), ...e })}\n`);
+        appendFileSync(fd, `${JSON.stringify({ ts: new Date(now()).toISOString(), ...e })}\n`);
       } finally {
         closeSync(fd);
       }

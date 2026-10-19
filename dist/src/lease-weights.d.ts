@@ -19,7 +19,7 @@ export declare const realGit: GitLookup;
 /** `owner/repo` from an ssh or https remote URL, with or without `.git`; `undefined` for any other shape. */
 export declare function normalizeRemote(url: string): string | undefined;
 /** The rules of the weights file: a missing file is silent, an unreadable or malformed one or a bad entry gives one warning, and only valid entries are kept. */
-export declare function loadWeightTable(env: NodeJS.ProcessEnv, warn: (line: string) => void, read?: (file: string) => string): WeightRule[];
+export declare function loadWeightTable(env: NodeJS.ProcessEnv, warn: (line: string) => void): WeightRule[];
 /** Bytes for the first rule matching `command` (and `cwd`'s repo, when keyed); `undefined` when none does. */
 export declare function resolveWeight(command: string, cwd: string, table: WeightRule[], lookup?: GitLookup): number | undefined;
 /** The weight for a command in `cwd` from the table `env` names; the one call the hook and the CLI make. */

@@ -6,8 +6,8 @@
  * `hw.memsize`). No match, a bad table or a failed git lookup yields `undefined`, so the lease applies its unmatched weight.
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { readLeaseRecord, readRegularFile } from "./lease-dir.js";
 import { leaseDirectory } from "./memory-pressure.js";
 const git = (cwd, args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
 export const realGit = {
@@ -33,11 +33,15 @@ const validRule = (r) => {
     }
 };
 /** The rules of the weights file: a missing file is silent, an unreadable or malformed one or a bad entry gives one warning, and only valid entries are kept. */
-export function loadWeightTable(env, warn, read = (f) => readFileSync(f, "utf8")) {
+export function loadWeightTable(env, warn) {
     let file = env.CO_LEASE_WEIGHTS_FILE;
     try {
-        file ||= join(leaseDirectory(env), "weights.json");
-        const parsed = JSON.parse(read(file));
+        const dir = file ? undefined : leaseDirectory(env);
+        file ||= join(dir, "weights.json");
+        const text = dir === undefined ? readRegularFile(file) : readLeaseRecord(dir, "weights.json")?.text;
+        if (text === undefined)
+            return [];
+        const parsed = JSON.parse(text);
         if (!Array.isArray(parsed))
             throw new Error("not an array");
         const rules = parsed.filter(validRule);

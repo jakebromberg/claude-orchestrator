@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REFRESH_MS } from "../src/engine-registry.js";
@@ -335,6 +335,18 @@ describe("watchdog", () => {
       } finally {
         rmSync(link);
       }
+    });
+
+    it("appends nothing to a foreign-owned watchdog.log", () => {
+      const file = join(dir, "watchdog.log");
+      writeFileSync(file, "");
+      const uid = statSync(dir).uid;
+      // the first getuid call is check's directory test
+      vi.spyOn(process as Required<NodeJS.Process>, "getuid").mockReturnValueOnce(uid).mockReturnValue(uid + 1);
+      scanError = new Error("no ps");
+      check();
+      vi.restoreAllMocks();
+      expect(readFileSync(file, "utf-8")).toBe("");
     });
 
     it("does not follow a symlinked watchdog.log", () => {
