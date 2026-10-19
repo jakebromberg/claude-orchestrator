@@ -15,6 +15,7 @@ import { postRunSummaryComments } from "./issue-comments.js";
 import { encodeRefForFilename } from "./ref.js";
 import { renderPlanPreview } from "./plan-preview.js";
 import { shellQuote } from "./shell-quote.js";
+import { runShellAsync } from "./yaml-hooks.js";
 import { authBanner, claudeExecOptions } from "./claude-env.js";
 import { defaultLeaseOptions } from "./lease.js";
 import { createFileEngineRegistry } from "./engine-registry.js";
@@ -98,6 +99,7 @@ export function createRealDeps(config, mode) {
         },
         readFile: (filePath) => fs.readFileSync(filePath, "utf-8"),
         runCommand: (cmd, options) => execSync(cmd, { stdio: "pipe", encoding: "utf-8", timeout: options?.timeout }),
+        runCommandAsync: (cmd, options) => runShellAsync(cmd, process.cwd(), undefined, undefined, options?.timeout),
         truncateFile: (filePath) => {
             try {
                 fs.truncateSync(filePath, 0);

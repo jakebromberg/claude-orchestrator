@@ -63,6 +63,7 @@ function setUp(opts: { logSize?: number; retries?: number; check?: OrchestratorH
     getLogFileSize: () => opts.logSize ?? 100,
     readFile,
     runCommand: vi.fn((cmd: string) => (cmd.includes("rev-list --count") ? "3" : "")),
+    runCommandAsync: vi.fn(async () => ""),
     truncateFile: vi.fn(),
   };
   const orchestrator = new Orchestrator(config, deps, {});

@@ -140,7 +140,7 @@ function makeConfig(
 }
 
 function makeDeps(overrides: Partial<Deps> = {}): Deps {
-  return {
+  const deps: Deps = {
     statusStore: new InMemoryStatusStore(),
     metadataStore: new InMemoryMetadataStore(),
     processRunner: makeMockRunner(),
@@ -150,9 +150,12 @@ function makeDeps(overrides: Partial<Deps> = {}): Deps {
     getLogFileSize: () => 100,
     readFile: () => "",
     runCommand: vi.fn(() => ""),
+    // Reads `deps.runCommand` lazily so a test that stubs only the sync seam still sees mode-node commands.
+    runCommandAsync: vi.fn(async (cmd: string, options?: { timeout?: number }) => deps.runCommand(cmd, options)),
     truncateFile: vi.fn(),
     ...overrides,
   };
+  return deps;
 }
 
 function makeOrchestrator(
@@ -1732,6 +1735,7 @@ describe("Orchestrator", () => {
       });
       expect(runCommand).toHaveBeenCalledWith(
         "gh pr view 152 --repo 'WXYC/wxyc-dj-ios' --json state,headRefName",
+        expect.anything(),
       );
     });
 
@@ -1771,6 +1775,28 @@ describe("Orchestrator", () => {
       expect(deps.metadataStore.get(issue.ref).prUrl).toBe(
         "https://github.com/WXYC/wxyc-dj-ios/pull/152",
       );
+    });
+
+    it("bounds the gh call well under the lease's 90 s reap window", async () => {
+      const runCommand = makeVerifyStub();
+      await runOnce(OWN_PR_LOG, runCommand);
+
+      const call = runCommand.mock.calls.find((c) => c[0].startsWith("gh pr view"));
+      const timeout = (call as unknown[] | undefined)?.[1] as { timeout?: number } | undefined;
+      expect(timeout?.timeout).toBeGreaterThan(0);
+      expect(timeout?.timeout).toBeLessThan(90_000);
+    });
+
+    it("does not record a PR when the gh call hangs past its timeout", async () => {
+      const runCommand = vi.fn((cmd: string, opts?: { timeout?: number }) => {
+        if (cmd.startsWith("gh pr view") && opts?.timeout) {
+          throw Object.assign(new Error("spawnSync /bin/sh ETIMEDOUT"), { code: "ETIMEDOUT" });
+        }
+        return cmd.includes("rev-list") ? "3" : "";
+      });
+      const { deps, ref } = await runOnce(OWN_PR_LOG, runCommand as ReturnType<typeof makeVerifyStub>);
+
+      expect(deps.metadataStore.get(ref).prUrl).toBeUndefined();
     });
 
     it("finds its own PR behind a later same-repo URL that fails verification", async () => {
@@ -1888,6 +1914,7 @@ describe("Orchestrator", () => {
 
       expect(runCommand).toHaveBeenCalledWith(
         `git -C '/worktrees/test-issue' rev-list --count origin/'master'..HEAD`,
+        expect.anything(),
       );
     });
 
@@ -1900,6 +1927,24 @@ describe("Orchestrator", () => {
       });
       const deps = await runToCleanExit(runCommand);
 
+      expect(deps.statusStore.get("1")).toBe("succeeded");
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("could not count commits"),
+      );
+    });
+
+    it("bounds the commit count and leaves the result in place when git hangs past it", async () => {
+      const seen: Array<number | undefined> = [];
+      const runCommand = vi.fn((cmd: string, opts?: { timeout?: number }) => {
+        if (!cmd.includes("rev-list")) return "";
+        seen.push(opts?.timeout);
+        throw Object.assign(new Error("spawnSync /bin/sh ETIMEDOUT"), { code: "ETIMEDOUT" });
+      });
+      const deps = await runToCleanExit(runCommand);
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toBeGreaterThan(0);
+      expect(seen[0]).toBeLessThan(90_000);
       expect(deps.statusStore.get("1")).toBe("succeeded");
       expect(deps.logger.warn).toHaveBeenCalledWith(
         expect.stringContaining("could not count commits"),
@@ -3199,7 +3244,7 @@ describe("mode-nodes", () => {
 
     await orchestrator.runWave(1);
 
-    expect(deps.runCommand).toHaveBeenCalledWith("gh workflow run deploy.yml", expect.anything());
+    expect(deps.runCommandAsync).toHaveBeenCalledWith("gh workflow run deploy.yml", expect.anything());
     expect(runner.spawned.length).toBe(0); // no Claude session spawned
     expect(deps.statusStore.get("1")).toBe("succeeded");
   });
@@ -3209,8 +3254,8 @@ describe("mode-nodes", () => {
       number: 1, slug: "deploy-lml", wave: 1,
       mode: "deploy", command: "gh workflow run deploy.yml",
     });
-    const runCommand = vi.fn(() => { throw new Error("deploy failed"); });
-    const { orchestrator, deps } = makeOrchestrator([issue], undefined, { runCommand });
+    const runCommandAsync = vi.fn(async () => { throw new Error("deploy failed"); });
+    const { orchestrator, deps } = makeOrchestrator([issue], undefined, { runCommandAsync });
 
     await orchestrator.runWave(1);
 
@@ -3244,8 +3289,8 @@ describe("mode-nodes", () => {
 
     await orchestrator.runAllWaves();
 
-    // The only runCommand call is the deploy command — no `gh pr merge`.
-    const calls = (deps.runCommand as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    // The deploy command goes through runCommandAsync — no `gh pr merge`.
+    const calls = (deps.runCommandAsync as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
     expect(calls).toContain("gh workflow run deploy.yml");
     expect(calls.some((c: string) => c.includes("gh pr merge"))).toBe(false);
     expect(deps.statusStore.get("1")).toBe("succeeded");
@@ -3268,7 +3313,7 @@ describe("mode-nodes", () => {
     runner.resolvers.get(1000)!(0);
     await promise;
 
-    expect(deps.runCommand).toHaveBeenCalledWith("gh workflow run deploy.yml", expect.anything());
+    expect(deps.runCommandAsync).toHaveBeenCalledWith("gh workflow run deploy.yml", expect.anything());
     expect(deps.statusStore.get("1")).toBe("succeeded");
     expect(deps.statusStore.get("2")).toBe("succeeded");
   });
@@ -3372,7 +3417,7 @@ describe("cutover gate", () => {
       runner.resolvers.get(1000)!(0);
       await promise;
 
-      expect(deps.runCommand).toHaveBeenCalledWith("npm publish", expect.anything());
+      expect(deps.runCommandAsync).toHaveBeenCalledWith("npm publish", expect.anything());
       expect(deps.statusStore.get("WXYC/wxyc-shared#1")).toBe("succeeded");
       expect(deps.statusStore.get("WXYC/backend#2")).toBe("succeeded");
     });
@@ -3444,13 +3489,13 @@ describe("mode-node command robustness", () => {
       mode: "deploy", command: "gh workflow run deploy.yml",
     });
     // Model an execSync failure: it attaches `status` (exit code) and `stderr`.
-    const runCommand = vi.fn(() => {
+    const runCommandAsync = vi.fn(async () => {
       throw Object.assign(new Error("Command failed: gh workflow run deploy.yml"), {
         status: 127,
         stderr: "gh: command not found\n",
       });
     });
-    const { orchestrator, deps } = makeOrchestrator([issue], undefined, { runCommand });
+    const { orchestrator, deps } = makeOrchestrator([issue], undefined, { runCommandAsync });
 
     await orchestrator.runWave(1);
 
@@ -3461,13 +3506,31 @@ describe("mode-node command robustness", () => {
     expect(errorLog).toContain("gh: command not found"); // stderr surfaced
   });
 
+  it("keeps the event loop running while a mode-node command runs", async () => {
+    const issue = makeIssue({
+      number: 1, slug: "deploy", wave: 1,
+      mode: "deploy", command: "slow-deploy",
+    });
+    const runCommandAsync = vi.fn(
+      () => new Promise<string>((resolve) => setTimeout(() => resolve(""), 50)),
+    );
+    const { orchestrator, deps } = makeOrchestrator([issue], undefined, { runCommandAsync });
+    let timerFired = false;
+    const run = orchestrator.runWave(1);
+    setTimeout(() => { timerFired = true; }, 10);
+    await run;
+    // Only an engine that awaits the command lets the 10 ms timer fire before the run ends.
+    expect(timerFired).toBe(true);
+    expect(deps.statusStore.get("1")).toBe("succeeded");
+  });
+
   it("falls back to exit code 1 when the error carries no status", async () => {
     const issue = makeIssue({
       number: 1, slug: "deploy", wave: 1,
       mode: "deploy", command: "false",
     });
-    const runCommand = vi.fn(() => { throw new Error("boom"); });
-    const { orchestrator, deps } = makeOrchestrator([issue], undefined, { runCommand });
+    const runCommandAsync = vi.fn(async () => { throw new Error("boom"); });
+    const { orchestrator, deps } = makeOrchestrator([issue], undefined, { runCommandAsync });
 
     await orchestrator.runWave(1);
 
@@ -3481,11 +3544,11 @@ describe("mode-node command robustness", () => {
       mode: "deploy", command: "gh workflow run deploy.yml", stallTimeout: 120,
     });
     const seen: Array<{ cmd: string; opts?: { timeout?: number } }> = [];
-    const runCommand = vi.fn((cmd: string, opts?: { timeout?: number }) => {
+    const runCommandAsync = vi.fn(async (cmd: string, opts?: { timeout?: number }) => {
       seen.push({ cmd, opts });
       return "";
     });
-    const { orchestrator } = makeOrchestrator([issue], undefined, { runCommand });
+    const { orchestrator } = makeOrchestrator([issue], undefined, { runCommandAsync });
 
     await orchestrator.runWave(1);
 
@@ -3500,11 +3563,11 @@ describe("mode-node command robustness", () => {
       mode: "deploy", command: "gh workflow run deploy.yml", stallTimeout: 0,
     });
     const seen: Array<{ opts?: { timeout?: number } }> = [];
-    const runCommand = vi.fn((_cmd: string, opts?: { timeout?: number }) => {
+    const runCommandAsync = vi.fn(async (_cmd: string, opts?: { timeout?: number }) => {
       seen.push({ opts });
       return "";
     });
-    const { orchestrator } = makeOrchestrator([issue], undefined, { runCommand });
+    const { orchestrator } = makeOrchestrator([issue], undefined, { runCommandAsync });
 
     await orchestrator.runWave(1);
 

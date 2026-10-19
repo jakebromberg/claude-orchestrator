@@ -836,6 +836,34 @@ describe("deriveHooks", () => {
       }
     });
 
+    it("rejects with the exit code as `status`, matching an execSync failure", async () => {
+      const err = await runShellAsync("echo oops >&2; exit 3", dir).catch((e) => e);
+      expect(err).toMatchObject({ status: 3 });
+      expect(String(err.message)).toContain("oops");
+    });
+
+    it("kills the child and rejects once the timeout passes", async () => {
+      let pid: number | undefined;
+      const started = Date.now();
+      const err = await runShellAsync("exec sleep 10", dir, undefined, (p) => { pid = p; }, 100).catch((e) => e);
+      try {
+        expect(Date.now() - started).toBeLessThan(5_000);
+        expect(String(err.message)).toContain("timed out after 100 ms");
+        expect(err.status).toBeUndefined();
+        await vi.waitFor(() =>
+          expect(() => process.kill(pid!, 0)).toThrow(expect.objectContaining({ code: "ESRCH" })),
+        );
+      } finally {
+        if (pid !== undefined && pid !== process.pid) {
+          try { process.kill(pid, "SIGKILL"); } catch {}
+        }
+      }
+    });
+
+    it("does not time out a command that finishes first", async () => {
+      await expect(runShellAsync("echo ok", dir, undefined, undefined, 5_000)).resolves.toBe("ok\n");
+    });
+
     it("default runner starts the tail on a UTF-8 character boundary", async () => {
       // 90000 bytes of "€\n" (E2 82 AC 0A) then "Z": a raw 64 KiB cut of the
       // 90001 bytes lands on 0x82, in the middle of a "€".

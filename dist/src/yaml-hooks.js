@@ -29,12 +29,17 @@ function utf8Tail(buf, max) {
 /**
  * Runs `cmd` under `/bin/sh -c` without blocking the event loop, keeping only
  * the last 64 KiB of combined stdout/stderr. Resolves with that tail on exit 0;
- * rejects with an Error carrying the exit code (or signal) and the tail.
+ * rejects with an Error carrying the exit code (or signal) and the tail. The
+ * exit code is also on the error as `status`, the field an `execSync` failure
+ * uses; a timeout or a signal leaves it unset.
  *
  * `onSpawn` receives the child's PID. If it throws, the child is killed and
  * the promise rejects with that error, but only after the child has exited.
+ *
+ * `timeoutMs` (unset or 0: none) SIGKILLs the child and rejects at once, without
+ * waiting for the pipes a grandchild may still hold open.
  */
-export function runShellAsync(cmd, cwd, env, onSpawn) {
+export function runShellAsync(cmd, cwd, env, onSpawn, timeoutMs) {
     return new Promise((resolve, reject) => {
         const child = spawn("/bin/sh", ["-c", cmd], {
             cwd,
@@ -48,15 +53,25 @@ export function runShellAsync(cmd, cwd, env, onSpawn) {
         child.stdout.on("data", collect);
         child.stderr.on("data", collect);
         let onSpawnFailure;
-        child.on("error", reject);
+        const timer = timeoutMs
+            ? setTimeout(() => {
+                child.kill("SIGKILL");
+                reject(new Error(`Command timed out after ${timeoutMs} ms\n${tail.toString("utf-8")}`));
+            }, timeoutMs)
+            : undefined;
+        child.on("error", (error) => {
+            clearTimeout(timer);
+            reject(error);
+        });
         child.on("close", (code, signal) => {
+            clearTimeout(timer);
             if (onSpawnFailure)
                 return reject(onSpawnFailure.error);
             const output = tail.toString("utf-8");
             if (code === 0)
                 return resolve(output);
             const how = signal ? `signal ${signal}` : `exit code ${code}`;
-            reject(new Error(`Command failed with ${how}\n${output}`));
+            reject(Object.assign(new Error(`Command failed with ${how}\n${output}`), code === null ? {} : { status: code }));
         });
         if (child.pid !== undefined && onSpawn) {
             try {

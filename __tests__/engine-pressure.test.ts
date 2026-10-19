@@ -87,6 +87,7 @@ function setUp(
     getLogFileSize: () => opts.logSize ?? 100,
     readFile: () => "",
     runCommand: vi.fn((cmd: string) => (cmd.includes("rev-list --count") ? "3" : "")),
+    runCommandAsync: vi.fn(async () => ""),
     truncateFile: vi.fn(),
     memoryPressure: sampler,
   };
