@@ -94,6 +94,20 @@ describe("createRealDeps lease wiring", () => {
   });
 });
 
+describe("createRealDeps mode-node runner", () => {
+  it("wires runCommandAsync to a runner that leaves the event loop free", async () => {
+    const deps = createRealDeps({ configDir: "/nonexistent" } as OrchestratorConfig, "status");
+    let ticks = 0;
+    const ticker = setInterval(() => ticks++, 20);
+    try {
+      await expect(deps.runCommandAsync!("sleep 0.3; echo ok", { timeout: 10_000 })).resolves.toBe("ok\n");
+    } finally {
+      clearInterval(ticker);
+    }
+    expect(ticks).toBeGreaterThan(2);
+  });
+});
+
 describe("buildGhIssueCreateCommand", () => {
   it("produces a well-formed gh issue create command", () => {
     expect(buildGhIssueCreateCommand("owner/repo", "my-feature")).toBe(

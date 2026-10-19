@@ -320,8 +320,9 @@ export interface Deps {
      * Run a shell command for a mode-node without blocking the event loop, so the
      * engine's heartbeats keep beating while it runs. Resolves with the output (the
      * real runner returns the combined stdout/stderr tail); rejects with an error
-     * carrying `status` (exit code) when the command exits non-zero, and kills the
-     * child and rejects when `options.timeout` (ms) passes; omit/0 for unbounded.
+     * carrying `status` (exit code) when the command exits non-zero, and stops the
+     * command (its whole process group) and rejects when `options.timeout` (ms)
+     * passes; omit/0 for unbounded.
      * Optional: absent, the engine runs mode-node commands through {@link runCommand},
      * which blocks the event loop.
      */

@@ -1,5 +1,7 @@
 import type { OrchestratorHooks } from "./types.js";
 import type { YamlConfig } from "./yaml-types.js";
+/** The largest delay `setTimeout` honours; Node fires a longer one after 1 ms. */
+export declare const MAX_TIMER_MS = 2147483647;
 /**
  * Runs `cmd` under `/bin/sh -c` without blocking the event loop, keeping only
  * the last 64 KiB of combined stdout/stderr. Resolves with that tail on exit 0;
@@ -10,10 +12,15 @@ import type { YamlConfig } from "./yaml-types.js";
  * `onSpawn` receives the child's PID. If it throws, the child is killed and
  * the promise rejects with that error, but only after the child has exited.
  *
- * `timeoutMs` (unset or 0: none) SIGKILLs the child and rejects at once, without
- * waiting for the pipes a grandchild may still hold open.
+ * `timeoutMs` (unset, 0, or above {@link MAX_TIMER_MS}: none) bounds the run. With
+ * a bound the shell runs in its own process group, and on timeout the whole group
+ * gets SIGTERM (as `execSync` sent the shell), so a script's trap can clean up and
+ * a grandchild cannot carry on; any member still alive `killGraceMs` later gets
+ * SIGKILL. The promise rejects at the timeout, without waiting for the pipes a
+ * grandchild may still hold open. Without a bound the shell stays in the
+ * engine's group, as before.
  */
-export declare function runShellAsync(cmd: string, cwd: string, env?: Record<string, string>, onSpawn?: (pid: number) => void, timeoutMs?: number): Promise<string>;
+export declare function runShellAsync(cmd: string, cwd: string, env?: Record<string, string>, onSpawn?: (pid: number) => void, timeoutMs?: number, killGraceMs?: number): Promise<string>;
 /** I/O dependencies injectable for testing. */
 export interface DeriveHooksDeps {
     readFile?: (path: string) => string;

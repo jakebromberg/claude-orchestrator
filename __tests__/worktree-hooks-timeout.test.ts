@@ -9,9 +9,16 @@ vi.mock("node:child_process", async (orig) => ({
 import { deriveWorktreeHooks } from "../src/worktree-hooks.js";
 
 describe("default git runner", () => {
-  beforeEach(() => execFileSync.mockClear());
+  beforeEach(() => execFileSync.mockReset().mockImplementation(() => "origin/main"));
 
-  it("bounds every git call well under the lease's 90 s reap window", async () => {
+  it.each([
+    { name: "fresh branch", addBranchFails: false, calls: 3 }, // rev-parse, prune, add -b
+    { name: "existing branch", addBranchFails: true, calls: 4 }, // ... then add <path> <branch>
+  ])("keeps setUpWorktree's blocking stretch within 60 s ($name)", async ({ addBranchFails, calls }) => {
+    execFileSync.mockImplementation((...args: unknown[]) => {
+      if (addBranchFails && Array.isArray(args[1]) && args[1].includes("-b")) throw new Error("branch exists");
+      return "origin/main";
+    });
     const hooks = deriveWorktreeHooks({
       reposDir: "/repos",
       existsSync: (p) => p === "/repos/r",
@@ -23,11 +30,11 @@ describe("default git runner", () => {
     };
     await hooks.setUpWorktree(issue);
 
-    expect(execFileSync).toHaveBeenCalledTimes(3); // rev-parse, prune, add
-    for (const call of execFileSync.mock.calls as unknown as unknown[][]) {
-      const opts = call[2] as { timeout?: number };
-      expect(opts.timeout).toBeGreaterThan(0);
-      expect(opts.timeout).toBeLessThan(90_000);
-    }
+    expect(execFileSync).toHaveBeenCalledTimes(calls);
+    const timeouts = (execFileSync.mock.calls as unknown as unknown[][]).map(
+      (call) => (call[2] as { timeout?: number }).timeout ?? Infinity,
+    );
+    for (const t of timeouts) expect(t).toBeGreaterThan(0);
+    expect(timeouts.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(60_000);
   });
 });

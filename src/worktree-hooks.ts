@@ -81,11 +81,11 @@ function defaultRepoOf(issue: Issue): string {
 }
 
 /**
- * Bounds `defaultRunGit` so a hung synchronous git fails its step instead of outlasting the lease's 90 s heartbeat
- * reap window. `setUpWorktree` makes three calls back to back (rev-parse, prune, add), and a blocking stretch must
- * end within 60 s, so 3 × 20 s.
+ * Bounds each `defaultRunGit` call so a hung synchronous git fails its step instead of outlasting the lease's 90 s
+ * heartbeat reap window. A blocking stretch must end within 60 s, and `setUpWorktree` makes up to four calls back to
+ * back (rev-parse, prune, `worktree add -b`, and on its failure `worktree add <path> <branch>`), so 4 × 12 s = 48 s.
  */
-const GIT_TIMEOUT_MS = 20_000;
+const GIT_TIMEOUT_MS = 12_000;
 
 function defaultRunGit(args: string[], cwd: string): string {
   return execFileSync("git", args, {
