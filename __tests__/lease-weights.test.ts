@@ -240,10 +240,15 @@ describe("heavy admission by summed memory weight", () => {
       expect(admitted(overridden(), GB)).toBe(expected);
     });
 
-    it("counts a ticket heavier than the current budget as ahead, so it is not starved", () => {
-      plantHolders(GB);
+    // Three live holders exceed the ticket's count capacity at step 2 (2), so only the weight rule counts it as ahead; the count rule would let every light newcomer pass it.
+    it("counts a ticket heavier than the current budget as ahead, so lighter newcomers do not starve it", () => {
+      plantHolders(GB, GB, GB);
       plantTicket("older", 1, { weight: 20 * GB });
       expect(admitted(at(2), GB)).toBe(false);
+    });
+
+    it("admits an oversize waiter, alone, once nothing is live at a step above 0", () => {
+      expect(admitted(at(2), 20 * GB)).toBe(true);
     });
   });
 
