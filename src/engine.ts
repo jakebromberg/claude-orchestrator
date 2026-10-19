@@ -713,7 +713,7 @@ export class Orchestrator {
     return false;
   }
 
-  /** True (and the issue is failed and stopped) when the check did not run for memory pressure; such a result is never retried. */
+  /** True (and the issue is failed and stopped) when the check did not run for memory pressure or a full disk; such a result is never retried. */
   private async checkStopped(issue: Issue, result: PostCheckResult): Promise<boolean> {
     if (!result.stopped) return false;
     await this.markStopped(issue, "post-check", "failed", result.stopped);
