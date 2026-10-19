@@ -17,7 +17,7 @@ import {
 import * as barrel from "../src/index.js";
 import type { HeadroomReading } from "../src/headroom-sampler.js";
 import { scriptedHeadroomSampler, scriptedPressureSampler } from "../src/testing.js";
-import { scriptedLease, type ScriptedLease } from "./helpers/lease.js";
+import { failFsCall, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
 
 const meta: HolderMeta = { command: "claude -p", cwd: "/work" };
 const HEARTBEAT_STALE_MS = 90_000;
@@ -216,6 +216,40 @@ describe("session holder class", () => {
       expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ id: h.id, pid: process.pid, command: "claude -p" });
       h.release();
       expect(existsSync(file)).toBe(false);
+    });
+  });
+
+  // Faults are injected with `failFsCall` (a spy on `fs` plus `syncBuiltinESMExports`) rather than `vi.mock("node:fs")`: no hoisting, and each row picks its own target.
+  describe("a full disk", () => {
+    let restore = () => {};
+    afterEach(() => restore());
+    const classes = [
+      { cls: "heavy", sub: "holders", waiting: "waiting", acquire: acquireLease },
+      { cls: "sessions", sub: "sessions", waiting: "sessions-waiting", acquire: acquireSessionLease },
+    ] as const;
+    const targets = [
+      { write: "mutex", hit: (_c: (typeof classes)[number], p: string) => p.endsWith(".mutex") },
+      { write: "holder", hit: (c: (typeof classes)[number], p: string) => p.includes(`/${c.sub}/`) },
+      { write: "ticket", hit: (c: (typeof classes)[number], p: string) => p.includes(`/${c.waiting}/`) },
+    ];
+    it.each(classes.flatMap((c) => targets.map((t) => ({ ...t, ...c, name: `${c.cls} ${t.write}` }))))(
+      "refuses a $name write as disk-full, emits the timeout and never fails open",
+      async (row) => {
+        const o = at(4, { policy: { heavyCeiling: 1, heavyWarning: 1 }, sessionSlots: 1 });
+        // The ticket is written only by a waiter, so a holder fills the one slot for that row.
+        if (row.write === "ticket") plant(row.sub, "4242-live", { id: "4242-live", pid: 4242, command: "x", cwd: "/", startedAt: lease.clock.ms, level: "normal" }, lease.clock.ms + 0.5);
+        restore = failFsCall(row.write === "mutex" ? "openSync" : "writeFileSync", (p) => row.hit(row, p), "ENOSPC");
+        const got = await row.acquire(o, meta, { maxWaitMs: 1_000 });
+        expect(got).toMatchObject({ refused: "disk-full", code: "ENOSPC" });
+        expect(lease.events).toContainEqual({ type: "timeout", refused: "disk-full", waitedMs: expect.any(Number) });
+        expect(lease.events.some((e) => e.type === "fail-open")).toBe(false);
+      },
+    );
+
+    it("tryAcquireLease emits its own disk-full timeout event on a holder write", () => {
+      restore = failFsCall("writeFileSync", (p) => p.includes("/holders/"), "ENOSPC");
+      expect(tryAcquireLease(opts(), meta)).toBeNull();
+      expect(lease.events).toContainEqual({ type: "timeout", refused: "disk-full", waitedMs: 0 });
     });
   });
 

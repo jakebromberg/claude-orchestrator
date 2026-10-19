@@ -130,6 +130,8 @@ export interface WatchdogDeps {
   now: () => number;
   out: (line: string) => void;
   err: (line: string) => void;
+  /** The volume reader behind `brief`'s disk-full line (default `statfsSync`). */
+  statfs?: (dir: string) => { bavail: number; blocks: number };
 }
 
 interface State {
@@ -258,9 +260,9 @@ export function diskFullText(dir: string, pct: string): string {
 }
 
 /** A disk-full line when the lease directory's volume is nearly out of space, read live (a full disk fails every record write), else `""`. */
-function diskFullLine(dir: string): string {
+function diskFullLine(dir: string, statfs: NonNullable<WatchdogDeps["statfs"]>): string {
   try {
-    const { bavail, blocks } = statfsSync(dir);
+    const { bavail, blocks } = statfs(dir);
     return blocks > 0 && bavail / blocks < DISK_FULL_FRACTION ? diskFullText(dir, ((bavail / blocks) * 100).toFixed(1)) : "";
   } catch {
     return "";
@@ -280,7 +282,7 @@ export function runWatchdog(argv: string[], d: WatchdogDeps): number {
       line = readFileSync(join(d.dir, "watchdog.brief"), "utf-8");
     } catch {}
     if (line) d.out(line);
-    const full = diskFullLine(d.dir);
+    const full = diskFullLine(d.dir, d.statfs ?? statfsSync);
     if (full) d.out(full);
   }
   return 0;
