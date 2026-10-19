@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import fs, { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -300,16 +300,15 @@ describe("session holder class", () => {
     it("returns the admission when removing the ticket fails, and leaves no holder behind", async () => {
       const holder = (await take(at(1)))!;
       lease.clock.onSleep = () => holder.release();
-      const real = fs.rmSync;
-      vi.spyOn(fs, "rmSync").mockImplementation((path, options) => {
-        if (String(path).includes("/sessions-waiting/")) throw Object.assign(new Error("boom"), { code: "EIO" });
-        return real(path, options);
-      });
-      syncBuiltinESMExports();
-      const r = await acquireSessionLease(at(1), meta);
-      expect(r).toMatchObject({ leased: true });
-      (r as LeaseHandle).release();
-      expect(names("sessions")).toEqual([]);
+      const restore = failFsCall("rmSync", (p) => p.includes("/sessions-waiting/"), "EIO");
+      try {
+        const r = await acquireSessionLease(at(1), meta);
+        expect(r).toMatchObject({ leased: true });
+        (r as LeaseHandle).release();
+        expect(names("sessions")).toEqual([]);
+      } finally {
+        restore();
+      }
     });
 
     it("leaves no ticket behind after a stop", async () => {
