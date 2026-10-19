@@ -1,5 +1,21 @@
 import type { MergeResult } from "./merge.js";
 import type { Issue, OrchestratorConfig, RunOptions, Deps, Logger } from "./types.js";
+/**
+ * How many scraped PR URLs to put to `gh pr view` before giving up.
+ *
+ * Verification is a blocking network call per candidate, so an unbounded loop
+ * would let a transcript that name-drops many same-repo PRs stall a wave. The
+ * run's own PR is near the newest end in every case this defends against, so a
+ * handful of the newest candidates is all that is worth paying for.
+ */
+export declare const MAX_PR_CANDIDATES_VERIFIED = 5;
+/**
+ * Bound on each synchronous gh/git call the engine makes (`verifyPrIdentity`, `producedNoCommits`): a hung tool must
+ * fail its step, not freeze the process past the lease's 90 s heartbeat reap window. A blocking stretch can begin up
+ * to 30 s after the last beat, so it must end within 60 s: verification runs up to `MAX_PR_CANDIDATES_VERIFIED`
+ * calls back to back, and `producedNoCommits` can follow with no yield, so (5 + 1) × 10 s fits.
+ */
+export declare const SYNC_CALL_TIMEOUT_MS = 10000;
 export declare class Orchestrator {
     private config;
     private deps;
@@ -167,9 +183,20 @@ export declare class Orchestrator {
      * session log stay at the call sites, which await them and act on the result.
      * Accounting must also run when `exitCode` rejects
      * (a `.finally`-style handler covering both paths), or a rejected exit
-     * leaks a count.
+     * leaks a count. The session's machine-wide `slot` (see {@link acquireSessionSlot}) is
+     * released there, and at once if the spawn itself throws.
      */
     private spawnSession;
+    /**
+     * One machine-wide session slot for a `claude` process about to spawn, waited for with no cap behind other engines'
+     * sessions; the caller passes it to {@link spawnSession}, which releases it when the process exits. Without
+     * `Deps.lease` it is {@link UNLEASED}. The wait ends with the reason it stops the issue when `stopAtCritical` confirms
+     * a `critical` with no session holder machine-wide and none of this engine's running, or when the disk is full. A
+     * progress line goes to `issue-<ref>.wait.log` once a minute, so a watchdog sees a waiting engine as alive.
+     */
+    private acquireSessionSlot;
+    /** Fails and stops `issue` whose retry's session wait was refused for `reason`. */
+    private stopRetry;
     /** True (and the issue is failed and stopped) when a fresh reading says a retry may not start. */
     private retryRefused;
     /** The run's one governor, read afresh as each wave starts launching. */

@@ -10,6 +10,9 @@ import { isModeNode, isCommandNode, cutoverReason, manualGateLabel } from "./mod
 import { shellQuote } from "./shell-quote.js";
 import { createCapacityGovernor } from "./capacity-governor.js";
 import { jsonlSink } from "./lease-events.js";
+import { MAX_STEP } from "./headroom.js";
+import { acquireSessionLease } from "./lease.js";
+import { refusalStopReason, WAIT_LOG_INTERVAL_MS } from "./lease-messages.js";
 import { stopAtCritical } from "./memory-pressure.js";
 const STALL_CHECK_INTERVAL_MS = 10_000;
 /** How often live pressure is re-read to adapt the launch capacity. */
@@ -24,14 +27,14 @@ const NO_STOP = { failureReason: undefined, stopStage: undefined };
  * run's own PR is near the newest end in every case this defends against, so a
  * handful of the newest candidates is all that is worth paying for.
  */
-const MAX_PR_CANDIDATES_VERIFIED = 5;
+export const MAX_PR_CANDIDATES_VERIFIED = 5;
 /**
  * Bound on each synchronous gh/git call the engine makes (`verifyPrIdentity`, `producedNoCommits`): a hung tool must
  * fail its step, not freeze the process past the lease's 90 s heartbeat reap window. A blocking stretch can begin up
  * to 30 s after the last beat, so it must end within 60 s: verification runs up to `MAX_PR_CANDIDATES_VERIFIED`
  * calls back to back, and `producedNoCommits` can follow with no yield, so (5 + 1) × 10 s fits.
  */
-const SYNC_CALL_TIMEOUT_MS = 10_000;
+export const SYNC_CALL_TIMEOUT_MS = 10_000;
 const DEFAULT_ALLOWED_TOOLS = [
     "Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Task",
 ];
@@ -43,6 +46,21 @@ function registryStallTimeout(timeouts) {
 function isTimeoutError(error) {
     const e = error;
     return e?.code === "ETIMEDOUT" || e?.signal === "SIGTERM";
+}
+const UNLEASED = { release() { } };
+/**
+ * `lease` with its headroom step read as 4 whenever it is above 0, so `--no-adaptive` lifts steps 1 to 3 and `critical`
+ * still closes the session row. Only the engine's session acquires use it; the post-check keeps the shared step.
+ */
+function withoutAdaptation(lease) {
+    const base = lease.headroom;
+    if (!base)
+        return lease;
+    const lift = (read) => () => {
+        const reading = read();
+        return reading.step > 0 ? { ...reading, step: MAX_STEP } : reading;
+    };
+    return { ...lease, headroom: Object.assign(lift(base), { fresh: lift(base.fresh), ...(base.overridden && { overridden: base.overridden }) }) };
 }
 export class Orchestrator {
     config;
@@ -642,10 +660,18 @@ export class Orchestrator {
      * session log stay at the call sites, which await them and act on the result.
      * Accounting must also run when `exitCode` rejects
      * (a `.finally`-style handler covering both paths), or a rejected exit
-     * leaks a count.
+     * leaks a count. The session's machine-wide `slot` (see {@link acquireSessionSlot}) is
+     * released there, and at once if the spawn itself throws.
      */
-    spawnSession(issue, args, cwd, logFile, stderrFile, { monitor = true, tagIssue = true, retry = false } = {}) {
-        const handle = this.deps.processRunner.spawn("claude", args, { cwd, logFile, stderrFile });
+    spawnSession(issue, args, cwd, logFile, stderrFile, { monitor = true, tagIssue = true, retry = false, slot = UNLEASED } = {}) {
+        let handle;
+        try {
+            handle = this.deps.processRunner.spawn("claude", args, { cwd, logFile, stderrFile });
+        }
+        catch (err) {
+            slot.release();
+            throw err;
+        }
         if (tagIssue)
             handle.issueNumber = issue.number;
         const stallTimeout = issue.stallTimeout ?? this.config.stallTimeout;
@@ -665,13 +691,53 @@ export class Orchestrator {
         // Either way the session stops counting. An exit stops the monitor; a rejection reaches the caller through
         // `handle.exitCode` itself and leaves the monitor running, as before, and this branch only swallows its own copy so
         // it is not reported as unhandled.
-        handle.exitCode.then(() => {
+        handle.exitCode.then((exitCode) => {
             this.liveSessions--;
+            slot.release({ exitCode });
             stallMonitor?.stop();
         }, () => {
             this.liveSessions--;
+            slot.release();
         });
         return handle;
+    }
+    /**
+     * One machine-wide session slot for a `claude` process about to spawn, waited for with no cap behind other engines'
+     * sessions; the caller passes it to {@link spawnSession}, which releases it when the process exits. Without
+     * `Deps.lease` it is {@link UNLEASED}. The wait ends with the reason it stops the issue when `stopAtCritical` confirms
+     * a `critical` with no session holder machine-wide and none of this engine's running, or when the disk is full. A
+     * progress line goes to `issue-<ref>.wait.log` once a minute, so a watchdog sees a waiting engine as alive.
+     */
+    async acquireSessionSlot(issue, cwd) {
+        const lease = this.deps.lease;
+        if (!lease)
+            return UNLEASED;
+        const waitLog = `${this.config.configDir}/logs/issue-${encodeRefForFilename(issue.ref)}.wait.log`;
+        let lastLogged;
+        const got = await acquireSessionLease({ ...(this.adaptive ? lease : withoutAdaptation(lease)), inheritedHolderId: undefined }, { command: "claude", label: `session ${issue.ref}`, cwd }, {
+            onWait: (s) => {
+                if (lastLogged !== undefined && s.waitedMs - lastLogged < WAIT_LOG_INTERVAL_MS)
+                    return;
+                lastLogged = s.waitedMs;
+                try {
+                    this.deps.appendFile?.(waitLog, `${new Date().toISOString()} Issue #${issue.number} waiting for a session slot (${s.level}, ${s.live.length}/${s.capacity} held)\n`);
+                }
+                catch {
+                    // A progress line must never change what the wait does.
+                }
+            },
+            stopWhen: (s) => stopAtCritical(s.level, s.live.length + this.liveSessions),
+        });
+        if (!("refused" in got))
+            return got;
+        if (got.refused === "max-wait")
+            throw new Error("a session slot wait has no cap, yet it was refused as max-wait");
+        return refusalStopReason(got);
+    }
+    /** Fails and stops `issue` whose retry's session wait was refused for `reason`. */
+    async stopRetry(issue, reason) {
+        this.deps.logger.error(`Issue #${issue.number}: no session slot (${reason}), not starting a retry`);
+        await this.markStopped(issue, "retry", "failed", reason);
     }
     /** True (and the issue is failed and stopped) when a fresh reading says a retry may not start. */
     async retryRefused(issue) {
@@ -722,19 +788,20 @@ export class Orchestrator {
         const postCheckPromises = [];
         for (const [index, { issue, prompt, sessionId }] of ready.entries()) {
             pressureTimer?.ref();
-            const slot = await pool.waitForSlot();
+            const poolSlot = await pool.waitForSlot();
             pressureTimer?.unref();
-            if (slot === "stop") {
+            const worktreePath = this.config.hooks.getWorktreePath(issue);
+            const slot = poolSlot === "stop" ? "memory-critical" : await this.acquireSessionSlot(issue, worktreePath);
+            if (typeof slot === "string") {
                 const unstarted = ready.slice(index).map((r) => r.issue);
                 for (const i of unstarted)
-                    await this.markStopped(i, "launch");
-                this.deps.logger.warn(`Memory pressure is critical and no session is active; not launching ${unstarted.map((i) => i.ref).join(", ")} (failureReason: memory-critical)`);
+                    await this.markStopped(i, "launch", undefined, slot);
+                this.deps.logger.warn(`${slot === "disk-full" ? "The disk is full" : "Memory pressure is critical and no session is active"}; not launching ${unstarted.map((i) => i.ref).join(", ")} (failureReason: ${slot})`);
                 break;
             }
             this.recordLaunch(issue, sessionId);
             await this.setStatus(issue, "running");
             this.deps.logger.step(`Launching Claude session for issue #${issue.number}: ${issue.description}`);
-            const worktreePath = this.config.hooks.getWorktreePath(issue);
             const extraArgs = this.config.hooks.getClaudeArgs(issue);
             const logFile = `${this.config.configDir}/logs/issue-${encodeRefForFilename(issue.ref)}.log`;
             const tools = this.config.allowedTools ?? DEFAULT_ALLOWED_TOOLS;
@@ -757,7 +824,7 @@ export class Orchestrator {
             const launchTime = new Date().toISOString();
             this.deps.metadataStore.update(issue.ref, { startedAt: launchTime, ...NO_STOP });
             const stderrFile = `${this.config.configDir}/logs/issue-${encodeRefForFilename(issue.ref)}.stderr.log`;
-            const handle = this.spawnSession(issue, args, worktreePath, logFile, stderrFile);
+            const handle = this.spawnSession(issue, args, worktreePath, logFile, stderrFile, { slot });
             const postCheck = handle.exitCode.then(async (exitCode) => {
                 const finishTime = new Date().toISOString();
                 this.deps.metadataStore.update(issue.ref, {
@@ -779,10 +846,13 @@ export class Orchestrator {
                         catch { }
                         if (await this.retryRefused(issue))
                             return;
+                        const retrySlot = await this.acquireSessionSlot(issue, worktreePath);
+                        if (typeof retrySlot === "string")
+                            return this.stopRetry(issue, retrySlot);
                         this.deps.logger.warn(`Issue #${issue.number} produced 0-byte log (exit ${exitCode}), retrying once...`);
                         this.deps.truncateFile(logFile);
                         this.deps.truncateFile(stderrFile);
-                        const retryHandle = this.spawnSession(issue, args, worktreePath, logFile, stderrFile, { retry: true });
+                        const retryHandle = this.spawnSession(issue, args, worktreePath, logFile, stderrFile, { retry: true, slot: retrySlot });
                         const retryExitCode = await retryHandle.exitCode;
                         this.deps.metadataStore.update(issue.ref, {
                             exitCode: retryExitCode,
@@ -877,8 +947,13 @@ export class Orchestrator {
                 "--session-id", sessionId,
                 "--verbose",
             ];
+            const slot = await this.acquireSessionSlot(issue, worktreePath);
+            if (typeof slot === "string") {
+                await this.stopRetry(issue, slot);
+                return false;
+            }
             this.recordLaunch(issue, sessionId);
-            const retryHandle = this.spawnSession(issue, retryArgs, worktreePath, logFile, stderrFile, { monitor: false, tagIssue: false });
+            const retryHandle = this.spawnSession(issue, retryArgs, worktreePath, logFile, stderrFile, { monitor: false, tagIssue: false, slot });
             const retryExitCode = await retryHandle.exitCode;
             this.deps.metadataStore.update(issue.ref, {
                 exitCode: retryExitCode,

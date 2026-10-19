@@ -11,8 +11,8 @@ import { perIssueSpawnArgs } from "./model-effort.js";
 import { shellQuote } from "./shell-quote.js";
 import { claudeExecOptions } from "./claude-env.js";
 import { acquireLease, defaultWarn } from "./lease.js";
-import { formatPostCheckStop, refusalStopReason } from "./lease-messages.js";
-import { loadWeightTable, realGit, resolveWeight } from "./lease-weights.js";
+import { formatPostCheckStop, refusalStopReason, WAIT_LOG_INTERVAL_MS } from "./lease-messages.js";
+import { SYNC_CALL_TIMEOUT_MS } from "./engine.js";
 import { stopAtCritical } from "./memory-pressure.js";
 import { groupAlive, signalGroup } from "./ps.js";
 const OUTPUT_TAIL_BYTES = 64 * 1024;
@@ -81,11 +81,8 @@ export function runShellAsync(cmd, cwd, env, onSpawn, timeoutMs, killGraceMs = K
             stdio: ["ignore", "pipe", "pipe"],
             detached: bounded,
         });
-        // Set by this call's settleGroup when it drops the pgid. The id may then be reused by another bounded command, so
-        // this call never signals it again, whatever liveGroups holds now.
-        let dropped = false;
         const signalChildGroup = (signal) => {
-            if (child.pid === undefined || dropped)
+            if (child.pid === undefined)
                 return;
             try {
                 signalGroup(child.pid, signal);
@@ -127,8 +124,7 @@ export function runShellAsync(cmd, cwd, env, onSpawn, timeoutMs, killGraceMs = K
         let recheck;
         const settleGroup = () => {
             clearTimeout(recheck);
-            // Once this call dropped its group, a later 'close' must not probe or poll the pgid: another command may own it now.
-            if (child.pid === undefined || dropped)
+            if (child.pid === undefined)
                 return;
             if (groupAlive(child.pid)) {
                 recheck = setTimeout(settleGroup, GROUP_RECHECK_MS);
@@ -136,7 +132,6 @@ export function runShellAsync(cmd, cwd, env, onSpawn, timeoutMs, killGraceMs = K
                 return;
             }
             clearTimeout(graceTimer);
-            dropped = true;
             liveGroups.delete(child.pid);
         };
         child.on("exit", settleGroup);
@@ -163,34 +158,14 @@ export function runShellAsync(cmd, cwd, env, onSpawn, timeoutMs, killGraceMs = K
         }
     });
 }
-const WAIT_LOG_INTERVAL_MS = 60_000;
 /**
  * One lease slot for a whole post-session check, labelled with the issue so the holder file does not show its first
  * command. Waits with no cap; at `critical` it ends in a refusal once no live holder and no engine session is left to
- * relieve the pressure. The engine never inherits a holder id, so `inheritedHolderId` is dropped. The slot covers the
- * whole command loop, so its weight is the largest any command resolves to, and absent when none matches.
+ * relieve the pressure. The engine never inherits a holder id, so `inheritedHolderId` is dropped.
  */
-function acquireCheckLease(lease, issue, cwd, commands, runningSessions = () => 0) {
+function acquireCheckLease(lease, issue, cwd, command, runningSessions = () => 0) {
     let lastLogged;
-    const warn = lease.warn ?? defaultWarn;
-    // One table read and at most one git call per fact for the whole check, not per command: the engine's event loop waits on each.
-    // The table comes from the handed lease's own directory, so holders and weight rules can never disagree about where the lease lives.
-    const table = loadWeightTable({ ...process.env, CO_LEASE_DIR: lease.dir }, warn);
-    const facts = new Map();
-    const once = (key, get) => {
-        if (!facts.has(key)) {
-            try {
-                facts.set(key, get());
-            }
-            catch {
-                facts.set(key, "");
-            }
-        }
-        return facts.get(key);
-    };
-    const git = { toplevel: (d) => once("toplevel", () => realGit.toplevel(d)), origin: (d) => once("origin", () => realGit.origin(d)) };
-    const weight = Math.max(0, ...commands.map((c) => resolveWeight(c, cwd, table, git) ?? 0));
-    return acquireLease({ ...lease, inheritedHolderId: undefined }, { command: commands[0] ?? "", label: `post-check ${issue.ref}`, cwd, ...(weight > 0 && { weight }) }, {
+    return acquireLease({ ...lease, inheritedHolderId: undefined }, { command, label: `post-check ${issue.ref}`, cwd }, {
         onWait: (s) => {
             if (lastLogged !== undefined && s.waitedMs - lastLogged < WAIT_LOG_INTERVAL_MS)
                 return;
@@ -376,7 +351,7 @@ export function deriveHooks(yaml, deps = {}) {
                     : worktreePath;
                 let slot;
                 if (ctx?.lease) {
-                    const got = await acquireCheckLease(ctx.lease, issue, execDir, cmdConfig.commands, ctx.runningSessions);
+                    const got = await acquireCheckLease(ctx.lease, issue, execDir, cmdConfig.commands[0] ?? "", ctx.runningSessions);
                     if ("refused" in got)
                         stopped = got;
                     else
@@ -413,7 +388,7 @@ export function deriveHooks(yaml, deps = {}) {
                     worktreePath: path.join(yaml.worktreeDir, peer.slug),
                 }));
                 const exists = deps.existsSync ?? fsExistsSync;
-                const gitRun = deps.runGitCommand ?? ((file, args) => execFileSync(file, args, { encoding: "utf-8" }));
+                const gitRun = deps.runGitCommand ?? ((file, args) => execFileSync(file, args, { encoding: "utf-8", timeout: SYNC_CALL_TIMEOUT_MS }));
                 const collisionInput = gatherCollisionInputs({
                     runCommand: gitRun,
                     existsSync: exists,
@@ -502,7 +477,7 @@ export function deriveHooks(yaml, deps = {}) {
         const labelRepo = yaml.labelSync.repo ?? yaml.issues[0]?.repo ?? "";
         if (labelRepo) {
             hooks.onStatusChange = createLabelSyncHandler({ prefix: yaml.labelSync.prefix, repo: labelRepo }, {
-                runCommand: (cmd) => execSync(cmd, { stdio: "pipe", encoding: "utf-8" }),
+                runCommand: (cmd) => execSync(cmd, { stdio: "pipe", encoding: "utf-8", timeout: SYNC_CALL_TIMEOUT_MS }),
                 logger: { info() { }, warn(msg) { console.warn(msg); }, error() { }, step() { }, header() { } },
             });
         }

@@ -85,7 +85,7 @@ function defaultRepoOf(issue: Issue): string {
  * heartbeat reap window. A blocking stretch must end within 60 s, and `setUpWorktree` makes up to four calls back to
  * back (rev-parse, prune, `worktree add -b`, and on its failure `worktree add <path> <branch>`), so 4 × 12 s = 48 s.
  */
-const GIT_TIMEOUT_MS = 12_000;
+export const GIT_TIMEOUT_MS = 12_000;
 
 function defaultRunGit(args: string[], cwd: string): string {
   return execFileSync("git", args, {

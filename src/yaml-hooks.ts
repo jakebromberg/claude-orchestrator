@@ -13,8 +13,9 @@ import { perIssueSpawnArgs } from "./model-effort.js";
 import { shellQuote } from "./shell-quote.js";
 import { claudeExecOptions } from "./claude-env.js";
 import { acquireLease, defaultWarn, type LeaseHandle, type LeaseOptions, type LeaseRefusal } from "./lease.js";
-import { formatPostCheckStop, refusalStopReason } from "./lease-messages.js";
+import { formatPostCheckStop, refusalStopReason, WAIT_LOG_INTERVAL_MS } from "./lease-messages.js";
 import { loadWeightTable, realGit, resolveWeight, type GitLookup } from "./lease-weights.js";
+import { SYNC_CALL_TIMEOUT_MS } from "./engine.js";
 import { stopAtCritical } from "./memory-pressure.js";
 import { groupAlive, signalGroup } from "./ps.js";
 
@@ -172,8 +173,6 @@ export function runShellAsync(
   });
 }
 
-const WAIT_LOG_INTERVAL_MS = 60_000;
-
 /**
  * One lease slot for a whole post-session check, labelled with the issue so the holder file does not show its first
  * command. Waits with no cap; at `critical` it ends in a refusal once no live holder and no engine session is left to
@@ -252,7 +251,8 @@ export interface DeriveHooksDeps {
   ) => string | Promise<string>;
   /**
    * Used by collision detection to run git commands with an argument array
-   * (avoids shell quoting entirely). Defaults to `execFileSync`.
+   * (avoids shell quoting entirely). Defaults to `execFileSync` with a
+   * {@link SYNC_CALL_TIMEOUT_MS} bound per call.
    */
   runGitCommand?: (file: string, args: string[]) => string;
   /**
@@ -540,7 +540,7 @@ export function deriveHooks(
 
         const exists = deps.existsSync ?? fsExistsSync;
         const gitRun: (file: string, args: string[]) => string =
-          deps.runGitCommand ?? ((file, args) => execFileSync(file, args, { encoding: "utf-8" }));
+          deps.runGitCommand ?? ((file, args) => execFileSync(file, args, { encoding: "utf-8", timeout: SYNC_CALL_TIMEOUT_MS }));
 
         const collisionInput = gatherCollisionInputs({
           runCommand: gitRun,
@@ -647,7 +647,7 @@ export function deriveHooks(
         { prefix: yaml.labelSync.prefix, repo: labelRepo },
         {
           runCommand: (cmd: string) =>
-            execSync(cmd, { stdio: "pipe", encoding: "utf-8" }),
+            execSync(cmd, { stdio: "pipe", encoding: "utf-8", timeout: SYNC_CALL_TIMEOUT_MS }),
           logger: { info() {}, warn(msg: string) { console.warn(msg); }, error() {}, step() {}, header() {} },
         },
       );

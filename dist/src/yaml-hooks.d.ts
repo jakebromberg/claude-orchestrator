@@ -53,7 +53,8 @@ export interface DeriveHooksDeps {
     runCommand?: (cmd: string, cwd: string, env?: Record<string, string>, onSpawn?: (pid: number) => void) => string | Promise<string>;
     /**
      * Used by collision detection to run git commands with an argument array
-     * (avoids shell quoting entirely). Defaults to `execFileSync`.
+     * (avoids shell quoting entirely). Defaults to `execFileSync` with a
+     * {@link SYNC_CALL_TIMEOUT_MS} bound per call.
      */
     runGitCommand?: (file: string, args: string[]) => string;
     /**

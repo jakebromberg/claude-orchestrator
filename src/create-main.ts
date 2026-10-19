@@ -125,6 +125,10 @@ export function createRealDeps(config: OrchestratorConfig, mode: ParsedMode): De
     truncateFile: (filePath: string) => {
       try { fs.truncateSync(filePath, 0); } catch {}
     },
+    appendFile: (filePath: string, text: string) => {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.appendFileSync(filePath, text);
+    },
     ...dispatchDeps(mode),
   };
 }

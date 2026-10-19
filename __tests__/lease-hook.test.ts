@@ -445,7 +445,7 @@ describe("hook events", () => {
       expect(code).toBe(0);
       expect(out).toBe(denied("lease: no slot after 450s (pressure=normal, capacity 1, 1 live: 7002 npm test); rerun the command — this is not a test failure"));
       expect(holders()).toEqual(["hook-other.json"]);
-      expect(events).toContainEqual({ type: "timeout", refused: "max-wait", waitedMs: 450_000 });
+      expect(events).toContainEqual({ type: "timeout", refused: "max-wait", waitedMs: 450_000, class: "heavy" });
     });
 
     it("denies at critical, whatever the lease directory", async () => {
@@ -479,7 +479,7 @@ describe("hook events", () => {
 
     it("fails open below critical when the directory is unwritable: no holder, no output", async () => {
       expect(await run(pre(), { CO_LEASE_DIR: unwritableLeaseDir(tmp) })).toEqual({ code: 0, out: "" });
-      expect(events).toContainEqual(expect.objectContaining({ type: "fail-open", reason: "io-error" }));
+      expect(events).toContainEqual(expect.objectContaining({ type: "fail-open", reason: "io-error", class: "heavy" }));
       expect(holders()).toEqual([]);
     });
   });
@@ -491,7 +491,7 @@ describe("hook events", () => {
       expect(await run(call(event))).toEqual({ code: 0, out: "" });
       expect(holders()).toEqual([]);
       expect(await run(call(event))).toEqual({ code: 0, out: "" });
-      expect(events.filter((e) => e.type === "release")).toEqual([{ type: "release", id: "hook-toolu_1", heldMs: 5_000 }]);
+      expect(events.filter((e) => e.type === "release")).toEqual([{ type: "release", id: "hook-toolu_1", heldMs: 5_000, class: "heavy" }]);
     });
 
     it("leaves another call's holder alone, and does nothing with the gate off", async () => {

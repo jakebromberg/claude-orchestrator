@@ -195,7 +195,7 @@ describe("capacity tables", () => {
   it.each([
     ["normal", 6],
     ["unknown", 6],
-    ["warning", 1],
+    ["warning", 6],
     ["critical", 0],
   ] as const)("sessionCapacity(%s, 6) = %d", (level, expected) => {
     expect(sessionCapacity(level, 6)).toBe(expected);

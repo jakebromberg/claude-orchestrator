@@ -1,15 +1,14 @@
 export const seconds = (ms) => Math.round(ms / 1000);
-const gb = (bytes) => (bytes / 2 ** 30).toFixed(1);
-/** `, weights <used>/<budget> GB` in weight mode, else nothing. */
-const weightsText = (w) => (w ? `, weights ${gb(w.used)}/${gb(w.budget)} GB` : "");
+/** The least time between two progress lines of one wait for a lease slot (the post-check's and the engine's session wait). */
+export const WAIT_LOG_INTERVAL_MS = 60_000;
 /** The admitted line; the hook prints the same text as `additionalContext`. */
 export function formatAdmitted(a) {
-    return `lease: admitted after ${seconds(a.waitedMs)}s (pressure=${a.level}, ${a.live}/${a.capacity} live${weightsText(a.weights)})`;
+    return `lease: admitted after ${seconds(a.waitedMs)}s (pressure=${a.level}, ${a.live}/${a.capacity} live)`;
 }
 /** The no-slot line; the hook denies with it as the reason. */
 export function formatNoSlot(refusal, status) {
     const holders = status.live.map((h) => `${h.pid} ${h.command}`).join(", ") || "none";
-    return `lease: no slot after ${seconds(refusal.waitedMs)}s (pressure=${refusal.level}, capacity ${status.capacity}${weightsText(status.weights)}, ${status.live.length} live: ${holders}); rerun the command — this is not a test failure`;
+    return `lease: no slot after ${seconds(refusal.waitedMs)}s (pressure=${refusal.level}, capacity ${status.capacity}, ${status.live.length} live: ${holders}); rerun the command — this is not a test failure`;
 }
 /** The disk-full line; the hook denies with it and the CLI prints it. Unlike `formatNoSlot` it says not to rerun. */
 export function formatDiskFull(refusal) {

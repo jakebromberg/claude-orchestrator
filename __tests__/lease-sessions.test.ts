@@ -187,7 +187,7 @@ describe("session holder class", () => {
       plantHolder("4242-stale", { childPid: 7777 }, HEARTBEAT_STALE_MS + 1_000);
       const h = await take(at(1));
       expect(h).toBeDefined();
-      expect(lease.events).toContainEqual({ type: "reap", id: "4242-stale", reason: "stale-heartbeat" });
+      expect(lease.events).toContainEqual({ type: "reap", id: "4242-stale", reason: "stale-heartbeat", class: "sessions" });
       expect(names("sessions")).toEqual([`${h!.id}.json`]);
       h!.release();
     });
@@ -206,7 +206,7 @@ describe("session holder class", () => {
       plant("sessions", "junk", { nonsense: true }, lease.clock.ms);
       const h = await take(at(1));
       expect(h).toBeDefined();
-      expect(lease.events).toContainEqual({ type: "reap", id: "junk", reason: "corrupt" });
+      expect(lease.events).toContainEqual({ type: "reap", id: "junk", reason: "corrupt", class: "sessions" });
       h!.release();
     });
 
@@ -257,7 +257,7 @@ describe("session holder class", () => {
         );
         const got = await row.acquire(o, weighted ? { ...meta, weight: 8 * GIB } : meta, { maxWaitMs: 1_000 });
         expect(got).toMatchObject({ refused: "disk-full", code: "ENOSPC" });
-        expect(lease.events).toContainEqual({ type: "timeout", refused: "disk-full", waitedMs: expect.any(Number) });
+        expect(lease.events).toContainEqual({ type: "timeout", refused: "disk-full", waitedMs: expect.any(Number), class: row.cls });
         expect(lease.events.some((e) => e.type === "fail-open")).toBe(false);
         if (row.write === "ticket") {
           expect(attempted).not.toHaveLength(0);
@@ -271,7 +271,7 @@ describe("session holder class", () => {
     it("tryAcquireLease emits its own disk-full timeout event on a holder write", () => {
       restore = failFsCall("writeFileSync", (p) => p.includes("/holders/"), "ENOSPC");
       expect(tryAcquireLease(opts(), meta)).toBeNull();
-      expect(lease.events).toContainEqual({ type: "timeout", refused: "disk-full", waitedMs: 0 });
+      expect(lease.events).toContainEqual({ type: "timeout", refused: "disk-full", waitedMs: 0, class: "heavy" });
     });
   });
 
@@ -402,6 +402,45 @@ describe("session holder class", () => {
       const o = opts({ headroom: scriptedHeadroomSampler(reading(0, "critical"), { fresh: () => reading(4) }) });
       const r = await acquireSessionLease(o, meta, { maxWaitMs: 0, stopWhen: (s) => s.level === "critical" });
       expect(r).toMatchObject({ refused: "max-wait" });
+    });
+  });
+
+  describe("holder meta", () => {
+    it("writes a heartbeat holder, and no lastAdmit mark, whatever detached or gated the caller passes", async () => {
+      const smuggled = { ...meta, detached: { id: "hook-x", sessionPid: 4242, expiresAt: lease.clock.ms + 60_000 }, gated: true, suspendable: true } as HolderMeta;
+      const r = await acquireSessionLease(at(4), smuggled, { maxWaitMs: 0 });
+      expect(isHandle(r)).toBe(true);
+      const [file] = names("sessions");
+      const rec = JSON.parse(readFileSync(join(dir, "sessions", file!), "utf8"));
+      expect(rec).not.toHaveProperty("expiresAt");
+      expect(rec).toMatchObject({ command: "claude -p", cwd: "/work" });
+      expect(names("sessions")).toEqual([`${rec.id}.json`]);
+      expect(existsSync(join(dir, "lastAdmit"))).toBe(false);
+      expect(names(".").filter((n) => n.startsWith("lastAdmit"))).toEqual([]);
+      (r as LeaseHandle).release();
+    });
+  });
+
+  describe("event class", () => {
+    it("tells a heavy and a session acquire, release and timeout apart in one event list", async () => {
+      const o = at(4, { policy: { heavyCeiling: 4, heavyWarning: 1 } });
+      const session = (await acquireSessionLease(o, meta, { maxWaitMs: 0 })) as LeaseHandle;
+      const heavyHandle = (await acquireLease(o, meta, { maxWaitMs: 0 })) as LeaseHandle;
+      session.release();
+      heavyHandle.release();
+      const stopped = at(0, { headroom: scriptedHeadroomSampler(reading(0, "critical")) });
+      await acquireSessionLease(stopped, meta, { stopWhen: () => true });
+      await acquireLease(stopped, meta, { stopWhen: () => true });
+      const byType = (type: string) => lease.events.filter((e) => e.type === type).map((e) => (e as { class?: string }).class);
+      expect(byType("acquire")).toEqual(["sessions", "heavy"]);
+      expect(byType("release")).toEqual(["sessions", "heavy"]);
+      expect(byType("timeout")).toEqual(["sessions", "heavy"]);
+    });
+
+    it("tags a session reap", async () => {
+      plantHolder("4242-old", {}, HEARTBEAT_STALE_MS + 1_000);
+      await take(at(4));
+      expect(lease.events).toContainEqual({ type: "reap", id: "4242-old", reason: "stale-heartbeat", class: "sessions" });
     });
   });
 

@@ -39,8 +39,9 @@ export { ensureOwnSubdir, isOwnDir, isPid, pidAlive };
 
 const MUTEX_STALE_MS = 10_000;
 const ORPHAN_MAX_MS = 2 * 60 * 60_000;
-const HEARTBEAT_MS = 30_000;
-const HEARTBEAT_STALE_MS = 90_000;
+/** A holder's mtime heartbeat period, and how old a beat may be before the holder is reaped; a blocking stretch in an engine that holds a session slot must fit in the difference (`__tests__/sync-call-budget.test.ts`). */
+export const HEARTBEAT_MS = 30_000;
+export const HEARTBEAT_STALE_MS = 90_000;
 const FAIL_OPEN_MS = 30_000;
 const POLL_MS = 3_000;
 const COMMAND_MAX = 200;
@@ -59,14 +60,18 @@ const HOLDER_ID = /^[\w-]{1,160}$/;
 
 type ReapReason = "stale-heartbeat" | "orphan-bound" | "corrupt" | "dead-session" | "expired";
 
-export type LeaseEvent =
+export type LeaseEvent = (
   | { type: "acquire"; id: string; waitedMs: number; level: PressureLevel; step: number; live: number; capacity: number; override?: true; weights?: Weights & { weight: number } }
   | { type: "release"; id: string; heldMs: number; exitCode?: number }
   | { type: "reap"; id: string; reason: ReapReason }
   /** `level` is the confirmed level of a `stopped` refusal. */
   | { type: "timeout"; refused: "max-wait" | "stopped" | "disk-full"; waitedMs: number; level?: PressureLevel }
   /** `code` and `message` describe the I/O error; a busy mutex has neither. */
-  | { type: "fail-open"; reason: "mutex-busy" | "io-error"; waitedMs: number; code?: string; message?: string };
+  | { type: "fail-open"; reason: "mutex-busy" | "io-error"; waitedMs: number; code?: string; message?: string }
+) & {
+  /** The holder class the event is about; absent in a record an older writer wrote, which means `heavy`. */
+  class?: "heavy" | "sessions";
+};
 
 /** Cumulative CPU tick counters over all cores. */
 export interface CpuTicks {
@@ -229,6 +234,8 @@ type Attempt =
  * the machine's memory is known; one without counts holders. Everything that scans, queues and admits takes one, so the classes share one implementation.
  */
 interface LeaseClass {
+  /** Tags every event the class emits. */
+  name: "heavy" | "sessions";
   holders: string;
   waiting: string;
   ceiling(opts: LeaseOptions): number;
@@ -238,6 +245,7 @@ interface LeaseClass {
 }
 
 const HEAVY: LeaseClass = {
+  name: "heavy",
   holders: "holders",
   waiting: "waiting",
   ceiling: (opts) => opts.policy.heavyCeiling,
@@ -248,6 +256,7 @@ const HEAVY: LeaseClass = {
 
 /** Engine implementer sessions: a stopped engine's `claude` children still answer `kill(pid, 0)`, so only the engine's heartbeat keeps a slot. */
 const SESSIONS: LeaseClass = {
+  name: "sessions",
   holders: "sessions",
   waiting: "sessions-waiting",
   ceiling: (opts) => opts.sessionSlots ?? DEFAULT_SESSION_SLOTS,
@@ -515,7 +524,7 @@ function createHolder(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, com
       } catch {
         // Already reaped.
       }
-      emit(opts, { type: "release", id, heldMs: now() - rec.startedAt, ...(outcome?.exitCode !== undefined && { exitCode: outcome.exitCode }) });
+      emit(opts, cls, { type: "release", id, heldMs: now() - rec.startedAt, ...(outcome?.exitCode !== undefined && { exitCode: outcome.exitCode }) });
     },
   };
 }
@@ -623,9 +632,9 @@ function attempt(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, waitedMs
   }
   for (const { id, reason } of reaped) {
     if (reason === "orphan-bound") warn(opts, `lease: reaping holder ${id}: its child outlived the 2 h orphan bound`);
-    emit(opts, { type: "reap", id, reason });
+    emit(opts, cls, { type: "reap", id, reason });
   }
-  if (r.kind === "admitted" && !r.borrowed) emit(opts, { type: "acquire", id: r.handle.id!, ...r.handle.admission, step: snap.step });
+  if (r.kind === "admitted" && !r.borrowed) emit(opts, cls, { type: "acquire", id: r.handle.id!, ...r.handle.admission, step: snap.step });
   return r;
 }
 
@@ -648,7 +657,7 @@ function guarded<T>(opts: LeaseOptions, callback: ((arg: T) => void) | undefined
 }
 
 const warn = (opts: LeaseOptions, msg: string): void => guarded(opts, opts.warn ?? defaultWarn, msg);
-const emit = (opts: LeaseOptions, e: LeaseEvent): void => guarded(opts, opts.onEvent, e);
+const emit = (opts: LeaseOptions, cls: LeaseClass, e: LeaseEvent): void => guarded(opts, opts.onEvent, { ...e, class: cls.name });
 
 /** An out-of-space error: the lease refuses instead of failing open, since unleased builds are the worst load on a full disk. Nothing is written to report it. */
 const diskFullCode = (error: unknown): string | undefined => {
@@ -656,10 +665,10 @@ const diskFullCode = (error: unknown): string | undefined => {
   return code === "ENOSPC" || code === "EDQUOT" ? code : undefined;
 };
 
-function failOpen(opts: LeaseOptions, level: PressureLevel, capacity: number, waitedMs: number, reason: "mutex-busy" | "io-error", error?: unknown): LeaseHandle {
+function failOpen(opts: LeaseOptions, cls: LeaseClass, level: PressureLevel, capacity: number, waitedMs: number, reason: "mutex-busy" | "io-error", error?: unknown): LeaseHandle {
   warn(opts, `lease: unavailable (${reason}); running unleased`);
   const { code, message } = (error ?? {}) as { code?: string; message?: string };
-  emit(opts, { type: "fail-open", reason, waitedMs, ...(code !== undefined && { code }), ...(message !== undefined && { message }) });
+  emit(opts, cls, { type: "fail-open", reason, waitedMs, ...(code !== undefined && { code }), ...(message !== undefined && { message }) });
   return { id: null, leased: false, admission: { waitedMs, level, live: 0, capacity }, childEnv: () => ({}), setChildPid() {}, release() {} };
 }
 
@@ -679,10 +688,10 @@ export function tryAcquireLease(opts: LeaseOptions, meta: HolderMeta): LeaseHand
   if (r.kind === "admitted") return r.handle;
   const code = r.kind === "error" ? diskFullCode(r.error) : undefined;
   if (code !== undefined) {
-    emit(opts, { type: "timeout", refused: "disk-full", waitedMs: 0 });
+    emit(opts, HEAVY, { type: "timeout", refused: "disk-full", waitedMs: 0 });
     return null;
   }
-  return r.kind === "error" && r.level !== "critical" ? failOpen(opts, r.level, r.capacity, 0, "io-error", r.error) : null;
+  return r.kind === "error" && r.level !== "critical" ? failOpen(opts, HEAVY, r.level, r.capacity, 0, "io-error", r.error) : null;
 }
 
 /** Live holders of `cls`, or none when the directory cannot be read. */
@@ -724,7 +733,8 @@ export type SessionMeta = Pick<HolderMeta, "command" | "label" | "cwd">;
  * acquire, and it sees the session holders and capacity. Interactive sessions take no slot.
  */
 export function acquireSessionLease(opts: LeaseOptions, meta: SessionMeta, wait: LeaseWait = {}): Promise<LeaseHandle | LeaseRefusal> {
-  return acquire(opts, SESSIONS, meta, wait);
+  // Rebuilt field by field, so a caller's `detached`, `gated` or `weight` can never reach the session class.
+  return acquire(opts, SESSIONS, { command: meta.command, cwd: meta.cwd, ...(meta.label !== undefined && { label: meta.label }) }, wait);
 }
 
 async function acquire(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, wait: LeaseWait, id?: string): Promise<LeaseHandle | LeaseRefusal> {
@@ -753,16 +763,16 @@ async function pollForLease(opts: LeaseOptions, cls: LeaseClass, meta: HolderMet
     busySince = r.kind === "busy" ? (busySince ?? now()) : undefined;
     const code = r.kind === "error" ? diskFullCode(r.error) : undefined;
     if (code !== undefined) {
-      emit(opts, { type: "timeout", refused: "disk-full", waitedMs });
+      emit(opts, cls, { type: "timeout", refused: "disk-full", waitedMs });
       return { refused: "disk-full", waitedMs, level: r.level, live: 0, code };
     }
     if (r.level !== "critical") {
-      if (r.kind === "error") return failOpen(opts, r.level, r.capacity, waitedMs, "io-error", r.error);
-      if (busySince !== undefined && now() - busySince >= FAIL_OPEN_MS) return failOpen(opts, r.level, r.capacity, waitedMs, "mutex-busy");
+      if (r.kind === "error") return failOpen(opts, cls, r.level, r.capacity, waitedMs, "io-error", r.error);
+      if (busySince !== undefined && now() - busySince >= FAIL_OPEN_MS) return failOpen(opts, cls, r.level, r.capacity, waitedMs, "mutex-busy");
     }
     const status = r.kind === "error" ? { level: r.level, capacity: r.capacity, step: r.step, signals: r.signals, live: [] } : statusOf(opts, cls, r);
     const refuse = (refused: LeaseRefusal["refused"], level: PressureLevel, live: number): LeaseRefusal => {
-      emit(opts, { type: "timeout", refused, waitedMs, ...(refused === "stopped" && { level }) });
+      emit(opts, cls, { type: "timeout", refused, waitedMs, ...(refused === "stopped" && { level }) });
       return { refused, waitedMs, level, live };
     };
     if (wait.stopWhen?.(status)) {
@@ -795,7 +805,7 @@ export function releaseHolder(opts: LeaseOptions, id: string): boolean {
   const text = unlessGone(() => readOwnFile(file))?.text;
   const rec = text === undefined ? null : parseHolder(text);
   if (rec?.expiresAt === undefined || unlessGone(() => (unlinkSync(file), true)) === undefined) return false;
-  emit(opts, { type: "release", id, heldMs: (opts.now ?? Date.now)() - rec.startedAt });
+  emit(opts, HEAVY, { type: "release", id, heldMs: (opts.now ?? Date.now)() - rec.startedAt });
   return true;
 }
 

@@ -25,8 +25,9 @@ import { isPid, pidAlive } from "./ps.js";
 export { ensureOwnSubdir, isOwnDir, isPid, pidAlive };
 const MUTEX_STALE_MS = 10_000;
 const ORPHAN_MAX_MS = 2 * 60 * 60_000;
-const HEARTBEAT_MS = 30_000;
-const HEARTBEAT_STALE_MS = 90_000;
+/** A holder's mtime heartbeat period, and how old a beat may be before the holder is reaped; a blocking stretch in an engine that holds a session slot must fit in the difference (`__tests__/sync-call-budget.test.ts`). */
+export const HEARTBEAT_MS = 30_000;
+export const HEARTBEAT_STALE_MS = 90_000;
 const FAIL_OPEN_MS = 30_000;
 const POLL_MS = 3_000;
 const COMMAND_MAX = 200;
@@ -53,6 +54,7 @@ export function osCpuTicks() {
     return { idle, total };
 }
 const HEAVY = {
+    name: "heavy",
     holders: "holders",
     waiting: "waiting",
     ceiling: (opts) => opts.policy.heavyCeiling,
@@ -62,6 +64,7 @@ const HEAVY = {
 };
 /** Engine implementer sessions: a stopped engine's `claude` children still answer `kill(pid, 0)`, so only the engine's heartbeat keeps a slot. */
 const SESSIONS = {
+    name: "sessions",
     holders: "sessions",
     waiting: "sessions-waiting",
     ceiling: (opts) => opts.sessionSlots ?? DEFAULT_SESSION_SLOTS,
@@ -316,7 +319,7 @@ function createHolder(opts, cls, meta, command, admission) {
             catch {
                 // Already reaped.
             }
-            emit(opts, { type: "release", id, heldMs: now() - rec.startedAt, ...(outcome?.exitCode !== undefined && { exitCode: outcome.exitCode }) });
+            emit(opts, cls, { type: "release", id, heldMs: now() - rec.startedAt, ...(outcome?.exitCode !== undefined && { exitCode: outcome.exitCode }) });
         },
     };
 }
@@ -432,10 +435,10 @@ function attempt(opts, cls, meta, waitedMs, ticketId) {
     for (const { id, reason } of reaped) {
         if (reason === "orphan-bound")
             warn(opts, `lease: reaping holder ${id}: its child outlived the 2 h orphan bound`);
-        emit(opts, { type: "reap", id, reason });
+        emit(opts, cls, { type: "reap", id, reason });
     }
     if (r.kind === "admitted" && !r.borrowed)
-        emit(opts, { type: "acquire", id: r.handle.id, ...r.handle.admission, step: snap.step });
+        emit(opts, cls, { type: "acquire", id: r.handle.id, ...r.handle.admission, step: snap.step });
     return r;
 }
 /** The one default diagnostics writer, shared with the event sink. Messages carry their own `lease:` prefix. */
@@ -456,16 +459,16 @@ function guarded(opts, callback, arg) {
     }
 }
 const warn = (opts, msg) => guarded(opts, opts.warn ?? defaultWarn, msg);
-const emit = (opts, e) => guarded(opts, opts.onEvent, e);
+const emit = (opts, cls, e) => guarded(opts, opts.onEvent, { ...e, class: cls.name });
 /** An out-of-space error: the lease refuses instead of failing open, since unleased builds are the worst load on a full disk. Nothing is written to report it. */
 const diskFullCode = (error) => {
     const code = error?.code;
     return code === "ENOSPC" || code === "EDQUOT" ? code : undefined;
 };
-function failOpen(opts, level, capacity, waitedMs, reason, error) {
+function failOpen(opts, cls, level, capacity, waitedMs, reason, error) {
     warn(opts, `lease: unavailable (${reason}); running unleased`);
     const { code, message } = (error ?? {});
-    emit(opts, { type: "fail-open", reason, waitedMs, ...(code !== undefined && { code }), ...(message !== undefined && { message }) });
+    emit(opts, cls, { type: "fail-open", reason, waitedMs, ...(code !== undefined && { code }), ...(message !== undefined && { message }) });
     return { id: null, leased: false, admission: { waitedMs, level, live: 0, capacity }, childEnv: () => ({}), setChildPid() { }, release() { } };
 }
 /** Throws on a detached id, session PID or `expiresAt` that would write a holder the next scan reaps as corrupt: a caller's bug, not an I/O error to fail open on. */
@@ -488,10 +491,10 @@ export function tryAcquireLease(opts, meta) {
         return r.handle;
     const code = r.kind === "error" ? diskFullCode(r.error) : undefined;
     if (code !== undefined) {
-        emit(opts, { type: "timeout", refused: "disk-full", waitedMs: 0 });
+        emit(opts, HEAVY, { type: "timeout", refused: "disk-full", waitedMs: 0 });
         return null;
     }
-    return r.kind === "error" && r.level !== "critical" ? failOpen(opts, r.level, r.capacity, 0, "io-error", r.error) : null;
+    return r.kind === "error" && r.level !== "critical" ? failOpen(opts, HEAVY, r.level, r.capacity, 0, "io-error", r.error) : null;
 }
 /** Live holders of `cls`, or none when the directory cannot be read. */
 function liveOf(opts, cls) {
@@ -527,7 +530,8 @@ export async function acquireLease(opts, meta, wait = {}) {
  * acquire, and it sees the session holders and capacity. Interactive sessions take no slot.
  */
 export function acquireSessionLease(opts, meta, wait = {}) {
-    return acquire(opts, SESSIONS, meta, wait);
+    // Rebuilt field by field, so a caller's `detached`, `gated` or `weight` can never reach the session class.
+    return acquire(opts, SESSIONS, { command: meta.command, cwd: meta.cwd, ...(meta.label !== undefined && { label: meta.label }) }, wait);
 }
 async function acquire(opts, cls, meta, wait, id) {
     const ticketId = id ?? `${process.pid}-${randomBytes(4).toString("hex")}`;
@@ -555,18 +559,18 @@ async function pollForLease(opts, cls, meta, wait, ticketId) {
         busySince = r.kind === "busy" ? (busySince ?? now()) : undefined;
         const code = r.kind === "error" ? diskFullCode(r.error) : undefined;
         if (code !== undefined) {
-            emit(opts, { type: "timeout", refused: "disk-full", waitedMs });
+            emit(opts, cls, { type: "timeout", refused: "disk-full", waitedMs });
             return { refused: "disk-full", waitedMs, level: r.level, live: 0, code };
         }
         if (r.level !== "critical") {
             if (r.kind === "error")
-                return failOpen(opts, r.level, r.capacity, waitedMs, "io-error", r.error);
+                return failOpen(opts, cls, r.level, r.capacity, waitedMs, "io-error", r.error);
             if (busySince !== undefined && now() - busySince >= FAIL_OPEN_MS)
-                return failOpen(opts, r.level, r.capacity, waitedMs, "mutex-busy");
+                return failOpen(opts, cls, r.level, r.capacity, waitedMs, "mutex-busy");
         }
         const status = r.kind === "error" ? { level: r.level, capacity: r.capacity, step: r.step, signals: r.signals, live: [] } : statusOf(opts, cls, r);
         const refuse = (refused, level, live) => {
-            emit(opts, { type: "timeout", refused, waitedMs, ...(refused === "stopped" && { level }) });
+            emit(opts, cls, { type: "timeout", refused, waitedMs, ...(refused === "stopped" && { level }) });
             return { refused, waitedMs, level, live };
         };
         if (wait.stopWhen?.(status)) {
@@ -603,7 +607,7 @@ export function releaseHolder(opts, id) {
     const rec = text === undefined ? null : parseHolder(text);
     if (rec?.expiresAt === undefined || unlessGone(() => (unlinkSync(file), true)) === undefined)
         return false;
-    emit(opts, { type: "release", id, heldMs: (opts.now ?? Date.now)() - rec.startedAt });
+    emit(opts, HEAVY, { type: "release", id, heldMs: (opts.now ?? Date.now)() - rec.startedAt });
     return true;
 }
 /** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. */

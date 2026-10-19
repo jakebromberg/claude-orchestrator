@@ -52,7 +52,11 @@ export declare function readMemorySignals(deps?: {
 }): MemorySignals | null;
 /** Heavy-command slots at a level; `critical` is always 0. */
 export declare function heavyCapacity(level: PressureLevel, policy: PressurePolicy): number;
-/** Concurrent engine sessions at a level. In the engine this bounds pipelines, not only live `claude` processes: a pipeline keeps its slot through its post-session check and retries. */
+/**
+ * One engine's launch capacity at a level: `maxParallel` (K) at every step but 0, which is `critical`. The machine-wide
+ * session row (`sessionHeadroomCapacity`) does the stepping, so `warning` no longer lowers it. In the engine this bounds
+ * pipelines, not only live `claude` processes: a pipeline keeps its slot through its post-session check and retries.
+ */
 export declare function sessionCapacity(level: PressureLevel, maxParallel: number): number;
 /**
  * The stop rule: critical with nothing running that could relieve it by finishing.

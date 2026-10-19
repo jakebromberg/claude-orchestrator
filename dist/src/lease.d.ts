@@ -3,10 +3,13 @@ import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
 import { type MemorySignals, type PressureLevel, type PressurePolicy, type PressureSampler } from "./memory-pressure.js";
 import { isPid, pidAlive } from "./ps.js";
 export { ensureOwnSubdir, isOwnDir, isPid, pidAlive };
+/** A holder's mtime heartbeat period, and how old a beat may be before the holder is reaped; a blocking stretch in an engine that holds a session slot must fit in the difference (`__tests__/sync-call-budget.test.ts`). */
+export declare const HEARTBEAT_MS = 30000;
+export declare const HEARTBEAT_STALE_MS = 90000;
 /** The longest a detached holder may be set to live: the largest Bash call timeout (10 min) plus hook mode's 60 s grace. */
 export declare const DETACHED_TTL_MAX_MS = 660000;
 type ReapReason = "stale-heartbeat" | "orphan-bound" | "corrupt" | "dead-session" | "expired";
-export type LeaseEvent = {
+export type LeaseEvent = ({
     type: "acquire";
     id: string;
     waitedMs: number;
@@ -42,6 +45,9 @@ export type LeaseEvent = {
     waitedMs: number;
     code?: string;
     message?: string;
+}) & {
+    /** The holder class the event is about; absent in a record an older writer wrote, which means `heavy`. */
+    class?: "heavy" | "sessions";
 };
 /** Cumulative CPU tick counters over all cores. */
 export interface CpuTicks {
