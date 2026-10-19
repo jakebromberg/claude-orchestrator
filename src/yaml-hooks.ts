@@ -12,7 +12,8 @@ import { resolveRepoSettings } from "./repo-settings.js";
 import { perIssueSpawnArgs } from "./model-effort.js";
 import { shellQuote } from "./shell-quote.js";
 import { claudeExecOptions } from "./claude-env.js";
-import { acquireLease, defaultWarn, type LeaseHandle, type LeaseOptions, type LeaseRefusal } from "./lease.js";
+import { acquireLease, defaultWarn, leaseStatus, type LeaseHandle, type LeaseOptions, type LeaseRefusal } from "./lease.js";
+import { formatRefusal, refusalStopReason } from "./lease-messages.js";
 import { stopAtCritical } from "./memory-pressure.js";
 
 const OUTPUT_TAIL_BYTES = 64 * 1024;
@@ -452,10 +453,8 @@ export function deriveHooks(
       if (stopped) {
         return {
           passed: false,
-          stopped: stopped.refused === "disk-full" ? "disk-full" : "memory-critical",
-          summary: stopped.refused === "disk-full"
-            ? `Post-session check not run: the disk is full (${stopped.code})`
-            : `Post-session check not run: memory pressure is ${stopped.level} and nothing is left to relieve it`,
+          stopped: refusalStopReason(stopped),
+          summary: `Post-session check not run: ${formatRefusal(stopped, leaseStatus(ctx!.lease!))}`,
         };
       }
       return { passed: true };
