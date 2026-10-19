@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DISK_FULL_FRACTION } from "../src/watchdog.js";
-import { checkoutOf, isGitWorktree, plistText, runPrint, statusLineSnippet, type PrintDeps } from "../src/watchdog-install.js";
+import { checkoutOf, isGitWorktree, plistText, runPrint, START_INTERVAL_S, STALE_AFTER_INTERVALS, statusLineSnippet, type PrintDeps } from "../src/watchdog-install.js";
 
 const LEASE = "/Users/me/.local/state/claude-orchestrator";
 
@@ -56,6 +56,7 @@ describe("statusLineSnippet", () => {
     const { execFileSync } = await import("node:child_process");
     const dir = mkdtempSync(join(tmpdir(), "wd-snippet-"));
     try {
+      writeFileSync(join(dir, "watchdog.json"), "{}");
       const run = () => execFileSync("/bin/sh", ["-c", statusLineSnippet(dir, 0)], { encoding: "utf-8" });
       expect(run()).toBe("");
       writeFileSync(join(dir, "watchdog.brief"), "watchdog: stopped");
@@ -64,6 +65,49 @@ describe("statusLineSnippet", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("statusLineSnippet staleness", () => {
+  const dir = () => mkdtempSync(join(tmpdir(), "wd-stale-"));
+  const run = async (d: string) => (await import("node:child_process")).execFileSync("/bin/sh", ["-c", statusLineSnippet(d, 0)], { encoding: "utf-8" });
+  const ageBy = (d: string, s: number) => {
+    const t = Date.now() / 1000 - s;
+    utimesSync(join(d, "watchdog.json"), t, t);
+  };
+
+  it("derives its threshold from the plist's StartInterval", () => {
+    expect(plistText({ node: "n", checkout: "/c", dir: LEASE })).toContain(`<integer>${START_INTERVAL_S}</integer>`);
+    expect(statusLineSnippet(LEASE, 0.02)).toContain(`-gt ${START_INTERVAL_S * STALE_AFTER_INTERVALS}`);
+  });
+
+  it.each([
+    ["fresh", 10, /^$/],
+    ["just inside the threshold", START_INTERVAL_S * STALE_AFTER_INTERVALS - 30, /^$/],
+    ["stale", START_INTERVAL_S * STALE_AFTER_INTERVALS + 60, /^watchdog: has not run since \d{2}:\d{2}[^\n]*print-plist[^\n]*\n$/],
+  ])("watchdog.json %s", async (_n, age, expected) => {
+    const d = dir();
+    try {
+      writeFileSync(join(d, "watchdog.json"), "{}");
+      ageBy(d, age);
+      expect(await run(d)).toMatch(expected);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it("prints one line when watchdog.json is missing from an existing lease directory", async () => {
+    const d = dir();
+    try {
+      expect(await run(d)).toMatch(/^watchdog: watchdog\.json is missing[^\n]*print-plist[^\n]*\n$/);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it("prints nothing when the lease directory does not exist, and spawns no node", async () => {
+    expect(await run(join(tmpdir(), "wd-no-such-dir"))).toBe("");
+    expect(statusLineSnippet(LEASE, 0.02)).not.toMatch(/\bnode\b/);
   });
 });
 
