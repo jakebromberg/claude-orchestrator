@@ -3,9 +3,11 @@ import type { YamlConfig } from "./yaml-types.js";
 /** The largest delay `setTimeout` honours; Node fires a longer one after 1 ms. */
 export declare const MAX_TIMER_MS = 2147483647;
 /**
- * Sends SIGTERM to the process group of every bounded {@link runShellAsync} command still running. A bounded command
- * runs in its own group, so the terminal's Ctrl-C does not reach it; this runs on the process's `exit` event, so an
- * engine that exits (its SIGINT/SIGTERM handler ends in `process.exit`) does not leave a deploy running behind it.
+ * Sends SIGKILL to the process group of every bounded {@link runShellAsync} command still live, synchronously. A
+ * bounded command runs in its own group, so the terminal's Ctrl-C does not reach it; this runs on the process's `exit`
+ * event, so an engine that exits (its SIGINT/SIGTERM handler ends in `process.exit`) does not leave a deploy running
+ * behind it. Exit is final and the kill-after-grace timer dies with the engine, so there is no grace: a member that
+ * traps SIGTERM (including one a timeout already sent SIGTERM to) must not outlive the engine. ESRCH is ignored.
  */
 export declare function stopLiveCommandGroups(): void;
 /**
@@ -23,8 +25,8 @@ export declare function stopLiveCommandGroups(): void;
  * gets SIGTERM (as `execSync` sent the shell), so a script's trap can clean up and
  * a grandchild cannot carry on; any member still alive `killGraceMs` later gets
  * SIGKILL. The promise rejects at the timeout, without waiting for the pipes a
- * grandchild may still hold open. If the engine exits first, the group gets
- * SIGTERM ({@link stopLiveCommandGroups}). Without a bound the shell stays in
+ * grandchild may still hold open. If the engine exits first, any group still live
+ * gets SIGKILL at once ({@link stopLiveCommandGroups}). Without a bound the shell stays in
  * the engine's group, as before.
  */
 export declare function runShellAsync(cmd: string, cwd: string, env?: Record<string, string>, onSpawn?: (pid: number) => void, timeoutMs?: number, killGraceMs?: number): Promise<string>;

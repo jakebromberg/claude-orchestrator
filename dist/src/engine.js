@@ -39,6 +39,11 @@ const DEFAULT_ALLOWED_TOOLS = [
 function registryStallTimeout(timeouts) {
     return timeouts.includes(0) ? 0 : Math.max(0, ...timeouts);
 }
+/** True for an `execSync` failure caused by its `timeout` option (ETIMEDOUT, or the kill signal it sends). */
+function isTimeoutError(error) {
+    const e = error;
+    return e?.code === "ETIMEDOUT" || e?.signal === "SIGTERM";
+}
 export class Orchestrator {
     config;
     deps;
@@ -463,6 +468,7 @@ export class Orchestrator {
         // the last thing printed (see `extractPrUrlCandidates`), so one rejection
         // is not proof the session opened nothing.
         const verified = candidates.slice(0, MAX_PR_CANDIDATES_VERIFIED);
+        this.verifyTimeouts = 0;
         for (const pr of verified) {
             const prRepo = expectedRepo ?? repoOfPrUrl(pr.url);
             if (!prRepo || !this.verifyPrIdentity(issue, pr.number, prRepo))
@@ -472,6 +478,13 @@ export class Orchestrator {
                 prNumber: pr.number,
             });
             this.deps.logger.info(`Issue #${issue.number} created PR: ${pr.url}`);
+            return;
+        }
+        if (this.verifyTimeouts > 0) {
+            this.deps.logger.warn(`Issue #${issue.number}: not recording ${candidates[0].url} — the gh call that checks the PR timed out ` +
+                `(${SYNC_CALL_TIMEOUT_MS} ms) for ${this.verifyTimeouts} of the ${verified.length} PR URL(s) checked, so ` +
+                `the PR could not be confirmed. It may well exist; re-run or record it by hand. A PR already recorded ` +
+                `for this issue is left in place.`);
             return;
         }
         this.deps.logger.warn(`Issue #${issue.number}: not recording ${candidates[0].url} — could not ` +
@@ -495,13 +508,17 @@ export class Orchestrator {
      * output, a deleted PR — counts as unverified. Failing closed is the point:
      * the store is what `mergePrs` acts on.
      */
+    /** Count of timed-out `gh pr view` calls in the current recording pass; names the timeout in the warning. */
+    verifyTimeouts = 0;
     verifyPrIdentity(issue, prNumber, repo) {
         const branch = this.config.hooks.getBranchName(issue);
         let raw;
         try {
             raw = this.deps.runCommand(`gh pr view ${prNumber} --repo ${shellQuote(repo)} --json state,headRefName`, { timeout: SYNC_CALL_TIMEOUT_MS });
         }
-        catch {
+        catch (error) {
+            if (isTimeoutError(error))
+                this.verifyTimeouts++;
             return false;
         }
         try {

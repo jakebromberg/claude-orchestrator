@@ -109,6 +109,8 @@ export declare class Orchestrator {
      * output, a deleted PR — counts as unverified. Failing closed is the point:
      * the store is what `mergePrs` acts on.
      */
+    /** Count of timed-out `gh pr view` calls in the current recording pass; names the timeout in the warning. */
+    private verifyTimeouts;
     private verifyPrIdentity;
     /**
      * Positive evidence that a session committed nothing on its branch.

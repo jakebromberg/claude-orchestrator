@@ -895,7 +895,7 @@ describe("deriveHooks", () => {
         }
       });
 
-      it("on engine exit, SIGTERMs a bounded command's group, which Ctrl-C no longer reaches", async () => {
+      it("on engine exit, signals a bounded command's group, which Ctrl-C no longer reaches", async () => {
         const gcFile = path.join(dir, "gc");
         const run = runShellAsync(`sleep 30 & echo $! > "${gcFile}"; wait`, dir, undefined, undefined, 60_000);
         let gc = 0;
@@ -904,6 +904,23 @@ describe("deriveHooks", () => {
           expect(process.listeners("exit")).toContain(stopLiveCommandGroups);
           stopLiveCommandGroups();
           await expect(run).rejects.toThrow(/Command failed/);
+          await vi.waitFor(() => expect(alive(gc)).toBe(false), { timeout: 3_000 });
+        } finally {
+          if (gc > 0) { try { process.kill(gc, "SIGKILL"); } catch {} }
+        }
+      });
+
+      it("on engine exit within the grace, SIGKILLs a group whose member traps TERM", async () => {
+        const gcFile = path.join(dir, "gc-trap");
+        const cmd = `(trap 'echo t' TERM; while :; do sleep 0.1; done) & echo $! > "${gcFile}"; wait`;
+        const run = runShellAsync(cmd, dir, undefined, undefined, 300, 60_000);
+        run.catch(() => {});
+        let gc = 0;
+        try {
+          await vi.waitFor(() => { gc = Number(readFileSync(gcFile, "utf-8")); expect(gc).toBeGreaterThan(0); });
+          await expect(run).rejects.toThrow("timed out");
+          // The grace (60 s) has not elapsed: this is what the process `exit` handler does.
+          stopLiveCommandGroups();
           await vi.waitFor(() => expect(alive(gc)).toBe(false), { timeout: 3_000 });
         } finally {
           if (gc > 0) { try { process.kill(gc, "SIGKILL"); } catch {} }

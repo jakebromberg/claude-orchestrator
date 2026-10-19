@@ -21,18 +21,30 @@ const KILL_GRACE_MS = 5_000;
 /** Process groups of bounded {@link runShellAsync} commands that have not closed yet. */
 const liveGroups = new Set();
 /**
- * Sends SIGTERM to the process group of every bounded {@link runShellAsync} command still running. A bounded command
- * runs in its own group, so the terminal's Ctrl-C does not reach it; this runs on the process's `exit` event, so an
- * engine that exits (its SIGINT/SIGTERM handler ends in `process.exit`) does not leave a deploy running behind it.
+ * Sends SIGKILL to the process group of every bounded {@link runShellAsync} command still live, synchronously. A
+ * bounded command runs in its own group, so the terminal's Ctrl-C does not reach it; this runs on the process's `exit`
+ * event, so an engine that exits (its SIGINT/SIGTERM handler ends in `process.exit`) does not leave a deploy running
+ * behind it. Exit is final and the kill-after-grace timer dies with the engine, so there is no grace: a member that
+ * traps SIGTERM (including one a timeout already sent SIGTERM to) must not outlive the engine. ESRCH is ignored.
  */
 export function stopLiveCommandGroups() {
     for (const pgid of liveGroups) {
         try {
-            process.kill(-pgid, "SIGTERM");
+            process.kill(-pgid, "SIGKILL");
         }
         catch {
             // ESRCH: every member has already exited.
         }
+    }
+}
+/** Whether any member of process group `pgid` is still alive (EPERM means one is, owned by another user). */
+function groupAlive(pgid) {
+    try {
+        process.kill(-pgid, 0);
+        return true;
+    }
+    catch (error) {
+        return error.code === "EPERM";
     }
 }
 /**
@@ -62,8 +74,8 @@ function utf8Tail(buf, max) {
  * gets SIGTERM (as `execSync` sent the shell), so a script's trap can clean up and
  * a grandchild cannot carry on; any member still alive `killGraceMs` later gets
  * SIGKILL. The promise rejects at the timeout, without waiting for the pipes a
- * grandchild may still hold open. If the engine exits first, the group gets
- * SIGTERM ({@link stopLiveCommandGroups}). Without a bound the shell stays in
+ * grandchild may still hold open. If the engine exits first, any group still live
+ * gets SIGKILL at once ({@link stopLiveCommandGroups}). Without a bound the shell stays in
  * the engine's group, as before.
  */
 export function runShellAsync(cmd, cwd, env, onSpawn, timeoutMs, killGraceMs = KILL_GRACE_MS) {
@@ -109,6 +121,17 @@ export function runShellAsync(cmd, cwd, env, onSpawn, timeoutMs, killGraceMs = K
         child.on("error", (error) => {
             clearTimeout(timer);
             reject(error);
+        });
+        // 'close' waits for every holder of the pipes, so a daemon that escaped the group and kept them open would leave
+        // the pgid here after the group is gone and the id may be reused. Drop it as soon as the shell exits and no member
+        // is left; a member that is still there (a grandchild that traps TERM) keeps the entry for the exit-time SIGKILL.
+        child.on("exit", () => {
+            if (child.pid !== undefined && !groupAlive(child.pid))
+                liveGroups.delete(child.pid);
+        });
+        child.on("error", () => {
+            if (child.pid !== undefined && !groupAlive(child.pid))
+                liveGroups.delete(child.pid);
         });
         child.on("close", (code, signal) => {
             clearTimeout(timer);
