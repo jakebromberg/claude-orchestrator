@@ -19,9 +19,9 @@ describe("defaultHeadroomSampler", () => {
   let reads: number;
   let log: ReturnType<typeof vi.fn>;
 
-  const make = (extra: NodeJS.ProcessEnv = {}, table: StepTable = FLAT, over: { dir?: string; heavyLive?: () => number } = {}) => {
+  const make = (extra: NodeJS.ProcessEnv = {}, table: StepTable = FLAT, over: { dir?: string; heavyLive?: () => number; heavyWeights?: (step: number, s: MemorySignals) => { used: number; budget: number } | undefined } = {}) => {
     const read = () => (reads++, signals);
-    return defaultHeadroomSampler({ CO_LEASE_DIR: over.dir ?? dir, ...extra }, { read, now: () => t, log, table, heavyLive: over.heavyLive });
+    return defaultHeadroomSampler({ CO_LEASE_DIR: over.dir ?? dir, ...extra }, { read, now: () => t, log, table, heavyLive: over.heavyLive, heavyWeights: over.heavyWeights });
   };
   const pressure = () => (existsSync(file("pressure.jsonl")) ? readFileSync(file("pressure.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
   const file = (name = "headroom.json") => join(dir, name);
@@ -263,13 +263,26 @@ describe("defaultHeadroomSampler", () => {
       signals = { level: "warning", freePct: 25, swapUsedBytes: 7, memsizeBytes: MEMSIZE };
       make({}, FLAT, { heavyLive: () => 2 }).fresh();
       expect(pressure()).toEqual([
-        { ts: new Date(t).toISOString(), level: "warning", freePct: 25, freeBytes: MEMSIZE / 4, swapUsedBytes: 7, step: 1, heavyLive: 2 },
+        { ts: new Date(t).toISOString(), type: "sample", level: "warning", freePct: 25, freeBytes: MEMSIZE / 4, swapUsedBytes: 7, step: 1, heavyLive: 2 },
       ]);
+    });
+
+    it("adds weights from heavyWeights, called with the step and signals, and omits them in count mode or when it throws", () => {
+      signals = { level: "warning", freePct: 25, memsizeBytes: MEMSIZE };
+      const heavyWeights = vi.fn(() => ({ used: 3, budget: 9 }));
+      make({}, FLAT, { heavyWeights }).fresh();
+      expect(heavyWeights).toHaveBeenCalledWith(1, signals);
+      expect(pressure()[0]).toMatchObject({ type: "sample", weights: { used: 3, budget: 9 } });
+      for (const fn of [() => undefined, () => { throw new Error("scan"); }]) {
+        t += 60_000;
+        make({}, FLAT, { heavyWeights: fn }).fresh();
+        expect(pressure().at(-1)).not.toHaveProperty("weights");
+      }
     });
 
     it("omits freeBytes without memsizeBytes, and heavyLive when the count throws", () => {
       make({}, FLAT, { heavyLive: () => { throw new Error("scan"); } }).fresh();
-      expect(pressure().map((l) => Object.keys(l))).toEqual([["ts", "level", "freePct", "step"]]);
+      expect(pressure().map((l) => Object.keys(l))).toEqual([["ts", "type", "level", "freePct", "step"]]);
     });
 
     it("writes nothing for an unchanged reading inside the heartbeat, across samplers", () => {

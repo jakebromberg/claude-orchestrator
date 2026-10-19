@@ -81,7 +81,7 @@ describe("claude-orchestrator-lease (integration)", () => {
   it("passes the exit code through, prints the admitted line and releases the slot", async () => {
     const r = await runCli(["--", "node", "-e", "process.exit(7)"], isolatedLeaseEnv(leaseDir));
     expect(r.code).toBe(7);
-    expect(r.stderr).toMatch(/^lease: admitted after 0s \(pressure=\w+, 1\/1 live\)$/m);
+    expect(r.stderr).toMatch(/^lease: admitted after 0s \(pressure=\w+, 1\/1 live(, weights [\d.]+\/[\d.]+ GB)?\)$/m);
     expect(holderFiles(leaseDir)).toEqual([]);
   });
 
@@ -97,7 +97,7 @@ describe("claude-orchestrator-lease (integration)", () => {
   it("reports holders from status without creating the lease directory", async () => {
     const r = await runCli(["status"], isolatedLeaseEnv(leaseDir));
     expect(r.code).toBe(0);
-    expect(JSON.parse(r.stdout)).toEqual({ level: expect.any(String), capacity: 1, live: [] });
+    expect(JSON.parse(r.stdout)).toEqual({ level: expect.any(String), capacity: 1, live: [], ...(JSON.parse(r.stdout).weights && { weights: expect.any(Object) }) });
     expect(fs.existsSync(leaseDir)).toBe(false);
   });
 

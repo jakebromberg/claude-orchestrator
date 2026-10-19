@@ -19,8 +19,8 @@ export interface HeadroomSampler {
  * steps from the last good reading under 60 s old (in-process, else `level.json`), and otherwise from `critical`; it is
  * not shared. `CO_PRESSURE_OVERRIDE=critical-as-warning` maps `critical` to `warning` and step 0 to 1 in this process
  * only. Each sample that changed the level, the step or free % (by 5 points) from the stored record, or that finds `sampledAt`
- * 60 s old, also appends a line to `pressure.jsonl`; `heavyLive` counts live heavy holders for it (the sampler has no lease
- * options), and a failed count or append is swallowed. Throws when `leaseDirectory(env)` does. `deps` exists for tests.
+ * 60 s old, also appends a line to `pressure.jsonl`; `heavyLive` counts live heavy holders and `heavyWeights` reports their `weights` (weight mode only) for it (the sampler has no lease
+ * options); each line has `type: "sample"`, and a failed count, weighing or append is swallowed. Throws when `leaseDirectory(env)` does. `deps` exists for tests.
  */
 export declare function defaultHeadroomSampler(env?: NodeJS.ProcessEnv, deps?: {
     read?: () => MemorySignals | null;
@@ -28,6 +28,10 @@ export declare function defaultHeadroomSampler(env?: NodeJS.ProcessEnv, deps?: {
     log?: (msg: string) => void;
     table?: StepTable;
     heavyLive?: () => number;
+    heavyWeights?: (step: number, signals: MemorySignals) => {
+        used: number;
+        budget: number;
+    } | undefined;
 }): HeadroomSampler;
 /** The level a `HeadroomSampler` reads, as a `PressureSampler`: one source of truth, so `level` and `level.fresh` cannot disagree with the step. */
 export declare function levelView(headroom: HeadroomSampler): PressureSampler;

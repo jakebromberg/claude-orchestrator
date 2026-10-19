@@ -14,6 +14,7 @@ import { shellQuote } from "./shell-quote.js";
 import { claudeExecOptions } from "./claude-env.js";
 import { acquireLease, defaultWarn, type LeaseHandle, type LeaseOptions, type LeaseRefusal } from "./lease.js";
 import { formatPostCheckStop, refusalStopReason } from "./lease-messages.js";
+import { weightFor } from "./lease-weights.js";
 import { stopAtCritical } from "./memory-pressure.js";
 import { groupAlive, signalGroup } from "./ps.js";
 
@@ -176,19 +177,22 @@ const WAIT_LOG_INTERVAL_MS = 60_000;
 /**
  * One lease slot for a whole post-session check, labelled with the issue so the holder file does not show its first
  * command. Waits with no cap; at `critical` it ends in a refusal once no live holder and no engine session is left to
- * relieve the pressure. The engine never inherits a holder id, so `inheritedHolderId` is dropped.
+ * relieve the pressure. The engine never inherits a holder id, so `inheritedHolderId` is dropped. The slot covers the
+ * whole command loop, so its weight is the largest any command resolves to, and absent when none matches.
  */
 function acquireCheckLease(
   lease: LeaseOptions,
   issue: Issue,
   cwd: string,
-  command: string,
+  commands: string[],
   runningSessions: () => number = () => 0,
 ): Promise<LeaseHandle | LeaseRefusal> {
   let lastLogged: number | undefined;
+  const warn = lease.warn ?? defaultWarn;
+  const weight = Math.max(0, ...commands.map((c) => weightFor(c, cwd, process.env, warn) ?? 0));
   return acquireLease(
     { ...lease, inheritedHolderId: undefined },
-    { command, label: `post-check ${issue.ref}`, cwd },
+    { command: commands[0] ?? "", label: `post-check ${issue.ref}`, cwd, ...(weight > 0 && { weight }) },
     {
       onWait: (s) => {
         if (lastLogged !== undefined && s.waitedMs - lastLogged < WAIT_LOG_INTERVAL_MS) return;
@@ -482,7 +486,7 @@ export function deriveHooks(
           : worktreePath;
         let slot: LeaseHandle | undefined;
         if (ctx?.lease) {
-          const got = await acquireCheckLease(ctx.lease, issue, execDir, cmdConfig.commands[0] ?? "", ctx.runningSessions);
+          const got = await acquireCheckLease(ctx.lease, issue, execDir, cmdConfig.commands, ctx.runningSessions);
           if ("refused" in got) stopped = got;
           else slot = got;
         }

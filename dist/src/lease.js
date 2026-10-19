@@ -323,6 +323,20 @@ function borrowedHandle(id, level, capacity, live) {
     return { id, leased: true, admission: { waitedMs: 0, level, live, capacity }, childEnv: () => ({ CO_LEASE_HOLDER: id }), setChildPid() { }, release() { } };
 }
 /**
+ * The one weight rule: bytes when the class has a `budget` and the reading carries the machine's memory (a holder without a weight takes
+ * the unmatched `usable / ceiling`), else every weight is 1 and the budget is the capacity, which is the count rule. `report` is the
+ * used/budget pair for the given holders, or `undefined` in count mode.
+ */
+function weigh(opts, cls, { step, capacity, signals }) {
+    const memsize = positive(signals?.memsizeBytes);
+    const usable = cls.budget && memsize !== undefined ? usableBytes(memsize, opts.reservePct ?? DEFAULT_RESERVE_PCT) : undefined;
+    const unmatched = usable === undefined ? 1 : usable / cls.ceiling(opts);
+    const of = (x) => (usable === undefined ? 1 : (x.weight ?? unmatched));
+    const budget = usable === undefined ? capacity : cls.budget(step, usable);
+    const report = (holders) => (usable === undefined ? undefined : { used: holders.reduce((sum, x) => sum + of(x), 0), budget });
+    return { usable, budget, of, report };
+}
+/**
  * One admission attempt for a holder class: sample the step, then weigh and write holders under the mutex. Weights are bytes when the class
  * has a `budget` and the reading carries the machine's memory (the unmatched weight, `usable / ceiling`, stands in for a missing one),
  * else every weight is 1 and the budget is the capacity, which is the count rule. Admission is FIFO: a waiter (`ticketId` set) is
@@ -358,12 +372,10 @@ function attempt(opts, cls, meta, waitedMs, ticketId) {
             // A writer killed between its write and rename leaves a uniquely named temp file: remove those of dead writers in this class's directories and the root. Only here, under the mutex; the scanners and `leaseStatus` never delete.
             for (const d of [cls.holders, cls.waiting, ""])
                 sweepDeadTemps(join(opts.dir, d), opts.isAlive ?? pidAlive);
-            const memsize = positive(snap.signals?.memsizeBytes);
-            const usable = cls.budget && memsize !== undefined ? usableBytes(memsize, opts.reservePct ?? DEFAULT_RESERVE_PCT) : undefined;
-            const unmatched = usable === undefined ? 1 : usable / cls.ceiling(opts);
-            const weightOf = (x) => (usable === undefined ? 1 : (x.weight ?? unmatched));
-            const budget = usable === undefined ? capacity : cls.budget(snap.step, usable);
-            const admission = { waitedMs, level, live: live.length + 1, capacity, ...(overridden && { override: true }) };
+            const { usable, budget, of: weightOf, report } = weigh(opts, cls, snap);
+            const myWeight = weightOf({ weight: positive(meta.weight) });
+            const weights = report([...live, { weight: myWeight }]);
+            const admission = { waitedMs, level, live: live.length + 1, capacity, ...(overridden && { override: true }), ...(weights && { weights: { ...weights, weight: myWeight } }) };
             // A second hook install for the same call acquires the id the first one holds: that call is already admitted.
             if (meta.detached && live.some((h) => h.id === meta.detached.id))
                 r = { kind: "admitted", handle: borrowedHandle(meta.detached.id, level, capacity, live.length), borrowed: true };
@@ -383,7 +395,6 @@ function attempt(opts, cls, meta, waitedMs, ticketId) {
                 const others = line.filter((t) => t.eligible && t.id !== ticketId && (ticketId === undefined || t.seq < seq) && counts(t));
                 const ahead = others.filter((t) => t.ready !== false);
                 const taken = [...live, ...ahead].reduce((sum, x) => sum + weightOf(x), 0);
-                const myWeight = weightOf({ weight: positive(meta.weight) });
                 // A relative slack of 1e-12 absorbs the rounding of `usable / ceiling` sums and is far below a byte.
                 const fits = taken + myWeight <= budget * (1 + 1e-12) || (usable !== undefined && live.length + ahead.length === 0 && snap.step > 0);
                 // The gates are machine-wide, so a gated waiter waits for every older gated ticket that could be admitted, however many slots are free:
@@ -490,7 +501,12 @@ function liveOf(opts, cls) {
         return [];
     }
 }
-const statusOf = (opts, cls, { level, capacity, step, signals }) => ({ level, capacity, step, signals, live: liveOf(opts, cls) });
+const statusOf = (opts, cls, snap) => {
+    const { level, capacity, step, signals } = snap;
+    const live = liveOf(opts, cls);
+    const weights = weigh(opts, cls, snap).report(live);
+    return { level, capacity, step, signals, live, ...(weights && { weights }) };
+};
 /**
  * Polls (3 s ± 1 s, never spinning) until admitted, in the order waiters arrived: each waits behind a ticket in
  * `<dir>/waiting/`, which it removes when it is admitted, when it gives up and when this returns or throws. `stopWhen` is checked on every poll, and a stop is confirmed with a
@@ -617,7 +633,11 @@ export function defaultLeaseOptions(env = process.env, overrides = {}) {
     const dir = leaseDirectory(env);
     // One sampler is the source of truth: `level` (and `level.fresh`) is a view over it, unless the caller supplies its own level.
     let opts;
-    const headroom = overrides.level ? undefined : defaultHeadroomSampler(env, { log: tagged, heavyLive: () => scanHolders(opts, HEAVY).live.length });
+    const headroom = overrides.level ? undefined : defaultHeadroomSampler(env, {
+        log: tagged,
+        heavyLive: () => scanHolders(opts, HEAVY).live.length,
+        heavyWeights: (step, signals) => weigh(opts, HEAVY, { step, capacity: HEAVY.capacity(step, HEAVY.ceiling(opts)), signals }).report(scanHolders(opts, HEAVY).live),
+    });
     const level = overrides.level ?? levelView(headroom);
     return (opts = {
         dir,

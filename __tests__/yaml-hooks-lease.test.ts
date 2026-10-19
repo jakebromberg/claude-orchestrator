@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -62,6 +62,26 @@ describe("leased postSessionCheck", () => {
     expect(seen.map((s) => s.env)).toEqual([{ CO_LEASE_HOLDER: id }, { CO_LEASE_HOLDER: id }]);
     expect(events.map((e) => e.type)).toEqual(["acquire", "release"]);
     expect(leaseStatus(leaseOptions()).live).toEqual([]);
+  });
+
+  // The slot covers the whole command loop, so it weighs the largest rule any command matches.
+  it.each([
+    { name: "records the bytes of the one matching rule", rules: [{ pattern: "^npx tsc", gb: 12 }], expected: 12 * 2 ** 30 },
+    { name: "records the largest of several matching rules", rules: [{ pattern: "^npm test", gb: 4 }, { pattern: "^npx tsc", gb: 12 }], expected: 12 * 2 ** 30 },
+    { name: "records no weight without a match", rules: [{ pattern: "^make", gb: 12 }], expected: undefined },
+  ])("the post-check holder $name", async ({ rules, expected }) => {
+    writeFileSync(join(tmp, "w.json"), JSON.stringify(rules));
+    vi.stubEnv("CO_LEASE_WEIGHTS_FILE", join(tmp, "w.json"));
+    let weight: unknown = "unset";
+    const runCommand = vi.fn(async () => {
+      weight = leaseStatus(leaseOptions()).live[0]?.weight;
+      return "";
+    });
+    const hooks = deriveHooks(makeYaml(), { runCommand });
+    await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions() });
+
+    expect(weight).toBe(expected);
+    expect(warnings).toEqual([]);
   });
 
   it("reports each child's PID to the holder, so it stays live past a stalled heartbeat", async () => {

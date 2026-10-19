@@ -647,6 +647,16 @@ describe("runLeased", () => {
       });
     });
 
+    it("adds weights beside live and capacity in weight mode, and leaves them out in count mode", () => {
+      const weights = { used: 3 * 2 ** 30, budget: 9 * 2 ** 30 };
+      const status = (extra: object) => deps({ leaseStatus: () => ({ level: "normal", capacity: 3, step: 3, signals: null, live: [holder()], ...extra }) });
+      expect(runStatus(status({ weights }))).toBe(0);
+      expect(JSON.parse(out.join(""))).toMatchObject({ capacity: 3, weights });
+      out.length = 0;
+      expect(runStatus(status({}))).toBe(0);
+      expect(JSON.parse(out.join(""))).not.toHaveProperty("weights");
+    });
+
     it("creates nothing on disk", () => {
       const tmp = mkdtempSync(join(tmpdir(), "cli-lease-status-"));
       const dir = join(tmp, "lease");

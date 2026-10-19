@@ -133,9 +133,9 @@ function ancestorHookSlot(opts: LeaseOptions, d: LeaseCliDeps): string | undefin
 export function runStatus(d: LeaseCliDeps): number {
   const opts = optionsOrReport(d);
   if (!opts) return EX_CONFIG;
-  const { level, capacity, live } = d.leaseStatus(opts);
+  const { level, capacity, live, weights } = d.leaseStatus(opts);
   const holders = live.map((h) => ({ pid: h.pid, command: h.command, ageSec: h.ageSec, ...(h.override && { override: true }) }));
-  d.out(`${JSON.stringify({ level, capacity, live: holders }, null, 2)}\n`);
+  d.out(`${JSON.stringify({ level, capacity, live: holders, ...(weights && { weights }) }, null, 2)}\n`);
   return 0;
 }
 
