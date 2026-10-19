@@ -86,7 +86,7 @@ describe("lease", () => {
       a.release({ exitCode: 0 });
       const c = tryAcquireLease(opts(), meta);
       expect(c?.leased).toBe(true);
-      expect(events.filter((e) => e.type === "release")).toEqual([{ type: "release", id: a.id, heldMs: 0, exitCode: 0 }]);
+      expect(events.filter((e) => e.type === "release")).toEqual([{ type: "release", id: a.id, heldMs: 0, exitCode: 0, class: "heavy" }]);
       b.release();
       c!.release();
     });
@@ -257,7 +257,7 @@ describe("lease", () => {
     it("reports a stale heartbeat with no live child as a stale-heartbeat reap", () => {
       plantHolder("4242-aaac", {});
       tryAcquireLease(opts(), meta)!.release();
-      expect(events).toContainEqual({ type: "reap", id: "4242-aaac", reason: "stale-heartbeat" });
+      expect(events).toContainEqual({ type: "reap", id: "4242-aaac", reason: "stale-heartbeat", class: "heavy" });
     });
 
     describe("heartbeat", () => {
@@ -318,7 +318,7 @@ describe("lease", () => {
         const stalled = (fake.ms - (HEARTBEAT_STALE_MS + 10_000) + 0.5) / 1000; // its event loop missed every beat
         utimesSync(holderFile(a.id!), stalled, stalled);
         const b = tryAcquireLease(one, meta)!;
-        expect(events).toContainEqual({ type: "reap", id: a.id, reason: "stale-heartbeat" });
+        expect(events).toContainEqual({ type: "reap", id: a.id, reason: "stale-heartbeat", class: "heavy" });
         a.setChildPid(4321);
         expect(existsSync(holderFile(a.id!))).toBe(false);
         expect(leaseStatus(one).live.map((x) => x.id)).toEqual([b.id]);
@@ -332,7 +332,7 @@ describe("lease", () => {
       plantHolder("4242-bbbb", { childPid: 900, startedAt: fake.ms - 3 * 3_600_000 });
       tryAcquireLease(opts(), meta)!.release();
       expect(warnings.join("\n")).toMatch(/4242-bbbb.*2 h orphan bound/);
-      expect(events).toContainEqual({ type: "reap", id: "4242-bbbb", reason: "orphan-bound" });
+      expect(events).toContainEqual({ type: "reap", id: "4242-bbbb", reason: "orphan-bound", class: "heavy" });
     });
 
     it.each([
@@ -350,7 +350,7 @@ describe("lease", () => {
       plantHolder("4242-cccc", {});
       writeFileSync(holderFile("4242-cccc"), text);
       tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta)!;
-      expect(events).toContainEqual({ type: "reap", id: "4242-cccc", reason: "corrupt" });
+      expect(events).toContainEqual({ type: "reap", id: "4242-cccc", reason: "corrupt", class: "heavy" });
       expect(existsSync(holderFile("4242-cccc"))).toBe(false);
     });
 
@@ -457,7 +457,7 @@ describe("lease", () => {
       plantHolder("hook-x", { pid: SESSION, expiresAt: fake.ms + expiresIn }, beatAgo);
       expect(leaseStatus(opts()).live.some((x) => x.id === "hook-x")).toBe(expected === "live");
       tryAcquireLease(opts(), meta)!.release();
-      expect(events.filter((e) => e.type === "reap")).toEqual(expected === "live" ? [] : [{ type: "reap", id: "hook-x", reason: expected }]);
+      expect(events.filter((e) => e.type === "reap")).toEqual(expected === "live" ? [] : [{ type: "reap", id: "hook-x", reason: expected, class: "heavy" }]);
       expect(existsSync(holderFile("hook-x"))).toBe(expected === "live");
     });
 
@@ -465,7 +465,7 @@ describe("lease", () => {
       plantHolder("hook-y", { pid: SESSION, expiresAt });
       alive.add(SESSION);
       tryAcquireLease(opts(), meta)!.release();
-      expect(events).toContainEqual({ type: "reap", id: "hook-y", reason: "corrupt" });
+      expect(events).toContainEqual({ type: "reap", id: "hook-y", reason: "corrupt", class: "heavy" });
     });
 
     it("counts a live detached holder against capacity", () => {
@@ -494,7 +494,7 @@ describe("lease", () => {
       plantHolder("hook-toolu_1", { pid: SESSION, expiresAt: fake.ms + 60_000 });
       const h = tryAcquireLease(opts(one), detached())!;
       expect(readHolder(h)).toMatchObject({ id: "hook-toolu_1", startedAt: fake.ms });
-      expect(events).toContainEqual({ type: "reap", id: "hook-toolu_1", reason: "dead-session" });
+      expect(events).toContainEqual({ type: "reap", id: "hook-toolu_1", reason: "dead-session", class: "heavy" });
     });
 
     it.each(["../escaped", "a/b", "a.b", ""])("refuses the detached id %j before taking a slot or writing anything", async (id) => {
@@ -531,7 +531,7 @@ describe("lease", () => {
         fake.ms += 4_000;
         expect(releaseHolder(opts(), "hook-toolu_1")).toBe(true);
         expect(existsSync(holderFile("hook-toolu_1"))).toBe(false);
-        expect(events.filter((e) => e.type === "release")).toEqual([{ type: "release", id: "hook-toolu_1", heldMs: 4_000 }]);
+        expect(events.filter((e) => e.type === "release")).toEqual([{ type: "release", id: "hook-toolu_1", heldMs: 4_000, class: "heavy" }]);
       });
 
       it("is idempotent: a holder that is already gone returns false and emits nothing", () => {
@@ -598,7 +598,7 @@ describe("lease", () => {
       expect(r).toMatchObject({ leased: false, id: null });
       expect(fake.sleeps.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(30_000);
       expect(warnings).toHaveLength(1);
-      expect(events).toContainEqual(expect.objectContaining({ type: "fail-open", reason: "mutex-busy" }));
+      expect(events).toContainEqual(expect.objectContaining({ type: "fail-open", reason: "mutex-busy", class: "heavy" }));
     });
 
     it("never fails open at critical: a busy mutex stays no free slot until maxWaitMs", async () => {
@@ -868,7 +868,7 @@ describe("lease", () => {
       expect(r).toEqual({ refused: "max-wait", waitedMs: 5_000, level: "normal", live: 1 });
       expect(fake.sleeps.reduce((a, b) => a + b, 0)).toBe(5_000);
       expect(onWait).toHaveBeenCalledWith(expect.objectContaining({ capacity: 1 }));
-      expect(events).toContainEqual({ type: "timeout", refused: "max-wait", waitedMs: 5_000 });
+      expect(events).toContainEqual({ type: "timeout", refused: "max-wait", waitedMs: 5_000, class: "heavy" });
     });
 
     it("stops on the first poll where stopWhen holds and a fresh read confirms it", async () => {
@@ -1295,8 +1295,8 @@ describe("lease", () => {
       h.release({ exitCode: 1 });
       g.release();
       expect(events.filter((e) => e.type === "release")).toStrictEqual([
-        { type: "release", id: h.id, heldMs: 12_345, exitCode: 1 },
-        { type: "release", id: g.id, heldMs: 12_345 },
+        { type: "release", id: h.id, heldMs: 12_345, exitCode: 1, class: "heavy" },
+        { type: "release", id: g.id, heldMs: 12_345, class: "heavy" },
       ]);
     });
 
@@ -1305,8 +1305,8 @@ describe("lease", () => {
       await acquireLease(opts(), meta, { stopWhen: (s) => s.level === "critical" });
       await acquireLease(opts(), meta, { maxWaitMs: 0 });
       expect(events.filter((e) => e.type === "timeout")).toStrictEqual([
-        { type: "timeout", refused: "stopped", waitedMs: 0, level: "critical" },
-        { type: "timeout", refused: "max-wait", waitedMs: 0 },
+        { type: "timeout", refused: "stopped", waitedMs: 0, level: "critical", class: "heavy" },
+        { type: "timeout", refused: "max-wait", waitedMs: 0, class: "heavy" },
       ]);
     });
 
@@ -1316,8 +1316,8 @@ describe("lease", () => {
       fake.onSleep = () => utimesSync(join(dir, ".mutex"), fake.ms / 1000, fake.ms / 1000);
       await acquireLease(opts(), meta);
       expect(events.filter((e) => e.type === "fail-open")).toStrictEqual([
-        { type: "fail-open", reason: "io-error", waitedMs: 0, code: "ENOTDIR", message: expect.any(String) },
-        { type: "fail-open", reason: "mutex-busy", waitedMs: expect.any(Number) },
+        { type: "fail-open", reason: "io-error", waitedMs: 0, code: "ENOTDIR", message: expect.any(String), class: "heavy" },
+        { type: "fail-open", reason: "mutex-busy", waitedMs: expect.any(Number), class: "heavy" },
       ]);
     });
   });
@@ -1339,7 +1339,7 @@ describe("lease", () => {
       expect(tryAcquireLease(opts(), meta)).toSatisfy((t: unknown) => (refused ? t === null : (t as LeaseHandle).leased === false));
       if (refused) {
         expect(got).toMatchObject({ refused: "disk-full", code });
-        expect(events).toContainEqual({ type: "timeout", refused: "disk-full", waitedMs: 0 });
+        expect(events).toContainEqual({ type: "timeout", refused: "disk-full", waitedMs: 0, class: "heavy" });
         expect(events.some((e) => e.type === "fail-open")).toBe(false);
       } else {
         expect(got).toMatchObject({ leased: false });

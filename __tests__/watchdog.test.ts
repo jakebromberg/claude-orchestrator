@@ -465,6 +465,18 @@ describe("watchdog", () => {
       });
 
       it.each([
+        ["a wait log written a minute ago", 1, false],
+        ["a wait log older than the threshold", 41, true],
+      ])("counts a session wait's progress line as activity: %s", (_name, age, reported) => {
+        engine({ logDir: logs(), stallTimeout: 1800, startedAt: "2026-10-16T09:00:00Z" });
+        mkdirSync(logs(), { recursive: true });
+        writeFileSync(join(logs(), "issue-1.wait.log"), "x");
+        utimesSync(join(logs(), "issue-1.wait.log"), (T0 - age * MIN) / 1000, (T0 - age * MIN) / 1000);
+        checkAt(0);
+        expect(brief().includes("wrote no session log")).toBe(reported);
+      });
+
+      it.each([
         ["within the threshold", "2026-10-16T11:30:00Z", false],
         ["past the threshold", "2026-10-16T11:10:00Z", true],
       ])("measures an engine with no logs from startedAt: %s", (_name, startedAt, reported) => {

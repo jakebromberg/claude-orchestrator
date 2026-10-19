@@ -367,6 +367,8 @@ export interface Deps {
    */
   runCommandAsync?(cmd: string, options?: { timeout?: number }): Promise<string>;
   truncateFile(path: string): void;
+  /** Appends `text` to `path`, creating the directory; the engine writes only a session wait's progress line through it. Absent means no progress line. */
+  appendFile?(path: string, text: string): void;
   /** Memory-pressure sampler; absent reads as `"unknown"` (no adaptation, no stop). */
   memoryPressure?: PressureSampler;
   /** Machine-wide heavy-command lease for post-session checks; absent means checks run unleased with no lease I/O. */

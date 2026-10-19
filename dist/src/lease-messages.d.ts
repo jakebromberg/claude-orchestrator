@@ -4,6 +4,8 @@
  */
 import type { LeaseHandle, LeaseRefusal, LeaseStatus } from "./lease.js";
 export declare const seconds: (ms: number) => number;
+/** The least time between two progress lines of one wait for a lease slot (the post-check's and the engine's session wait). */
+export declare const WAIT_LOG_INTERVAL_MS = 60000;
 /** The admitted line; the hook prints the same text as `additionalContext`. */
 export declare function formatAdmitted(a: LeaseHandle["admission"]): string;
 /** The no-slot line; the hook denies with it as the reason. */

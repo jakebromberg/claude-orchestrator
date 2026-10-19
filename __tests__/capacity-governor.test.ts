@@ -20,23 +20,23 @@ function setUp(levels: PressureLevel[], adaptive = true, maxParallel = 4, inject
 }
 
 describe("createCapacityGovernor", () => {
-  it("reads the level at creation: one at a time at warning, none at critical", () => {
-    expect(setUp(["warning"]).governor.capacity()).toBe(1);
+  it("reads the level at creation: K at warning, none at critical", () => {
+    expect(setUp(["warning"]).governor.capacity()).toBe(4);
     expect(setUp(["critical"]).governor.capacity()).toBe(0);
     expect(setUp(["unknown"]).governor.capacity()).toBe(4);
   });
 
   it("holds the lower capacity until normal has lasted 60 s", () => {
-    const { governor, clock } = setUp(["warning", "normal", "normal", "normal", "normal"]);
-    expect(governor.capacity()).toBe(1);
+    const { governor, clock } = setUp(["critical", "normal", "normal", "normal", "normal"]);
+    expect(governor.capacity()).toBe(0);
 
     clock.t = 10_000;
     governor.tick(); // first normal reading starts the clock
-    expect(governor.capacity()).toBe(1);
+    expect(governor.capacity()).toBe(0);
 
     clock.t = 69_999;
     governor.tick();
-    expect(governor.capacity()).toBe(1);
+    expect(governor.capacity()).toBe(0);
 
     clock.t = 70_000;
     governor.tick();
@@ -49,12 +49,12 @@ describe("createCapacityGovernor", () => {
     try {
       wall.mockReturnValue(1_000_000);
       mono.mockReturnValue(0);
-      const { governor } = setUp(["warning", "normal", "normal", "normal"], true, 4, false);
+      const { governor } = setUp(["critical", "normal", "normal", "normal"], true, 4, false);
       governor.tick(); // calm starts
       wall.mockReturnValue(1_000_000 - 3_600_000); // wall clock steps back an hour
       mono.mockReturnValue(59_999);
       governor.tick();
-      expect(governor.capacity()).toBe(1);
+      expect(governor.capacity()).toBe(0);
       mono.mockReturnValue(60_000);
       governor.tick();
       expect(governor.capacity()).toBe(4);
@@ -65,16 +65,16 @@ describe("createCapacityGovernor", () => {
   });
 
   it("restarts the 60 s when pressure returns mid-hold", () => {
-    const { governor, clock } = setUp(["warning", "normal", "warning", "normal", "normal"]);
+    const { governor, clock } = setUp(["critical", "normal", "critical", "normal", "normal"]);
     clock.t = 10_000;
     governor.tick();
     clock.t = 20_000;
-    governor.tick(); // back to warning: the calm window resets
+    governor.tick(); // back to critical: the calm window resets
     clock.t = 30_000;
     governor.tick(); // calm starts again at 30 s
     clock.t = 89_000;
     governor.tick();
-    expect(governor.capacity()).toBe(1);
+    expect(governor.capacity()).toBe(0);
   });
 
   it("never opens capacity at critical, however far the clock advances", () => {
@@ -104,7 +104,7 @@ describe("createCapacityGovernor", () => {
     expect(info).toHaveBeenCalledTimes(2);
     expect(info.mock.calls[0][0]).toContain("warning");
     expect(info.mock.calls[1][0]).toContain("critical");
-    expect(info.mock.calls[0][0]).toContain("launch capacity 1");
+    expect(info.mock.calls[0][0]).toContain("launch capacity 4");
     expect(info.mock.calls[1][0]).toContain("launch capacity 0");
   });
 
@@ -114,7 +114,7 @@ describe("createCapacityGovernor", () => {
     governor.tick();
     governor.tick();
     expect(onTransition.mock.calls).toEqual([
-      [{ type: "capacity-transition", runId: "run-7", from: "normal", to: "warning", capacity: 1 }],
+      [{ type: "capacity-transition", runId: "run-7", from: "normal", to: "warning", capacity: 4 }],
       [{ type: "capacity-transition", runId: "run-7", from: "warning", to: "critical", capacity: 0 }],
     ]);
   });

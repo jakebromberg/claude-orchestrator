@@ -106,6 +106,10 @@ export function createRealDeps(config, mode) {
             }
             catch { }
         },
+        appendFile: (filePath, text) => {
+            fs.mkdirSync(path.dirname(filePath), { recursive: true });
+            fs.appendFileSync(filePath, text);
+        },
         ...dispatchDeps(mode),
     };
 }

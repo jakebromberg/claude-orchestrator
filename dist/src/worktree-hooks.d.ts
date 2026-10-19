@@ -39,6 +39,12 @@ export interface DeriveWorktreeHooksOptions {
     mkdirSync?: (p: string) => void;
 }
 /**
+ * Bounds each `defaultRunGit` call so a hung synchronous git fails its step instead of outlasting the lease's 90 s
+ * heartbeat reap window. A blocking stretch must end within 60 s, and `setUpWorktree` makes up to four calls back to
+ * back (rev-parse, prune, `worktree add -b`, and on its failure `worktree add <path> <branch>`), so 4 × 12 s = 48 s.
+ */
+export declare const GIT_TIMEOUT_MS = 12000;
+/**
  * Build the worktree lifecycle hooks (`getWorktreePath`, `getBranchName`,
  * `setUpWorktree`, `removeWorktree`) for a cross-repo config. All four agree on
  * the same path and branch derivation, so the created worktree is exactly where

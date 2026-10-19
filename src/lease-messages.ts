@@ -9,6 +9,8 @@ export const seconds = (ms: number): number => Math.round(ms / 1000);
 const gb = (bytes: number): string => (bytes / 2 ** 30).toFixed(1);
 /** `, weights <used>/<budget> GB` in weight mode, else nothing. */
 const weightsText = (w: Weights | undefined): string => (w ? `, weights ${gb(w.used)}/${gb(w.budget)} GB` : "");
+/** The least time between two progress lines of one wait for a lease slot (the post-check's and the engine's session wait). */
+export const WAIT_LOG_INTERVAL_MS = 60_000;
 
 /** The admitted line; the hook prints the same text as `additionalContext`. */
 export function formatAdmitted(a: LeaseHandle["admission"]): string {

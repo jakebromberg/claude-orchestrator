@@ -100,38 +100,35 @@ describe("pressure-aware launches", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it("launches one at a time at warning", async () => {
+  it("launches up to K at warning: the machine-wide session row does the stepping", async () => {
     const { orchestrator, runner } = setUp(3, "warning", { run: { maxParallel: 3 } });
     const wave = orchestrator.runWave(1);
 
     await vi.advanceTimersByTimeAsync(0);
-    expect(runner.spawned.length).toBe(1);
+    expect(runner.spawned.length).toBe(3);
 
-    runner.resolvers.get(1000)!(0);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(runner.spawned.length).toBe(2);
-
-    runner.resolvers.get(1001)!(0);
-    await vi.advanceTimersByTimeAsync(0);
-    runner.resolvers.get(1002)!(0);
+    for (const pid of [1000, 1001, 1002]) runner.resolvers.get(pid)!(0);
     await wave;
   });
 
   it("returns to full capacity only after normal has held for 60 s", async () => {
-    const { orchestrator, runner, ctl } = setUp(3, "warning", { run: { maxParallel: 3 } });
+    const { orchestrator, runner, ctl } = setUp(3, "normal", { run: { maxParallel: 2 } });
     const wave = orchestrator.runWave(1);
     await vi.advanceTimersByTimeAsync(0);
-    expect(runner.spawned.length).toBe(1);
+    expect(runner.spawned.length).toBe(2);
 
+    ctl.level = "critical";
+    await vi.advanceTimersByTimeAsync(10_000); // the governor holds critical
     ctl.level = "normal";
+    runner.resolvers.get(1000)!(0); // a slot frees, but capacity stays closed
     await vi.advanceTimersByTimeAsync(10_000); // calm starts
-    await vi.advanceTimersByTimeAsync(40_000);
-    expect(runner.spawned.length).toBe(1);
+    await vi.advanceTimersByTimeAsync(39_000);
+    expect(runner.spawned.length).toBe(2);
 
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(21_000);
     expect(runner.spawned.length).toBe(3);
 
-    for (const pid of [1000, 1001, 1002]) runner.resolvers.get(pid)!(0);
+    for (const pid of [1001, 1002]) runner.resolvers.get(pid)!(0);
     await wave;
   });
 
@@ -219,15 +216,17 @@ describe("pressure-aware launches", () => {
   });
 
   it("keeps the 60 s hysteresis across a wave boundary", async () => {
-    const { orchestrator, runner, ctl } = setUp(4, "warning", { run: { maxParallel: 3 }, waves: [1, 2, 2, 2] });
+    const { orchestrator, runner, ctl } = setUp(4, "normal", { run: { maxParallel: 3 }, waves: [1, 2, 2, 2] });
     const run = orchestrator.runAllWaves();
     await vi.advanceTimersByTimeAsync(0);
     expect(runner.spawned.length).toBe(1);
 
+    ctl.level = "critical";
+    await vi.advanceTimersByTimeAsync(10_000); // the governor holds critical
     ctl.level = "normal";
     runner.resolvers.get(1000)!(0);
     await vi.advanceTimersByTimeAsync(0);
-    expect(runner.spawned.length).toBe(2); // wave 2 still launches one at a time
+    expect(runner.spawned.length).toBe(1); // wave 2 waits out the hold
 
     await vi.advanceTimersByTimeAsync(70_000);
     expect(runner.spawned.length).toBe(4);
@@ -247,7 +246,7 @@ describe("pressure-aware launches", () => {
     runner.resolvers.get(1002)!(1); // still 0-byte: fall back to one session at a time
     await vi.advanceTimersByTimeAsync(0);
 
-    ctl.level = "warning";
+    ctl.level = "critical";
     await vi.advanceTimersByTimeAsync(10_000);
     ctl.level = "normal";
     await vi.advanceTimersByTimeAsync(70_000); // capacity is back to 2
@@ -546,7 +545,7 @@ describe("runningSessions", () => {
         }),
       },
     });
-    deps.lease = { dir: "/unused", level: deps.memoryPressure!, policy: { heavyCeiling: 1, heavyWarning: 1 } };
+    deps.lease = { dir: mkdtempSync(join(tmpdir(), "engine-pressure-lease-")), level: deps.memoryPressure!, policy: { heavyCeiling: 1, heavyWarning: 1 } };
     const wave = orchestrator.runWave(1);
     await vi.advanceTimersByTimeAsync(0);
     runner.resolvers.get(1000)!(0);

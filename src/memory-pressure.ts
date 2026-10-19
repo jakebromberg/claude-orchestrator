@@ -134,10 +134,13 @@ export function heavyCapacity(level: PressureLevel, policy: PressurePolicy): num
   return level === "warning" ? policy.heavyWarning : policy.heavyCeiling;
 }
 
-/** Concurrent engine sessions at a level. In the engine this bounds pipelines, not only live `claude` processes: a pipeline keeps its slot through its post-session check and retries. */
+/**
+ * One engine's launch capacity at a level: `maxParallel` (K) at every step but 0, which is `critical`. The machine-wide
+ * session row (`sessionHeadroomCapacity`) does the stepping, so `warning` no longer lowers it. In the engine this bounds
+ * pipelines, not only live `claude` processes: a pipeline keeps its slot through its post-session check and retries.
+ */
 export function sessionCapacity(level: PressureLevel, maxParallel: number): number {
-  if (level === "critical") return 0;
-  return level === "warning" ? 1 : maxParallel;
+  return level === "critical" ? 0 : maxParallel;
 }
 
 /**
