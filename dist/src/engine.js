@@ -25,6 +25,12 @@ const NO_STOP = { failureReason: undefined, stopStage: undefined };
  * handful of the newest candidates is all that is worth paying for.
  */
 const MAX_PR_CANDIDATES_VERIFIED = 5;
+/**
+ * Bound on each synchronous gh/git call the engine makes (`verifyPrIdentity`, `producedNoCommits`): a hung tool must
+ * fail its step, not freeze the process past the lease's 90 s heartbeat reap window. Verification runs up to
+ * `MAX_PR_CANDIDATES_VERIFIED` calls back to back with no yield, so 5 × 15 s stays under that window.
+ */
+const SYNC_CALL_TIMEOUT_MS = 15_000;
 const DEFAULT_ALLOWED_TOOLS = [
     "Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Task",
 ];
@@ -335,7 +341,7 @@ export class Orchestrator {
             const effectiveTimeout = issue.stallTimeout ?? this.config.stallTimeout;
             const timeout = effectiveTimeout > 0 ? effectiveTimeout * 1000 : undefined;
             try {
-                this.deps.runCommand(issue.command, { timeout });
+                await this.deps.runCommandAsync(issue.command, { timeout });
                 this.deps.metadataStore.update(issue.ref, {
                     exitCode: 0,
                     finishedAt: new Date().toISOString(),
@@ -491,7 +497,7 @@ export class Orchestrator {
         const branch = this.config.hooks.getBranchName(issue);
         let raw;
         try {
-            raw = this.deps.runCommand(`gh pr view ${prNumber} --repo ${shellQuote(repo)} --json state,headRefName`);
+            raw = this.deps.runCommand(`gh pr view ${prNumber} --repo ${shellQuote(repo)} --json state,headRefName`, { timeout: SYNC_CALL_TIMEOUT_MS });
         }
         catch {
             return false;
@@ -530,7 +536,7 @@ export class Orchestrator {
             // config-derived, and `shell-quote.ts` is explicitly the idiom for every
             // execSync command string (issue #28). `merge.ts` still interpolates its
             // worktree path bare — same wart, worth fixing there separately.
-            raw = this.deps.runCommand(`git -C ${shellQuote(worktreePath)} rev-list --count origin/${shellQuote(baseBranch)}..HEAD`);
+            raw = this.deps.runCommand(`git -C ${shellQuote(worktreePath)} rev-list --count origin/${shellQuote(baseBranch)}..HEAD`, { timeout: SYNC_CALL_TIMEOUT_MS });
         }
         catch (err) {
             this.deps.logger.warn(`Issue #${issue.number}: could not count commits on its branch ` +
@@ -914,7 +920,8 @@ function lastSessionResult(log) {
 /**
  * Extract a mode-node command's real exit code and a human diagnostic from a
  * thrown error. `execSync` failures carry `status` (exit code) and
- * `stderr`/`stdout` (strings under utf-8, or Buffers); a timeout has no status.
+ * `stderr`/`stdout` (strings under utf-8, or Buffers); `runShellAsync` failures
+ * carry `status` and fold the output into the message. A timeout has no status.
  * Falls back to exit code 1 and the error message.
  */
 function describeCommandFailure(err) {

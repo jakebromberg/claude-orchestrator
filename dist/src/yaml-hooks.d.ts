@@ -3,12 +3,17 @@ import type { YamlConfig } from "./yaml-types.js";
 /**
  * Runs `cmd` under `/bin/sh -c` without blocking the event loop, keeping only
  * the last 64 KiB of combined stdout/stderr. Resolves with that tail on exit 0;
- * rejects with an Error carrying the exit code (or signal) and the tail.
+ * rejects with an Error carrying the exit code (or signal) and the tail. The
+ * exit code is also on the error as `status`, the field an `execSync` failure
+ * uses; a timeout or a signal leaves it unset.
  *
  * `onSpawn` receives the child's PID. If it throws, the child is killed and
  * the promise rejects with that error, but only after the child has exited.
+ *
+ * `timeoutMs` (unset or 0: none) SIGKILLs the child and rejects at once, without
+ * waiting for the pipes a grandchild may still hold open.
  */
-export declare function runShellAsync(cmd: string, cwd: string, env?: Record<string, string>, onSpawn?: (pid: number) => void): Promise<string>;
+export declare function runShellAsync(cmd: string, cwd: string, env?: Record<string, string>, onSpawn?: (pid: number) => void, timeoutMs?: number): Promise<string>;
 /** I/O dependencies injectable for testing. */
 export interface DeriveHooksDeps {
     readFile?: (path: string) => string;

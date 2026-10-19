@@ -309,12 +309,23 @@ export interface Deps {
     /**
      * Run a shell command, returning stdout. Throws on non-zero exit (the thrown
      * error carries `status`/`stderr`/`stdout` when it comes from `execSync`).
-     * `options.timeout` (ms) bounds the run — used for mode-node commands so a
-     * hung deploy/gate can't block the engine indefinitely; omit/0 for unbounded.
+     * `options.timeout` (ms) bounds the run — used for the engine's short gh/git
+     * calls so a hung tool fails its step instead of freezing the process; omit/0
+     * for unbounded.
      */
     runCommand(cmd: string, options?: {
         timeout?: number;
     }): string;
+    /**
+     * Like {@link runCommand}, but without blocking the event loop, so the engine's
+     * heartbeats keep beating while the command runs. Rejects with an error carrying
+     * `status` (exit code) when the command exits non-zero, and kills the child and
+     * rejects when `options.timeout` (ms) passes; omit/0 for unbounded. Used for
+     * mode-node commands.
+     */
+    runCommandAsync(cmd: string, options?: {
+        timeout?: number;
+    }): Promise<string>;
     truncateFile(path: string): void;
     /** Memory-pressure sampler; absent reads as `"unknown"` (no adaptation, no stop). */
     memoryPressure?: PressureSampler;

@@ -80,11 +80,15 @@ function defaultRepoOf(issue: Issue): string {
   return slash >= 0 ? repo.slice(slash + 1) : repo;
 }
 
+/** Bounds `defaultRunGit` well under the lease's 90 s heartbeat reap window, which a hung synchronous git would outlast. */
+const GIT_TIMEOUT_MS = 30_000;
+
 function defaultRunGit(args: string[], cwd: string): string {
   return execFileSync("git", args, {
     cwd,
     encoding: "utf-8",
     stdio: ["pipe", "pipe", "pipe"],
+    timeout: GIT_TIMEOUT_MS,
   });
 }
 
