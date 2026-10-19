@@ -1711,6 +1711,18 @@ describe("Orchestrator", () => {
       );
     });
 
+    it("names the timeout, not the session, when the gh call times out", async () => {
+      const runCommand = vi.fn((cmd: string) => {
+        if (cmd.includes("gh pr view")) throw Object.assign(new Error("spawnSync /bin/sh ETIMEDOUT"), { code: "ETIMEDOUT" });
+        return "";
+      });
+      const { deps, ref } = await runOnce(OWN_PR_LOG, runCommand as never);
+
+      expect(deps.metadataStore.get(ref).prUrl).toBeUndefined();
+      expect(deps.logger.warn).toHaveBeenCalledWith(expect.stringContaining("timed out"));
+      expect(deps.logger.warn).not.toHaveBeenCalledWith(expect.stringContaining("session never opened"));
+    });
+
     it("does not record a PR that is no longer open", async () => {
       const runCommand = makeVerifyStub({ state: "MERGED" });
       const { deps, ref } = await runOnce(OWN_PR_LOG, runCommand);
