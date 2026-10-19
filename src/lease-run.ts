@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import type { PressureSampler } from "./memory-pressure.js";
 import { acquireLease, defaultLeaseOptions, leaseStatus, type LeaseOptions, type LeaseStatus } from "./lease.js";
-import { formatAdmitted, formatNoSlot, seconds } from "./lease-messages.js";
+import { formatAdmitted, formatDiskFull, formatNoSlot, seconds } from "./lease-messages.js";
 import { psAncestors } from "./ps.js";
 
 const DEFAULT_MAX_WAIT_SEC = 100;
@@ -22,6 +22,7 @@ const FORWARDED: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
 const TASKPOLICY = "/usr/sbin/taskpolicy";
 const EX_TEMPFAIL = 75;
 const EX_CONFIG = 78;
+const EX_IOERR = 74;
 
 /** Exactly one of `argv` (spawned directly) and `shell` (run under `/bin/sh -c`) is set. */
 export interface RunArgs {
@@ -204,6 +205,10 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
   });
   if (!("leased" in got)) {
     unhook();
+    if (got.refused === "disk-full") {
+      d.err(formatDiskFull(got));
+      return EX_IOERR;
+    }
     d.err(formatNoSlot(got, d.leaseStatus(opts)));
     return EX_TEMPFAIL;
   }

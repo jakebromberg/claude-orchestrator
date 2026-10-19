@@ -58,7 +58,7 @@ export type LeaseEvent =
   | { type: "release"; id: string; heldMs: number; exitCode?: number }
   | { type: "reap"; id: string; reason: ReapReason }
   /** `level` is the confirmed level of a `stopped` refusal. */
-  | { type: "timeout"; refused: "max-wait" | "stopped"; waitedMs: number; level?: PressureLevel }
+  | { type: "timeout"; refused: "max-wait" | "stopped" | "disk-full"; waitedMs: number; level?: PressureLevel }
   /** `code` and `message` describe the I/O error; a busy mutex has neither. */
   | { type: "fail-open"; reason: "mutex-busy" | "io-error"; waitedMs: number; code?: string; message?: string };
 
@@ -182,10 +182,12 @@ export interface LeaseHandle {
 }
 
 export interface LeaseRefusal {
-  refused: "max-wait" | "stopped";
+  refused: "max-wait" | "stopped" | "disk-full";
   waitedMs: number;
   level: PressureLevel;
   live: number;
+  /** The out-of-space error code of a `disk-full` refusal. */
+  code?: string;
 }
 
 /** What one reading of the machine step means for this lease: the reading plus the heavy capacity it allows. */
@@ -545,6 +547,12 @@ function guarded<T>(opts: LeaseOptions, callback: ((arg: T) => void) | undefined
 const warn = (opts: LeaseOptions, msg: string): void => guarded(opts, opts.warn ?? defaultWarn, msg);
 const emit = (opts: LeaseOptions, e: LeaseEvent): void => guarded(opts, opts.onEvent, e);
 
+/** An out-of-space error: the lease refuses instead of failing open, since unleased builds are the worst load on a full disk. Nothing is written to report it. */
+const diskFullCode = (error: unknown): string | undefined => {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "ENOSPC" || code === "EDQUOT" ? code : undefined;
+};
+
 function failOpen(opts: LeaseOptions, level: PressureLevel, capacity: number, waitedMs: number, reason: "mutex-busy" | "io-error", error?: unknown): LeaseHandle {
   warn(opts, `lease: unavailable (${reason}); running unleased`);
   const { code, message } = (error ?? {}) as { code?: string; message?: string };
@@ -561,11 +569,16 @@ function checkDetached(meta: HolderMeta): void {
   if (!Number.isFinite(d.expiresAt)) throw new TypeError(`lease: detached expiresAt ${String(d.expiresAt)} is not a finite number`);
 }
 
-/** A single non-blocking attempt: a handle, or `null` when not admitted this poll. Throws a `TypeError` on an invalid detached id, session PID or `expiresAt`. */
+/** A single non-blocking attempt: a handle, or `null` when not admitted this poll (a full disk included: it is never failed open, and emits a `timeout` event with `refused: "disk-full"`). Throws a `TypeError` on an invalid detached id, session PID or `expiresAt`. */
 export function tryAcquireLease(opts: LeaseOptions, meta: HolderMeta): LeaseHandle | null {
   checkDetached(meta);
   const r = attempt(opts, meta, 0);
   if (r.kind === "admitted") return r.handle;
+  const code = r.kind === "error" ? diskFullCode(r.error) : undefined;
+  if (code !== undefined) {
+    emit(opts, { type: "timeout", refused: "disk-full", waitedMs: 0 });
+    return null;
+  }
   return r.kind === "error" && r.level !== "critical" ? failOpen(opts, r.level, r.capacity, 0, "io-error", r.error) : null;
 }
 
@@ -610,6 +623,11 @@ async function pollForLease(opts: LeaseOptions, meta: HolderMeta, wait: LeaseWai
     const r = attempt(opts, meta, waitedMs, ticketId);
     if (r.kind === "admitted") return r.handle;
     busySince = r.kind === "busy" ? (busySince ?? now()) : undefined;
+    const code = r.kind === "error" ? diskFullCode(r.error) : undefined;
+    if (code !== undefined) {
+      emit(opts, { type: "timeout", refused: "disk-full", waitedMs });
+      return { refused: "disk-full", waitedMs, level: r.level, live: 0, code };
+    }
     if (r.level !== "critical") {
       if (r.kind === "error") return failOpen(opts, r.level, r.capacity, waitedMs, "io-error", r.error);
       if (busySince !== undefined && now() - busySince >= FAIL_OPEN_MS) return failOpen(opts, r.level, r.capacity, waitedMs, "mutex-busy");

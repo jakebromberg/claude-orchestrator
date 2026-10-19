@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -417,6 +418,22 @@ describe("hook events", () => {
       const { out } = await run(pre());
       expect(out).toMatch(/^\{"hookSpecificOutput":\{"hookEventName":"PreToolUse","additionalContext":"lease: admitted after [1-9]\d*s /);
       expect(record("hook-toolu_1").expiresAt).toBe(fake.ms + 180_000);
+    });
+
+    it("denies a full disk with the do-not-rerun line, not the no-slot line", async () => {
+      const real = fs.openSync;
+      vi.spyOn(fs, "openSync").mockImplementation(((path: fs.PathLike, ...rest: unknown[]) => {
+        if (String(path).endsWith(".mutex")) throw Object.assign(new Error("full"), { code: "ENOSPC" });
+        return (real as (...a: unknown[]) => number)(path, ...rest);
+      }) as typeof fs.openSync);
+      syncBuiltinESMExports();
+      try {
+        const { out } = await run(pre());
+        expect(out).toBe(denied("lease: the disk is full (ENOSPC); free space before running heavy commands — do not rerun"));
+      } finally {
+        vi.restoreAllMocks();
+        syncBuiltinESMExports();
+      }
     });
 
     it("denies with the exact no-slot line when no slot frees within 450 s", async () => {
