@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, utimesSync } from "node:fs";
 import { cpus } from "node:os";
 import { join } from "node:path";
-import { writeFileAtomic } from "./atomic-write.js";
+import { sweepDeadTemps, writeFileAtomic } from "./atomic-write.js";
 import { isWithinWindow, tryLockOnce } from "./file-lock.js";
 import { headroomCapacity, MAX_STEP, sessionHeadroomCapacity } from "./headroom.js";
 import { defaultHeadroomSampler, levelView, type HeadroomReading, type HeadroomSampler } from "./headroom-sampler.js";
@@ -247,7 +247,7 @@ function snapshot(opts: LeaseOptions, cls: LeaseClass, fresh = false): Snapshot 
   return { level, step, signals: null, capacity: cls.capacity(step, ceiling) };
 }
 
-function pidAlive(pid: number): boolean {
+export function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -535,6 +535,8 @@ function attempt(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, waitedMs
         rmSync(join(opts.dir, cls.holders, `${d.id}.json`), { force: true });
         reaped.push(d);
       }
+      // A writer killed between its write and rename leaves a uniquely named temp file: remove those of dead writers in this class's directories and the root. Only here, under the mutex; the scanners and `leaseStatus` never delete.
+      for (const d of [cls.holders, cls.waiting, ""]) sweepDeadTemps(join(opts.dir, d), opts.isAlive ?? pidAlive);
       const admission = { waitedMs, level, live: live.length + 1, capacity, ...(overridden && { override: true as const }) };
       // A second hook install for the same call acquires the id the first one holds: that call is already admitted.
       if (meta.detached && live.some((h) => h.id === meta.detached!.id)) r = { kind: "admitted", handle: borrowedHandle(meta.detached.id, level, capacity, live.length), borrowed: true };

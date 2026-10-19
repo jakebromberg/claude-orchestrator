@@ -1,6 +1,6 @@
-import { randomBytes } from "node:crypto";
-import { existsSync, linkSync, lstatSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { writeFileAtomic } from "./atomic-write.js";
 import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
 import { leaseDirectory } from "./memory-pressure.js";
 import { ancestry, isPid, parsePsTable, ps, PS_TABLE_ARGS, type ProcRow } from "./ps.js";
@@ -97,15 +97,11 @@ export function suspensionFile(dir: string, pgid: number): string {
 export function writeSuspension(dir: string, record: SuspensionRecord): void {
   ensureOwnSubdir(dir, "suspensions");
   const file = suspensionFile(dir, record.pgid);
-  const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   try {
-    writeFileSync(tmp, JSON.stringify(record), { mode: 0o600 });
-    linkSync(tmp, file);
+    writeFileAtomic(file, JSON.stringify(record), { exclusive: true });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`process group ${record.pgid} already has a suspension record (${file})`);
     throw err;
-  } finally {
-    rmSync(tmp, { force: true });
   }
 }
 
