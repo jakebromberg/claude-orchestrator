@@ -75,6 +75,32 @@ describe("heavy admission by summed memory weight", () => {
       expect(n).toBe(ceiling);
     });
 
+    // The budget is proportional (`usable × step / 4`) and an unmatched weight is `usable / ceiling`, so a step admits floor(ceiling × step / 4) holders, at least one above step 0.
+    // That equals the count rule `min(ceiling, step)` at the default ceiling of 4 and differs at other `CO_LEASE_SLOTS` values (owner decision on #218).
+    it.each([
+      { ceiling: 8, step: 0, weights: 0, count: 0 },
+      { ceiling: 8, step: 1, weights: 2, count: 1 },
+      { ceiling: 8, step: 2, weights: 4, count: 2 },
+      { ceiling: 8, step: 3, weights: 6, count: 3 },
+      { ceiling: 8, step: 4, weights: 8, count: 8 },
+      { ceiling: 2, step: 1, weights: 1, count: 1 },
+      { ceiling: 2, step: 2, weights: 1, count: 2 },
+      { ceiling: 2, step: 3, weights: 1, count: 2 },
+      { ceiling: 3, step: 2, weights: 1, count: 2 },
+    ])("admits $weights, not the count rule's $count, at step $step with a ceiling of $ceiling", ({ ceiling, step, weights, count }) => {
+      const o = at(step, { policy: { heavyCeiling: ceiling, heavyWarning: 1 } });
+      let n = 0;
+      while (take(o)) n++;
+      expect(n).toBe(weights);
+      expect(headroomCapacity(step, ceiling)).toBe(count);
+      // With the machine's memory unknown the count rule applies at any ceiling.
+      rmSync(join(dir, "holders"), { recursive: true, force: true });
+      const unknown = at(step, { policy: { heavyCeiling: ceiling, heavyWarning: 1 } }, null);
+      let m = 0;
+      while (take(unknown)) m++;
+      expect(m).toBe(count);
+    });
+
     it("leaves the session row alone at every step, with the machine's memory known", async () => {
       for (const step of [0, 1, 2, 3, 4]) {
         const o = at(step, { sessionSlots: 6 });
