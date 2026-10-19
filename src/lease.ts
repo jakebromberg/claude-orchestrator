@@ -33,9 +33,9 @@ import {
   type PressurePolicy,
   type PressureSampler,
 } from "./memory-pressure.js";
-import { isPid } from "./ps.js";
+import { isPid, pidAlive } from "./ps.js";
 
-export { ensureOwnSubdir, isOwnDir, isPid };
+export { ensureOwnSubdir, isOwnDir, isPid, pidAlive };
 
 const MUTEX_STALE_MS = 10_000;
 const ORPHAN_MAX_MS = 2 * 60 * 60_000;
@@ -257,15 +257,6 @@ function snapshot(opts: LeaseOptions, cls: LeaseClass, fresh = false): Snapshot 
   const level = fresh ? opts.level.fresh() : opts.level();
   const step = level === "critical" ? 0 : level === "warning" ? Math.min(MAX_STEP, opts.policy.heavyWarning) : MAX_STEP;
   return { level, step, signals: null, capacity: cls.capacity(step, ceiling) };
-}
-
-export function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "EPERM";
-  }
 }
 
 /**

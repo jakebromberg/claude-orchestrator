@@ -21,8 +21,8 @@ import { defaultHeadroomSampler, levelView } from "./headroom-sampler.js";
 import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
 import { leaseEventSink } from "./lease-events.js";
 import { DEFAULT_RESERVE_PCT, DEFAULT_SESSION_SLOTS, leaseDirectory, pressurePolicyFromEnv, reservePctFromEnv, sessionSlotsFromEnv, usableBytes, } from "./memory-pressure.js";
-import { isPid } from "./ps.js";
-export { ensureOwnSubdir, isOwnDir, isPid };
+import { isPid, pidAlive } from "./ps.js";
+export { ensureOwnSubdir, isOwnDir, isPid, pidAlive };
 const MUTEX_STALE_MS = 10_000;
 const ORPHAN_MAX_MS = 2 * 60 * 60_000;
 const HEARTBEAT_MS = 30_000;
@@ -78,15 +78,6 @@ function snapshot(opts, cls, fresh = false) {
     const level = fresh ? opts.level.fresh() : opts.level();
     const step = level === "critical" ? 0 : level === "warning" ? Math.min(MAX_STEP, opts.policy.heavyWarning) : MAX_STEP;
     return { level, step, signals: null, capacity: cls.capacity(step, ceiling) };
-}
-export function pidAlive(pid) {
-    try {
-        process.kill(pid, 0);
-        return true;
-    }
-    catch (err) {
-        return err.code === "EPERM";
-    }
 }
 /**
  * The single liveness rule. A detached holder (`expiresAt` set) is judged first and never by its heartbeat: it is

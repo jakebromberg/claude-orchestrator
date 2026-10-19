@@ -24,6 +24,16 @@ export function psAncestors(startPid: number, depth: number): number[] {
 /** A PID that `kill(pid, 0)` checks as one process: `0` and negatives address a group, or every process, and `process.kill` rejects 2^31 and above. */
 export const isPid = (n: unknown): boolean => Number.isInteger(n) && (n as number) > 0 && (n as number) < 2 ** 31;
 
+/** Whether `kill(pid, 0)` finds the process: it exists, or exists under another user (`EPERM`). */
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /** `ps` `etime`, `[[dd-]hh:]mm:ss`, in milliseconds; NaN for any other shape. */
 export function parseElapsed(etime: string): number {
   const m = /^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$/.exec(etime);
