@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireLease, defaultLeaseOptions, DETACHED_TTL_MAX_MS, isPid, leaseStatus, releaseHolder, type LeaseOptions } from "./lease.js";
-import { formatAdmitted, formatNoSlot } from "./lease-messages.js";
+import { formatAdmitted, formatDiskFull, formatNoSlot } from "./lease-messages.js";
 import { shellQuote } from "./shell-quote.js";
 
 /**
@@ -267,7 +267,7 @@ async function handleEvent(stdin: string, io: HookIo): Promise<void> {
   // `expiresAt` is a getter so it counts from admission, not from the start of a wait that can last 450 s.
   const detached = { id, sessionPid, get expiresAt() { return now() + timeoutMs + GRACE_MS; } };
   const got = await acquireLease(opts, { command: String(input.tool_input!.command), cwd, detached }, { maxWaitMs: WAIT_MS });
-  if (!("leased" in got)) io.out(decision({ permissionDecision: "deny", permissionDecisionReason: formatNoSlot(got, leaseStatus(opts)) }));
+  if (!("leased" in got)) io.out(decision({ permissionDecision: "deny", permissionDecisionReason: got.refused === "disk-full" ? formatDiskFull(got) : formatNoSlot(got, leaseStatus(opts)) }));
   else if (got.leased) io.out(decision({ additionalContext: formatAdmitted(got.admission) }));
 }
 

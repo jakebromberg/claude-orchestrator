@@ -1282,6 +1282,39 @@ describe("lease", () => {
     });
   });
 
+  describe("a failing filesystem", () => {
+    const failMutexOpen = (code: string) => {
+      const real = fs.openSync;
+      vi.spyOn(fs, "openSync").mockImplementation(((path: fs.PathLike, ...rest: unknown[]) => {
+        if (String(path).endsWith(".mutex")) throw Object.assign(new Error(code), { code });
+        return (real as (...a: unknown[]) => number)(path, ...rest);
+      }) as typeof fs.openSync);
+      syncBuiltinESMExports();
+    };
+    afterEach(() => {
+      vi.restoreAllMocks();
+      syncBuiltinESMExports();
+    });
+
+    it.each<[string, boolean]>([
+      ["ENOSPC", true],
+      ["EDQUOT", true],
+      ["EACCES", false],
+    ])("%s %s", async (code, refused) => {
+      failMutexOpen(code);
+      const got = await acquireLease(opts(), meta);
+      expect(tryAcquireLease(opts(), meta)).toSatisfy((t: unknown) => (refused ? t === null : (t as LeaseHandle).leased === false));
+      if (refused) {
+        expect(got).toMatchObject({ refused: "disk-full", code });
+        expect(events).toContainEqual({ type: "timeout", refused: "disk-full", waitedMs: 0 });
+        expect(events.some((e) => e.type === "fail-open")).toBe(false);
+      } else {
+        expect(got).toMatchObject({ leased: false });
+        expect(events.some((e) => e.type === "fail-open")).toBe(true);
+      }
+    });
+  });
+
   describe("headroom", () => {
     const reading = (step: number, level: PressureLevel = "normal", signals: HeadroomReading["signals"] = null): HeadroomReading => ({ level, step, signals });
     const wide = { heavyCeiling: 6, heavyWarning: 1 };

@@ -4,7 +4,7 @@
  * stopped tree cannot silence it. It sends no signal: its dependencies are `ps`, the clock and the file system, and an
  * engine's liveness is whether its pid has a row in the scan for a process that started no later than the record.
  */
-import { appendFileSync, closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, statfsSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
@@ -249,7 +249,20 @@ export function check(d: WatchdogDeps): void {
   for (const f of findings) if (!prev.findings.some((p) => p.key === f.key)) appendLog(d.dir, now, f.message);
 }
 
-/** Runs `check` or `brief` (`argv[0]`): exit 0 done, 64 usage. `brief` prints `watchdog.brief`, and nothing when it is empty or missing. */
+/** Free fraction of the lease directory's volume below which `brief` reports a full disk. */
+export const DISK_FULL_FRACTION = 0.02;
+
+/** A disk-full line when the lease directory's volume is nearly out of space, read live (a full disk fails every record write), else `""`. */
+function diskFullLine(dir: string): string {
+  try {
+    const { bavail, blocks } = statfsSync(dir);
+    return blocks > 0 && bavail / blocks < DISK_FULL_FRACTION ? `watchdog: the disk holding ${dir} is nearly full (${((bavail / blocks) * 100).toFixed(1)}% free); heavy commands are refused until space is freed` : "";
+  } catch {
+    return "";
+  }
+}
+
+/** Runs `check` or `brief` (`argv[0]`): exit 0 done, 64 usage. `brief` prints `watchdog.brief` (nothing when it is empty or missing), then a disk-full line when the volume is nearly full (a live `statfsSync`, no file written). */
 export function runWatchdog(argv: string[], d: WatchdogDeps): number {
   if (argv.length !== 1 || (argv[0] !== "check" && argv[0] !== "brief")) {
     d.err(USAGE);
@@ -262,6 +275,8 @@ export function runWatchdog(argv: string[], d: WatchdogDeps): number {
       line = readFileSync(join(d.dir, "watchdog.brief"), "utf-8");
     } catch {}
     if (line) d.out(line);
+    const full = diskFullLine(d.dir);
+    if (full) d.out(full);
   }
   return 0;
 }

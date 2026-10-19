@@ -16,3 +16,8 @@ export function formatNoSlot(refusal: LeaseRefusal, status: LeaseStatus): string
   const holders = status.live.map((h) => `${h.pid} ${h.command}`).join(", ") || "none";
   return `lease: no slot after ${seconds(refusal.waitedMs)}s (pressure=${refusal.level}, capacity ${status.capacity}, ${status.live.length} live: ${holders}); rerun the command — this is not a test failure`;
 }
+
+/** The disk-full line; the hook denies with it and the CLI prints it. Unlike `formatNoSlot` it says not to rerun. */
+export function formatDiskFull(refusal: LeaseRefusal): string {
+  return `lease: the disk is full (${refusal.code ?? "ENOSPC"}); free space before running heavy commands — do not rerun`;
+}

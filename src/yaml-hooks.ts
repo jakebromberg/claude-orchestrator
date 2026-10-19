@@ -453,7 +453,9 @@ export function deriveHooks(
         return {
           passed: false,
           stopped: "memory-critical",
-          summary: `Post-session check not run: memory pressure is ${stopped.level} and nothing is left to relieve it`,
+          summary: stopped.refused === "disk-full"
+            ? `Post-session check not run: the disk is full (${stopped.code})`
+            : `Post-session check not run: memory pressure is ${stopped.level} and nothing is left to relieve it`,
         };
       }
       return { passed: true };

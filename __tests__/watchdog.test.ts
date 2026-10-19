@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach, beforeEach } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REFRESH_MS } from "../src/engine-registry.js";
@@ -353,6 +354,30 @@ describe("watchdog", () => {
       expect(runWatchdog(["brief"], deps())).toBe(0);
       expect(out).toEqual([]);
       expect(brief()).toBe("");
+    });
+  });
+
+  describe("brief on a nearly full volume", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+      syncBuiltinESMExports();
+    });
+    const free = (bavail: number) => {
+      vi.spyOn(fs, "statfsSync").mockReturnValue({ bavail, blocks: 1000 } as fs.StatsFs);
+      syncBuiltinESMExports();
+    };
+
+    it("prints a disk-full line below the free fraction, writing no file", () => {
+      free(5);
+      expect(runWatchdog(["brief"], deps())).toBe(0);
+      expect(out).toEqual([expect.stringMatching(/nearly full \(0\.5% free\)/)]);
+      expect(existsSync(join(dir, "watchdog.brief"))).toBe(false);
+    });
+
+    it("prints nothing at or above it", () => {
+      free(500);
+      runWatchdog(["brief"], deps());
+      expect(out).toEqual([]);
     });
   });
 

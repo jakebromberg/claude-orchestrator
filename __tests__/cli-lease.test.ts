@@ -260,6 +260,13 @@ describe("runLeased", () => {
     expect(spawned[0]!.env).not.toHaveProperty("CO_LEASE_HOLDER");
   });
 
+  it("exits 74 with the disk-full message, not the rerun line, and never runs the command", async () => {
+    outcome = { refused: "disk-full", waitedMs: 0, level: "normal", live: 0, code: "ENOSPC" };
+    expect(await run()).toBe(74);
+    expect(err).toEqual(["lease: the disk is full (ENOSPC); free space before running heavy commands — do not rerun"]);
+    expect(spawned).toEqual([]);
+  });
+
   describe("the wait cap", () => {
     it("exits 75 with the no-slot message and never runs the command", async () => {
       outcome = { refused: "max-wait", waitedMs: 100_400, level: "warning", live: 1 };
