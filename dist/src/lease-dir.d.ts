@@ -20,8 +20,9 @@ export declare function isOwnDir(st: Stats): boolean;
 export declare function writeLeaseRecord(dir: string, name: string, text: string, opts?: AtomicWriteOptions): boolean;
 /**
  * The records of `<dir>/<sub>`, read-only: each canonical `<pid>.json` file (no leading zero; a `writeFileAtomic` temp
- * name is not one) with its text and mtime. A missing, symlinked or foreign subdirectory reads as empty, and a file
- * that cannot be read is skipped. Creates and removes nothing.
+ * name is not one) with its text and mtime. A missing, symlinked or foreign subdirectory reads as empty, and an entry
+ * that cannot be read, or is not a regular file this user owns (a symlink, FIFO, socket, directory), is skipped.
+ * Creates and removes nothing.
  */
 export declare function readRecordDir(dir: string, sub: string): {
     stem: number;
