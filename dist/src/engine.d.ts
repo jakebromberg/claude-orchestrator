@@ -147,7 +147,7 @@ export declare class Orchestrator {
      * other `orchestrator-stop` reason is ignored with a warning.
      */
     private sessionStopped;
-    /** True (and the issue is failed and stopped) when the check did not run for memory pressure; such a result is never retried. */
+    /** True (and the issue is failed and stopped) when the check did not run for memory pressure or a full disk; such a result is never retried. */
     private checkStopped;
     /**
      * The one place a `claude` session is spawned for an issue. Unless `tagIssue`

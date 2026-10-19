@@ -28,7 +28,7 @@ export type LeaseEvent = {
 /** `level` is the confirmed level of a `stopped` refusal. */
  | {
     type: "timeout";
-    refused: "max-wait" | "stopped";
+    refused: "max-wait" | "stopped" | "disk-full";
     waitedMs: number;
     level?: PressureLevel;
 }
@@ -156,14 +156,16 @@ export interface LeaseHandle {
     }): void;
 }
 export interface LeaseRefusal {
-    refused: "max-wait" | "stopped";
+    refused: "max-wait" | "stopped" | "disk-full";
     waitedMs: number;
     level: PressureLevel;
     live: number;
+    /** The out-of-space error code of a `disk-full` refusal. */
+    code?: string;
 }
 /** The one default diagnostics writer, shared with the event sink. Messages carry their own `lease:` prefix. */
 export declare function defaultWarn(msg: string): void;
-/** A single non-blocking attempt: a handle, or `null` when not admitted this poll. Throws a `TypeError` on an invalid detached id, session PID or `expiresAt`. */
+/** A single non-blocking attempt: a handle, or `null` when not admitted this poll (a full disk included: it is never failed open, and emits a `timeout` event with `refused: "disk-full"`). Throws a `TypeError` on an invalid detached id, session PID or `expiresAt`. */
 export declare function tryAcquireLease(opts: LeaseOptions, meta: HolderMeta): LeaseHandle | null;
 /**
  * Polls (3 s ± 1 s, never spinning) until admitted, in the order waiters arrived: each waits behind a ticket in

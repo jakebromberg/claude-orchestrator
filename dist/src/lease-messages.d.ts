@@ -8,3 +8,5 @@ export declare const seconds: (ms: number) => number;
 export declare function formatAdmitted(a: LeaseHandle["admission"]): string;
 /** The no-slot line; the hook denies with it as the reason. */
 export declare function formatNoSlot(refusal: LeaseRefusal, status: LeaseStatus): string;
+/** The disk-full line; the hook denies with it and the CLI prints it. Unlike `formatNoSlot` it says not to rerun. */
+export declare function formatDiskFull(refusal: LeaseRefusal): string;

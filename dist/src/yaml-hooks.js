@@ -323,8 +323,10 @@ export function deriveHooks(yaml, deps = {}) {
             if (stopped) {
                 return {
                     passed: false,
-                    stopped: "memory-critical",
-                    summary: `Post-session check not run: memory pressure is ${stopped.level} and nothing is left to relieve it`,
+                    stopped: stopped.refused === "disk-full" ? "disk-full" : "memory-critical",
+                    summary: stopped.refused === "disk-full"
+                        ? `Post-session check not run: the disk is full (${stopped.code})`
+                        : `Post-session check not run: memory pressure is ${stopped.level} and nothing is left to relieve it`,
                 };
             }
             return { passed: true };
