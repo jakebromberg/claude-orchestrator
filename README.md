@@ -385,6 +385,8 @@ issues:
 
 `mode` accepts `deploy`, `publish`, or `gate` (an unrecognized value is a load error). A mode-node never has a PR, so the merge step skips it, and cleanup leaves it alone.
 
+A bounded command (one with a timeout) runs unattended in its own process group. If it exits 0 but leaves a background member in that group that holds no output pipe (for example `./start-preview.sh > log 2>&1 &`), the node resolves when the shell closes, the member has no time bound, and it is SIGKILLed, with no SIGTERM and no grace, when the engine exits. This differs from the old `execSync` run, which left such a member running after the engine exited. To detach work for good, move it out of the group (`setsid`, or `nohup` in a new session).
+
 ##### The cutover gate (cross-repo HITL)
 
 "Satisfied" isn't "consumable" across a repo boundary: a merged upstream PR isn't live downstream until it's published or deployed. So before releasing an issue, the engine stops for a **cutover confirmation** when either:

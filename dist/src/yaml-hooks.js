@@ -80,8 +80,11 @@ export function runShellAsync(cmd, cwd, env, onSpawn, timeoutMs, killGraceMs = K
             stdio: ["ignore", "pipe", "pipe"],
             detached: bounded,
         });
+        // Set by this call's settleGroup when it drops the pgid. The id may then be reused by another bounded command, so
+        // this call never signals it again, whatever liveGroups holds now.
+        let dropped = false;
         const signalChildGroup = (signal) => {
-            if (child.pid === undefined)
+            if (child.pid === undefined || dropped)
                 return;
             try {
                 signalGroup(child.pid, signal);
@@ -131,6 +134,7 @@ export function runShellAsync(cmd, cwd, env, onSpawn, timeoutMs, killGraceMs = K
                 return;
             }
             clearTimeout(graceTimer);
+            dropped = true;
             liveGroups.delete(child.pid);
         };
         child.on("exit", settleGroup);
