@@ -155,7 +155,7 @@ describe("watchdog", () => {
     });
 
     it("keeps a record fresh for three refresh periods", () => {
-      engine({}, 3 * REFRESH_MS);
+      engine({ startedAt: "2026-10-16T11:59:00Z" }, 3 * REFRESH_MS);
       checkAt(0);
       expect(brief()).toBe("");
       engine({}, 3 * REFRESH_MS + 1);
@@ -366,5 +366,87 @@ describe("watchdog", () => {
     for (const file of ["../src/watchdog.ts", "../src/cli-watchdog.ts"]) {
       expect(readFileSync(new URL(file, import.meta.url), "utf-8")).not.toMatch(/\bkill\b/i);
     }
+  });
+
+  describe("report rules", () => {
+    const iso = (min: number) => new Date(T0 + min * MIN).toISOString();
+    const record = (over: object = {}) => ({ ...suspension(300), ...over });
+    const OUTSIDE: Row[] = [[50, 1, 50, "S", "zsh"], [300, 50, 300, "T", "sleep 9"]];
+
+    it.each([
+      ["remindAt not yet due", OUTSIDE, record({ remindAt: iso(1) }), 0, false],
+      ["due and stopped, outside every claude tree", OUTSIDE, record({ remindAt: iso(-1) }), 0, true],
+      ["due but the group runs", [[300, 50, 300, "S", "sleep 9"]] as Row[], record({ remindAt: iso(-1) }), 0, false],
+    ])("due reminder: %s", (_name, scan, rec, at, reported) => {
+      rows = scan;
+      writeRecord("suspensions", "300.json", rec);
+      checkAt(at);
+      expect(brief().includes("reminder due")).toBe(reported);
+    });
+
+    it("reports a due record with no live members once as stale and leaves it", () => {
+      rows = [[50, 1, 50, "S", "zsh"]];
+      writeRecord("suspensions", "300.json", record({ remindAt: iso(-1) }));
+      checkAt(0);
+      expect(brief()).toContain("no live members");
+      checkAt(2);
+      expect(brief()).toBe("");
+      expect(existsSync(join(dir, "suspensions", "300.json"))).toBe(true);
+    });
+
+    it.each([
+      ["29 minutes", "lease", 29, false],
+      ["31 minutes", "lease", 31, true],
+      ["31 minutes by the owner", "owner", 31, false],
+    ])("lease suspension at %s", (_name, by, age, reported) => {
+      rows = [[300, 50, 300, "S", "sleep 9"]];
+      writeRecord("suspensions", "300.json", record({ by, at: iso(-age), remindAt: iso(600) }));
+      checkAt(0);
+      expect(brief().includes("suspended by the lease")).toBe(reported);
+    });
+
+    describe("silent engine", () => {
+      const logs = () => join(dir, "logs");
+      const logAge = (min: number) => {
+        mkdirSync(logs(), { recursive: true });
+        writeFileSync(join(logs(), "a.log"), "x");
+        utimesSync(join(logs(), "a.log"), (T0 - min * MIN) / 1000, (T0 - min * MIN) / 1000);
+      };
+      beforeEach(() => {
+        rows = [[700, 1, 700, "S", "node run.js"]];
+      });
+
+      it.each([
+        ["logs newer than the threshold", 39, 1800, false],
+        ["logs older than the threshold", 41, 1800, true],
+        ["stallTimeout 0", 600, 0, false],
+      ])("%s", (_name, age, stallTimeout, reported) => {
+        engine({ logDir: logs(), stallTimeout });
+        logAge(age);
+        checkAt(0);
+        expect(brief().includes("wrote no session log")).toBe(reported);
+        expect(brief()).not.toContain("wedged");
+      });
+
+      it.each([
+        ["within the threshold", "2026-10-16T11:30:00Z", false],
+        ["past the threshold", "2026-10-16T11:10:00Z", true],
+      ])("measures an engine with no logs from startedAt: %s", (_name, startedAt, reported) => {
+        engine({ logDir: logs(), startedAt });
+        checkAt(0);
+        expect(brief().includes("wrote no session log")).toBe(reported);
+      });
+    });
+
+    it.each([
+      ["vim claude-notes", false],
+      ["grep claude", false],
+      ["/usr/local/bin/claude -p", true],
+    ])("scope: a stopped %s is in scope only as the executable", (command, reported) => {
+      rows = [[50, 1, 50, "S", "zsh"], [300, 50, 300, "T", command]];
+      checkAt(0);
+      checkAt(6);
+      expect(brief().includes("process group 300")).toBe(reported);
+    });
   });
 });

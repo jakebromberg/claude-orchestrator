@@ -1,10 +1,13 @@
 import { type ProcRow } from "./ps.js";
+import { type SuspensionRecord } from "./suspensions.js";
 /** A stopped group with no suspension record is reported this long after it was first seen stopped. */
 export declare const STOPPED_AFTER_MS: number;
 /** An engine record is fresh for three refresh periods, the lease's heartbeat rule. */
 export declare const ENGINE_FRESH_MS: number;
 /** A stale engine record whose pid is alive and running is reported once it is older than the engine's `stallTimeout` plus this. */
 export declare const STALLED_MARGIN_MS: number;
+/** A lease suspension (`by: "lease"`) older than this is reported. */
+export declare const LEASE_SUSPENSION_MAX_MS: number;
 /** An `engines/<pid>.json` record (see `engine-registry.ts`) with the verdicts the rules need. */
 export interface Engine {
     pid: number;
@@ -21,6 +24,8 @@ export interface Engine {
     mtimeMs: number;
     /** The engine's own scan row has a `stat` starting with `T`. */
     stopped: boolean;
+    /** The newest mtime of `<logDir>/*.log`, else the record's `startedAt`; NaN when neither is readable. Read only for a fresh record that has a silence check. */
+    activityMs: number;
 }
 /** One thing to tell the owner. `once` findings are emitted in one cycle per `key` while the thing they describe lasts. */
 export interface Finding {
@@ -35,6 +40,8 @@ export interface Context {
     engines: Engine[];
     /** Groups with a valid suspension record (`readSuspensions`). */
     suspended: Set<number>;
+    /** The valid suspension records themselves. */
+    records: SuspensionRecord[];
     /** In-scope stopped groups, with the time each was first seen stopped. */
     stoppedSince: Map<number, number>;
 }
