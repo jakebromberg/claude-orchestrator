@@ -18,6 +18,12 @@ import { stopAtCritical } from "./memory-pressure.js";
 
 const OUTPUT_TAIL_BYTES = 64 * 1024;
 
+/** The largest delay `setTimeout` honours; Node fires a longer one after 1 ms. */
+export const MAX_TIMER_MS = 2_147_483_647;
+
+/** How long a timed-out command's process group has between SIGTERM and SIGKILL. */
+const KILL_GRACE_MS = 5_000;
+
 /**
  * The last `max` bytes of `buf`, moved forward past any UTF-8 continuation
  * bytes so that the tail never starts in the middle of a character.
@@ -39,8 +45,13 @@ function utf8Tail(buf: Buffer, max: number): Buffer {
  * `onSpawn` receives the child's PID. If it throws, the child is killed and
  * the promise rejects with that error, but only after the child has exited.
  *
- * `timeoutMs` (unset or 0: none) SIGKILLs the child and rejects at once, without
- * waiting for the pipes a grandchild may still hold open.
+ * `timeoutMs` (unset, 0, or above {@link MAX_TIMER_MS}: none) bounds the run. With
+ * a bound the shell runs in its own process group, and on timeout the whole group
+ * gets SIGTERM (as `execSync` sent the shell), so a script's trap can clean up and
+ * a grandchild cannot carry on; any member still alive `killGraceMs` later gets
+ * SIGKILL. The promise rejects at the timeout, without waiting for the pipes a
+ * grandchild may still hold open. Without a bound the shell stays in the
+ * engine's group, as before.
  */
 export function runShellAsync(
   cmd: string,
@@ -48,13 +59,25 @@ export function runShellAsync(
   env?: Record<string, string>,
   onSpawn?: (pid: number) => void,
   timeoutMs?: number,
+  killGraceMs = KILL_GRACE_MS,
 ): Promise<string> {
+  const bounded = timeoutMs !== undefined && timeoutMs > 0 && timeoutMs <= MAX_TIMER_MS;
   return new Promise((resolve, reject) => {
     const child = spawn("/bin/sh", ["-c", cmd], {
       cwd,
       env: env ? { ...process.env, ...env } : process.env,
       stdio: ["ignore", "pipe", "pipe"],
+      detached: bounded,
     });
+    const signalGroup = (signal: NodeJS.Signals) => {
+      if (child.pid === undefined) return;
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        // ESRCH: every member has already exited.
+      }
+    };
+    let graceTimer: NodeJS.Timeout | undefined;
     let tail: Buffer = Buffer.alloc(0);
     const collect = (chunk: Buffer) => {
       tail = utf8Tail(Buffer.concat([tail, chunk]), OUTPUT_TAIL_BYTES);
@@ -62,9 +85,10 @@ export function runShellAsync(
     child.stdout.on("data", collect);
     child.stderr.on("data", collect);
     let onSpawnFailure: { error: unknown } | undefined;
-    const timer = timeoutMs
+    const timer = bounded
       ? setTimeout(() => {
-          child.kill("SIGKILL");
+          signalGroup("SIGTERM");
+          graceTimer = setTimeout(() => signalGroup("SIGKILL"), killGraceMs);
           reject(new Error(`Command timed out after ${timeoutMs} ms\n${tail.toString("utf-8")}`));
         }, timeoutMs)
       : undefined;
@@ -74,6 +98,7 @@ export function runShellAsync(
     });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
+      clearTimeout(graceTimer);
       if (onSpawnFailure) return reject(onSpawnFailure.error);
       const output = tail.toString("utf-8");
       if (code === 0) return resolve(output);

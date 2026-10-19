@@ -4,7 +4,7 @@ import path from "node:path";
 import { refOf, normalizeDep } from "../src/ref.js";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { deriveHooks, runShellAsync } from "../src/yaml-hooks.js";
+import { deriveHooks, MAX_TIMER_MS, runShellAsync } from "../src/yaml-hooks.js";
 import type { YamlConfig } from "../src/yaml-types.js";
 import type { Issue, Status } from "../src/types.js";
 
@@ -862,6 +862,45 @@ describe("deriveHooks", () => {
 
     it("does not time out a command that finishes first", async () => {
       await expect(runShellAsync("echo ok", dir, undefined, undefined, 5_000)).resolves.toBe("ok\n");
+    });
+
+    it.each([
+      { name: "the largest timer delay plus one", timeoutMs: MAX_TIMER_MS + 1 },
+      { name: "a year", timeoutMs: 365 * 24 * 3_600_000 },
+    ])("treats a timeout above the timer limit as none ($name)", async ({ timeoutMs }) => {
+      // Node fires a setTimeout above 2^31-1 ms after 1 ms; the command must outlive that.
+      await expect(runShellAsync("sleep 0.2; echo ok", dir, undefined, undefined, timeoutMs)).resolves.toBe("ok\n");
+    });
+
+    describe("on timeout, signals the command's whole process group", () => {
+      const alive = (pid: number) => {
+        try { process.kill(pid, 0); return true; } catch { return false; }
+      };
+      const grandchildOf = (err: Error) => Number(/gc=(\d+)/.exec(err.message)?.[1]);
+
+      it.each([
+        // A background grandchild that would outlive /bin/sh and hold its pipes open.
+        { name: "SIGTERM reaches a grandchild", cmd: 'sleep 30 & echo "gc=$!"; wait', graceMs: 60_000 },
+        // A grandchild that ignores SIGTERM gets SIGKILL after the grace period.
+        { name: "SIGKILL follows the grace period", cmd: '(trap "" TERM; exec sleep 30) & echo "gc=$!"; wait', graceMs: 200 },
+      ])("$name", async ({ cmd, graceMs }) => {
+        const err: Error = await runShellAsync(cmd, dir, undefined, undefined, 300, graceMs).catch((e) => e);
+        const gc = grandchildOf(err);
+        try {
+          expect(String(err.message)).toContain("timed out after 300 ms");
+          expect(gc).toBeGreaterThan(0);
+          await vi.waitFor(() => expect(alive(gc)).toBe(false), { timeout: 3_000 });
+        } finally {
+          if (gc > 0) { try { process.kill(gc, "SIGKILL"); } catch {} }
+        }
+      });
+
+      it("sends SIGTERM first, so the command's trap can clean up", async () => {
+        const marker = path.join(dir, "cleaned");
+        const cmd = `trap 'echo done > "${marker}"; exit 1' TERM; sleep 30 & wait`;
+        await expect(runShellAsync(cmd, dir, undefined, undefined, 300, 60_000)).rejects.toThrow("timed out");
+        await vi.waitFor(() => expect(readFileSync(marker, "utf-8")).toBe("done\n"), { timeout: 3_000 });
+      });
     });
 
     it("default runner starts the tail on a UTF-8 character boundary", async () => {
