@@ -389,6 +389,16 @@ describe("hook events", () => {
       expect(record("hook-toolu_1")).toMatchObject({ id: "hook-toolu_1", pid: SESSION, cwd: "/work", expiresAt: start + 120_000 + 60_000 });
     });
 
+    it("records the weight of a matching rule in GiB bytes, and none without a match", async () => {
+      const weights = join(tmp, "weights.json");
+      writeFileSync(weights, '[{"pattern":"^npm test","gb":2}]');
+      await run(pre(), { CO_LEASE_WEIGHTS_FILE: weights });
+      expect(record("hook-toolu_1").weight).toBe(2 * 2 ** 30);
+      releaseHolder(scripted.opts(), "hook-toolu_1");
+      await run(pre({ command: "npm ci" }), { CO_LEASE_WEIGHTS_FILE: weights });
+      expect(record("hook-toolu_1")).not.toHaveProperty("weight");
+    });
+
     // [description, tool_input.timeout, BASH_DEFAULT_TIMEOUT_MS, expected call timeout ms]
     it.each<[string, unknown, string | undefined, number]>([
       ["the call's own timeout", 300_000, "90000", 300_000],
