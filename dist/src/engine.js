@@ -27,10 +27,11 @@ const NO_STOP = { failureReason: undefined, stopStage: undefined };
 const MAX_PR_CANDIDATES_VERIFIED = 5;
 /**
  * Bound on each synchronous gh/git call the engine makes (`verifyPrIdentity`, `producedNoCommits`): a hung tool must
- * fail its step, not freeze the process past the lease's 90 s heartbeat reap window. Verification runs up to
- * `MAX_PR_CANDIDATES_VERIFIED` calls back to back with no yield, so 5 × 15 s stays under that window.
+ * fail its step, not freeze the process past the lease's 90 s heartbeat reap window. A blocking stretch can begin up
+ * to 30 s after the last beat, so it must end within 60 s: verification runs up to `MAX_PR_CANDIDATES_VERIFIED`
+ * calls back to back, and `producedNoCommits` can follow with no yield, so (5 + 1) × 10 s fits.
  */
-const SYNC_CALL_TIMEOUT_MS = 15_000;
+const SYNC_CALL_TIMEOUT_MS = 10_000;
 const DEFAULT_ALLOWED_TOOLS = [
     "Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Task",
 ];
@@ -341,7 +342,8 @@ export class Orchestrator {
             const effectiveTimeout = issue.stallTimeout ?? this.config.stallTimeout;
             const timeout = effectiveTimeout > 0 ? effectiveTimeout * 1000 : undefined;
             try {
-                await this.deps.runCommandAsync(issue.command, { timeout });
+                const run = this.deps.runCommandAsync ?? (async (cmd, options) => this.deps.runCommand(cmd, options));
+                await run(issue.command, { timeout });
                 this.deps.metadataStore.update(issue.ref, {
                     exitCode: 0,
                     finishedAt: new Date().toISOString(),

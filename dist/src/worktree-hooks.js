@@ -28,8 +28,12 @@ function defaultRepoOf(issue) {
     const slash = repo.lastIndexOf("/");
     return slash >= 0 ? repo.slice(slash + 1) : repo;
 }
-/** Bounds `defaultRunGit` well under the lease's 90 s heartbeat reap window, which a hung synchronous git would outlast. */
-const GIT_TIMEOUT_MS = 30_000;
+/**
+ * Bounds `defaultRunGit` so a hung synchronous git fails its step instead of outlasting the lease's 90 s heartbeat
+ * reap window. `setUpWorktree` makes three calls back to back (rev-parse, prune, add), and a blocking stretch must
+ * end within 60 s, so 3 × 20 s.
+ */
+const GIT_TIMEOUT_MS = 20_000;
 function defaultRunGit(args, cwd) {
     return execFileSync("git", args, {
         cwd,

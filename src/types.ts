@@ -356,13 +356,15 @@ export interface Deps {
    */
   runCommand(cmd: string, options?: { timeout?: number }): string;
   /**
-   * Like {@link runCommand}, but without blocking the event loop, so the engine's
-   * heartbeats keep beating while the command runs. Rejects with an error carrying
-   * `status` (exit code) when the command exits non-zero, and kills the child and
-   * rejects when `options.timeout` (ms) passes; omit/0 for unbounded. Used for
-   * mode-node commands.
+   * Run a shell command for a mode-node without blocking the event loop, so the
+   * engine's heartbeats keep beating while it runs. Resolves with the output (the
+   * real runner returns the combined stdout/stderr tail); rejects with an error
+   * carrying `status` (exit code) when the command exits non-zero, and kills the
+   * child and rejects when `options.timeout` (ms) passes; omit/0 for unbounded.
+   * Optional: absent, the engine runs mode-node commands through {@link runCommand},
+   * which blocks the event loop.
    */
-  runCommandAsync(cmd: string, options?: { timeout?: number }): Promise<string>;
+  runCommandAsync?(cmd: string, options?: { timeout?: number }): Promise<string>;
   truncateFile(path: string): void;
   /** Memory-pressure sampler; absent reads as `"unknown"` (no adaptation, no stop). */
   memoryPressure?: PressureSampler;
