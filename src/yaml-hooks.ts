@@ -24,6 +24,24 @@ export const MAX_TIMER_MS = 2_147_483_647;
 /** How long a timed-out command's process group has between SIGTERM and SIGKILL. */
 const KILL_GRACE_MS = 5_000;
 
+/** Process groups of bounded {@link runShellAsync} commands that have not closed yet. */
+const liveGroups = new Set<number>();
+
+/**
+ * Sends SIGTERM to the process group of every bounded {@link runShellAsync} command still running. A bounded command
+ * runs in its own group, so the terminal's Ctrl-C does not reach it; this runs on the process's `exit` event, so an
+ * engine that exits (its SIGINT/SIGTERM handler ends in `process.exit`) does not leave a deploy running behind it.
+ */
+export function stopLiveCommandGroups(): void {
+  for (const pgid of liveGroups) {
+    try {
+      process.kill(-pgid, "SIGTERM");
+    } catch {
+      // ESRCH: every member has already exited.
+    }
+  }
+}
+
 /**
  * The last `max` bytes of `buf`, moved forward past any UTF-8 continuation
  * bytes so that the tail never starts in the middle of a character.
@@ -50,8 +68,9 @@ function utf8Tail(buf: Buffer, max: number): Buffer {
  * gets SIGTERM (as `execSync` sent the shell), so a script's trap can clean up and
  * a grandchild cannot carry on; any member still alive `killGraceMs` later gets
  * SIGKILL. The promise rejects at the timeout, without waiting for the pipes a
- * grandchild may still hold open. Without a bound the shell stays in the
- * engine's group, as before.
+ * grandchild may still hold open. If the engine exits first, the group gets
+ * SIGTERM ({@link stopLiveCommandGroups}). Without a bound the shell stays in
+ * the engine's group, as before.
  */
 export function runShellAsync(
   cmd: string,
@@ -77,6 +96,12 @@ export function runShellAsync(
         // ESRCH: every member has already exited.
       }
     };
+    if (bounded && child.pid !== undefined) {
+      if (!process.listeners("exit").includes(stopLiveCommandGroups)) {
+        process.on("exit", stopLiveCommandGroups);
+      }
+      liveGroups.add(child.pid);
+    }
     let graceTimer: NodeJS.Timeout | undefined;
     let tail: Buffer = Buffer.alloc(0);
     const collect = (chunk: Buffer) => {
@@ -99,6 +124,7 @@ export function runShellAsync(
     child.on("close", (code, signal) => {
       clearTimeout(timer);
       clearTimeout(graceTimer);
+      if (child.pid !== undefined) liveGroups.delete(child.pid);
       if (onSpawnFailure) return reject(onSpawnFailure.error);
       const output = tail.toString("utf-8");
       if (code === 0) return resolve(output);
