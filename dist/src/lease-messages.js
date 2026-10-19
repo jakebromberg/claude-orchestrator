@@ -12,4 +12,10 @@ export function formatNoSlot(refusal, status) {
 export function formatDiskFull(refusal) {
     return `lease: the disk is full (${refusal.code ?? "ENOSPC"}); free space before running heavy commands — do not rerun`;
 }
+/** The one text of any refusal: the disk-full line for `disk-full`, else the no-slot line. */
+export const formatRefusal = (refusal, status) => refusal.refused === "disk-full" ? formatDiskFull(refusal) : formatNoSlot(refusal, status);
+/** Why a refusal stops work: `disk-full` for a full disk, else `memory-critical`. */
+export const refusalStopReason = (refusal) => (refusal.refused === "disk-full" ? "disk-full" : "memory-critical");
+/** The CLI's exit code for a refusal: 74 for a full disk, else 75 (no slot). */
+export const refusalExitCode = (refusal) => (refusal.refused === "disk-full" ? 74 : 75);
 //# sourceMappingURL=lease-messages.js.map

@@ -9,7 +9,7 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { acquireLease, defaultLeaseOptions, leaseStatus } from "./lease.js";
-import { formatAdmitted, formatDiskFull, formatNoSlot, seconds } from "./lease-messages.js";
+import { formatAdmitted, formatRefusal, refusalExitCode, seconds } from "./lease-messages.js";
 import { psAncestors } from "./ps.js";
 const DEFAULT_MAX_WAIT_SEC = 100;
 const ANCESTOR_DEPTH = 32;
@@ -17,9 +17,7 @@ const GRACE_MS = 10_000;
 const PROGRESS_MS = 60_000;
 const FORWARDED = ["SIGINT", "SIGTERM", "SIGHUP"];
 const TASKPOLICY = "/usr/sbin/taskpolicy";
-const EX_TEMPFAIL = 75;
 const EX_CONFIG = 78;
-const EX_IOERR = 74;
 function parseSeconds(text) {
     const n = Number(text);
     return text !== undefined && text.trim() !== "" && Number.isFinite(n) && n >= 0 ? n : undefined;
@@ -170,12 +168,8 @@ export async function runLeased(args, d) {
     });
     if (!("leased" in got)) {
         unhook();
-        if (got.refused === "disk-full") {
-            d.err(formatDiskFull(got));
-            return EX_IOERR;
-        }
-        d.err(formatNoSlot(got, d.leaseStatus(opts)));
-        return EX_TEMPFAIL;
+        d.err(formatRefusal(got, d.leaseStatus(opts)));
+        return refusalExitCode(got);
     }
     if (hookSlot && got.leased && got.id === hookSlot)
         d.err(`lease: running inside this session's hook slot (${hookSlot})`);

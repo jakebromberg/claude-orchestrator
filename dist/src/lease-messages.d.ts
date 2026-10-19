@@ -10,3 +10,9 @@ export declare function formatAdmitted(a: LeaseHandle["admission"]): string;
 export declare function formatNoSlot(refusal: LeaseRefusal, status: LeaseStatus): string;
 /** The disk-full line; the hook denies with it and the CLI prints it. Unlike `formatNoSlot` it says not to rerun. */
 export declare function formatDiskFull(refusal: LeaseRefusal): string;
+/** The one text of any refusal: the disk-full line for `disk-full`, else the no-slot line. */
+export declare const formatRefusal: (refusal: LeaseRefusal, status: LeaseStatus) => string;
+/** Why a refusal stops work: `disk-full` for a full disk, else `memory-critical`. */
+export declare const refusalStopReason: (refusal: LeaseRefusal) => "memory-critical" | "disk-full";
+/** The CLI's exit code for a refusal: 74 for a full disk, else 75 (no slot). */
+export declare const refusalExitCode: (refusal: LeaseRefusal) => number;
