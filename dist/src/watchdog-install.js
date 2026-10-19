@@ -42,6 +42,8 @@ ${args.map((a) => `    <string>${xml(a)}</string>`).join("\n")}
     <key>CO_LEASE_DIR</key>
     <string>${xml(o.dir)}</string>
   </dict>
+  <key>RunAtLoad</key>
+  <true/>
   <key>StartInterval</key>
   <integer>${START_INTERVAL_S}</integer>
   <key>StandardErrorPath</key>
@@ -49,14 +51,17 @@ ${args.map((a) => `    <string>${xml(a)}</string>`).join("\n")}
 </dict>
 </plist>`;
 }
-/** A shell fragment for a status line: prints `watchdog.brief`, the disk-full line of `brief` and a stale-`watchdog.json` line (missing, or older than `STALE_AFTER_INTERVALS` × `START_INTERVAL_S`, while the lease directory exists), each only when present. Spawns no `node`; the mtime comes from BSD `stat -f %m`. */
+/** A shell fragment for a status line: prints `watchdog.brief`, the disk-full line of `brief` and a stale-`watchdog.json` line (missing, or older than `STALE_AFTER_INTERVALS` × `START_INTERVAL_S`, while the lease directory exists), each only when present. Spawns no `node`; the mtime comes from BSD `stat -f %m`, else GNU `stat -c %Y`, and the age check is skipped unless the result is all digits (it never aborts the status line). */
 export function statusLineSnippet(dir, fraction) {
     // The message is printf's format, so its only literal `%` (before " free") is doubled.
     const format = diskFullText("%s", "%.1f").replace("% free", "%% free");
     const df = `df -Pk ${sh(dir)} 2>/dev/null | awk -v d=${sh(dir)} -v f=${fraction} 'NR==2 && $2>0 && $4/$2<f {printf "${format}\\n", d, $4/$2*100}'`;
     const fix = "re-run print-plist and reload the LaunchAgent";
     const file = sh(`${dir}/watchdog.json`);
-    const stale = `if [ -d ${sh(dir)} ]; then m=$(stat -f %m ${file} 2>/dev/null); if [ -z "$m" ]; then echo "watchdog: watchdog.json is missing; ${fix}"; elif [ $(( $(date +%s) - m )) -gt ${START_INTERVAL_S * STALE_AFTER_INTERVALS} ]; then echo "watchdog: has not run since $(date -r "$m" +%H:%M); ${fix}"; fi; fi`;
+    const num = (v) => `case $${v} in ''|*[!0-9]*) ${v}=;; esac`;
+    const read = `m=$(stat -f %m ${file} 2>/dev/null); ${num("m")}; if [ -z "$m" ]; then m=$(stat -c %Y ${file} 2>/dev/null); ${num("m")}; fi`;
+    const when = `$(date -r "$m" +%H:%M 2>/dev/null || date -d "@$m" +%H:%M 2>/dev/null)`;
+    const stale = `if [ -d ${sh(dir)} ]; then if [ ! -e ${file} ]; then echo "watchdog: watchdog.json is missing; ${fix}"; else ${read}; if [ -n "$m" ] && [ $(( $(date +%s) - m )) -gt ${START_INTERVAL_S * STALE_AFTER_INTERVALS} ]; then echo "watchdog: has not run since ${when}; ${fix}"; fi; fi; fi`;
     return `w=$(cat ${sh(`${dir}/watchdog.brief`)} 2>/dev/null); [ -n "$w" ] && printf '%s\\n' "$w"; ${df}; ${stale}`;
 }
 /** Handles `print-plist` and `print-status-line` (exit 0, or 1 when the checkout is a git worktree); `undefined` for any other subcommand. */

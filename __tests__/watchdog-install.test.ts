@@ -24,6 +24,10 @@ describe("plistText", () => {
     expect(text).toContain(`<key>EnvironmentVariables</key>\n  <dict>\n    <key>CO_LEASE_DIR</key>\n    <string>${LEASE}</string>\n  </dict>`);
   });
 
+  it("runs at load, so a fresh load or login does not show a stale warning until the first interval", () => {
+    expect(text).toContain("<key>RunAtLoad</key>\n  <true/>\n  <key>StartInterval</key>");
+  });
+
   it("escapes XML in paths", () => {
     const escaped = plistText({ node: "/a&b/node", checkout: "/c", dir: "/d<&>" });
     expect(escaped).toContain("<string>/a&amp;b/node</string>");
@@ -102,6 +106,21 @@ describe("statusLineSnippet staleness", () => {
       expect(await run(d)).toMatch(/^watchdog: watchdog\.json is missing[^\n]*print-plist[^\n]*\n$/);
     } finally {
       rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it("prints nothing, and does not abort, when no stat yields a number", async () => {
+    const d = dir();
+    const bin = mkdtempSync(join(tmpdir(), "wd-nostat-"));
+    try {
+      writeFileSync(join(d, "watchdog.json"), "{}");
+      writeFileSync(join(bin, "stat"), "#!/bin/sh\necho 'File: x'\necho 'Type: ext2/ext3'\n", { mode: 0o755 });
+      const { execFileSync } = await import("node:child_process");
+      const out = execFileSync("/bin/sh", ["-c", statusLineSnippet(d, 0)], { encoding: "utf-8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+      expect(out).toBe("");
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+      rmSync(bin, { recursive: true, force: true });
     }
   });
 
