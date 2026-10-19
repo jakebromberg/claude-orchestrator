@@ -1789,8 +1789,10 @@ describe("Orchestrator", () => {
 
     it("does not record a PR when the gh call hangs past its timeout", async () => {
       const runCommand = vi.fn((cmd: string, opts?: { timeout?: number }) => {
-        if (cmd.startsWith("gh pr view") && opts?.timeout) {
-          throw Object.assign(new Error("spawnSync /bin/sh ETIMEDOUT"), { code: "ETIMEDOUT" });
+        if (cmd.startsWith("gh pr view")) {
+          // Without a timeout this would hang; with one it fails. A healthy answer here would record the PR.
+          if (opts?.timeout) throw Object.assign(new Error("spawnSync /bin/sh ETIMEDOUT"), { code: "ETIMEDOUT" });
+          return JSON.stringify({ state: "OPEN", headRefName: "orchestrator/test-issue" });
         }
         return cmd.includes("rev-list") ? "3" : "";
       });
@@ -3521,6 +3523,19 @@ describe("mode-node command robustness", () => {
     await run;
     // Only an engine that awaits the command lets the 10 ms timer fire before the run ends.
     expect(timerFired).toBe(true);
+    expect(deps.statusStore.get("1")).toBe("succeeded");
+  });
+
+  it("runs a mode-node through runCommand when the deps have no runCommandAsync", async () => {
+    const issue = makeIssue({
+      number: 1, slug: "deploy", wave: 1,
+      mode: "deploy", command: "gh workflow run deploy.yml",
+    });
+    const { orchestrator, deps } = makeOrchestrator([issue], undefined, { runCommandAsync: undefined });
+
+    await orchestrator.runWave(1);
+
+    expect(deps.runCommand).toHaveBeenCalledWith("gh workflow run deploy.yml", expect.anything());
     expect(deps.statusStore.get("1")).toBe("succeeded");
   });
 
