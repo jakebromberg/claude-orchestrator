@@ -488,8 +488,8 @@ describe("pressure-aware retries", () => {
     },
   );
 
-  it("never retries a check that did not run for memory pressure", async () => {
-    const stopped: PostCheckResult = { passed: false, stopped: "memory-critical" };
+  it.each<PostCheckResult["stopped"]>(["memory-critical", "disk-full"])("never retries a check that did not run (%s) and records it as the failure reason", async (reason) => {
+    const stopped: PostCheckResult = { passed: false, stopped: reason };
     const { orchestrator, runner, status, meta } = setUp(1, "normal", {
       hooks: { postSessionCheck: vi.fn(async () => stopped) },
       retries: 2,
@@ -501,7 +501,7 @@ describe("pressure-aware retries", () => {
 
     expect(runner.spawned.length).toBe(1);
     expect(status(1)).toBe("failed");
-    expect(meta(1)).toMatchObject({ failureReason: "memory-critical", stopStage: "post-check" });
+    expect(meta(1)).toMatchObject({ failureReason: reason, stopStage: "post-check" });
   });
 });
 
