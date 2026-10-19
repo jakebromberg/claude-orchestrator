@@ -9,9 +9,15 @@ export interface PrintDeps {
     err(line: string): void;
 }
 export declare const LABEL = "com.jakebromberg.claude-orchestrator-watchdog";
-/** A linked git worktree has a `.git` file where a primary checkout has a directory. */
+/** A linked git worktree has a `.git` file whose `gitdir:` points into a `worktrees/` directory; a primary checkout, a submodule or a `--separate-git-dir` checkout does not. */
 export declare function isGitWorktree(checkout: string): boolean;
-/** The LaunchAgent plist: `check` every 120 s at background priority, named by absolute path because launchd's PATH has no `node`. */
+/** The checkout holding `dist/`, two levels above the real path of the running bin (`dist/src/cli-watchdog.js`). */
+export declare function checkoutOf(binPath: string): string;
+/**
+ * The LaunchAgent plist: `check` every 120 s at background priority, named by absolute path because launchd's PATH has no `node`.
+ * `CO_LEASE_DIR` pins the print-time lease directory, since launchd's environment has no `CO_LEASE_DIR` or `XDG_STATE_HOME`
+ * and `check` would otherwise write where the status line does not read.
+ */
 export declare function plistText(o: {
     node: string;
     checkout: string;

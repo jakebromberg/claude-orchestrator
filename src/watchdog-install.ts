@@ -1,4 +1,5 @@
-import { statSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { diskFullText, DISK_FULL_FRACTION } from "./watchdog.js";
 
 /** What `print-plist` and `print-status-line` need; nothing here installs anything. */
@@ -17,16 +18,25 @@ export const LABEL = "com.jakebromberg.claude-orchestrator-watchdog";
 const xml = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const sh = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
 
-/** A linked git worktree has a `.git` file where a primary checkout has a directory. */
+/** A linked git worktree has a `.git` file whose `gitdir:` points into a `worktrees/` directory; a primary checkout, a submodule or a `--separate-git-dir` checkout does not. */
 export function isGitWorktree(checkout: string): boolean {
   try {
-    return statSync(`${checkout}/.git`).isFile();
+    return /^gitdir: .*[\\/]worktrees[\\/][^\\/]+\s*$/m.test(readFileSync(join(checkout, ".git"), "utf-8"));
   } catch {
     return false;
   }
 }
 
-/** The LaunchAgent plist: `check` every 120 s at background priority, named by absolute path because launchd's PATH has no `node`. */
+/** The checkout holding `dist/`, two levels above the real path of the running bin (`dist/src/cli-watchdog.js`). */
+export function checkoutOf(binPath: string): string {
+  return join(dirname(binPath), "../..");
+}
+
+/**
+ * The LaunchAgent plist: `check` every 120 s at background priority, named by absolute path because launchd's PATH has no `node`.
+ * `CO_LEASE_DIR` pins the print-time lease directory, since launchd's environment has no `CO_LEASE_DIR` or `XDG_STATE_HOME`
+ * and `check` would otherwise write where the status line does not read.
+ */
 export function plistText(o: { node: string; checkout: string; dir: string }): string {
   const args = ["/usr/sbin/taskpolicy", "-b", o.node, `${o.checkout}/dist/src/cli-watchdog.js`, "check"];
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -39,6 +49,11 @@ export function plistText(o: { node: string; checkout: string; dir: string }): s
   <array>
 ${args.map((a) => `    <string>${xml(a)}</string>`).join("\n")}
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CO_LEASE_DIR</key>
+    <string>${xml(o.dir)}</string>
+  </dict>
   <key>StartInterval</key>
   <integer>120</integer>
   <key>StandardErrorPath</key>
@@ -51,7 +66,7 @@ ${args.map((a) => `    <string>${xml(a)}</string>`).join("\n")}
 export function statusLineSnippet(dir: string, fraction: number): string {
   // The message is printf's format, so its only literal `%` (before " free") is doubled.
   const format = diskFullText("%s", "%.1f").replace("% free", "%% free");
-  const df = `df -k ${sh(dir)} 2>/dev/null | awk -v d=${sh(dir)} -v f=${fraction} 'NR==2 && $2>0 && $4/$2<f {printf "${format}\\n", d, $4/$2*100}'`;
+  const df = `df -Pk ${sh(dir)} 2>/dev/null | awk -v d=${sh(dir)} -v f=${fraction} 'NR==2 && $2>0 && $4/$2<f {printf "${format}\\n", d, $4/$2*100}'`;
   return `w=$(cat ${sh(`${dir}/watchdog.brief`)} 2>/dev/null); [ -n "$w" ] && printf '%s\\n' "$w"; ${df}`;
 }
 

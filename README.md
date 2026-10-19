@@ -162,16 +162,16 @@ Its state lives in the lease directory (`CO_LEASE_DIR`): `watchdog.json` (first-
 
 **Install runbook.** The package prints; it installs nothing. Each of the three steps below is the owner's, taken with a go-ahead at install time. Run the printers from the primary checkout (`print-plist` refuses from a git worktree, whose `dist` is removed at cleanup, and takes `node` from `process.execPath`).
 
-1. **LaunchAgent** (`check` every 120 s at background priority, stderr to `<lease dir>/watchdog.err`):
+1. **LaunchAgent** (`check` every 120 s at background priority, stderr to `<lease dir>/watchdog.err`, and `CO_LEASE_DIR` pinned to the lease directory resolved when it is printed, since launchd's environment has no `CO_LEASE_DIR` or `XDG_STATE_HOME`; print it from the shell whose lease directory the status line reads). Print to a temporary file and move it only when the printer succeeds, so a refusal never truncates an installed plist:
 
    ```bash
-   node dist/src/cli-watchdog.js print-plist > ~/Library/LaunchAgents/com.jakebromberg.claude-orchestrator-watchdog.plist
+   node dist/src/cli-watchdog.js print-plist > /tmp/watchdog.plist && mv /tmp/watchdog.plist ~/Library/LaunchAgents/com.jakebromberg.claude-orchestrator-watchdog.plist
    launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.jakebromberg.claude-orchestrator-watchdog.plist
    launchctl kickstart -k gui/$UID/com.jakebromberg.claude-orchestrator-watchdog   # then check that <lease dir>/watchdog.json is non-empty
    ```
 
    Remove: `launchctl bootout gui/$UID/com.jakebromberg.claude-orchestrator-watchdog && rm ~/Library/LaunchAgents/com.jakebromberg.claude-orchestrator-watchdog.plist`.
-2. **Status line:** `node dist/src/cli-watchdog.js print-status-line` prints a shell fragment that prints `watchdog.brief` and the disk-full line, each only when present, with the 2% threshold filled in and no `node`. Append it to the `statusLine` command in `~/.claude/settings.json` so it prints as a second line below the existing one; a normal status line is unchanged. Remove: delete the fragment from that command.
+2. **Status line:** `node dist/src/cli-watchdog.js print-status-line` prints a shell fragment that prints `watchdog.brief` and the disk-full line, each only when present, with the 2% threshold filled in and no `node`. Append it to the `statusLine` command in `~/.claude/settings.json`, after a `; ` separator, so it prints as a second line below the existing one; a normal status line is unchanged. The fragment is shell, and the command is a JSON string: escape each `\` as `\\` and each `"` as `\"` when you paste it, and make sure the existing command's output ends with a newline. Remove: delete the fragment from that command.
 3. **CLAUDE.md line:** add this to the "Machine-wide lease for heavy commands" section of `~/.claude/CLAUDE.md`. Remove: delete the line.
 
    ```
