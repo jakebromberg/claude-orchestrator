@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DISK_FULL_FRACTION } from "../src/watchdog.js";
-import { isGitWorktree, plistText, runPrint, statusLineSnippet, type PrintDeps } from "../src/watchdog-install.js";
+import { checkoutOf, isGitWorktree, plistText, runPrint, statusLineSnippet, type PrintDeps } from "../src/watchdog-install.js";
 
 const LEASE = "/Users/me/.local/state/claude-orchestrator";
 
@@ -20,8 +20,14 @@ describe("plistText", () => {
     expect(text).toContain(`<key>StandardErrorPath</key>\n  <string>${LEASE}/watchdog.err</string>`);
   });
 
+  it("pins the print-time lease directory as CO_LEASE_DIR, so check writes where the status line reads", () => {
+    expect(text).toContain(`<key>EnvironmentVariables</key>\n  <dict>\n    <key>CO_LEASE_DIR</key>\n    <string>${LEASE}</string>\n  </dict>`);
+  });
+
   it("escapes XML in paths", () => {
-    expect(plistText({ node: "/a&b/node", checkout: "/c", dir: "/d" })).toContain("<string>/a&amp;b/node</string>");
+    const escaped = plistText({ node: "/a&b/node", checkout: "/c", dir: "/d<&>" });
+    expect(escaped).toContain("<string>/a&amp;b/node</string>");
+    expect(escaped).toContain("<key>CO_LEASE_DIR</key>\n    <string>/d&lt;&amp;&gt;</string>");
   });
 });
 
@@ -32,8 +38,8 @@ describe("statusLineSnippet", () => {
     expect(snippet).toContain(`cat '${LEASE}/watchdog.brief' 2>/dev/null`);
   });
 
-  it("checks the lease volume with df -k against the substituted fraction, without node", () => {
-    expect(snippet).toContain(`df -k '${LEASE}'`);
+  it("checks the lease volume with POSIX df -Pk against the substituted fraction, without node", () => {
+    expect(snippet).toContain(`df -Pk '${LEASE}'`);
     expect(snippet).toContain("f=0.02");
     expect(snippet).not.toMatch(/\bnode\b/);
   });
@@ -46,11 +52,11 @@ describe("statusLineSnippet", () => {
     expect(statusLineSnippet("/a'b", 0.02)).toContain(`'/a'\\''b/watchdog.brief'`);
   });
 
-  it("behaves in a real shell: silent with no brief and ample space, brief text when present", async () => {
+  it("behaves in a real shell: silent with no brief at fraction 0, brief text when present, disk line above 100%", async () => {
     const { execFileSync } = await import("node:child_process");
     const dir = mkdtempSync(join(tmpdir(), "wd-snippet-"));
     try {
-      const run = () => execFileSync("/bin/sh", ["-c", statusLineSnippet(dir, 0.02)], { encoding: "utf-8" });
+      const run = () => execFileSync("/bin/sh", ["-c", statusLineSnippet(dir, 0)], { encoding: "utf-8" });
       expect(run()).toBe("");
       writeFileSync(join(dir, "watchdog.brief"), "watchdog: stopped");
       expect(run()).toBe("watchdog: stopped\n");
@@ -62,17 +68,27 @@ describe("statusLineSnippet", () => {
 });
 
 describe("isGitWorktree", () => {
-  it("is true when .git is a file, false for a directory", () => {
+  it.each([
+    ["a primary checkout (.git directory)", null, false],
+    ["a linked worktree", "gitdir: /r/.git/worktrees/wt\n", true],
+    ["a submodule", "gitdir: ../.git/modules/sub\n", false],
+    ["a --separate-git-dir checkout", "gitdir: /elsewhere/repo.git\n", false],
+    ["no .git at all", undefined, false],
+  ] as const)("%s → %s", (_name, gitFile, expected) => {
     const root = mkdtempSync(join(tmpdir(), "wd-wt-"));
     try {
-      mkdirSync(join(root, "primary/.git"), { recursive: true });
-      mkdirSync(join(root, "linked"));
-      writeFileSync(join(root, "linked/.git"), "gitdir: /x");
-      expect(isGitWorktree(join(root, "primary"))).toBe(false);
-      expect(isGitWorktree(join(root, "linked"))).toBe(true);
+      if (gitFile === null) mkdirSync(join(root, ".git"));
+      else if (gitFile !== undefined) writeFileSync(join(root, ".git"), gitFile);
+      expect(isGitWorktree(root)).toBe(expected);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("checkoutOf", () => {
+  it("is two levels above the bin's directory (dist/src/cli-watchdog.js)", () => {
+    expect(checkoutOf("/Users/me/Developer/claude-orchestrator/dist/src/cli-watchdog.js")).toBe("/Users/me/Developer/claude-orchestrator");
   });
 });
 

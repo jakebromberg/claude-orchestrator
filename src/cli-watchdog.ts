@@ -11,10 +11,9 @@
  * Exit 78 means the lease directory is misconfigured (a relative `CO_LEASE_DIR`).
  */
 import { realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { leaseDirectory } from "./memory-pressure.js";
-import { isGitWorktree, runPrint } from "./watchdog-install.js";
+import { checkoutOf, isGitWorktree, runPrint } from "./watchdog-install.js";
 import { runWatchdog, scanProcessTable } from "./watchdog.js";
 
 const EX_CONFIG = 78;
@@ -29,7 +28,7 @@ function main(argv: string[]): number {
     return EX_CONFIG;
   }
   const out = (line: string): void => void process.stdout.write(`${line}\n`);
-  const checkout = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "../..");
+  const checkout = checkoutOf(realpathSync(fileURLToPath(import.meta.url)));
   const printed = runPrint(argv, { dir, node: process.execPath, checkout, isWorktree: isGitWorktree, out, err });
   if (printed !== undefined) return printed;
   return runWatchdog(argv, { dir, scan: scanProcessTable, now: Date.now, out, err });
