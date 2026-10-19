@@ -8,7 +8,7 @@ import { appendFileSync, closeSync, constants, fstatSync, lstatSync, openSync, r
 import { basename, join } from "node:path";
 import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
-import { isOwnDir, writeLeaseRecord } from "./lease-dir.js";
+import { isOwnDir, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
 import { ancestry, isPid, parsePsTable, ps, PS_TABLE_ARGS, type ProcRow } from "./ps.js";
 import { readSuspensions, type SuspensionRecord } from "./suspensions.js";
 
@@ -148,24 +148,6 @@ function isSameProcess(row: ProcRow, startedAt: unknown, now: number): boolean {
   return !(now - row.elapsedMs > started + START_SLACK_MS);
 }
 
-/** The `*.json` files of `<dir>/<sub>` (a temp file of `writeFileAtomic` ends in `.tmp`), parsed; one that is gone or unparsable is skipped. */
-function readRecords(dir: string, sub: string): { name: string; record: any; mtimeMs: number }[] {
-  let names: string[];
-  try {
-    names = readdirSync(join(dir, sub)).filter((n) => n.endsWith(".json"));
-  } catch {
-    return [];
-  }
-  return names.flatMap((name) => {
-    try {
-      const file = join(dir, sub, name);
-      return [{ name, record: JSON.parse(readFileSync(file, "utf-8")), mtimeMs: statSync(file).mtimeMs }];
-    } catch {
-      return [];
-    }
-  });
-}
-
 /** The newest mtime among the regular `*.log` files directly in `logDir`, else the record's `startedAt` (NaN when unreadable). */
 function activityOf(logDir: unknown, startedAt: unknown): number {
   let newest = -Infinity;
@@ -179,7 +161,13 @@ function activityOf(logDir: unknown, startedAt: unknown): number {
 }
 
 function readEngines(dir: string, now: number, procs: ProcRow[]): Engine[] {
-  return readRecords(dir, "engines").flatMap(({ record: r, mtimeMs }) => {
+  return readRecordDir(dir, "engines").flatMap(({ text, mtimeMs }) => {
+    let r: any;
+    try {
+      r = JSON.parse(text);
+    } catch {
+      return [];
+    }
     if (!isPid(r?.pid) || typeof r.runId !== "string") return [];
     const row = procs.find((p) => p.pid === r.pid);
     // A null pgid (ps failed at engine start) falls back to the scan's.

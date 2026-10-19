@@ -43,7 +43,7 @@ export declare function suspensionFile(dir: string, pgid: number): string;
 export declare function writeSuspension(dir: string, record: SuspensionRecord): void;
 /** Removes the record of `pgid`; returns whether one existed. */
 export declare function removeSuspension(dir: string, pgid: number): boolean;
-/** The valid records in `<dir>/suspensions`: a name that is not a canonical `<pid>.json` (no leading zero), a temp file, an unreadable or invalid body (`at` and `remindAt` must parse as dates), or a body whose pgid is not its name is skipped. Creates nothing; a missing, symlinked or foreign directory reads as empty. */
+/** The valid records in `<dir>/suspensions` (`readRecordDir`'s name and directory rule): an unreadable or invalid body (`at` and `remindAt` must parse as dates), or a body whose pgid is not its name, is skipped. */
 export declare function readSuspensions(dir: string): SuspensionRecord[];
 /** Runs `suspend` or `resume` (`argv[0]`): exit 0 done, 1 refused or failed, 64 usage. A suspend writes the record before the signal; a resume signals before it removes the record. */
 export declare function runSuspension(argv: string[], d: SuspensionDeps): number;

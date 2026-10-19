@@ -18,3 +18,13 @@ export declare function isOwnDir(st: Stats): boolean;
  * error from the write propagates.
  */
 export declare function writeLeaseRecord(dir: string, name: string, text: string, opts?: AtomicWriteOptions): boolean;
+/**
+ * The records of `<dir>/<sub>`, read-only: each canonical `<pid>.json` file (no leading zero; a `writeFileAtomic` temp
+ * name is not one) with its text and mtime. A missing, symlinked or foreign subdirectory reads as empty, and a file
+ * that cannot be read is skipped. Creates and removes nothing.
+ */
+export declare function readRecordDir(dir: string, sub: string): {
+    stem: number;
+    text: string;
+    mtimeMs: number;
+}[];
