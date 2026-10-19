@@ -145,4 +145,15 @@ describe("createFileEngineRegistry", () => {
       expect(read().pgid).toBeNull();
     });
   });
+
+  it.each([
+    { name: "dead owner", file: "4242.json.111.0a1b.tmp", removed: true },
+    { name: "live owner", file: "4242.json.222.0a1b.tmp", removed: false },
+    { name: "no pid", file: "4242.json.tmp", removed: false },
+  ])("sweeps an engines/ temp file at start: $name", ({ file, removed }) => {
+    mkdirSync(join(dir, "engines"), { mode: 0o700 });
+    writeFileSync(join(dir, "engines", file), "{");
+    make({ isAlive: (pid) => pid === 222 }).start(info);
+    expect(existsSync(join(dir, "engines", file))).toBe(!removed);
+  });
 });
