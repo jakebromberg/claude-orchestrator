@@ -4,7 +4,7 @@ import path from "node:path";
 import { refOf, normalizeDep } from "../src/ref.js";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { deriveHooks, MAX_TIMER_MS, runShellAsync } from "../src/yaml-hooks.js";
+import { deriveHooks, MAX_TIMER_MS, runShellAsync, stopLiveCommandGroups } from "../src/yaml-hooks.js";
 import type { YamlConfig } from "../src/yaml-types.js";
 import type { Issue, Status } from "../src/types.js";
 
@@ -889,6 +889,21 @@ describe("deriveHooks", () => {
         try {
           expect(String(err.message)).toContain("timed out after 300 ms");
           expect(gc).toBeGreaterThan(0);
+          await vi.waitFor(() => expect(alive(gc)).toBe(false), { timeout: 3_000 });
+        } finally {
+          if (gc > 0) { try { process.kill(gc, "SIGKILL"); } catch {} }
+        }
+      });
+
+      it("on engine exit, SIGTERMs a bounded command's group, which Ctrl-C no longer reaches", async () => {
+        const gcFile = path.join(dir, "gc");
+        const run = runShellAsync(`sleep 30 & echo $! > "${gcFile}"; wait`, dir, undefined, undefined, 60_000);
+        let gc = 0;
+        try {
+          await vi.waitFor(() => { gc = Number(readFileSync(gcFile, "utf-8")); expect(gc).toBeGreaterThan(0); });
+          expect(process.listeners("exit")).toContain(stopLiveCommandGroups);
+          stopLiveCommandGroups();
+          await expect(run).rejects.toThrow(/Command failed/);
           await vi.waitFor(() => expect(alive(gc)).toBe(false), { timeout: 3_000 });
         } finally {
           if (gc > 0) { try { process.kill(gc, "SIGKILL"); } catch {} }

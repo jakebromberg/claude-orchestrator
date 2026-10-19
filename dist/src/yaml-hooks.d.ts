@@ -3,6 +3,12 @@ import type { YamlConfig } from "./yaml-types.js";
 /** The largest delay `setTimeout` honours; Node fires a longer one after 1 ms. */
 export declare const MAX_TIMER_MS = 2147483647;
 /**
+ * Sends SIGTERM to the process group of every bounded {@link runShellAsync} command still running. A bounded command
+ * runs in its own group, so the terminal's Ctrl-C does not reach it; this runs on the process's `exit` event, so an
+ * engine that exits (its SIGINT/SIGTERM handler ends in `process.exit`) does not leave a deploy running behind it.
+ */
+export declare function stopLiveCommandGroups(): void;
+/**
  * Runs `cmd` under `/bin/sh -c` without blocking the event loop, keeping only
  * the last 64 KiB of combined stdout/stderr. Resolves with that tail on exit 0;
  * rejects with an Error carrying the exit code (or signal) and the tail. The
@@ -17,8 +23,9 @@ export declare const MAX_TIMER_MS = 2147483647;
  * gets SIGTERM (as `execSync` sent the shell), so a script's trap can clean up and
  * a grandchild cannot carry on; any member still alive `killGraceMs` later gets
  * SIGKILL. The promise rejects at the timeout, without waiting for the pipes a
- * grandchild may still hold open. Without a bound the shell stays in the
- * engine's group, as before.
+ * grandchild may still hold open. If the engine exits first, the group gets
+ * SIGTERM ({@link stopLiveCommandGroups}). Without a bound the shell stays in
+ * the engine's group, as before.
  */
 export declare function runShellAsync(cmd: string, cwd: string, env?: Record<string, string>, onSpawn?: (pid: number) => void, timeoutMs?: number, killGraceMs?: number): Promise<string>;
 /** I/O dependencies injectable for testing. */
