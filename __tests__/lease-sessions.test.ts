@@ -223,26 +223,48 @@ describe("session holder class", () => {
   describe("a full disk", () => {
     let restore = () => {};
     afterEach(() => restore());
+    const GIB = 1024 ** 3;
+    // `count` reads no memory signals; `weight` reads 16 GiB of memory, so the heavy budget at step 4 is 12 GiB (a ceiling of 1 and the default 25 % reserve).
+    const modes = {
+      count: reading(4),
+      weight: { level: "normal", step: 4, signals: { level: "normal", freePct: 50, memsizeBytes: 16 * GIB } } satisfies HeadroomReading,
+    } as const;
     const classes = [
-      { cls: "heavy", sub: "holders", waiting: "waiting", acquire: acquireLease },
-      { cls: "sessions", sub: "sessions", waiting: "sessions-waiting", acquire: acquireSessionLease },
+      { cls: "heavy", sub: "holders", waiting: "waiting", acquire: acquireLease, modes: ["count", "weight"] },
+      { cls: "sessions", sub: "sessions", waiting: "sessions-waiting", acquire: acquireSessionLease, modes: ["count"] },
     ] as const;
     const targets = [
       { write: "mutex", hit: (_c: (typeof classes)[number], p: string) => p.endsWith(".mutex") },
       { write: "holder", hit: (c: (typeof classes)[number], p: string) => p.includes(`/${c.sub}/`) },
       { write: "ticket", hit: (c: (typeof classes)[number], p: string) => p.includes(`/${c.waiting}/`) },
     ];
-    it.each(classes.flatMap((c) => targets.map((t) => ({ ...t, ...c, name: `${c.cls} ${t.write}` }))))(
+    it.each(classes.flatMap((c) => c.modes.flatMap((mode) => targets.map((t) => ({ ...t, ...c, mode, name: `${c.cls} ${mode} ${t.write}` })))))(
       "refuses a $name write as disk-full, emits the timeout and never fails open",
       async (row) => {
-        const o = at(4, { policy: { heavyCeiling: 1, heavyWarning: 1 }, sessionSlots: 1 });
-        // The ticket is written only by a waiter, so a holder fills the one slot for that row.
-        if (row.write === "ticket") plant(row.sub, "4242-live", { id: "4242-live", pid: 4242, command: "x", cwd: "/", startedAt: lease.clock.ms, level: "normal" }, lease.clock.ms + 0.5);
-        restore = failFsCall(row.write === "mutex" ? "openSync" : "writeFileSync", (p) => row.hit(row, p), "ENOSPC");
-        const got = await row.acquire(o, meta, { maxWaitMs: 1_000 });
+        const o = opts({ headroom: scriptedHeadroomSampler(modes[row.mode]), policy: { heavyCeiling: 1, heavyWarning: 1 }, sessionSlots: 1 });
+        const weighted = row.mode === "weight";
+        // The ticket is written only by a waiter, so a holder fills the one slot for that row; in weight mode the holder and the request are 8 GiB each, which the 12 GiB budget refuses by weight.
+        if (row.write === "ticket") plant(row.sub, "4242-live", { id: "4242-live", pid: 4242, command: "x", cwd: "/", startedAt: lease.clock.ms, level: "normal", ...(weighted && { weight: 8 * GIB }) }, lease.clock.ms + 0.5);
+        const attempted: unknown[] = [];
+        restore = failFsCall(
+          row.write === "mutex" ? "openSync" : "writeFileSync",
+          (p, data) => {
+            const hit = row.hit(row, p);
+            if (hit && row.write === "ticket") attempted.push(data);
+            return hit;
+          },
+          "ENOSPC",
+        );
+        const got = await row.acquire(o, weighted ? { ...meta, weight: 8 * GIB } : meta, { maxWaitMs: 1_000 });
         expect(got).toMatchObject({ refused: "disk-full", code: "ENOSPC" });
         expect(lease.events).toContainEqual({ type: "timeout", refused: "disk-full", waitedMs: expect.any(Number) });
         expect(lease.events.some((e) => e.type === "fail-open")).toBe(false);
+        if (row.write === "ticket") {
+          expect(attempted).not.toHaveLength(0);
+          // Weight mode must have reached the ticket write with the weight in hand, not failed earlier.
+          for (const data of attempted) expect(JSON.parse(String(data))).toMatchObject(weighted ? { weight: 8 * GIB } : {});
+          if (!weighted) for (const data of attempted) expect(JSON.parse(String(data))).not.toHaveProperty("weight");
+        }
       },
     );
 
