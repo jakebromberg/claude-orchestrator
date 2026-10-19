@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
 import { ensureOwnSubdir, readRecordDir } from "./lease-dir.js";
 import { leaseDirectory } from "./memory-pressure.js";
-import { ancestry, isPid, parsePsTable, ps, PS_TABLE_ARGS } from "./ps.js";
+import { ancestry, isPid, parsePsTable, ps, PS_TABLE_ARGS, signalGroup } from "./ps.js";
 const EX_USAGE = 64;
 const EX_CONFIG = 78;
 /** The longest `--remind`: 30 days. */
@@ -120,14 +120,8 @@ export function runSuspension(argv, d) {
         ensureOwnSubdir(d.dir, "suspensions");
         const file = suspensionFile(d.dir, args.pgid);
         if (args.kind === "resume") {
-            try {
-                d.kill(-args.pgid, "SIGCONT");
-            }
-            catch (err) {
-                // A group that is gone has nothing to continue; its record can still go.
-                if (err.code !== "ESRCH")
-                    throw err;
-            }
+            // A group that is gone has nothing to continue; its record can still go.
+            signalGroup(args.pgid, "SIGCONT", d.kill);
             const had = removeSuspension(d.dir, args.pgid);
             d.out(`lease: resumed process group ${args.pgid}${had ? `; removed ${file}` : "; no record existed"}`);
             return 0;
@@ -139,7 +133,9 @@ export function runSuspension(argv, d) {
         writeSuspension(d.dir, { pgid: args.pgid, by: args.by, reason: args.reason, at: new Date(at).toISOString(), remindAt: new Date(at + args.remindMs).toISOString(), leader });
         if (!args.recordOnly) {
             try {
-                d.kill(-args.pgid, "SIGSTOP");
+                // The group vanished since the scan: report it as the signal call would have.
+                if (!signalGroup(args.pgid, "SIGSTOP", d.kill))
+                    throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
             }
             catch (err) {
                 removeSuspension(d.dir, args.pgid);

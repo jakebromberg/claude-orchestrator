@@ -13,7 +13,7 @@ import type { PressureSampler } from "./memory-pressure.js";
 import { weightFor } from "./lease-weights.js";
 import { acquireLease, defaultLeaseOptions, leaseStatus, type LeaseOptions, type LeaseStatus } from "./lease.js";
 import { formatAdmitted, formatRefusal, refusalExitCode, seconds } from "./lease-messages.js";
-import { psAncestors } from "./ps.js";
+import { psAncestors, signalGroup } from "./ps.js";
 
 const DEFAULT_MAX_WAIT_SEC = 100;
 const ANCESTOR_DEPTH = 32;
@@ -158,7 +158,7 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
     if (!args.background || child!.pid === undefined) return void child!.kill(sig);
     for (const s of ["SIGCONT", sig] as const) {
       try {
-        d.signals.kill(-child!.pid, s);
+        signalGroup(child!.pid, s, d.signals.kill);
       } catch {
         // The group is gone.
       }

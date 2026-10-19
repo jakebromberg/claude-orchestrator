@@ -11,7 +11,7 @@ import { constants } from "node:os";
 import { weightFor } from "./lease-weights.js";
 import { acquireLease, defaultLeaseOptions, leaseStatus } from "./lease.js";
 import { formatAdmitted, formatRefusal, refusalExitCode, seconds } from "./lease-messages.js";
-import { psAncestors } from "./ps.js";
+import { psAncestors, signalGroup } from "./ps.js";
 const DEFAULT_MAX_WAIT_SEC = 100;
 const ANCESTOR_DEPTH = 32;
 const GRACE_MS = 10_000;
@@ -123,7 +123,7 @@ export async function runLeased(args, d) {
             return void child.kill(sig);
         for (const s of ["SIGCONT", sig]) {
             try {
-                d.signals.kill(-child.pid, s);
+                signalGroup(child.pid, s, d.signals.kill);
             }
             catch {
                 // The group is gone.
