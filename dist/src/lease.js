@@ -186,36 +186,44 @@ function parseCpuReading(text) {
     }
 }
 /**
- * The CPU gate, under the mutex. Busy is 1 minus the idle share of the ticks since the reading in `cpu.json`: a reading
- * under 2 s old is gated on as stored, one 2 to 10 s old is the base of a new delta (and is replaced), and an older,
- * future-dated or missing one is replaced and fails this poll, so the next has a delta. Unknown CPU passes.
+ * The CPU busy share, under the mutex: 1 minus the idle share of the ticks since the reading in `cpu.json`. A reading
+ * under 2 s old is returned as stored, one 2 to 10 s old is the base of a new delta (and is replaced), and an older,
+ * future-dated or missing one is replaced and yields `null`, so the next poll has a delta. Unknown CPU reads as 0 (idle).
  */
-function cpuAdmits(opts, nowMs) {
+export function cpuBusy(opts, nowMs) {
     let ticks;
     try {
         ticks = opts.cpuTimes?.();
     }
     catch {
-        return true;
+        return 0;
     }
     if (!ticks || !(ticks.total > 0))
-        return true;
+        return 0;
     const file = join(opts.dir, "cpu.json");
     const prev = unlessGone(() => parseCpuReading(readFileSync(file, "utf8")));
     const age = prev ? nowMs - prev.at : -1;
     if (prev && age >= 0 && age < CPU_REUSE_MS)
-        return prev.busy !== null && prev.busy < GATE_CPU_BUSY;
+        return prev.busy;
     const span = prev ? ticks.total - prev.ticks.total : 0;
     const busy = prev && age >= 0 && age <= CPU_DELTA_MAX_MS && span > 0 ? 1 - (ticks.idle - prev.ticks.idle) / span : null;
     writeFileAtomic(file, JSON.stringify({ at: nowMs, ticks, busy }));
-    return busy !== null && busy < GATE_CPU_BUSY;
+    return busy;
 }
-/** The gates of a gated ticket. `cpuAdmits` always runs, since each poll keeps `cpu.json`'s delta fresh; a `lastAdmit` mark from the future reads as elapsed. */
+/** Whether `ms` has passed since the mark `name` in the lease directory; a missing mark, or one from the future, reads as elapsed. */
+export function markElapsed(dir, name, nowMs, ms) {
+    const markedAt = unlessGone(() => statSync(join(dir, name)).mtimeMs);
+    return markedAt === undefined || markedAt > nowMs || nowMs - markedAt >= ms;
+}
+/** Stamps the mark `name` in the lease directory with `nowMs`. */
+export function writeMark(dir, name, nowMs) {
+    writeFileAtomic(join(dir, name), "", { mtimeMs: nowMs });
+}
+/** The gates of a gated ticket. `cpuBusy` always runs, since each poll keeps `cpu.json`'s delta fresh; a `lastAdmit` mark from the future reads as elapsed. */
 function gatesPass(opts, live, nowMs) {
-    const cpu = cpuAdmits(opts, nowMs);
-    const markedAt = unlessGone(() => statSync(join(opts.dir, "lastAdmit")).mtimeMs);
-    const spaced = markedAt === undefined || markedAt > nowMs || nowMs - markedAt >= GATE_SPACING_MS;
-    return cpu && spaced && !live.some((h) => h.suspended);
+    const busy = cpuBusy(opts, nowMs);
+    const spaced = markElapsed(opts.dir, "lastAdmit", nowMs, GATE_SPACING_MS);
+    return busy !== null && busy < GATE_CPU_BUSY && spaced && !live.some((h) => h.suspended);
 }
 const removeTicket = (opts, id) => rmSync(join(waitingDir(opts.dir), `${id}.json`), { force: true });
 // Paste-safety for `status` output and the event log, not a security boundary: the lease does no shell parsing. Nothing
@@ -347,7 +355,7 @@ function attempt(opts, meta, waitedMs, ticketId) {
                 const ready = !gated || gatesPass(opts, live, nowMs) || (live.length === 0 && snap.step > 0 && !others.some((t) => t.gated));
                 if (ready && !behindGated && ahead < (ticketId === undefined ? Math.min(free, 1) : free)) {
                     if (gated)
-                        writeFileAtomic(join(opts.dir, "lastAdmit"), "", { mtimeMs: nowMs });
+                        writeMark(opts.dir, "lastAdmit", nowMs);
                     r = { kind: "admitted", handle: createHolder(opts, meta, command, admission) };
                     try {
                         if (mine)

@@ -163,6 +163,16 @@ export interface LeaseRefusal {
     /** The out-of-space error code of a `disk-full` refusal. */
     code?: string;
 }
+/**
+ * The CPU busy share, under the mutex: 1 minus the idle share of the ticks since the reading in `cpu.json`. A reading
+ * under 2 s old is returned as stored, one 2 to 10 s old is the base of a new delta (and is replaced), and an older,
+ * future-dated or missing one is replaced and yields `null`, so the next poll has a delta. Unknown CPU reads as 0 (idle).
+ */
+export declare function cpuBusy(opts: LeaseOptions, nowMs: number): number | null;
+/** Whether `ms` has passed since the mark `name` in the lease directory; a missing mark, or one from the future, reads as elapsed. */
+export declare function markElapsed(dir: string, name: string, nowMs: number, ms: number): boolean;
+/** Stamps the mark `name` in the lease directory with `nowMs`. */
+export declare function writeMark(dir: string, name: string, nowMs: number): void;
 /** The one default diagnostics writer, shared with the event sink. Messages carry their own `lease:` prefix. */
 export declare function defaultWarn(msg: string): void;
 /** A single non-blocking attempt: a handle, or `null` when not admitted this poll (a full disk included: it is never failed open, and emits a `timeout` event with `refused: "disk-full"`). Throws a `TypeError` on an invalid detached id, session PID or `expiresAt`. */
