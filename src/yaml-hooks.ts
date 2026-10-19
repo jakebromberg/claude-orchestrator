@@ -24,6 +24,9 @@ export const MAX_TIMER_MS = 2_147_483_647;
 /** How long a timed-out command's process group has between SIGTERM and SIGKILL. */
 const KILL_GRACE_MS = 5_000;
 
+/** How often a finished command's process group is probed while a member is still alive. */
+const GROUP_RECHECK_MS = 250;
+
 /** Process groups of bounded {@link runShellAsync} commands that have not closed yet. */
 const liveGroups = new Set<number>();
 
@@ -133,19 +136,28 @@ export function runShellAsync(
       clearTimeout(timer);
       reject(error);
     });
-    // 'close' waits for every holder of the pipes, so a daemon that escaped the group and kept them open would leave
-    // the pgid here after the group is gone and the id may be reused. Drop it as soon as the shell exits and no member
-    // is left; a member that is still there (a grandchild that traps TERM) keeps the entry for the exit-time SIGKILL.
-    child.on("exit", () => {
-      if (child.pid !== undefined && !groupAlive(child.pid)) liveGroups.delete(child.pid);
-    });
-    child.on("error", () => {
-      if (child.pid !== undefined && !groupAlive(child.pid)) liveGroups.delete(child.pid);
-    });
+    // A group stays in the live set, with its pending grace SIGKILL, until no member is left: a member that traps
+    // TERM and no longer holds the pipes outlives both 'exit' and 'close'. 'close' also waits for every holder of the
+    // pipes, so a daemon that escaped the group would leave the pgid here after the group is gone and the id may be
+    // reused. So at 'exit' and 'close' probe the group, and while a member lives re-check every RECHECK_MS on an
+    // unref'd timer (it never keeps the engine alive, and ends the moment the group is empty).
+    let recheck: NodeJS.Timeout | undefined;
+    const settleGroup = () => {
+      clearTimeout(recheck);
+      if (child.pid === undefined) return;
+      if (groupAlive(child.pid)) {
+        recheck = setTimeout(settleGroup, GROUP_RECHECK_MS);
+        recheck.unref();
+        return;
+      }
+      clearTimeout(graceTimer);
+      liveGroups.delete(child.pid);
+    };
+    child.on("exit", settleGroup);
+    child.on("error", settleGroup);
     child.on("close", (code, signal) => {
       clearTimeout(timer);
-      clearTimeout(graceTimer);
-      if (child.pid !== undefined) liveGroups.delete(child.pid);
+      settleGroup();
       if (onSpawnFailure) return reject(onSpawnFailure.error);
       const output = tail.toString("utf-8");
       if (code === 0) return resolve(output);

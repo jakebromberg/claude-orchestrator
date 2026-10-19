@@ -61,6 +61,8 @@ export class Orchestrator {
      * reuses its launch's id; each check-failure retry adds its own.
      */
     launched = new Map();
+    /** Count of timed-out `gh pr view` calls in the current recording pass; names the timeout in the warning. */
+    verifyTimeouts = 0;
     constructor(config, deps, options) {
         this.config = config;
         this.deps = deps;
@@ -508,8 +510,6 @@ export class Orchestrator {
      * output, a deleted PR — counts as unverified. Failing closed is the point:
      * the store is what `mergePrs` acts on.
      */
-    /** Count of timed-out `gh pr view` calls in the current recording pass; names the timeout in the warning. */
-    verifyTimeouts = 0;
     verifyPrIdentity(issue, prNumber, repo) {
         const branch = this.config.hooks.getBranchName(issue);
         let raw;

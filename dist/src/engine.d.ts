@@ -17,6 +17,8 @@ export declare class Orchestrator {
      * reuses its launch's id; each check-failure retry adds its own.
      */
     private launched;
+    /** Count of timed-out `gh pr view` calls in the current recording pass; names the timeout in the warning. */
+    private verifyTimeouts;
     constructor(config: OrchestratorConfig, deps: Deps, options?: RunOptions);
     /** Rows this run launched a session for, with the `--session-id` of each launch (for the run report). */
     launchedSessions(): ReadonlyMap<string, readonly string[]>;
@@ -109,8 +111,6 @@ export declare class Orchestrator {
      * output, a deleted PR — counts as unverified. Failing closed is the point:
      * the store is what `mergePrs` acts on.
      */
-    /** Count of timed-out `gh pr view` calls in the current recording pass; names the timeout in the warning. */
-    private verifyTimeouts;
     private verifyPrIdentity;
     /**
      * Positive evidence that a session committed nothing on its branch.

@@ -927,6 +927,74 @@ describe("deriveHooks", () => {
         }
       });
 
+      describe("a member that no longer holds the output pipes", () => {
+        // sh forks the last command of an && list and dies from SIGTERM, so 'close' fires at once while this member,
+        // which traps TERM and has its output redirected, lives on.
+        const trapCmd = (pidFile: string) =>
+          `cd "${dir}" && bash -c 'echo $$ > "${pidFile}"; trap "echo t" TERM; while :; do sleep 0.1; done' > "${dir}/out.log" 2>&1`;
+        const readPid = async (file: string) => {
+          let pid = 0;
+          await vi.waitFor(() => { pid = Number(readFileSync(file, "utf-8")); expect(pid).toBeGreaterThan(0); });
+          return pid;
+        };
+
+        it("gets the grace SIGKILL", async () => {
+          const pidFile = path.join(dir, "member");
+          const run = runShellAsync(trapCmd(pidFile), dir, undefined, undefined, 300, 500);
+          run.catch(() => {});
+          let pid = 0;
+          try {
+            pid = await readPid(pidFile);
+            await expect(run).rejects.toThrow("timed out");
+            await vi.waitFor(() => expect(alive(pid)).toBe(false), { timeout: 4_000 });
+          } finally {
+            if (pid > 0) { try { process.kill(pid, "SIGKILL"); } catch {} }
+          }
+        });
+
+        it("gets SIGKILL from stopLiveCommandGroups at engine exit", async () => {
+          const pidFile = path.join(dir, "member");
+          const run = runShellAsync(trapCmd(pidFile), dir, undefined, undefined, 300, 60_000);
+          run.catch(() => {});
+          let pid = 0;
+          try {
+            pid = await readPid(pidFile);
+            await expect(run).rejects.toThrow("timed out");
+            await new Promise((r) => setTimeout(r, 200));
+            expect(alive(pid)).toBe(true);
+            stopLiveCommandGroups();
+            await vi.waitFor(() => expect(alive(pid)).toBe(false), { timeout: 3_000 });
+          } finally {
+            if (pid > 0) { try { process.kill(pid, "SIGKILL"); } catch {} }
+          }
+        });
+      });
+
+      it("drops a group from the live set when the shell exits with no member left, even if a daemon holds the pipes", async () => {
+        // The daemon escapes the group with setsid and keeps stdout open, so 'close' waits for it; only 'exit' can
+        // drop the pgid before its id could be reused.
+        const pidFile = path.join(dir, "daemon");
+        let shellPid = 0;
+        const run = runShellAsync(
+          `perl -e 'use POSIX; setsid(); open(F, ">", $ARGV[0]); print F $$; close F; exec "sleep", "30"' "${pidFile}" &`,
+          dir, undefined, (p) => { shellPid = p; }, 60_000,
+        );
+        let daemon = 0;
+        const kill = vi.spyOn(process, "kill");
+        try {
+          await vi.waitFor(() => { daemon = Number(readFileSync(pidFile, "utf-8")); expect(daemon).toBeGreaterThan(0); });
+          await vi.waitFor(() => {
+            kill.mockClear();
+            stopLiveCommandGroups();
+            expect(kill.mock.calls.some((c) => c[0] === -shellPid)).toBe(false);
+          }, { timeout: 3_000 });
+        } finally {
+          kill.mockRestore();
+          if (daemon > 0) { try { process.kill(daemon, "SIGKILL"); } catch {} }
+        }
+        await run;
+      });
+
       it("sends SIGTERM first, so the command's trap can clean up", async () => {
         const marker = path.join(dir, "cleaned");
         const cmd = `trap 'echo done > "${marker}"; exit 1' TERM; sleep 30 & wait`;
