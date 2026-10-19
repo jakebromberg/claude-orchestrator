@@ -193,10 +193,10 @@ export function installIsolatedHome(parent: string = tmpdir()): IsolatedHome {
  * for faults in modules that call `fs.x` through the namespace or a named import of a CJS builtin (`syncBuiltinESMExports` carries
  * the spy to the named bindings); a fault needing a hoisted hook on a name imported into an ESM module uses `vi.mock("node:fs")`.
  */
-export function failFsCall(name: "openSync" | "writeFileSync" | "linkSync" | "renameSync" | "rmSync", match: (path: string) => boolean, code: string): () => void {
+export function failFsCall(name: "openSync" | "writeFileSync" | "linkSync" | "renameSync" | "rmSync", match: (path: string, data?: unknown) => boolean, code: string): () => void {
   const real = fs[name] as (...a: unknown[]) => unknown;
   const spy = vi.spyOn(fs, name as "openSync").mockImplementation(((path: fs.PathLike, ...rest: unknown[]) => {
-    if (match(String(path))) throw Object.assign(new Error(code), { code });
+    if (match(String(path), rest[0])) throw Object.assign(new Error(code), { code });
     return real(path, ...rest);
   }) as typeof fs.openSync);
   syncBuiltinESMExports();
