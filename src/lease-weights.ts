@@ -7,8 +7,8 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { readLeaseRecord, readRegularFile } from "./lease-dir.js";
 import { leaseDirectory } from "./memory-pressure.js";
 
 export interface WeightRule {
@@ -49,11 +49,14 @@ const validRule = (r: unknown): r is WeightRule => {
 };
 
 /** The rules of the weights file: a missing file is silent, an unreadable or malformed one or a bad entry gives one warning, and only valid entries are kept. */
-export function loadWeightTable(env: NodeJS.ProcessEnv, warn: (line: string) => void, read: (file: string) => string = (f) => readFileSync(f, "utf8")): WeightRule[] {
+export function loadWeightTable(env: NodeJS.ProcessEnv, warn: (line: string) => void): WeightRule[] {
   let file = env.CO_LEASE_WEIGHTS_FILE;
   try {
-    file ||= join(leaseDirectory(env), "weights.json");
-    const parsed: unknown = JSON.parse(read(file));
+    const dir = file ? undefined : leaseDirectory(env);
+    file ||= join(dir!, "weights.json");
+    const text = dir === undefined ? readRegularFile(file) : readLeaseRecord(dir, "weights.json")?.text;
+    if (text === undefined) return [];
+    const parsed: unknown = JSON.parse(text);
     if (!Array.isArray(parsed)) throw new Error("not an array");
     const rules = parsed.filter(validRule);
     if (rules.length < parsed.length) warn(`lease: ignoring ${parsed.length - rules.length} invalid entries in ${file}`);

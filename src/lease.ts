@@ -18,7 +18,7 @@ import { sweepDeadTemps, writeFileAtomic } from "./atomic-write.js";
 import { isWithinWindow, tryLockOnce } from "./file-lock.js";
 import { headroomCapacity, heavyBudget, MAX_STEP, sessionHeadroomCapacity } from "./headroom.js";
 import { defaultHeadroomSampler, levelView, type HeadroomReading, type HeadroomSampler } from "./headroom-sampler.js";
-import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
+import { ensureOwnSubdir, isOwnDir, readLeaseRecord } from "./lease-dir.js";
 import { leaseEventSink } from "./lease-events.js";
 import {
   DEFAULT_RESERVE_PCT,
@@ -421,7 +421,8 @@ export function cpuBusy(opts: LeaseOptions, nowMs: number): number | null {
   }
   if (!ticks || !(ticks.total > 0)) return 0;
   const file = join(opts.dir, "cpu.json");
-  const prev = unlessGone(() => parseCpuReading(readFileSync(file, "utf8")));
+  const record = readLeaseRecord(opts.dir, "cpu.json");
+  const prev = record && parseCpuReading(record.text);
   const age = prev ? nowMs - prev.at : -1;
   if (prev && age >= 0 && age < CPU_REUSE_MS) return prev.busy;
   const span = prev ? ticks.total - prev.ticks.total : 0;

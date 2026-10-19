@@ -4,8 +4,7 @@
  * preflight), so their thresholds cannot drift.
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { writeLeaseRecord } from "./lease-dir.js";
+import { readLeaseRecord, writeLeaseRecord } from "./lease-dir.js";
 import { userInfo } from "node:os";
 import { isAbsolute, join } from "node:path";
 
@@ -262,7 +261,7 @@ export function persistLevel(dir: string, reading: { level: PressureLevel; at: n
 /** The reading `persistLevel` left in `<dir>/level.json`, or `undefined` when it is missing or malformed. */
 export function persistedLevel(dir: string): { level: PressureLevel; at: number } | undefined {
   try {
-    const parsed = JSON.parse(readFileSync(join(dir, "level.json"), "utf8"));
+    const parsed = JSON.parse(readLeaseRecord(dir, "level.json")?.text ?? "null");
     return Object.values(LEVELS_BY_VALUE).includes(parsed.level) && typeof parsed.at === "number"
       ? { level: parsed.level, at: parsed.at }
       : undefined;

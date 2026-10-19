@@ -15,9 +15,9 @@
  * everything is linear. It is not a shell parser: no expansion, aliases or functions.
  */
 
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readRegularFile } from "./lease-dir.js";
 import { acquireLease, defaultLeaseOptions, DETACHED_TTL_MAX_MS, isPid, leaseStatus, releaseHolder, type LeaseOptions } from "./lease.js";
 import { formatAdmitted, formatRefusal } from "./lease-messages.js";
 import { weightFor } from "./lease-weights.js";
@@ -180,7 +180,7 @@ function extraPatterns(env: NodeJS.ProcessEnv): string[] {
   const file = env.CO_LEASE_PATTERNS_FILE;
   if (!file) return [];
   try {
-    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    const parsed: unknown = JSON.parse(readRegularFile(file));
     return Array.isArray(parsed) ? parsed.filter((p): p is string => typeof p === "string") : [];
   } catch {
     return [];

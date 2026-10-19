@@ -1,14 +1,5 @@
-/**
- * The machine-wide headroom step. `<lease dir>/headroom.json` holds `{ at, signals, step, risingSince }`, computed from
- * the raw signals with the rise hold and before any per-process override, so every process that reads it agrees and
- * no process's override reaches another. Written without a lock (the last writer wins, which can delay a rise by one
- * sample) through `writeLeaseRecord`, so a missing, symlinked or foreign lease directory gets no write. The record's
- * `sampledAt` is when a line was last appended to `<lease dir>/pressure.jsonl`, the machine-wide history.
- */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { DEFAULT_STEP_TABLE, headroomStep, MAX_STEP } from "./headroom.js";
-import { writeLeaseRecord } from "./lease-dir.js";
+import { readLeaseRecord, writeLeaseRecord } from "./lease-dir.js";
 import { jsonlSink } from "./lease-events.js";
 import { applyPressureOverride, FALLBACK_MAX_AGE_MS, freeBytes, isFresh, leaseDirectory, persistedLevel, persistLevel, readMemorySignals, warnOnce, } from "./memory-pressure.js";
 const SHARE_TTL_MS = 10_000;
@@ -69,7 +60,7 @@ export function defaultHeadroomSampler(env = process.env, deps = {}) {
     };
     const stored = () => {
         try {
-            const parsed = JSON.parse(readFileSync(join(dir, "headroom.json"), "utf8"));
+            const parsed = JSON.parse(readLeaseRecord(dir, "headroom.json")?.text ?? "null");
             return parsed && typeof parsed === "object" ? parsed : undefined;
         }
         catch {

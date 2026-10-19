@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, s
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readRecordDir, writeLeaseRecord } from "../src/lease-dir.js";
+import { readLeaseRecord, readRecordDir, readRegularFile, writeLeaseRecord } from "../src/lease-dir.js";
 
 describe("writeLeaseRecord", () => {
   let tmp: string;
@@ -107,5 +107,52 @@ describe("readRecordDir", () => {
     expect(got.map((r) => r.stem)).toEqual(stems);
     for (const r of got) expect(r).toMatchObject({ text: "{}", mtimeMs: expect.any(Number) });
     expect(readdirSync(tmp).sort()).toEqual(before);
+  });
+});
+
+// A FIFO row would hang the run if the reader regressed; those rows run in a killable child in lease-fifo-readers.test.ts.
+describe("readLeaseRecord and readRegularFile", () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "lease-dir-record-"));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const rows: [string, () => void, boolean][] = [
+    ["a regular file", () => writeFileSync(join(tmp, "rec.json"), "BODY"), true],
+    ["a missing file", () => {}, false],
+    ["a symlink to a regular file", () => {
+      writeFileSync(join(tmp, "elsewhere"), "BODY");
+      symlinkSync(join(tmp, "elsewhere"), join(tmp, "rec.json"));
+    }, false],
+    ["a directory", () => mkdirSync(join(tmp, "rec.json")), false],
+    ["a foreign-owned file", () => {
+      writeFileSync(join(tmp, "rec.json"), "BODY");
+      vi.spyOn(process as Required<NodeJS.Process>, "getuid").mockReturnValue(statSync(tmp).uid + 1);
+    }, false],
+  ];
+
+  it.each(rows)("readLeaseRecord: %s", (_n, plant, read) => {
+    plant();
+    const got = readLeaseRecord(tmp, "rec.json");
+    if (read) expect(got).toEqual({ text: "BODY", mtimeMs: expect.any(Number) });
+    else expect(got).toBeUndefined();
+  });
+
+  it("readRegularFile follows a symlink, as an explicit file may be one on purpose", () => {
+    writeFileSync(join(tmp, "elsewhere"), "BODY");
+    symlinkSync(join(tmp, "elsewhere"), join(tmp, "link"));
+    expect(readRegularFile(join(tmp, "link"))).toBe("BODY");
+  });
+
+  it.each<[string, () => void]>([
+    ["a missing file", () => {}],
+    ["a directory", () => mkdirSync(join(tmp, "rec.json"))],
+  ])("readRegularFile throws for %s", (_n, plant) => {
+    plant();
+    expect(() => readRegularFile(join(tmp, "rec.json"))).toThrow();
   });
 });

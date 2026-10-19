@@ -5,10 +5,9 @@
  * sample) through `writeLeaseRecord`, so a missing, symlinked or foreign lease directory gets no write. The record's
  * `sampledAt` is when a line was last appended to `<lease dir>/pressure.jsonl`, the machine-wide history.
  */
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_STEP_TABLE, headroomStep, MAX_STEP, type HeadroomState, type StepTable } from "./headroom.js";
-import { writeLeaseRecord } from "./lease-dir.js";
+import { readLeaseRecord, writeLeaseRecord } from "./lease-dir.js";
 import { jsonlSink } from "./lease-events.js";
 import {
   applyPressureOverride,
@@ -111,7 +110,7 @@ export function defaultHeadroomSampler(
 
   const stored = (): Record<string, unknown> | undefined => {
     try {
-      const parsed = JSON.parse(readFileSync(join(dir, "headroom.json"), "utf8"));
+      const parsed = JSON.parse(readLeaseRecord(dir, "headroom.json")?.text ?? "null");
       return parsed && typeof parsed === "object" ? parsed : undefined;
     } catch {
       return undefined;
