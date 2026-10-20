@@ -290,7 +290,9 @@ describe("session holder class", () => {
       expect(names("sessions-waiting")).toEqual(left);
     });
 
-    it("admits waiters in the order they arrived, even when the last to arrive polls first", async () => {
+    // The waiters share one fake clock and each sleep a jittered `pollMs`, so the draw decides how far the clock has moved when B re-polls, and A's ticket is passed over once it is older than TICKET_FRESH_MS. At the default 3 s, four sleeps at a high draw pass 15 s; pinning `pollMs` keeps them under 6 s whatever the draw.
+    it.each([0, 0.5, 0.999])("admits waiters in the order they arrived, even when the last to arrive polls first (poll jitter draw %s)", async (draw) => {
+      vi.spyOn(Math, "random").mockReturnValue(draw);
       const holder = (await take(at(1)))!;
       lease.clock.onSleep = () => holder.release();
       const slowSleep = (yields: number): LeaseOptions["sleep"] => async (ms) => {
@@ -299,7 +301,7 @@ describe("session holder class", () => {
       };
       const order: string[] = [];
       const waiter = (name: string, yields: number): Promise<void> =>
-        acquireSessionLease(at(1, { sleep: slowSleep(yields) }), meta).then((r) => {
+        acquireSessionLease(at(1, { sleep: slowSleep(yields), pollMs: 1_000 }), meta).then((r) => {
           order.push(name);
           (r as LeaseHandle).release();
         });
