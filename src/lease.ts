@@ -639,14 +639,13 @@ function weigh(opts: LeaseOptions, cls: LeaseClass, { step, capacity = 0, signal
   const usable = cls.budget && memsize !== undefined ? usableBytes(memsize, opts.reservePct ?? DEFAULT_RESERVE_PCT) : undefined;
   const unmatched = usable === undefined ? 1 : usable / cls.ceiling(opts);
   const of = (x: { weight?: number }): number => (usable === undefined ? 1 : (x.weight ?? unmatched));
-  const free = signals ? freeBytes(signals) : undefined;
+  const freeNow = signals ? freeBytes(signals) : undefined;
   const nowMs = (opts.now ?? Date.now)();
-  const settled = (): FreeBudget | undefined =>
-    free === undefined || usable === undefined ? undefined : { freeBytes: free, reserve: memsize! - usable, settled: live.filter((h) => nowMs - h.startedAt >= RAMP_MS).reduce((sum, h) => sum + of(h), 0) };
-  const free_ = settled();
-  const budget = usable === undefined ? capacity : cls.budget!(step, usable, free_);
+  const free: FreeBudget | undefined =
+    freeNow === undefined || usable === undefined ? undefined : { freeBytes: freeNow, reserve: memsize! - usable, settled: live.filter((h) => nowMs - h.startedAt >= RAMP_MS).reduce((sum, h) => sum + of(h), 0) };
+  const budget = usable === undefined ? capacity : cls.budget!(step, usable, free);
   const report = (holders: { weight?: number }[], withFree = false): Weights | undefined =>
-    usable === undefined ? undefined : { used: holders.reduce((sum, x) => sum + of(x), 0), budget, ...(withFree && free_ && { free: free_ }) };
+    usable === undefined ? undefined : { used: holders.reduce((sum, x) => sum + of(x), 0), budget, ...(withFree && free && { free }) };
   return { usable, budget, of, report };
 }
 
