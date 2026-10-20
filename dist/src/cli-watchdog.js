@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { leaseDirectory } from "./memory-pressure.js";
 import { checkoutOf, isGitWorktree, runPrint } from "./watchdog-install.js";
 import { runWatchdog, scanProcessTable } from "./watchdog.js";
+import { isEntryPoint } from "./entry-point.js";
 const EX_CONFIG = 78;
 function main(argv) {
     const err = (line) => void process.stderr.write(`${line}\n`);
@@ -33,8 +34,6 @@ function main(argv) {
         return printed;
     return runWatchdog(argv, { dir, scan: scanProcessTable, now: Date.now, out, err });
 }
-// A bin is run through a symlink (`node_modules/.bin/...`), so compare real paths.
-const entryPath = process.argv[1] ? realpathSync(process.argv[1]) : "";
-if (entryPath === realpathSync(fileURLToPath(import.meta.url)))
+if (isEntryPoint(import.meta.url))
     process.exitCode = main(process.argv.slice(2));
 //# sourceMappingURL=cli-watchdog.js.map

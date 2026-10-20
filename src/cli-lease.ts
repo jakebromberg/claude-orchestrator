@@ -18,12 +18,11 @@
  * re-exported here; the file's bottom wires the entry point.
  */
 
-import { realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { formatAdmitted, formatNoSlot } from "./lease-messages.js";
 import { runHook } from "./lease-hook.js";
 import { runSuspensionCli } from "./suspensions.js";
 import { cliLeaseDeps, parseLeaseArgs, runLeased, runStatus, type LeaseArgs } from "./lease-run.js";
+import { isEntryPoint } from "./entry-point.js";
 
 export { formatAdmitted, formatNoSlot };
 export { cliLeaseDeps, parseLeaseArgs, runLeased, runStatus };
@@ -58,9 +57,7 @@ async function main(argv: string[]): Promise<number> {
   return args.kind === "status" ? runStatus(deps) : runLeased(args, deps);
 }
 
-// A bin is run through a symlink (`node_modules/.bin/...`), so compare real paths.
-const entryPath = process.argv[1] ? realpathSync(process.argv[1]) : "";
-if (entryPath === realpathSync(fileURLToPath(import.meta.url))) {
+if (isEntryPoint(import.meta.url)) {
   main(process.argv.slice(2)).then(
     (code) => {
       process.exitCode = code;

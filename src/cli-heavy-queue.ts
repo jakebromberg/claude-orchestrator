@@ -12,9 +12,8 @@
  * `status` is the lease's own (`runStatus`). The run function lives in `lease-run.ts`; this file never imports `cli-lease.ts`, which runs a startup check at load.
  */
 
-import { realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { cliLeaseDeps, runLeased, runStatus, type LeaseArgs, type LeaseCliDeps } from "./lease-run.js";
+import { isEntryPoint } from "./entry-point.js";
 
 const EX_USAGE = 2;
 const USAGE = `usage: heavy-queue run --label "<session>: <what>" [--no-suspend] (-- <cmd> [args...] | --shell '<command line>')
@@ -42,9 +41,7 @@ export async function runHeavyQueue(argv: string[], d: LeaseCliDeps): Promise<nu
   return args.kind === "status" ? runStatus(d) : runLeased(args, d);
 }
 
-// A bin is run through a symlink or a shim, so compare real paths.
-const entryPath = process.argv[1] ? realpathSync(process.argv[1]) : "";
-if (entryPath === realpathSync(fileURLToPath(import.meta.url))) {
+if (isEntryPoint(import.meta.url)) {
   runHeavyQueue(process.argv.slice(2), cliLeaseDeps((line) => void process.stderr.write(`${line}\n`))).then(
     (code) => {
       process.exitCode = code;
