@@ -22,11 +22,8 @@ export declare const GIT_TIMEOUT_MS = 12000;
  * so one post-check makes at most two (toplevel, origin) for one `cwd`, whatever the number of commands: 2 × 2 s.
  */
 export declare const WEIGHT_GIT_TIMEOUT_MS = 2000;
-/**
- * Bound on `LeaseOptions.processCommand` (the default is a `ps` call): `attempt()` continues at most one dead owner's group,
- * so an acquire, which the engine's post-check makes on its event loop, blocks for one lookup at most.
- */
-export declare const PROCESS_COMMAND_TIMEOUT_MS = 2000;
+/** Bound on the default `LeaseOptions.processCommand`, defined beside its one reader in `lease.ts` (which this module imports from). */
+export { PROCESS_COMMAND_TIMEOUT_MS } from "./lease.js";
 /**
  * How many scraped PR URLs to put to `gh pr view` before giving up. Verification is a blocking network call per
  * candidate, so an unbounded loop would let a transcript that name-drops many same-repo PRs stall a wave. The run's own

@@ -21,10 +21,15 @@ import { defaultHeadroomSampler, levelView } from "./headroom-sampler.js";
 import { ensureOwnSubdir, isOwnDir, readLeaseRecord, readOwnFile } from "./lease-dir.js";
 import { leaseEventSink } from "./lease-events.js";
 import { DEFAULT_RESERVE_PCT, DEFAULT_SESSION_SLOTS, freeBytes, leaseDirectory, pressurePolicyFromEnv, reservePctFromEnv, sessionSlotsFromEnv, usableBytes, } from "./memory-pressure.js";
-import { isPid, pidAlive, psField, signalGroup } from "./ps.js";
+import { isPid, pidAlive, PS_TIMEOUT_MS, psField, signalGroup } from "./ps.js";
 import { leaseSuspension, removeLeaseSuspension, removeSuspension, writeSuspension } from "./suspensions.js";
 export { ensureOwnSubdir, isOwnDir, isPid, pidAlive };
 const MUTEX_STALE_MS = 10_000;
+/**
+ * Bound on the default `LeaseOptions.processCommand` (a `ps` call): `attempt()` continues at most one dead owner's group,
+ * so an acquire, which the engine's post-check makes on its event loop, blocks for one lookup at most. Re-exported by `sync-budget.ts`.
+ */
+export const PROCESS_COMMAND_TIMEOUT_MS = PS_TIMEOUT_MS;
 const ORPHAN_MAX_MS = 2 * 60 * 60_000;
 /** A holder's mtime heartbeat period, and how old a beat may be before the holder is reaped; a blocking stretch in an engine that holds a session slot must fit in the difference (`__tests__/sync-call-budget.test.ts`). */
 export const HEARTBEAT_MS = 30_000;
@@ -347,11 +352,13 @@ export function suspendNewest(opts, handle, pgid, leader, stop) {
  * One tick of a suspended holder's front end: continues `handle`'s own group, `pgid`, when `handle` is the oldest suspended holder and the machine
  * has recovered, and returns `"resumed"`. The signals are sampled before the mutex; under it the decision is made and `cont` (SIGCONT of `pgid`) runs
  * after it is released, then the holder's mark is cleared, then the record is removed, so a crash leaves a mark or a record on a running group and never
- * a stopped group without either. Recovered is CPU busy under 0.85 (`cpuBusy`; null means not yet), and in count mode a free percentage above 20 (none
+ * a stopped group without either. Recovered is CPU busy under 0.85 (`cpuBusy`; null means not yet), in count mode a free percentage above 20 (none
  * means not yet; in weight mode the room test below is stricter, since it cannot hold inside the reserve), a step of at least 1, and room: the weights
- * `weigh` gives the running holders plus this one fit its budget, with admission's slack. When no other holder is running, step 0 and room do not apply.
+ * `weigh` gives the running holders plus this one fit its budget, with admission's slack. When no other holder is running, step 0 and room do not
+ * apply, but memory still does: in weight mode free memory above the reserve (`weigh`'s `FreeBudget`), or without a free reading a budget above 0.
  * When the group has no record of the lease's (the owner resumed it, or replaced the record with their own) the mark is cleared at once, whatever the
- * load, with no signal and no mutex, and the result is `"cleared"`. A `cont` that reports the group gone still clears the mark and the record.
+ * load, with no signal and no mutex, and the result is `"cleared"`; the record is checked again right before `cont`, which narrows the window in which
+ * an owner's suspend between the decision and the signal is undone. A `cont` that reports the group gone still clears the mark and the record.
  */
 export function resumeOldest(opts, handle, pgid, cont) {
     if (!handle.setSuspended)
@@ -372,12 +379,13 @@ export function resumeOldest(opts, handle, pgid, cont) {
         if (oldest?.id === handle.id && busy !== null && busy < RESUME_CPU_BUSY) {
             const running = live.filter((h) => !h.suspended);
             // Weighed over the holders summed below only: another suspended holder's weight would otherwise be added back to the free budget without being charged against it.
-            const { usable, budget, of } = weigh(opts, HEAVY, snap, [...running, oldest]);
+            const { usable, budget, of, free } = weigh(opts, HEAVY, snap, [...running, oldest]);
             const alone = running.length === 0;
-            const free = snap.signals?.freePct;
-            const recovered = usable !== undefined || (free !== undefined && free > RESUME_FREE_PCT);
+            const freePct = snap.signals?.freePct;
             const room = alone || running.reduce((sum, h) => sum + of(h), of(oldest)) <= budget * (1 + 1e-12);
-            if (recovered && room && (snap.step > 0 || alone))
+            // In weight mode room is the memory test; alone, where room is waived, free memory must still clear the reserve.
+            const memory = usable === undefined ? freePct !== undefined && freePct > RESUME_FREE_PCT : !alone || (free ? free.freeBytes > free.reserve : budget > 0);
+            if (memory && room && (snap.step > 0 || alone))
                 why = `CPU ${Math.round(busy * 100)}% busy, step ${snap.step}`;
         }
     }
@@ -386,49 +394,68 @@ export function resumeOldest(opts, handle, pgid, cont) {
     }
     if (!why)
         return undefined;
+    if (!leaseSuspension(opts.dir, pgid)) {
+        handle.setSuspended(false);
+        return "cleared";
+    }
     if (cont(pgid))
         emit(opts, HEAVY, { type: "resume", id: handle.id, pgid, reason: why });
     handle.setSuspended(false);
     removeLeaseSuspension(opts.dir, pgid);
     return "resumed";
 }
-/** Rewrites the holder file of `id` without its `suspended` mark, keeping its heartbeat mtime; a holder that is gone, or not marked, is left alone. */
-function unmarkHolder(opts, id) {
+/** Under the mutex only: sets or clears the `suspended` mark in the holder file of `id`, keeping its heartbeat mtime; a holder that is gone, or already so, is left alone. */
+function markHolder(opts, id, on) {
     const file = join(opts.dir, HEAVY.holders, `${id}.json`);
     const entry = unlessGone(() => readOwnFile(file));
     const rec = entry && parseHolder(entry.text);
-    if (!entry || !rec?.suspended)
+    if (!entry || !rec || (rec.suspended === true) === on)
         return;
-    delete rec.suspended;
+    if (on)
+        rec.suspended = true;
+    else
+        delete rec.suspended;
     writeFileAtomic(file, JSON.stringify(rec), { mtimeMs: entry.mtimeMs });
 }
 /**
- * After the mutex: continues the group of a suspended holder whose front end is gone (`attempt()` chose it). No resume gate applies, since
- * only the owner's own tick could pass one. The group is signalled only when the record's `leader` is the command `processCommand` now reads
- * for the group: a null leader, a missing or an owner's record, or a lookup that throws counts as changed, and nothing is signalled and the
- * record stays for the watchdog. The mark is cleared in every case, so the holder is not looked at again on every acquire. Never throws.
+ * After the mutex: continues the group of a suspended holder whose front end is gone. `attempt()` chose it and cleared its mark under the
+ * mutex, so no other acquire picks it too. No resume gate applies, since only the owner's own tick could pass one. The group is signalled only
+ * when the record's `leader` is the command `processCommand` now reads for the group: a null leader, a missing or an owner's record, or a
+ * changed command means no signal, and the record stays for the watchdog. A lookup that throws also means no signal, and the mark is put back
+ * under the mutex (when it is free) so a later acquire tries again; at most one lookup runs per `attempt()`. Never throws.
  */
 function continueDeadOwner(opts, holder) {
     const pgid = holder.pgid;
-    let done = false;
+    let leader;
+    let current;
     try {
-        const leader = leaseSuspension(opts.dir, pgid)?.leader;
-        if (typeof leader === "string" && opts.processCommand?.(pgid) === leader) {
-            if (signalGroup(pgid, "SIGCONT"))
-                emit(opts, HEAVY, { type: "resume", id: holder.id, pgid, reason: "dead-owner" });
-            done = true;
+        leader = leaseSuspension(opts.dir, pgid)?.leader;
+        current = typeof leader === "string" ? opts.processCommand?.(pgid) : undefined;
+    }
+    catch (err) {
+        warn(opts, `lease: could not read the leader of group ${pgid}: ${err.message}`);
+        const lock = tryLockOnce(join(opts.dir, ".mutex"), { staleAfterMs: MUTEX_STALE_MS, now: opts.now });
+        try {
+            if (lock)
+                markHolder(opts, holder.id, true);
         }
+        catch (e) {
+            warn(opts, `lease: could not mark group ${pgid} for another try: ${e.message}`);
+        }
+        finally {
+            lock?.release();
+        }
+        return;
+    }
+    if (current === undefined || current !== leader)
+        return;
+    try {
+        if (signalGroup(pgid, "SIGCONT"))
+            emit(opts, HEAVY, { type: "resume", id: holder.id, pgid, reason: "dead-owner" });
+        removeLeaseSuspension(opts.dir, pgid);
     }
     catch (err) {
         warn(opts, `lease: could not continue group ${pgid}: ${err.message}`);
-    }
-    try {
-        unmarkHolder(opts, holder.id);
-        if (done)
-            removeLeaseSuspension(opts.dir, pgid);
-    }
-    catch (err) {
-        warn(opts, `lease: could not clear the suspension of group ${pgid}: ${err.message}`);
     }
 }
 const removeTicket = (opts, cls, id) => rmSync(join(opts.dir, cls.waiting, `${id}.json`), { force: true });
@@ -538,7 +565,7 @@ function weigh(opts, cls, { step, capacity = 0, signals }, live) {
     const free = freeNow === undefined || usable === undefined ? undefined : { freeBytes: freeNow, reserve: memsize - usable, settled: live.filter((h) => nowMs - h.startedAt >= RAMP_MS).reduce((sum, h) => sum + of(h), 0) };
     const budget = usable === undefined ? capacity : cls.budget(step, usable, free);
     const report = (holders, withFree = false) => usable === undefined ? undefined : { used: holders.reduce((sum, x) => sum + of(x), 0), budget, ...(withFree && free && { free }) };
-    return { usable, budget, of, report };
+    return { usable, budget, of, report, free };
 }
 /**
  * One admission attempt for a holder class: sample the step, then weigh and write holders under the mutex. Weights are bytes when the class
@@ -580,6 +607,15 @@ function attempt(opts, cls, meta, waitedMs, ticketId) {
             // The oldest suspended holder whose front end is gone (ESRCH; a stopped one is alive and is left alone); its group is continued after the mutex.
             if (cls === HEAVY)
                 orphan = live.filter((h) => h.suspended && h.pgid !== undefined && !(opts.isAlive ?? pidAlive)(h.pid)).sort(byAge)[0];
+            // Claimed under the mutex, so a concurrent acquire does not pick the same group.
+            if (orphan) {
+                try {
+                    markHolder(opts, orphan.id, false);
+                }
+                catch {
+                    orphan = undefined; // Unclaimed: left for a later acquire, and the admission is unchanged.
+                }
+            }
             const { usable, budget, of: weightOf, report } = weigh(opts, cls, snap, live);
             const myWeight = weightOf({ weight: positive(meta.weight) });
             const weights = report([...live, { weight: myWeight }]);
@@ -861,7 +897,7 @@ export function defaultLeaseOptions(env = process.env, overrides = {}) {
         reservePct: reservePctFromEnv(env, tagged),
         inheritedHolderId: env.CO_LEASE_HOLDER || undefined,
         cpuTimes: osCpuTicks,
-        processCommand: (pgid) => psField(pgid, "command"),
+        processCommand: (pgid) => psField(pgid, "command", { timeoutMs: PROCESS_COMMAND_TIMEOUT_MS }),
         onEvent: leaseEventSink(dir, { warn }),
         warn,
     });

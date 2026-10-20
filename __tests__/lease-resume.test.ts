@@ -196,6 +196,32 @@ describe("resuming the oldest suspended holder", () => {
       handles.b!.release();
       expect(tick("a")).toBe("resumed");
     });
+
+    // Alone, step 0 and room are waived but the memory test is not: free memory above the 4 GiB reserve (16 GiB × 25%), or the step's share without a free reading.
+    it.each<[string, boolean, number | undefined]>([
+      ["5% free (0.8 GiB, inside the reserve)", false, 5],
+      ["30% free (4.8 GiB, above the reserve)", true, 30],
+      ["no free reading (the step's share is 0)", false, undefined],
+    ])("alone at step 0 with %s -> resumes %s", (_n, resumes, free) => {
+      setUp({});
+      handles.c!.release();
+      handles.b!.release();
+      step = 0;
+      freePct = free;
+      expect(tick("a")).toBe(resumes ? "resumed" : undefined);
+    });
+  });
+
+  it("re-checks the record before the SIGCONT: an owner who took the group over during the decision keeps it stopped", () => {
+    const takeOver = (): typeof TICKS => {
+      rmSync(join(dir, "suspensions", `${pgid.a}.json`));
+      record("a", "jake");
+      return TICKS;
+    };
+    expect(tick("a", { cpuTimes: takeOver })).toBe("cleared");
+    expect(cont).not.toHaveBeenCalled();
+    expect(recordOf("a")?.by).toBe("jake");
+    expect(holderRec("a").suspended).toBeUndefined();
   });
 
   describe("a record the lease no longer holds", () => {

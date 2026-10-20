@@ -4,6 +4,11 @@ import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
 import { type MemorySignals, type PressureLevel, type PressurePolicy, type PressureSampler } from "./memory-pressure.js";
 import { isPid, pidAlive } from "./ps.js";
 export { ensureOwnSubdir, isOwnDir, isPid, pidAlive };
+/**
+ * Bound on the default `LeaseOptions.processCommand` (a `ps` call): `attempt()` continues at most one dead owner's group,
+ * so an acquire, which the engine's post-check makes on its event loop, blocks for one lookup at most. Re-exported by `sync-budget.ts`.
+ */
+export declare const PROCESS_COMMAND_TIMEOUT_MS = 2000;
 /** A holder's mtime heartbeat period, and how old a beat may be before the holder is reaped; a blocking stretch in an engine that holds a session slot must fit in the difference (`__tests__/sync-call-budget.test.ts`). */
 export declare const HEARTBEAT_MS = 30000;
 export declare const HEARTBEAT_STALE_MS = 90000;
@@ -235,11 +240,13 @@ export declare function suspendNewest(opts: LeaseOptions, handle: LeaseHandle, p
  * One tick of a suspended holder's front end: continues `handle`'s own group, `pgid`, when `handle` is the oldest suspended holder and the machine
  * has recovered, and returns `"resumed"`. The signals are sampled before the mutex; under it the decision is made and `cont` (SIGCONT of `pgid`) runs
  * after it is released, then the holder's mark is cleared, then the record is removed, so a crash leaves a mark or a record on a running group and never
- * a stopped group without either. Recovered is CPU busy under 0.85 (`cpuBusy`; null means not yet), and in count mode a free percentage above 20 (none
+ * a stopped group without either. Recovered is CPU busy under 0.85 (`cpuBusy`; null means not yet), in count mode a free percentage above 20 (none
  * means not yet; in weight mode the room test below is stricter, since it cannot hold inside the reserve), a step of at least 1, and room: the weights
- * `weigh` gives the running holders plus this one fit its budget, with admission's slack. When no other holder is running, step 0 and room do not apply.
+ * `weigh` gives the running holders plus this one fit its budget, with admission's slack. When no other holder is running, step 0 and room do not
+ * apply, but memory still does: in weight mode free memory above the reserve (`weigh`'s `FreeBudget`), or without a free reading a budget above 0.
  * When the group has no record of the lease's (the owner resumed it, or replaced the record with their own) the mark is cleared at once, whatever the
- * load, with no signal and no mutex, and the result is `"cleared"`. A `cont` that reports the group gone still clears the mark and the record.
+ * load, with no signal and no mutex, and the result is `"cleared"`; the record is checked again right before `cont`, which narrows the window in which
+ * an owner's suspend between the decision and the signal is undone. A `cont` that reports the group gone still clears the mark and the record.
  */
 export declare function resumeOldest(opts: LeaseOptions, handle: LeaseHandle, pgid: number, cont: (pgid: number) => boolean): "resumed" | "cleared" | undefined;
 /** The one default diagnostics writer, shared with the event sink. Messages carry their own `lease:` prefix. */
