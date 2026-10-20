@@ -113,8 +113,9 @@ export function gatherCollisionInputs(deps) {
     try {
         runCommand("git", ["-C", currentWorktree, "fetch", "origin", baseBranch]);
     }
-    catch {
-        // ignore — we proceed with whatever origin/<baseBranch> currently points to
+    catch (err) {
+        // we proceed with whatever origin/<baseBranch> currently points to
+        deps.onFetchError?.(baseBranch, err instanceof Error ? err : new Error(String(err)));
     }
     const myMergeBase = safeMergeBase(runCommand, currentWorktree, baseBranch);
     const current = myMergeBase

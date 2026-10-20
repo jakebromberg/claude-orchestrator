@@ -527,6 +527,14 @@ export function deriveHooks(
           peers,
           entries: sequentialEntries,
           baseBranch,
+          onFetchError: (branch, err) => {
+            const why = (err as NodeJS.ErrnoException).code === "ETIMEDOUT"
+              ? `timed out at the ${SYNC_CALL_TIMEOUT_MS / 1000} s bound`
+              : err.message;
+            console.warn(
+              `[collision-check] fetch of origin/${branch} in ${worktreePath} failed (${why}); scanned the locally known origin/${branch}, which may be stale`,
+            );
+          },
           onPeerError: (slug, err) => {
             console.warn(
               `[collision-check] skipping peer ${slug}: ${err.message}`,

@@ -74,5 +74,7 @@ export interface GatherCollisionInputsDeps {
     baseBranch: string;
     /** Optional logger for swallowed peer errors. */
     onPeerError?: (slug: string, err: Error) => void;
+    /** Optional logger for a failed fetch; the scan then compares against the locally known `origin/<baseBranch>`. */
+    onFetchError?: (baseBranch: string, err: Error) => void;
 }
 export declare function gatherCollisionInputs(deps: GatherCollisionInputsDeps): CollisionInput;
