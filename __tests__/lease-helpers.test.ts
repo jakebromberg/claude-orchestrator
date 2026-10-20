@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { plantCpu, scriptedLease } from "./helpers/lease.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
