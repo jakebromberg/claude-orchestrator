@@ -74,29 +74,42 @@ describe("replay of the 2026-10-18 window", () => {
   beforeEach(() => void (tmp = mkdtempSync(join(tmpdir(), "lease-replay-"))));
   afterEach(() => rmSync(tmp, { recursive: true, force: true }));
 
-  // [machine GB, requests admitted by step 4]: 12 GB of usable memory fits one pre-push alone; 48 GB fits all four (12 + 12 + 8 + 12 = 44 GB).
-  it.each([[16, 1], [24, 2], [64, 4]])("keeps the admitted weight within the budget on a %i GB machine", (gb, admittedCount) => {
+  // [machine GB, live holders after each step 1..4, oversize-alone admissions over the climb]. 16 GB leaves 12 GB usable: one pre-push runs
+  // alone from step 1 and nothing else fits. 24 GB (18 usable) admits a pre-push alone at step 1 and the 4.5 GB unmatched command at step 4.
+  // 64 GB (48 usable) fits every request within budget, 12 + 12 + 8 + 12 = 44 GB, one more each step.
+  it.each([
+    [16, [1, 1, 1, 1], 1],
+    [24, [1, 1, 1, 2], 1],
+    [64, [1, 2, 3, 4], 0],
+  ])("keeps the admitted weight within the budget on a %i GB machine", (gb, liveByStep, oversizeAdmissions) => {
     const usable = gb * GB * 0.75;
     let step = 1;
     const lease = scriptedLease(join(tmp, `lease-${gb}`), { policy: { heavyCeiling: 4, heavyWarning: 1 }, alive: [process.pid] });
     const o = lease.opts({ headroom: scriptedHeadroomSampler(() => reading(step, gb * GB)) });
     const pending = requests.map((command) => ({ command, weight: resolveWeight(command, "/w/backend", rules, git) }));
     const admittedWeights: number[] = [];
+    const liveSeen: number[] = [];
+    let oversize = 0;
 
     for (step = 1; step <= 4; step++) {
+      const budget = (usable * step) / 4;
       for (const request of [...pending]) {
         const { command, weight } = request;
         if (tryAcquireLease(o, { command, cwd: "/w/backend", ...(weight !== undefined && { weight }) })) {
           admittedWeights.push(weight ?? usable / 4);
           pending.splice(pending.indexOf(request), 1);
+          if (admittedWeights.reduce((a, b) => a + b, 0) > budget * (1 + 1e-12)) oversize++;
         }
       }
-      const budget = (usable * step) / 4;
       const total = admittedWeights.reduce((a, b) => a + b, 0);
+      liveSeen.push(admittedWeights.length);
+      expect(admittedWeights.length, `step ${step} admits a non-empty set`).toBeGreaterThan(0);
       expect(leaseStatus(o).live).toHaveLength(admittedWeights.length);
       expect(leaseStatus(o).weights).toEqual({ used: total, budget });
       expect(total <= budget * (1 + 1e-12) || admittedWeights.length === 1, `step ${step}: ${total / GB} GB of ${budget / GB} GB`).toBe(true);
     }
-    expect(admittedWeights).toHaveLength(admittedCount);
+    expect(oversize, "oversize-alone admissions over the climb").toBeLessThanOrEqual(1);
+    expect(oversize).toBe(oversizeAdmissions);
+    expect(liveSeen).toEqual(liveByStep);
   });
 });
