@@ -9,11 +9,11 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { weightFor } from "./lease-weights.js";
-import { acquireLease, defaultLeaseOptions, leaseStatus, SUSPEND_MIN_RUN_MS, suspendNewest } from "./lease.js";
+import { acquireLease, defaultLeaseOptions, leaseStatus, resumeOldest, SUSPEND_MIN_RUN_MS, suspendNewest } from "./lease.js";
 import { formatAdmitted, formatRefusal, refusalExitCode, seconds, throttledProgress } from "./lease-messages.js";
-import { psAncestors, psField, signalGroup } from "./ps.js";
+import { psAncestors, signalGroup } from "./ps.js";
 import { sampleUnowned } from "./unowned-memory.js";
-import { readSuspensions, removeSuspension } from "./suspensions.js";
+import { removeLeaseSuspension } from "./suspensions.js";
 const DEFAULT_MAX_WAIT_SEC = 100;
 const ANCESTOR_DEPTH = 32;
 const GRACE_MS = 10_000;
@@ -225,7 +225,7 @@ export async function runLeased(args, d) {
             return;
         }
         if (suspendable && args.background && d.governor) {
-            // The group is the child's own (pid = pgid). The leader's command is read once, outside the lease's mutex, after the 20 s a holder must run before it can be suspended.
+            // The group is the child's own (pid = pgid). The leader's command (`LeaseOptions.processCommand`) is read once, outside the lease's mutex, after the 20 s a holder must run before it can be suspended.
             const pgid = child.pid;
             const now = opts.now ?? Date.now;
             const startedAt = now();
@@ -238,22 +238,32 @@ export async function runLeased(args, d) {
                 if (now() - startedAt < SUSPEND_MIN_RUN_MS)
                     return;
                 try {
-                    leader ??= d.governor.processCommand(pgid);
+                    // A suspended run is only ever resumed; the mark is also cleared when the owner resumed the group (`resumeOldest`).
+                    if (suspended) {
+                        const resumed = resumeOldest(opts, got, pgid, (g) => signalGroup(g, "SIGCONT", d.signals.kill));
+                        if (resumed)
+                            suspended = false;
+                        if (resumed === "resumed")
+                            d.err("lease: resumed (SIGCONT) after the machine recovered");
+                        return;
+                    }
+                    if (leader === undefined)
+                        leader = opts.processCommand?.(pgid) ?? null;
                     if (!suspendNewest(opts, got, pgid, leader, (g) => signalGroup(g, "SIGSTOP", d.signals.kill)))
                         return;
                     suspended = true;
                     d.err("lease: paused on purpose (SIGSTOP) while the machine is overloaded; do not kill or re-run it");
                 }
                 catch (e) {
-                    d.err(`lease: suspend check failed: ${e.message}`);
+                    d.err(`lease: ${suspended ? "resume" : "suspend"} check failed: ${e.message}`);
                 }
             }, GOVERN_MS);
             // A group that was suspended and is now going away takes the lease's record with it, never one another writer put there since; the holder file, and with it the mark, goes with the release.
             stopGoverning = () => {
                 unGovern();
                 try {
-                    if (suspended && readSuspensions(opts.dir).some((r) => r.pgid === pgid && r.by === "lease"))
-                        removeSuspension(opts.dir, pgid);
+                    if (suspended)
+                        removeLeaseSuspension(opts.dir, pgid);
                 }
                 catch (e) {
                     d.err(`lease: could not remove the suspension record for group ${pgid}: ${e.message}`);
@@ -278,7 +288,7 @@ export function cliLeaseDeps(err, base = {}) {
         leaseStatus,
         unowned: (opts, sessionPids, leasedRoots) => sampleUnowned({ dir: opts.dir, now: opts.now }, sessionPids, leasedRoots),
         ancestors: () => psAncestors(process.ppid, ANCESTOR_DEPTH),
-        governor: { every: (fn, ms) => { const t = setInterval(fn, ms); t.unref(); return () => clearInterval(t); }, processCommand: (pgid) => psField(pgid, "command") },
+        governor: { every: (fn, ms) => { const t = setInterval(fn, ms); t.unref(); return () => clearInterval(t); } },
         spawn: (file, fileArgs, opts) => spawn(file, fileArgs, { stdio: "inherit", env: opts.env, detached: opts.detached }),
         env,
         cwd: process.cwd(),

@@ -1,4 +1,6 @@
-/** Runs `ps` and returns trimmed stdout; throws on failure. Bounded (2 s unless `timeoutMs`) and stderr is discarded, so a hung `ps` cannot stall a caller and nothing writes past a `warn` seam. */
+/** The default bound of one `ps` call. */
+export declare const PS_TIMEOUT_MS = 2000;
+/** Runs `ps` and returns trimmed stdout; throws on failure. Bounded (`PS_TIMEOUT_MS` unless `timeoutMs`) and stderr is discarded, so a hung `ps` cannot stall a caller and nothing writes past a `warn` seam. */
 export declare function ps(args: string[], { timeoutMs }?: {
     timeoutMs?: number;
 }): string;

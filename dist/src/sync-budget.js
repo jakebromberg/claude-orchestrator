@@ -1,4 +1,5 @@
 import { HEARTBEAT_MS, HEARTBEAT_STALE_MS } from "./lease.js";
+import { PS_TIMEOUT_MS } from "./ps.js";
 /**
  * The longest the engine may block its event loop in one synchronous stretch. A session holder is reaped
  * {@link HEARTBEAT_STALE_MS} after its last beat and beats come every {@link HEARTBEAT_MS}, and a stretch can begin right
@@ -23,6 +24,11 @@ export const GIT_TIMEOUT_MS = 12_000;
  * so one post-check makes at most two (toplevel, origin) for one `cwd`, whatever the number of commands: 2 × 2 s.
  */
 export const WEIGHT_GIT_TIMEOUT_MS = 2_000;
+/**
+ * Bound on `LeaseOptions.processCommand` (the default is a `ps` call): `attempt()` continues at most one dead owner's group,
+ * so an acquire, which the engine's post-check makes on its event loop, blocks for one lookup at most.
+ */
+export const PROCESS_COMMAND_TIMEOUT_MS = PS_TIMEOUT_MS;
 /**
  * How many scraped PR URLs to put to `gh pr view` before giving up. Verification is a blocking network call per
  * candidate, so an unbounded loop would let a transcript that name-drops many same-repo PRs stall a wave. The run's own

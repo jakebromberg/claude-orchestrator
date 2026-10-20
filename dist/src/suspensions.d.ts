@@ -43,6 +43,12 @@ export declare function suspensionFile(dir: string, pgid: number): string;
 export declare function writeSuspension(dir: string, record: SuspensionRecord): void;
 /** Removes the record of `pgid`; returns whether one existed. */
 export declare function removeSuspension(dir: string, pgid: number): boolean;
+/** Whether the lease wrote `record` (`by: "lease"`) rather than an owner; the one place that tells the two apart. */
+export declare const isLeaseRecord: (record: SuspensionRecord) => boolean;
+/** The record of `pgid` when the lease wrote it; an owner's record, or none, is `undefined`. */
+export declare function leaseSuspension(dir: string, pgid: number): SuspensionRecord | undefined;
+/** Removes the record of `pgid` only when it is the lease's; returns whether one was removed. */
+export declare function removeLeaseSuspension(dir: string, pgid: number): boolean;
 /** The valid records in `<dir>/suspensions` (`readRecordDir`'s name and directory rule): an unreadable or invalid body (`at` and `remindAt` must parse as dates), or a body whose pgid is not its name, is skipped. */
 export declare function readSuspensions(dir: string): SuspensionRecord[];
 /** Runs `suspend` or `resume` (`argv[0]`): exit 0 done, 1 refused or failed, 64 usage. A suspend writes the record before the signal; a resume signals before it removes the record. */

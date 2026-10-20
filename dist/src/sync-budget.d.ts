@@ -23,6 +23,11 @@ export declare const GIT_TIMEOUT_MS = 12000;
  */
 export declare const WEIGHT_GIT_TIMEOUT_MS = 2000;
 /**
+ * Bound on `LeaseOptions.processCommand` (the default is a `ps` call): `attempt()` continues at most one dead owner's group,
+ * so an acquire, which the engine's post-check makes on its event loop, blocks for one lookup at most.
+ */
+export declare const PROCESS_COMMAND_TIMEOUT_MS = 2000;
+/**
  * How many scraped PR URLs to put to `gh pr view` before giving up. Verification is a blocking network call per
  * candidate, so an unbounded loop would let a transcript that name-drops many same-repo PRs stall a wave. The run's own
  * PR is near the newest end in every case this defends against, so a handful of the newest candidates is all that is

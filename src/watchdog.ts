@@ -10,7 +10,7 @@ import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
 import { appendOwnLine, isOwnDir, readLeaseRecord, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
 import { ancestry, isClaudeCommand, isPid, parsePsTable, ps, PS_TABLE_ARGS, type ProcRow } from "./ps.js";
-import { readSuspensions, type SuspensionRecord } from "./suspensions.js";
+import { isLeaseRecord, readSuspensions, type SuspensionRecord } from "./suspensions.js";
 
 const EX_USAGE = 64;
 const USAGE = "usage: claude-orchestrator-watchdog check | brief | print-plist | print-status-line";
@@ -106,7 +106,7 @@ const dueReminder: Rule = (c) =>
 
 const oldLeaseSuspension: Rule = (c) =>
   c.records
-    .filter((r) => r.by === "lease" && c.now - Date.parse(r.at) >= LEASE_SUSPENSION_MAX_MS)
+    .filter((r) => isLeaseRecord(r) && c.now - Date.parse(r.at) >= LEASE_SUSPENSION_MAX_MS)
     .map((r) => ({ key: `lease-suspended:${r.pgid}`, message: `process group ${r.pgid} suspended by the lease ${minutes(c.now - Date.parse(r.at))}m (${r.reason})` }));
 
 // A fresh record is refreshing, so a silent engine is a live one that writes no session log: exclusive with stalledEngine by freshness.

@@ -8,6 +8,7 @@ import {
   BLOCKING_BUDGET_MS,
   GIT_TIMEOUT_MS,
   MAX_PR_CANDIDATES_VERIFIED,
+  PROCESS_COMMAND_TIMEOUT_MS,
   SYNC_CALL_TIMEOUT_MS,
   WEIGHT_GIT_TIMEOUT_MS,
 } from "../src/sync-budget.js";
@@ -39,6 +40,8 @@ describe("synchronous call budgets", () => {
     { name: "PR verification plus the commit count", stretch: (MAX_PR_CANDIDATES_VERIFIED + 1) * SYNC_CALL_TIMEOUT_MS },
     { name: "setUpWorktree's four git calls", stretch: 4 * GIT_TIMEOUT_MS },
     { name: "the post-check weight lookup's git calls", stretch: weightLookupCalls() * WEIGHT_GIT_TIMEOUT_MS },
+    // `attempt()` continues at most one dead owner's group, so one `processCommand` (a bounded `ps`) runs per acquire.
+    { name: "the dead-owner check's one leader lookup", stretch: PROCESS_COMMAND_TIMEOUT_MS },
   ])("keeps $name within the heartbeat window", ({ stretch }) => {
     expect(stretch).toBeLessThanOrEqual(BLOCKING_BUDGET_MS);
   });

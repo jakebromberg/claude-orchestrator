@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readSuspensions, removeSuspension, suspensionFile, writeSuspension, type SuspensionRecord } from "../src/suspensions.js";
+import { leaseSuspension, readSuspensions, removeLeaseSuspension, removeSuspension, suspensionFile, writeSuspension, type SuspensionRecord } from "../src/suspensions.js";
 
 const REC: SuspensionRecord = { pgid: 4242, by: "jake", reason: "demo", at: "2026-10-16T12:00:00.000Z", remindAt: "2026-10-16T14:00:00.000Z", leader: "sleep 100" };
 
@@ -58,5 +58,17 @@ describe("suspension records", () => {
     put(`4242.json.${process.pid}.ab12cd34.tmp`, "{");
     writeSuspension(dir, REC);
     expect(readdirSync(join(dir, "suspensions")).sort()).toEqual(["4242.json", `4242.json.${process.pid}.ab12cd34.tmp`]);
+  });
+
+  it("finds and removes only a record the lease wrote", () => {
+    writeSuspension(dir, { ...REC, by: "lease" });
+    writeSuspension(dir, { ...REC, pgid: 4243 });
+    expect(leaseSuspension(dir, 4242)).toMatchObject({ pgid: 4242, by: "lease" });
+    expect(leaseSuspension(dir, 4243)).toBeUndefined();
+    expect(leaseSuspension(dir, 4244)).toBeUndefined();
+    expect(removeLeaseSuspension(dir, 4243)).toBe(false);
+    expect(removeLeaseSuspension(dir, 4244)).toBe(false);
+    expect(removeLeaseSuspension(dir, 4242)).toBe(true);
+    expect(readSuspensions(dir).map((r) => r.pgid)).toEqual([4243]);
   });
 });

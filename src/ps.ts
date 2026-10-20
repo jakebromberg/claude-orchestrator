@@ -1,8 +1,11 @@
 import { basename } from "node:path";
 import { execFileSync } from "node:child_process";
 
-/** Runs `ps` and returns trimmed stdout; throws on failure. Bounded (2 s unless `timeoutMs`) and stderr is discarded, so a hung `ps` cannot stall a caller and nothing writes past a `warn` seam. */
-export function ps(args: string[], { timeoutMs = 2_000 }: { timeoutMs?: number } = {}): string {
+/** The default bound of one `ps` call. */
+export const PS_TIMEOUT_MS = 2_000;
+
+/** Runs `ps` and returns trimmed stdout; throws on failure. Bounded (`PS_TIMEOUT_MS` unless `timeoutMs`) and stderr is discarded, so a hung `ps` cannot stall a caller and nothing writes past a `warn` seam. */
+export function ps(args: string[], { timeoutMs = PS_TIMEOUT_MS }: { timeoutMs?: number } = {}): string {
   return execFileSync("ps", args, { encoding: "utf8", timeout: timeoutMs, stdio: ["ignore", "pipe", "ignore"] }).trim();
 }
 

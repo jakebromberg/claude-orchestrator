@@ -92,6 +92,16 @@ export function removeSuspension(dir, pgid) {
     rmSync(file, { force: true });
     return had;
 }
+/** Whether the lease wrote `record` (`by: "lease"`) rather than an owner; the one place that tells the two apart. */
+export const isLeaseRecord = (record) => record.by === "lease";
+/** The record of `pgid` when the lease wrote it; an owner's record, or none, is `undefined`. */
+export function leaseSuspension(dir, pgid) {
+    return readSuspensions(dir).find((r) => r.pgid === pgid && isLeaseRecord(r));
+}
+/** Removes the record of `pgid` only when it is the lease's; returns whether one was removed. */
+export function removeLeaseSuspension(dir, pgid) {
+    return leaseSuspension(dir, pgid) !== undefined && removeSuspension(dir, pgid);
+}
 /** The valid records in `<dir>/suspensions` (`readRecordDir`'s name and directory rule): an unreadable or invalid body (`at` and `remindAt` must parse as dates), or a body whose pgid is not its name, is skipped. */
 export function readSuspensions(dir) {
     return readRecordDir(dir, "suspensions").flatMap(({ stem, text }) => {
