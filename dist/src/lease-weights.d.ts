@@ -26,5 +26,11 @@ export declare function normalizeRemote(url: string): string | undefined;
 export declare function loadWeightTable(env: NodeJS.ProcessEnv, warn: (line: string) => void): WeightRule[];
 /** Bytes for the first rule matching `command` (and `cwd`'s repo, when keyed); `undefined` when none does. */
 export declare function resolveWeight(command: string, cwd: string, table: WeightRule[], lookup?: GitLookup): number | undefined;
+/** `lookup` answering each fact once per directory; a throw is cached as unknown (""). */
+export declare function memoizedGit(lookup: GitLookup): GitLookup;
+/**
+ * The largest weight over `commands` in `cwd` from the table `env` names; `undefined` when none matches. One table read and at most one git call per fact per directory, because each blocks the caller's event loop.
+ */
+export declare function weightForCommands(commands: string[], cwd: string, env: NodeJS.ProcessEnv, warn: (line: string) => void, lookup?: GitLookup): number | undefined;
 /** The weight for a command in `cwd` from the table `env` names; the one call the hook and the CLI make. */
 export declare function weightFor(command: string, cwd: string, env: NodeJS.ProcessEnv, warn: (line: string) => void): number | undefined;
