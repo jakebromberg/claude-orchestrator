@@ -15,7 +15,7 @@ import { MAX_STEP } from "./headroom.js";
 import { SYNC_CALL_TIMEOUT_MS } from "./worktree-hooks.js";
 import type { HeadroomReading } from "./headroom-sampler.js";
 import { acquireSessionLease, type LeaseHandle, type LeaseOptions } from "./lease.js";
-import { refusalStopReason, WAIT_LOG_INTERVAL_MS } from "./lease-messages.js";
+import { refusalStopReason, throttledProgress } from "./lease-messages.js";
 import { stopAtCritical } from "./memory-pressure.js";
 import type { PressureSampler } from "./memory-pressure.js";
 import type { MergeResult } from "./merge.js";
@@ -73,14 +73,15 @@ const UNLEASED: SessionSlot = { release() {} };
 
 /**
  * `lease` with its headroom step read as 4 whenever it is above 0, so `--no-adaptive` lifts steps 1 to 3 and `critical`
- * still closes the session row. Only the engine's session acquires use it; the post-check keeps the shared step.
+ * still closes the session row. A reading the `CO_PRESSURE_OVERRIDE` changed (a real step 0 read as 1) is not lifted.
+ * Only the engine's session acquires use it; the post-check keeps the shared step.
  */
 function withoutAdaptation(lease: LeaseOptions): LeaseOptions {
   const base = lease.headroom;
   if (!base) return lease;
   const lift = (read: () => HeadroomReading) => (): HeadroomReading => {
     const reading = read();
-    return reading.step > 0 ? { ...reading, step: MAX_STEP } : reading;
+    return reading.step > 0 && !base.overridden?.() ? { ...reading, step: MAX_STEP } : reading;
   };
   return { ...lease, headroom: Object.assign(lift(base), { fresh: lift(base.fresh), ...(base.overridden && { overridden: base.overridden }) }) };
 }
@@ -850,20 +851,13 @@ export class Orchestrator {
     const lease = this.deps.lease;
     if (!lease) return UNLEASED;
     const waitLog = `${this.config.configDir}/logs/issue-${encodeRefForFilename(issue.ref)}.wait.log`;
-    let lastLogged: number | undefined;
     const got = await acquireSessionLease(
       { ...(this.adaptive ? lease : withoutAdaptation(lease)), inheritedHolderId: undefined },
       { command: "claude", label: `session ${issue.ref}`, cwd },
       {
-        onWait: (s) => {
-          if (lastLogged !== undefined && s.waitedMs - lastLogged < WAIT_LOG_INTERVAL_MS) return;
-          lastLogged = s.waitedMs;
-          try {
-            this.deps.appendFile?.(waitLog, `${new Date().toISOString()} Issue #${issue.number} waiting for a session slot (${s.level}, ${s.live.length}/${s.capacity} held)\n`);
-          } catch {
-            // A progress line must never change what the wait does.
-          }
-        },
+        onWait: throttledProgress((s) => this.deps.appendFile?.(
+          waitLog, `${new Date().toISOString()} Issue #${issue.number} waiting for a session slot (${s.level}, ${s.live.length}/${s.capacity} held)\n`,
+        )),
         stopWhen: (s) => stopAtCritical(s.level, s.live.length + this.liveSessions),
       },
     );

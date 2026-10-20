@@ -13,7 +13,7 @@ import { perIssueSpawnArgs } from "./model-effort.js";
 import { shellQuote } from "./shell-quote.js";
 import { claudeExecOptions } from "./claude-env.js";
 import { acquireLease, defaultWarn, type LeaseHandle, type LeaseOptions, type LeaseRefusal } from "./lease.js";
-import { formatPostCheckStop, refusalStopReason, WAIT_LOG_INTERVAL_MS } from "./lease-messages.js";
+import { formatPostCheckStop, refusalStopReason, throttledProgress } from "./lease-messages.js";
 import { loadWeightTable, realGit, resolveWeight, type GitLookup } from "./lease-weights.js";
 import { SYNC_CALL_TIMEOUT_MS } from "./worktree-hooks.js";
 import { stopAtCritical } from "./memory-pressure.js";
@@ -186,7 +186,6 @@ function acquireCheckLease(
   commands: string[],
   runningSessions: () => number = () => 0,
 ): Promise<LeaseHandle | LeaseRefusal> {
-  let lastLogged: number | undefined;
   const warn = lease.warn ?? defaultWarn;
   // One table read and at most one git call per fact for the whole check, not per command: the engine's event loop waits on each.
   // The table comes from the handed lease's own directory, so holders and weight rules can never disagree about where the lease lives.
@@ -208,16 +207,9 @@ function acquireCheckLease(
     { ...lease, inheritedHolderId: undefined },
     { command: commands[0] ?? "", label: `post-check ${issue.ref}`, cwd, ...(weight > 0 && { weight }) },
     {
-      onWait: (s) => {
-        if (lastLogged !== undefined && s.waitedMs - lastLogged < WAIT_LOG_INTERVAL_MS) return;
-        lastLogged = s.waitedMs;
-        // A throwing writer must never change what the check does.
-        try {
-          (lease.warn ?? defaultWarn)(
-            `Issue #${issue.number} post-check waiting for a lease slot (${s.level}, ${s.live.length}/${s.capacity} slots held)`,
-          );
-        } catch {}
-      },
+      onWait: throttledProgress((s) => (lease.warn ?? defaultWarn)(
+        `Issue #${issue.number} post-check waiting for a lease slot (${s.level}, ${s.live.length}/${s.capacity} slots held)`,
+      )),
       stopWhen: (s) => stopAtCritical(s.level, s.live.length + runningSessions()),
     },
   );
