@@ -12,6 +12,7 @@ import { createCapacityGovernor, type CapacityTransition } from "./capacity-gove
 import { jsonlSink } from "./lease-events.js";
 import type { CapacityGovernor } from "./capacity-governor.js";
 import { MAX_STEP } from "./headroom.js";
+import { SYNC_CALL_TIMEOUT_MS } from "./worktree-hooks.js";
 import type { HeadroomReading } from "./headroom-sampler.js";
 import { acquireSessionLease, type LeaseHandle, type LeaseOptions } from "./lease.js";
 import { refusalStopReason, WAIT_LOG_INTERVAL_MS } from "./lease-messages.js";
@@ -49,14 +50,6 @@ const NO_STOP = { failureReason: undefined, stopStage: undefined };
  * handful of the newest candidates is all that is worth paying for.
  */
 export const MAX_PR_CANDIDATES_VERIFIED = 5;
-
-/**
- * Bound on each synchronous gh/git call the engine makes (`verifyPrIdentity`, `producedNoCommits`): a hung tool must
- * fail its step, not freeze the process past the lease's 90 s heartbeat reap window. A blocking stretch can begin up
- * to 30 s after the last beat, so it must end within 60 s: verification runs up to `MAX_PR_CANDIDATES_VERIFIED`
- * calls back to back, and `producedNoCommits` can follow with no yield, so (5 + 1) × 10 s fits.
- */
-export const SYNC_CALL_TIMEOUT_MS = 10_000;
 
 const DEFAULT_ALLOWED_TOOLS = [
   "Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Task",
@@ -940,26 +933,7 @@ export class Orchestrator {
     const postCheckPromises: Promise<void>[] = [];
 
     for (const [index, { issue, prompt, sessionId }] of ready.entries()) {
-      pressureTimer?.ref();
-      const poolSlot = await pool.waitForSlot();
-      pressureTimer?.unref();
       const worktreePath = this.config.hooks.getWorktreePath(issue);
-      const slot = poolSlot === "stop" ? "memory-critical" : await this.acquireSessionSlot(issue, worktreePath);
-      if (typeof slot === "string") {
-        const unstarted = ready.slice(index).map((r) => r.issue);
-        for (const i of unstarted) await this.markStopped(i, "launch", undefined, slot);
-        this.deps.logger.warn(
-          `${slot === "disk-full" ? "The disk is full" : "Memory pressure is critical and no session is active"}; not launching ${unstarted.map((i) => i.ref).join(", ")} (failureReason: ${slot})`,
-        );
-        break;
-      }
-
-      this.recordLaunch(issue, sessionId);
-      await this.setStatus(issue, "running");
-      this.deps.logger.step(
-        `Launching Claude session for issue #${issue.number}: ${issue.description}`,
-      );
-
       const extraArgs = this.config.hooks.getClaudeArgs(issue);
       const logFile = `${this.config.configDir}/logs/issue-${encodeRefForFilename(issue.ref)}.log`;
       const tools = this.config.allowedTools ?? DEFAULT_ALLOWED_TOOLS;
@@ -980,11 +954,38 @@ export class Orchestrator {
         sessionId,
         "--verbose",
       ];
-
-      const launchTime = new Date().toISOString();
-      this.deps.metadataStore.update(issue.ref, { startedAt: launchTime, ...NO_STOP });
-
       const stderrFile = `${this.config.configDir}/logs/issue-${encodeRefForFilename(issue.ref)}.stderr.log`;
+
+      let slot: SessionSlot | FailureReason;
+      for (;;) {
+        pressureTimer?.ref();
+        const poolSlot = await pool.waitForSlot();
+        pressureTimer?.unref();
+        slot = poolSlot === "stop" ? "memory-critical" : await this.acquireSessionSlot(issue, worktreePath);
+        // The pool's limit can drop during the session wait (the 0-byte fallback, a critical hold), so check it again.
+        if (typeof slot === "string" || !pool.isFull) break;
+        slot.release();
+      }
+      if (typeof slot === "string") {
+        const unstarted = ready.slice(index).map((r) => r.issue);
+        for (const i of unstarted) await this.markStopped(i, "launch", undefined, slot);
+        this.deps.logger.warn(
+          `${slot === "disk-full" ? "The disk is full" : "Memory pressure is critical and no session is active"}; not launching ${unstarted.map((i) => i.ref).join(", ")} (failureReason: ${slot})`,
+        );
+        break;
+      }
+
+      try {
+        this.recordLaunch(issue, sessionId);
+        await this.setStatus(issue, "running");
+        this.deps.metadataStore.update(issue.ref, { startedAt: new Date().toISOString(), ...NO_STOP });
+      } catch (err) {
+        slot.release();
+        throw err;
+      }
+      this.deps.logger.step(
+        `Launching Claude session for issue #${issue.number}: ${issue.description}`,
+      );
 
       const handle = this.spawnSession(issue, args, worktreePath, logFile, stderrFile, { slot });
 

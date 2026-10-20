@@ -8,7 +8,7 @@ vi.mock("node:child_process", async (orig) => ({
   execFileSync,
 }));
 
-import { SYNC_CALL_TIMEOUT_MS } from "../src/engine.js";
+import { SYNC_CALL_TIMEOUT_MS } from "../src/worktree-hooks.js";
 import { deriveHooks } from "../src/yaml-hooks.js";
 import type { Issue } from "../src/types.js";
 import type { YamlConfig } from "../src/yaml-types.js";
@@ -42,13 +42,23 @@ describe("synchronous calls during a wave", () => {
     warn.mockRestore();
   });
 
-  it("bounds the collision check's default git runner", async () => {
+  it.each([
+    { fetch: "returns", fetchTimesOut: false },
+    { fetch: "times out", fetchTimesOut: true },
+  ])("bounds the collision check's default git runner, and passes the check when git fetch $fetch", async ({ fetchTimesOut }) => {
+    execFileSync.mockImplementation((_file: unknown, args: unknown) => {
+      if (fetchTimesOut && (args as string[]).includes("fetch")) {
+        throw Object.assign(new Error("spawnSync git ETIMEDOUT"), { code: "ETIMEDOUT" });
+      }
+      return "";
+    });
     const hooks = deriveHooks(yaml({
       sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
       postSessionCheck: undefined,
     }));
-    await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo");
-    expect(execFileSync).toHaveBeenCalled();
+    const result = await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo");
+    expect(result.passed).toBe(true);
+    expect(execFileSync.mock.calls.some(([, args]) => (args as string[]).includes("fetch"))).toBe(true);
     for (const call of execFileSync.mock.calls) expect(timeoutOf(call)).toBe(SYNC_CALL_TIMEOUT_MS);
   });
 });

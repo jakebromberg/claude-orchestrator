@@ -15,7 +15,7 @@ import { claudeExecOptions } from "./claude-env.js";
 import { acquireLease, defaultWarn, type LeaseHandle, type LeaseOptions, type LeaseRefusal } from "./lease.js";
 import { formatPostCheckStop, refusalStopReason, WAIT_LOG_INTERVAL_MS } from "./lease-messages.js";
 import { loadWeightTable, realGit, resolveWeight, type GitLookup } from "./lease-weights.js";
-import { SYNC_CALL_TIMEOUT_MS } from "./engine.js";
+import { SYNC_CALL_TIMEOUT_MS } from "./worktree-hooks.js";
 import { stopAtCritical } from "./memory-pressure.js";
 import { groupAlive, signalGroup } from "./ps.js";
 

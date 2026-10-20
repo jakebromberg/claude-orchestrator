@@ -45,6 +45,14 @@ export interface DeriveWorktreeHooksOptions {
  */
 export declare const GIT_TIMEOUT_MS = 12000;
 /**
+ * Bound on each synchronous gh/git call made while sessions run (the engine's `verifyPrIdentity` and
+ * `producedNoCommits`, label sync's `gh`, the collision check's `git`): a hung tool must fail its step, not freeze the
+ * process past the lease's 90 s heartbeat reap window. A blocking stretch can begin up to 30 s after the last beat, so
+ * it must end within 60 s: the engine's PR verification runs up to `MAX_PR_CANDIDATES_VERIFIED` calls back to back, and
+ * `producedNoCommits` can follow with no yield, so (5 + 1) × 10 s fits.
+ */
+export declare const SYNC_CALL_TIMEOUT_MS = 10000;
+/**
  * Build the worktree lifecycle hooks (`getWorktreePath`, `getBranchName`,
  * `setUpWorktree`, `removeWorktree`) for a cross-repo config. All four agree on
  * the same path and branch derivation, so the created worktree is exactly where
