@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { deriveHooks, MAX_TIMER_MS, runShellAsync, stopLiveCommandGroups } from "../src/yaml-hooks.js";
 import type { YamlConfig } from "../src/yaml-types.js";
 import type { Issue, Status } from "../src/types.js";
+import type { LeaseOptions } from "../src/lease.js";
 
 function makeYaml(overrides: Partial<YamlConfig> = {}): YamlConfig {
   return {
@@ -508,6 +509,53 @@ describe("deriveHooks", () => {
       expect(warn).toHaveBeenCalledWith(expect.stringMatching(text));
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("/tmp/worktrees/foo"));
       warn.mockRestore();
+    });
+
+    it("keeps the stale-base warning on one line when git's error spans several", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const fetchError = new Error("Command failed: git -C /tmp/worktrees/foo fetch origin main\nfatal: unable to access origin\n");
+      const hooks = deriveHooks(
+        makeYaml({
+          sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+        }),
+        {
+          runGitCommand: (_file, args) => {
+            if (args.includes("fetch")) throw fetchError;
+            return "";
+          },
+          existsSync: () => false,
+        },
+      );
+      await hooks.postSessionCheck!(makeIssue({ slug: "foo" }), "/tmp/worktrees/foo");
+      expect(warn).toHaveBeenCalledOnce();
+      const [line] = warn.mock.calls[0] as [string];
+      expect(line).not.toContain("\n");
+      expect(line).toMatch(/Command failed: git .*fetch origin main.*may be stale/);
+      warn.mockRestore();
+    });
+
+    it("sends the stale-base warning through the engine's warn when the check has one", async () => {
+      const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const engineWarn = vi.fn();
+      const hooks = deriveHooks(
+        makeYaml({
+          sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+        }),
+        {
+          runGitCommand: (_file, args) => {
+            if (args.includes("fetch")) throw new Error("unable to access origin");
+            return "";
+          },
+          existsSync: () => false,
+        },
+      );
+      await hooks.postSessionCheck!(makeIssue({ slug: "foo" }), "/tmp/worktrees/foo", {
+        lease: { warn: engineWarn } as unknown as LeaseOptions,
+        runningSessions: () => 0,
+      });
+      expect(engineWarn).toHaveBeenCalledWith(expect.stringMatching(/main.*stale/));
+      expect(consoleWarn).not.toHaveBeenCalledWith(expect.stringMatching(/stale/));
+      consoleWarn.mockRestore();
     });
 
     it("logs no warning when the fetch succeeds", async () => {

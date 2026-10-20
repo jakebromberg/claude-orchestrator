@@ -56,22 +56,27 @@ describe("synchronous call budgets", () => {
     expect((MAX_PR_CANDIDATES_VERIFIED + 3) * SYNC_CALL_TIMEOUT_MS).toBeLessThanOrEqual(BLOCKING_BUDGET_MS);
   });
 
-  // The fetch plus the git calls gatherCollisionInputs makes per peer worktree (merge-base, one diff per entry).
-  const callsPerPeer = (): number => {
+  // Every git call gatherCollisionInputs makes with one sequential entry and `peers` peer worktrees.
+  const gitCalls = (peers: number): number => {
     let total = 0;
     gatherCollisionInputs({
-      runCommand: (_file, args) => (args.includes("/peer") && total++, "abc\n"),
+      runCommand: () => (total++, "abc\n"),
       existsSync: () => true,
       currentWorktree: "/wt",
-      peers: [{ slug: "p", worktreePath: "/peer" }],
+      peers: Array.from({ length: peers }, (_, i) => ({ slug: `p${i}`, worktreePath: `/peer${i}` })),
       entries: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
       baseBranch: "main",
     });
     return total;
   };
 
+  it("counts the fetch, the current worktree's merge-base and two diffs per entry, and a merge-base and one diff per entry per peer", () => {
+    expect(gitCalls(0)).toBe(4);
+    expect(gitCalls(3) - gitCalls(2)).toBe(2);
+  });
+
   it.fails("keeps the collision check with many peers within the heartbeat window", () => {
     const peers = 10; // the number of peers is not bounded
-    expect((1 + peers * callsPerPeer()) * SYNC_CALL_TIMEOUT_MS).toBeLessThanOrEqual(BLOCKING_BUDGET_MS);
+    expect(gitCalls(peers) * SYNC_CALL_TIMEOUT_MS).toBeLessThanOrEqual(BLOCKING_BUDGET_MS);
   });
 });
