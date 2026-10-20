@@ -31,7 +31,7 @@ function main(argv: string[]): number {
   }
   const out = (line: string): void => void process.stdout.write(`${line}\n`);
   const checkout = checkoutOf(realpathSync(fileURLToPath(import.meta.url)));
-  const printed = runPrint(argv, { dir, node: stableNode(process.execPath, process.env.PATH, realpathSync), checkout, isWorktree: isGitWorktree, out, err });
+  const printed = runPrint(argv, { dir, node: () => stableNode(process.execPath, process.env.PATH, realpathSync), checkout, isWorktree: isGitWorktree, out, err });
   if (printed !== undefined) return printed;
   return runWatchdog(argv, { dir, scan: scanProcessTable, now: Date.now, out, err });
 }

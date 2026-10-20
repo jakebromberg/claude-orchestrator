@@ -2,10 +2,11 @@ import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { diskFullText, DISK_FULL_FRACTION } from "./watchdog.js";
 
-/** What `print-plist` and `print-status-line` need; nothing here installs anything. */
+/** What `print-plist`, `print-status-line` and `print-claude-md-line` need; nothing here installs anything. */
 export interface PrintDeps {
   dir: string;
-  node: string;
+  /** The plist's `node` path, looked up only by `print-plist`, so `check` never walks `PATH`. */
+  node(): string;
   /** The checkout holding `dist/`, two levels above the running bin. */
   checkout: string;
   isWorktree(checkout: string): boolean;
@@ -125,6 +126,6 @@ export function runPrint(argv: string[], d: PrintDeps): number | undefined {
     d.err(`watchdog: ${d.checkout} is a git worktree, and its dist is removed at cleanup; run ${cmd} from the primary checkout`);
     return 1;
   }
-  d.out(cmd === "print-plist" ? plistText({ node: d.node, checkout: d.checkout, dir: d.dir }) : claudeMdLine(d.checkout));
+  d.out(cmd === "print-plist" ? plistText({ node: d.node(), checkout: d.checkout, dir: d.dir }) : claudeMdLine(d.checkout));
   return 0;
 }

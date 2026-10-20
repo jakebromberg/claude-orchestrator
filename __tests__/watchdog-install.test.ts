@@ -193,10 +193,20 @@ describe("checkoutOf", () => {
 describe("runPrint", () => {
   const out: string[] = [];
   const err: string[] = [];
-  const deps = (over: Partial<PrintDeps> = {}): PrintDeps => ({ dir: LEASE, node: "/n/node", checkout: "/c", isWorktree: () => false, out: (l) => out.push(l), err: (l) => err.push(l), ...over });
+  const deps = (over: Partial<PrintDeps> = {}): PrintDeps => ({ dir: LEASE, node: () => "/n/node", checkout: "/c", isWorktree: () => false, out: (l) => out.push(l), err: (l) => err.push(l), ...over });
 
-  it("ignores other subcommands", () => {
-    expect(runPrint(["check"], deps())).toBeUndefined();
+  it.each([[["check"]], [["print-nothing"]], [["print-plist", "extra"]], [[]]])("ignores %j", (argv) => {
+    expect(runPrint(argv, deps({ node: () => { throw new Error("node looked up"); } }))).toBeUndefined();
+  });
+
+  it("looks up node only for print-plist", () => {
+    let calls = 0;
+    const d = deps({ node: () => (calls++, "/n/node") });
+    runPrint(["print-status-line"], d);
+    runPrint(["print-claude-md-line"], d);
+    expect(calls).toBe(0);
+    runPrint(["print-plist"], d);
+    expect(calls).toBe(1);
   });
 
   it("prints the plist and the snippet", () => {
