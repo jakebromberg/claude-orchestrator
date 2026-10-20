@@ -39,7 +39,22 @@ describe("runShellAsync signalling a dropped process group", () => {
     h.signalGroup.mockReset().mockReturnValue(true);
   });
   afterEach(() => {
+    // Settle every fake child so no pgid stays in the module-wide live set for the next case.
+    h.groupAlive.mockReturnValue(false);
+    for (const child of h.children as FakeChild[]) child.emit("exit", 0, null);
     vi.useRealTimers();
+  });
+
+  it("does not probe or poll the pgid again on a later 'close' once this call dropped it", async () => {
+    h.groupAlive.mockReturnValue(false);
+    const run = runShellAsync("x", "/", undefined, undefined, 60_000, 100);
+    (h.children[0] as FakeChild).emit("exit", 0, null);
+    // Another command now owns the reused pgid and its group is live.
+    h.groupAlive.mockReset().mockReturnValue(true);
+    (h.children[0] as FakeChild).emit("close", 0, null);
+    await run;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(h.groupAlive).not.toHaveBeenCalled();
   });
 
   it("signals a group that is still live: SIGTERM at the deadline, SIGKILL after the grace", async () => {
