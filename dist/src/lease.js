@@ -22,7 +22,7 @@ import { ensureOwnSubdir, isOwnDir, readLeaseRecord, readOwnFile } from "./lease
 import { leaseEventSink } from "./lease-events.js";
 import { DEFAULT_RESERVE_PCT, DEFAULT_SESSION_SLOTS, freeBytes, leaseDirectory, pressurePolicyFromEnv, reservePctFromEnv, sessionSlotsFromEnv, usableBytes, } from "./memory-pressure.js";
 import { isPid, pidAlive, PS_TIMEOUT_MS, psField, signalGroup } from "./ps.js";
-import { leaseSuspension, removeLeaseSuspension, removeSuspension, writeSuspension } from "./suspensions.js";
+import { isLeaseRecord, leaseSuspension, readSuspensions, removeLeaseSuspension, removeSuspension, suspensionOf, writeSuspension } from "./suspensions.js";
 export { ensureOwnSubdir, isOwnDir, isPid, pidAlive };
 const MUTEX_STALE_MS = 10_000;
 /**
@@ -289,6 +289,10 @@ function recordSuspension(dir, record) {
 export function suspendNewest(opts, handle, pgid, leader, stop) {
     if (!handle.setSuspended)
         return false;
+    // The owner's record is the only thing read before the mutex: it settles the tick, and the lease never writes over it.
+    const held = suspensionOf(opts.dir, pgid);
+    if (held && !isLeaseRecord(held))
+        return false;
     const { step, signals } = snapshot(opts, HEAVY);
     const lock = tryLockOnce(join(opts.dir, ".mutex"), { staleAfterMs: MUTEX_STALE_MS, now: opts.now });
     if (!lock)
@@ -313,7 +317,9 @@ export function suspendNewest(opts, handle, pgid, leader, stop) {
             free !== undefined && free <= SUSPEND_FREE_PCT && `${free}% memory free`,
         ].filter(Boolean).join(", ");
         if (why && markElapsed(opts.dir, "lastSuspend", nowMs, SUSPEND_SPACING_MS)) {
-            const running = scanHolders(opts, HEAVY).live.filter((h) => !h.suspended).sort(byAge);
+            // A group with any record is stopped, whoever stopped it, except this one's own (a leftover lease record is replaced).
+            const stopped = new Set(readSuspensions(opts.dir).map((r) => r.pgid));
+            const running = scanHolders(opts, HEAVY).live.filter((h) => !h.suspended && (h.id === handle.id || h.pgid === undefined || !stopped.has(h.pgid))).sort(byAge);
             const newest = running.slice(1).filter((h) => h.suspendable).at(-1);
             if (newest?.id === handle.id && nowMs - newest.startedAt >= SUSPEND_MIN_RUN_MS) {
                 const at = new Date(nowMs).toISOString();
@@ -403,7 +409,12 @@ export function resumeOldest(opts, handle, pgid, cont) {
     if (cont(pgid))
         emit(opts, HEAVY, { type: "resume", id: handle.id, pgid, reason: why });
     handle.setSuspended(false);
-    removeLeaseSuspension(opts.dir, pgid);
+    try {
+        removeLeaseSuspension(opts.dir, pgid);
+    }
+    catch (err) {
+        warn(opts, `lease: could not remove the suspension record for group ${pgid}: ${err.message}`);
+    }
     return "resumed";
 }
 /** Under the mutex only: sets or clears the `suspended` mark in the holder file of `id`, keeping its heartbeat mtime; a holder that is gone, or already so, is left alone. */

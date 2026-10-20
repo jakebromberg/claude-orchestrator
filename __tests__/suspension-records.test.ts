@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { leaseSuspension, readSuspensions, removeLeaseSuspension, removeSuspension, suspensionFile, writeSuspension, type SuspensionRecord } from "../src/suspensions.js";
+import { leaseSuspension, readSuspensions, removeLeaseSuspension, removeSuspension, suspensionFile, suspensionOf, writeSuspension, type SuspensionRecord } from "../src/suspensions.js";
+import { failFsCall } from "./helpers/lease.js";
 
 const REC: SuspensionRecord = { pgid: 4242, by: "jake", reason: "demo", at: "2026-10-16T12:00:00.000Z", remindAt: "2026-10-16T14:00:00.000Z", leader: "sleep 100" };
 
@@ -40,6 +41,42 @@ describe("suspension records", () => {
     const before = readdirSync(dir);
     expect(readSuspensions(dir)).toEqual(want);
     expect(readdirSync(dir)).toEqual(before);
+  });
+
+  it.each<[string, () => void, SuspensionRecord | undefined]>([
+    ["a valid record", () => put("4242.json", REC), REC],
+    ["an owner's record", () => put("4242.json", { ...REC, by: "lease" }), { ...REC, by: "lease" }],
+    ["a missing file", () => put("4243.json", REC), undefined],
+    ["a missing directory", () => {}, undefined],
+    ["malformed JSON", () => put("4242.json", "{nope"), undefined],
+    ["a body that fails validation", () => put("4242.json", { ...REC, remindAt: 5 }), undefined],
+    ["a body whose pgid is not the file's", () => put("4242.json", { ...REC, pgid: 4243 }), undefined],
+    ["a directory in place of the file", () => mkdirSync(join(dir, "suspensions", "4242.json"), { recursive: true, mode: 0o700 }), undefined],
+    ["a symlinked record", () => {
+      put("real.json", REC);
+      symlinkSync(join(dir, "suspensions", "real.json"), join(dir, "suspensions", "4242.json"));
+    }, undefined],
+    ["a symlinked suspensions/", () => {
+      const real = join(dir, "real");
+      mkdirSync(real);
+      writeFileSync(join(real, "4242.json"), JSON.stringify(REC));
+      symlinkSync(real, join(dir, "suspensions"));
+    }, undefined],
+  ])("suspensionOf: %s", (_n, setUp, want) => {
+    setUp();
+    expect(suspensionOf(dir, 4242)).toEqual(want);
+  });
+
+  it("suspensionOf throws on an I/O error, which readSuspensions reads as no record", () => {
+    put("4242.json", REC);
+    const restore = failFsCall("openSync", (p) => p.includes("suspensions"), "EIO");
+    try {
+      expect(() => suspensionOf(dir, 4242)).toThrow(expect.objectContaining({ code: "EIO" }));
+      expect(() => leaseSuspension(dir, 4242)).toThrow(expect.objectContaining({ code: "EIO" }));
+      expect(readSuspensions(dir)).toEqual([]);
+    } finally {
+      restore();
+    }
   });
 
   it("round-trips a record and reports removal once", () => {

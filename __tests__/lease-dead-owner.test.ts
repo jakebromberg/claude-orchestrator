@@ -126,6 +126,24 @@ describe("continuing a dead owner's suspended group", () => {
     expect(sigconts()).toEqual([-7001]);
   });
 
+  it("sends no signal when the record cannot be read, and the orphan stays selectable by a later acquire", () => {
+    plant("dead", 7001);
+    const restore = failFsCall("openSync", (p) => p.includes("suspensions"), "EIO");
+    try {
+      acquire();
+    } finally {
+      restore();
+    }
+    expect(sigconts()).toEqual([]);
+    expect(asked).toEqual([]);
+    expect(readSuspensions(dir)).toHaveLength(1);
+    expect(holderRec("dead").suspended).toBe(true);
+    expect(lease.warnings.at(-1)).toMatch(/could not read the leader of group 7001: EIO/);
+    handle?.release();
+    acquire();
+    expect(sigconts()).toEqual([-7001]);
+  });
+
   it("claims the orphan under the mutex: an acquire made during the leader lookup does not pick it again", () => {
     plant("dead", 7001);
     let nested: LeaseHandle | null = null;
