@@ -102,7 +102,7 @@ export function runStatus(d) {
     if (!opts)
         return EX_CONFIG;
     const { level, capacity, live, weights, sessions } = d.leaseStatus(opts);
-    const unowned = d.unowned?.(opts, (sessions?.live ?? []).map((h) => h.pid));
+    const unowned = d.unowned?.(opts, (sessions?.live ?? []).map((h) => h.pid), live.flatMap((h) => h.childPid ?? []));
     const holders = live.map((h) => ({ pid: h.pid, command: h.command, ageSec: h.ageSec, ...(h.override && { override: true }) }));
     d.out(`${JSON.stringify({ level, capacity, live: holders, ...(weights && { weights }), ...(unowned && { unowned }) }, null, 2)}\n`);
     return 0;
@@ -276,7 +276,7 @@ export function cliLeaseDeps(err, base = {}) {
         leaseOptions: () => defaultLeaseOptions(env, { warn: err, level }),
         acquire: acquireLease,
         leaseStatus,
-        unowned: (opts, sessionPids) => sampleUnowned({ dir: opts.dir, now: opts.now }, sessionPids),
+        unowned: (opts, sessionPids, heavyChildPids) => sampleUnowned({ dir: opts.dir, now: opts.now }, sessionPids, heavyChildPids),
         ancestors: () => psAncestors(process.ppid, ANCESTOR_DEPTH),
         governor: { every: (fn, ms) => { const t = setInterval(fn, ms); t.unref(); return () => clearInterval(t); }, processCommand: (pgid) => psField(pgid, "command") },
         spawn: (file, fileArgs, opts) => spawn(file, fileArgs, { stdio: "inherit", env: opts.env, detached: opts.detached }),

@@ -1,6 +1,6 @@
 /**
  * The memory the lease does not own, for `claude-orchestrator-lease status`: booted simulators, `claude` processes that are not a lease-owned session's
- * child, and the largest other processes. Report only, never on the admission path. It comes from its own bounded `ps` call (rss in KiB), cached a few
+ * child, and the largest other processes that are not a heavy holder's recorded command. Report only, never on the admission path. It comes from its own bounded `ps` call (rss in KiB), cached a few
  * seconds in `<lease dir>/unowned.json` through the lease-record reader and writer, and a failed sample is `undefined` so `status` goes on without it.
  */
 export declare const UNOWNED_PS_ARGS: string[];
@@ -15,11 +15,14 @@ export interface UnownedMemory {
         bytes: number;
     }[];
 }
-/** Groups `ps` output (`UNOWNED_PS_ARGS`); `sessionPids` are the pids of the live session holders, whose direct `claude` children are lease-owned. */
-export declare function summarizeUnowned(text: string, sessionPids: number[]): UnownedMemory;
+/**
+ * Groups `ps` output (`UNOWNED_PS_ARGS`); `sessionPids` are the pids of the live session holders, whose direct `claude` children are lease-owned,
+ * and `heavyChildPids` the commands that heavy holders recorded, which with their descendants are left out of `others`.
+ */
+export declare function summarizeUnowned(text: string, sessionPids: number[], heavyChildPids?: number[]): UnownedMemory;
 /** The cached sample while it is under `UNOWNED_CACHE_MS` old, else a fresh one (cached best effort); `undefined` when `ps` fails. */
 export declare function sampleUnowned(deps: {
     dir: string;
     now?(): number;
     ps?(args: string[]): string;
-}, sessionPids: number[]): UnownedMemory | undefined;
+}, sessionPids: number[], heavyChildPids?: number[]): UnownedMemory | undefined;

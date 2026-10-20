@@ -39,8 +39,8 @@ export interface LeaseCliDeps {
     leaseOptions(): LeaseOptions;
     acquire: typeof acquireLease;
     leaseStatus(opts: LeaseOptions): LeaseStatus;
-    /** The memory the lease does not own, given the live session holders' pids; absent or `undefined`, `status` omits it. */
-    unowned?(opts: LeaseOptions, sessionPids: number[]): UnownedMemory | undefined;
+    /** The memory the lease does not own, given the live session holders' pids and the heavy holders' child pids; absent or `undefined`, `status` omits it. */
+    unowned?(opts: LeaseOptions, sessionPids: number[], heavyChildPids: number[]): UnownedMemory | undefined;
     /** PIDs of this process's ancestors, nearest first; `[]` when they cannot be read. */
     ancestors(): number[];
     spawn(file: string, args: string[], opts: {
