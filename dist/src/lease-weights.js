@@ -7,7 +7,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { isAbsolute, join } from "node:path";
-import { readLeaseRecord, readRegularFile } from "./lease-dir.js";
+import { readOwnFile, readRegularFile } from "./lease-dir.js";
 import { leaseDirectory } from "./memory-pressure.js";
 const git = (cwd, args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
 export const realGit = {
@@ -32,15 +32,20 @@ const validRule = (r) => {
         return false;
     }
 };
-/** The rules of the weights file: a missing file is silent, an unreadable or malformed one or a bad entry gives one warning, and only valid entries are kept. */
+/**
+ * The rules of the weights file: a missing file is silent, an unreadable or malformed one or a bad entry gives one warning, and only valid entries are kept.
+ * `<lease dir>/weights.json` is read through `readOwnFile`, so one that is a symlink, FIFO, directory or another user's file is unreadable (one warning);
+ * an explicit `CO_LEASE_WEIGHTS_FILE` may be a symlink and is read through `readRegularFile`.
+ */
 export function loadWeightTable(env, warn) {
     let file = env.CO_LEASE_WEIGHTS_FILE;
     try {
         const dir = file ? undefined : leaseDirectory(env);
         file ||= join(dir, "weights.json");
-        const text = dir === undefined ? readRegularFile(file) : readLeaseRecord(dir, "weights.json")?.text;
+        // A missing file throws ENOENT, which is silent below.
+        const text = dir === undefined ? readRegularFile(file) : readOwnFile(file)?.text;
         if (text === undefined)
-            return [];
+            throw new Error("not a regular file this user owns");
         const parsed = JSON.parse(text);
         if (!Array.isArray(parsed))
             throw new Error("not an array");

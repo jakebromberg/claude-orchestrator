@@ -370,6 +370,35 @@ describe("lease", () => {
       expect(leaseStatus(opts()).live).toEqual([]);
     });
 
+    // A FIFO at each of these entries is covered in lease-fifo-readers.test.ts, in a child the test can kill.
+    it.each<[string, string, Record<string, unknown>, () => void]>([
+      ["holders/ (a live holder)", "holders/4242-eeee.json", { id: "4242-eeee", pid: 4242, command: "x", cwd: "/", level: "normal" }, () => {
+        expect(leaseStatus(opts()).live).toEqual([]);
+        expect(tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta)?.leased).toBe(true);
+      }],
+      ["waiting/ (a ticket ahead)", "waiting/4242-eeee.json", { seq: 1, id: "4242-eeee", pid: 4242, label: "x", gated: false }, () => {
+        expect(tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta)?.leased).toBe(true);
+      }],
+      ["sessions/ (a live session)", "sessions/4242-eeee.json", { id: "4242-eeee", pid: 4242, command: "x", cwd: "/", level: "normal" }, () => {
+        expect(leaseStatus(opts()).sessions?.live).toEqual([]);
+      }],
+      ["holders/ (releaseHolder)", "holders/hook-eeee.json", { id: "hook-eeee", pid: 4242, command: "x", cwd: "/", level: "normal", expiresAt: 0 }, () => {
+        expect(releaseHolder(opts(), "hook-eeee")).toBe(false);
+      }],
+    ])("does not follow a symlink at %s, and leaves its target alone", (_name, entry, rec, check) => {
+      alive.add(4242);
+      tryAcquireLease(opts(), meta)!.release();
+      mkdirSync(join(dir, "sessions"), { recursive: true, mode: 0o700 });
+      const target = join(tmp, "target.json");
+      const body = JSON.stringify({ startedAt: fake.ms, ...rec, ...(rec.expiresAt === 0 && { expiresAt: fake.ms + 60_000 }) });
+      writeFileSync(target, body);
+      utimesSync(target, fake.ms / 1000, fake.ms / 1000);
+      symlinkSync(target, join(dir, entry));
+      check();
+      expect(readFileSync(target, "utf8")).toBe(body);
+      expect(events.filter((e) => e.type === "reap")).toEqual([]);
+    });
+
     it("does not reap from leaseStatus", () => {
       plantHolder("4242-dddd", {});
       expect(leaseStatus(opts()).live).toEqual([]);

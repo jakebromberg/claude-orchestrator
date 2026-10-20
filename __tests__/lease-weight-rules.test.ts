@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadWeightTable, normalizeRemote, resolveWeight, weightFor, type GitLookup, type WeightRule } from "../src/lease-weights.js";
 
 const GIB = 2 ** 30;
@@ -88,6 +88,19 @@ describe("loadWeightTable", () => {
   it("warns once for an unreadable file", () => {
     expect(loadWeightTable({ CO_LEASE_WEIGHTS_FILE: tmp }, warn)).toEqual([]);
     expect(warnings).toHaveLength(1);
+  });
+  it.each<[string, () => void]>([
+    ["a symlink", () => (writeFileSync(join(tmp, "elsewhere"), '[{"pattern":"p","gb":2}]'), symlinkSync(join(tmp, "elsewhere"), join(tmp, "weights.json")))],
+    ["a directory", () => mkdirSync(join(tmp, "weights.json"))],
+    ["another user's file", () => {
+      writeFileSync(join(tmp, "weights.json"), '[{"pattern":"p","gb":2}]');
+      vi.spyOn(process as Required<NodeJS.Process>, "getuid").mockReturnValue(statSync(tmp).uid + 1);
+    }],
+  ])("warns once and reads no rules when weights.json in the lease directory is %s", (_n, plant) => {
+    plant();
+    expect(loadWeightTable({ CO_LEASE_DIR: tmp }, warn)).toEqual([]);
+    vi.restoreAllMocks();
+    expect(warnings).toEqual([expect.stringContaining("weights.json")]);
   });
   it("weightFor loads and resolves", () => {
     expect(weightFor("git push", "/w", file('[{"pattern":"push","gb":4}]'), warn)).toBe(4 * GIB);
