@@ -21,6 +21,7 @@ import { readRegularFile } from "./lease-dir.js";
 import { acquireLease, defaultLeaseOptions, DETACHED_TTL_MAX_MS, isPid, leaseStatus, releaseHolder } from "./lease.js";
 import { formatAdmitted, formatRefusal } from "./lease-messages.js";
 import { weightFor } from "./lease-weights.js";
+import { commandWord } from "./ps.js";
 import { shellQuote } from "./shell-quote.js";
 /**
  * npm/npx options before the subcommand: `--prefix`/`-C`, `--workspace`/`-w` and `--package`/`-p` take a value, and any
@@ -64,7 +65,7 @@ const DEFAULT_PATTERNS = [
 ];
 const CLI = /cli-lease\.js|claude-orchestrator-lease|cli-heavy-queue\.js|claude-orchestrator-heavy-queue/;
 /** Text that names heavy-queue's `run`; not heavy only while the file at the heavy-queue path is the front-end shim. */
-const HEAVY_QUEUE_RUN = /(?:^|[\s/])heavy-queue\s+run(?:\s|$)/;
+const HEAVY_QUEUE_RUN = commandWord(["heavy-queue run"]);
 const shimMarker = "cli-heavy-queue.js";
 const defaultHeavyQueuePath = () => path.join(homedir(), ".local/share/heavy-queue/heavy-queue");
 /** Whether the file at `file` is the sh shim for `cli-heavy-queue.js`; a missing or non-regular file is not. */

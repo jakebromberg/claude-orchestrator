@@ -204,7 +204,24 @@ describe("runsTool", () => {
     ["a name that only ends in the word", "mysimctl list", false],
     ["a name that only starts with the word", "xcodebuild-helper run", false],
     ["no match", "npm test", false],
+    ["after ;", "cd x;xcodebuild test", true],
+    ["after |", "echo y|xcodebuild test", true],
+    ["after (", "(xcodebuild test)", true],
+    ["after &&, no spaces", "cd x&&xcodebuild test", true],
+    ["after a tab", "cd x\txcodebuild test", true],
+    ["a bare name at the end", "xcrun simctl", true],
+    ["a quoted path", "\"/opt/Xcode Beta/xcodebuild\" test", true],
   ])("classifies %s", (_name, command, expected) => {
     expect(runsTool(command, XCODE_TOOLS)).toBe(expected);
+  });
+
+  it.each([
+    ["an escaped metacharacter", ["a.c"], "run a.c now", true],
+    ["an unescaped lookalike", ["a.c"], "run abc now", false],
+    ["a name that only continues", ["heavy-queue run"], "heavy-queue runner x", false],
+    ["a quoted multi-word path", ["heavy-queue run"], "\"/x/heavy-queue\" run --shell 'a'", true],
+    ["a variable", ["heavy-queue run"], "$HQ run --shell 'a'", false],
+  ])("matches %s", (_name, names, command, expected) => {
+    expect(runsTool(command, names)).toBe(expected);
   });
 });

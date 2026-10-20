@@ -213,6 +213,17 @@ describe("heavy-queue run", () => {
   const log = "cat ~/.local/share/heavy-queue/queue.log; npm test";
   const shimmed = (yes: boolean) => () => yes;
 
+  const shellArg = `--shell "npm run lint && npm test"`;
+  it.each([
+    ["after ;", `cd x;heavy-queue run ${shellArg}`],
+    ["after &&", `cd x&&heavy-queue run ${shellArg}`],
+    ["in a subshell", `(heavy-queue run ${shellArg})`],
+    ["a quoted path", `"$HOME/.local/share/heavy-queue/heavy-queue" run ${shellArg}`],
+  ])("%s: exempt with the shim, heavy without", (_name, command) => {
+    expect(isHeavyCommand(command, [], shimmed(true))).toBe(false);
+    expect(isHeavyCommand(command, [], shimmed(false))).toBe(true);
+  });
+
   it.each<[string, string, boolean, boolean]>([
     ["a separator inside --shell, Python script installed", multi, false, true],
     ["a separator inside --shell, shim installed", multi, true, false],

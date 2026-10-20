@@ -102,8 +102,18 @@ export const isSimulatorCommand = (command: string): boolean => /\/CoreSimulator
 /** The Xcode tools whose running marks a simulator as in use and a command as unsuspendable. */
 export const XCODE_TOOLS = ["xcodebuild", "simctl"];
 
-/** True when `command` runs one of `names`: the name preceded by the start, whitespace, `/` or a shell separator and followed by whitespace or the end, so a tool path with spaces still counts and `mysimctl` does not. */
-export const runsTool = (command: string, names: string[]): boolean => new RegExp(`(^|[\\s/;&|(])(${names.join("|")})(\\s|$)`).test(command);
+/** A regexp for a command naming one of `words` (a multi-word name joins its words with whitespace, a closing quote allowed between them): each word escaped, preceded by the start, whitespace, `/`, a shell separator (`;`, `&`, `|`, `(`, a backtick) or a quote, and followed by whitespace, a quote or the end. A shell variable such as `$HQ run` is not expanded, so it does not match. */
+export const commandWord = (words: readonly string[]): RegExp =>
+  new RegExp(`(?:^|[\\s/;&|(\`"'])(?:${words.map((w) => w.split(/\s+/).map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\"']?\\s+")).join("|")})(?:[\\s\"']|$)`);
+
+const toolPatterns = new Map<string, RegExp>();
+/** True when `command` runs one of `names`, by `commandWord`'s boundary rule, so a tool path with spaces still counts and `mysimctl` does not. */
+export const runsTool = (command: string, names: readonly string[]): boolean => {
+  const key = names.join("\0");
+  let re = toolPatterns.get(key);
+  if (!re) toolPatterns.set(key, (re = commandWord(names)));
+  return re.test(command);
+};
 
 /** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */
 export const simulatorUdid = (command: string): string | undefined => /\/CoreSimulator\/Devices\/([0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12})\//i.exec(command)?.[1]?.toUpperCase();

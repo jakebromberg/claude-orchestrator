@@ -44,8 +44,10 @@ export declare const isClaudeCommand: (command: string) => boolean;
 export declare const isSimulatorCommand: (command: string) => boolean;
 /** The Xcode tools whose running marks a simulator as in use and a command as unsuspendable. */
 export declare const XCODE_TOOLS: string[];
-/** True when `command` runs one of `names`: the name preceded by the start, whitespace, `/` or a shell separator and followed by whitespace or the end, so a tool path with spaces still counts and `mysimctl` does not. */
-export declare const runsTool: (command: string, names: string[]) => boolean;
+/** A regexp for a command naming one of `words` (a multi-word name joins its words with whitespace, a closing quote allowed between them): each word escaped, preceded by the start, whitespace, `/`, a shell separator (`;`, `&`, `|`, `(`, a backtick) or a quote, and followed by whitespace, a quote or the end. A shell variable such as `$HQ run` is not expanded, so it does not match. */
+export declare const commandWord: (words: readonly string[]) => RegExp;
+/** True when `command` runs one of `names`, by `commandWord`'s boundary rule, so a tool path with spaces still counts and `mysimctl` does not. */
+export declare const runsTool: (command: string, names: readonly string[]) => boolean;
 /** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */
 export declare const simulatorUdid: (command: string) => string | undefined;
 /** `pid` and its parents through `rows`, nearest first, without pid 1. `complete` is false when a link is missing from the scan or the chain is not finished within `max` rows (a loop), so a caller that guards on the chain can fail closed. */
