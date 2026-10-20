@@ -113,6 +113,19 @@ describe("suspending the newest suspendable holder", () => {
     expect(tick("c")).toBe(true);
   });
 
+  it.each<[string, number | undefined, boolean]>([
+    ["resumed 15 s ago", 15 * SECOND, false],
+    ["resumed 20 s ago", 20 * SECOND, true],
+    ["never resumed", undefined, true],
+    ["a wrongly typed resumedAt", -1, true],
+  ])("measures run time from the later of startedAt and resumedAt: %s", (_n, ago, suspends) => {
+    const file = join(dir, "holders", `${handles.c!.id}.json`);
+    const rec = JSON.parse(readFileSync(file, "utf8"));
+    if (ago !== undefined) rec.resumedAt = ago === -1 ? "soon" : lease.clock.ms - ago;
+    writeFileSync(file, JSON.stringify(rec));
+    expect(tick("c")).toBe(suspends);
+  });
+
   it("suspends at most once per 15 s machine-wide, then the next newest running holder", () => {
     expect(tick("c")).toBe(true);
     advance(10 * SECOND);

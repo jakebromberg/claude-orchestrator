@@ -143,7 +143,7 @@ const positive = (v) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? 
 function parseHolder(text) {
     try {
         const rec = JSON.parse(text);
-        return isPid(rec?.pid) && (rec.childPid === undefined || isPid(rec.childPid)) && typeof rec.startedAt === "number" && (rec.expiresAt === undefined || Number.isFinite(rec.expiresAt)) ? { ...rec, weight: positive(rec.weight) } : null;
+        return isPid(rec?.pid) && (rec.childPid === undefined || isPid(rec.childPid)) && typeof rec.startedAt === "number" && (rec.expiresAt === undefined || Number.isFinite(rec.expiresAt)) ? { ...rec, weight: positive(rec.weight), resumedAt: positive(rec.resumedAt) } : null;
     }
     catch {
         return null;
@@ -322,7 +322,7 @@ export function suspendNewest(opts, handle, pgid, leader, stop) {
             const stopped = new Set(readSuspensions(opts.dir).map((r) => r.pgid));
             const running = scanHolders(opts, HEAVY).live.filter((h) => !h.suspended && (h.id === handle.id || h.pgid === undefined || !stopped.has(h.pgid))).sort(byAge);
             const newest = running.slice(1).filter((h) => h.suspendable).at(-1);
-            if (newest?.id === handle.id && nowMs - newest.startedAt >= SUSPEND_MIN_RUN_MS) {
+            if (newest?.id === handle.id && nowMs - Math.max(newest.startedAt, newest.resumedAt ?? 0) >= SUSPEND_MIN_RUN_MS) {
                 const at = new Date(nowMs).toISOString();
                 go = recordSuspension(opts.dir, { pgid, by: "lease", reason: why, at, remindAt: new Date(nowMs + SUSPEND_REMIND_MS).toISOString(), leader });
                 if (go) {
@@ -409,7 +409,7 @@ export function resumeOldest(opts, handle, pgid, cont) {
     }
     if (cont(pgid))
         emit(opts, HEAVY, { type: "resume", id: handle.id, pgid, reason: why });
-    handle.setSuspended(false);
+    handle.setSuspended(false, (opts.now ?? Date.now)());
     try {
         removeLeaseSuspension(opts.dir, pgid);
     }
@@ -536,13 +536,15 @@ function createHolder(opts, cls, meta, command, admission) {
                 // The previous record still names this holder.
             }
         },
-        setSuspended(on) {
+        setSuspended(on, resumedAt) {
             if (released || !unlessGone(() => statSync(file)))
                 throw new Error(`holder ${id} is gone`);
             if (on)
                 rec.suspended = true;
             else
                 delete rec.suspended;
+            if (resumedAt !== undefined)
+                rec.resumedAt = resumedAt;
             write();
         },
         release(outcome) {

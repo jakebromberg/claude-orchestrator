@@ -183,6 +183,8 @@ interface HolderRecord {
   override?: true;
   /** Set while the holder's group is stopped; a gated ticket is not admitted while any live holder has it. */
   suspended?: true;
+  /** Epoch ms the governor last resumed this holder; its run time for `suspendNewest` counts from the later of this and `startedAt`. */
+  resumedAt?: number;
   /** Bytes; absent means the unmatched weight. */
   weight?: number;
 }
@@ -233,8 +235,8 @@ export interface LeaseHandle {
    * not a positive integer, and once the holder has been reaped: a reaped holder's file is not recreated.
    */
   setChildPid(pid: number, pgid?: number): void;
-  /** Sets or clears the holder's `suspended` mark; throws when the mark cannot be written or the holder is gone. Present on a holder this process owns. */
-  setSuspended?(on: boolean): void;
+  /** Sets or clears the holder's `suspended` mark, and records `resumedAt` when given (a resume); throws when the mark cannot be written or the holder is gone. Present on a holder this process owns. */
+  setSuspended?(on: boolean, resumedAt?: number): void;
   release(outcome?: { exitCode?: number }): void;
 }
 
@@ -343,7 +345,7 @@ const positive = (v: unknown): number | undefined => (typeof v === "number" && N
 function parseHolder(text: string): HolderRecord | null {
   try {
     const rec = JSON.parse(text);
-    return isPid(rec?.pid) && (rec.childPid === undefined || isPid(rec.childPid)) && typeof rec.startedAt === "number" && (rec.expiresAt === undefined || Number.isFinite(rec.expiresAt)) ? { ...rec, weight: positive(rec.weight) } : null;
+    return isPid(rec?.pid) && (rec.childPid === undefined || isPid(rec.childPid)) && typeof rec.startedAt === "number" && (rec.expiresAt === undefined || Number.isFinite(rec.expiresAt)) ? { ...rec, weight: positive(rec.weight), resumedAt: positive(rec.resumedAt) } : null;
   } catch {
     return null;
   }
@@ -541,7 +543,7 @@ export function suspendNewest(opts: LeaseOptions, handle: LeaseHandle, pgid: num
       const stopped = new Set(readSuspensions(opts.dir).map((r) => r.pgid));
       const running = scanHolders(opts, HEAVY).live.filter((h) => !h.suspended && (h.id === handle.id || h.pgid === undefined || !stopped.has(h.pgid))).sort(byAge);
       const newest = running.slice(1).filter((h) => h.suspendable).at(-1);
-      if (newest?.id === handle.id && nowMs - newest.startedAt >= SUSPEND_MIN_RUN_MS) {
+      if (newest?.id === handle.id && nowMs - Math.max(newest.startedAt, newest.resumedAt ?? 0) >= SUSPEND_MIN_RUN_MS) {
         const at = new Date(nowMs).toISOString();
         go = recordSuspension(opts.dir, { pgid, by: "lease", reason: why, at, remindAt: new Date(nowMs + SUSPEND_REMIND_MS).toISOString(), leader });
         if (go) {
@@ -617,7 +619,7 @@ export function resumeOldest(opts: LeaseOptions, handle: LeaseHandle, pgid: numb
     return "cleared";
   }
   if (cont(pgid)) emit(opts, HEAVY, { type: "resume", id: handle.id!, pgid, reason: why });
-  handle.setSuspended(false);
+  handle.setSuspended(false, (opts.now ?? Date.now)());
   try {
     removeLeaseSuspension(opts.dir, pgid);
   } catch (err) {
@@ -729,10 +731,11 @@ function createHolder(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, com
         // The previous record still names this holder.
       }
     },
-    setSuspended(on) {
+    setSuspended(on, resumedAt) {
       if (released || !unlessGone(() => statSync(file))) throw new Error(`holder ${id} is gone`);
       if (on) rec.suspended = true;
       else delete rec.suspended;
+      if (resumedAt !== undefined) rec.resumedAt = resumedAt;
       write();
     },
     release(outcome) {

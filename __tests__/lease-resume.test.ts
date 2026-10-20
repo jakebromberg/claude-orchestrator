@@ -87,6 +87,11 @@ describe("resuming the oldest suspended holder", () => {
     expect(lease.events.filter((e) => e.type === "resume")).toEqual([{ type: "resume", id: handles.a!.id, pgid: pgid.a, reason: expect.stringContaining("CPU 10% busy"), class: "heavy" }]);
   });
 
+  it("records resumedAt on the holder with the mark clear", () => {
+    expect(tick("a")).toBe("resumed");
+    expect(holderRec("a").resumedAt).toBe(lease.clock.ms);
+  });
+
   it.each<[string, () => void, boolean]>([
     ["CPU 0.84", () => plantCpu(lease, 0.84, TICKS), true],
     ["CPU 0.85", () => plantCpu(lease, 0.85, TICKS), false],
