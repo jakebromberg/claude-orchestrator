@@ -31,10 +31,28 @@ describe("isEntryPoint", () => {
       ["other file", other, false],
       ["missing argv[1]", undefined, false],
       ["argv[1] that does not exist", join(tmp, "nope.js"), false],
+      ["extensionless argv[1]", join(tmp, "real"), true],
+      ["extensionless argv[1] of another file", join(tmp, "other"), false],
+      ["extensionless argv[1] with no file", join(tmp, "nope"), false],
     ];
     for (const [name, arg, want] of rows) {
       process.argv[1] = arg as string;
       expect(isEntryPoint(url), name).toBe(want);
+    }
+  });
+});
+
+describe("import.meta.main", () => {
+  it.each([
+    [true, "/nowhere", true],
+    [false, undefined, false],
+  ])("main %s decides before argv[1] is read", (main, arg, want) => {
+    const saved = process.argv[1];
+    process.argv[1] = arg as string;
+    try {
+      expect(isEntryPoint(pathToFileURL("/x/real.js").href, main)).toBe(want);
+    } finally {
+      process.argv[1] = saved as string;
     }
   });
 });
@@ -50,6 +68,14 @@ describe("built bins run through a symlink", () => {
     const link = join(tmp, `${bin}.js`);
     symlinkSync(join(__dirname, "..", "dist", "src", `${bin}.js`), link);
     const r = spawnSync(process.execPath, [link, "--bogus-flag"], { encoding: "utf8", timeout: 20_000 });
+    expect(r.status).not.toBe(0);
+    expect(r.stdout + r.stderr).not.toBe("");
+  });
+});
+
+describe("built bins run by an extensionless path", () => {
+  it.each(["cli-claim", "cli-heavy-queue", "cli-lease", "cli-merge-appendable", "cli-watchdog"])("%s does its work", (bin) => {
+    const r = spawnSync(process.execPath, [join(__dirname, "..", "dist", "src", bin), "--bogus-flag"], { encoding: "utf8", timeout: 20_000 });
     expect(r.status).not.toBe(0);
     expect(r.stdout + r.stderr).not.toBe("");
   });

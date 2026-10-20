@@ -34,6 +34,6 @@ function main(argv) {
         return printed;
     return runWatchdog(argv, { dir, scan: scanProcessTable, now: Date.now, out, err });
 }
-if (isEntryPoint(import.meta.url))
+if (isEntryPoint(import.meta.url, import.meta.main))
     process.exitCode = main(process.argv.slice(2));
 //# sourceMappingURL=cli-watchdog.js.map

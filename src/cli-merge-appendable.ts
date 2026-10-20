@@ -296,7 +296,7 @@ function main(): void {
   }
 }
 
-if (isEntryPoint(import.meta.url)) {
+if (isEntryPoint(import.meta.url, import.meta.main)) {
   try {
     main();
   } catch (err) {
