@@ -12,6 +12,7 @@ import { shellQuote } from "./shell-quote.js";
 import { claudeExecOptions } from "./claude-env.js";
 import { acquireLease, defaultWarn } from "./lease.js";
 import { formatPostCheckStop, refusalStopReason, throttledProgress } from "./lease-messages.js";
+import { loadWeightTable, realGit, resolveWeight } from "./lease-weights.js";
 import { SYNC_CALL_TIMEOUT_MS } from "./worktree-hooks.js";
 import { stopAtCritical } from "./memory-pressure.js";
 import { groupAlive, signalGroup } from "./ps.js";
@@ -81,8 +82,11 @@ export function runShellAsync(cmd, cwd, env, onSpawn, timeoutMs, killGraceMs = K
             stdio: ["ignore", "pipe", "pipe"],
             detached: bounded,
         });
+        // Set by this call's settleGroup when it drops the pgid. The id may then be reused by another bounded command, so
+        // this call never signals it again, whatever liveGroups holds now.
+        let dropped = false;
         const signalChildGroup = (signal) => {
-            if (child.pid === undefined)
+            if (child.pid === undefined || dropped)
                 return;
             try {
                 signalGroup(child.pid, signal);
@@ -124,7 +128,8 @@ export function runShellAsync(cmd, cwd, env, onSpawn, timeoutMs, killGraceMs = K
         let recheck;
         const settleGroup = () => {
             clearTimeout(recheck);
-            if (child.pid === undefined)
+            // Once this call dropped its group, a later 'close' must not probe or poll the pgid: another command may own it now.
+            if (child.pid === undefined || dropped)
                 return;
             if (groupAlive(child.pid)) {
                 recheck = setTimeout(settleGroup, GROUP_RECHECK_MS);
@@ -132,6 +137,7 @@ export function runShellAsync(cmd, cwd, env, onSpawn, timeoutMs, killGraceMs = K
                 return;
             }
             clearTimeout(graceTimer);
+            dropped = true;
             liveGroups.delete(child.pid);
         };
         child.on("exit", settleGroup);
@@ -161,10 +167,29 @@ export function runShellAsync(cmd, cwd, env, onSpawn, timeoutMs, killGraceMs = K
 /**
  * One lease slot for a whole post-session check, labelled with the issue so the holder file does not show its first
  * command. Waits with no cap; at `critical` it ends in a refusal once no live holder and no engine session is left to
- * relieve the pressure. The engine never inherits a holder id, so `inheritedHolderId` is dropped.
+ * relieve the pressure. The engine never inherits a holder id, so `inheritedHolderId` is dropped. The slot covers the
+ * whole command loop, so its weight is the largest any command resolves to, and absent when none matches.
  */
-function acquireCheckLease(lease, issue, cwd, command, runningSessions = () => 0) {
-    return acquireLease({ ...lease, inheritedHolderId: undefined }, { command, label: `post-check ${issue.ref}`, cwd }, {
+function acquireCheckLease(lease, issue, cwd, commands, runningSessions = () => 0) {
+    const warn = lease.warn ?? defaultWarn;
+    // One table read and at most one git call per fact for the whole check, not per command: the engine's event loop waits on each.
+    // The table comes from the handed lease's own directory, so holders and weight rules can never disagree about where the lease lives.
+    const table = loadWeightTable({ ...process.env, CO_LEASE_DIR: lease.dir }, warn);
+    const facts = new Map();
+    const once = (key, get) => {
+        if (!facts.has(key)) {
+            try {
+                facts.set(key, get());
+            }
+            catch {
+                facts.set(key, "");
+            }
+        }
+        return facts.get(key);
+    };
+    const git = { toplevel: (d) => once("toplevel", () => realGit.toplevel(d)), origin: (d) => once("origin", () => realGit.origin(d)) };
+    const weight = Math.max(0, ...commands.map((c) => resolveWeight(c, cwd, table, git) ?? 0));
+    return acquireLease({ ...lease, inheritedHolderId: undefined }, { command: commands[0] ?? "", label: `post-check ${issue.ref}`, cwd, ...(weight > 0 && { weight }) }, {
         onWait: throttledProgress((s) => (lease.warn ?? defaultWarn)(`Issue #${issue.number} post-check waiting for a lease slot (${s.level}, ${s.live.length}/${s.capacity} slots held)`)),
         stopWhen: (s) => stopAtCritical(s.level, s.live.length + runningSessions()),
     });
@@ -341,7 +366,7 @@ export function deriveHooks(yaml, deps = {}) {
                     : worktreePath;
                 let slot;
                 if (ctx?.lease) {
-                    const got = await acquireCheckLease(ctx.lease, issue, execDir, cmdConfig.commands[0] ?? "", ctx.runningSessions);
+                    const got = await acquireCheckLease(ctx.lease, issue, execDir, cmdConfig.commands, ctx.runningSessions);
                     if ("refused" in got)
                         stopped = got;
                     else
