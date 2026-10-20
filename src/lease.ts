@@ -659,12 +659,14 @@ const claimHolds = (h: HolderRecord, nowMs: number): boolean => h.claimedAt !== 
  * fails: no holder file is written without the mutex, so the claim is left to expire and a later acquire takes the group again.
  */
 function releaseClaim(opts: LeaseOptions, holder: HolderInfo): boolean {
-  const lock = tryLockOnce(join(opts.dir, ".mutex"), { staleAfterMs: MUTEX_STALE_MS, now: opts.now });
-  if (!lock) {
-    warn(opts, `lease: could not clear the claim on group ${holder.pgid}: the lease mutex is busy; the claim expires in ${DEAD_OWNER_CLAIM_MS / 1000} s`);
-    return false;
-  }
+  let lock: ReturnType<typeof tryLockOnce> = null;
   try {
+    // Taking the mutex can itself fail (ENOSPC, EMFILE); that is one more way the claim is left to expire, never a throw out of attempt().
+    lock = tryLockOnce(join(opts.dir, ".mutex"), { staleAfterMs: MUTEX_STALE_MS, now: opts.now });
+    if (!lock) {
+      warn(opts, `lease: could not clear the claim on group ${holder.pgid}: the lease mutex is busy; the claim expires in ${DEAD_OWNER_CLAIM_MS / 1000} s`);
+      return false;
+    }
     editHolder(opts, holder.id, (rec) => {
       delete rec.suspended;
       delete rec.claimedAt;
@@ -674,7 +676,7 @@ function releaseClaim(opts: LeaseOptions, holder: HolderInfo): boolean {
     warn(opts, `lease: could not clear the claim on group ${holder.pgid}: ${(err as Error).message}`);
     return false;
   } finally {
-    lock.release();
+    lock?.release();
   }
 }
 
@@ -855,7 +857,7 @@ function attempt(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, waitedMs
       // The oldest suspended holder whose front end is gone (ESRCH; a stopped one is alive and is left alone) and that no other acquire holds a claim on; its group is continued after the mutex.
       const claimMs = (opts.now ?? Date.now)();
       if (cls === HEAVY) orphan = live.filter((h) => h.suspended && h.pgid !== undefined && !claimHolds(h, claimMs) && !(opts.isAlive ?? pidAlive)(h.pid)).sort(byAge)[0];
-      // Claimed under the mutex, so a concurrent acquire does not pick the same group while the claim holds; the mark stays until the group is continued.
+      // Claimed under the mutex, so a concurrent acquire does not pick the same group while the claim holds; the mark stays until the leader lookup gives an answer.
       if (orphan) {
         try {
           editHolder(opts, orphan.id, (rec) => {
