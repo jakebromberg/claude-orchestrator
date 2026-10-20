@@ -1,9 +1,9 @@
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { writeFileAtomic } from "./atomic-write.js";
+import { sweepDeadTemps, writeFileAtomic } from "./atomic-write.js";
 import { ensureOwnSubdir, readRecordDir } from "./lease-dir.js";
 import { leaseDirectory } from "./memory-pressure.js";
-import { ancestry, isPid, parsePsTable, ps, PS_TABLE_ARGS, signalGroup } from "./ps.js";
+import { ancestry, isPid, parsePsTable, pidAlive, ps, PS_TABLE_ARGS, signalGroup } from "./ps.js";
 const EX_USAGE = 64;
 const EX_CONFIG = 78;
 /** The longest `--remind`: 30 days. */
@@ -70,16 +70,17 @@ function checkGroup(args, d) {
 export function suspensionFile(dir, pgid) {
     return join(dir, "suspensions", `${pgid}.json`);
 }
-/** Writes `record` through the lease's directory rule; throws when the group already has one. The complete temp file is hard-linked to the final name, so the refusal is atomic (`EEXIST`) and a reader never sees a partial record. */
+/** Writes `record` through the lease's directory rule; throws, with `code` `EEXIST`, when the group already has one. The complete temp file is hard-linked to the final name, so the refusal is atomic and a reader never sees a partial record. Temp files of dead writers (a writer killed mid-write) are removed first. */
 export function writeSuspension(dir, record) {
     ensureOwnSubdir(dir, "suspensions");
+    sweepDeadTemps(join(dir, "suspensions"), pidAlive);
     const file = suspensionFile(dir, record.pgid);
     try {
         writeFileAtomic(file, JSON.stringify(record), { exclusive: true });
     }
     catch (err) {
         if (err.code === "EEXIST")
-            throw new Error(`process group ${record.pgid} already has a suspension record (${file})`);
+            throw Object.assign(new Error(`process group ${record.pgid} already has a suspension record (${file})`), { code: "EEXIST" });
         throw err;
     }
 }

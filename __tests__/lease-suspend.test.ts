@@ -1,0 +1,307 @@
+import { EventEmitter } from "node:events";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { runLeased, type LeaseCliDeps } from "../src/cli-lease.js";
+import { acquireLease, SUSPEND_MIN_RUN_MS, suspendNewest, tryAcquireLease, type LeaseHandle, type LeaseOptions } from "../src/lease.js";
+import { readSuspensions, writeSuspension, type SuspensionRecord } from "../src/suspensions.js";
+import { scriptedHeadroomSampler } from "../src/testing.js";
+import { failFsCall, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
+
+const WIDE = { heavyCeiling: 4, heavyWarning: 4 };
+const TICKS = { idle: 1, total: 10 };
+const SECOND = 1000;
+
+describe("suspending the newest suspendable holder", () => {
+  let dir: string;
+  let lease: ScriptedLease;
+  let step: number;
+  let freePct: number | undefined;
+  let stop: ReturnType<typeof vi.fn>;
+  let handles: Record<string, LeaseHandle>;
+  const pgid = { a: 9001, b: 9002, c: 9003 };
+
+  const opts = (over: Partial<LeaseOptions> = {}): LeaseOptions =>
+    lease.opts({
+      policy: WIDE,
+      cpuTimes: () => TICKS,
+      headroom: scriptedHeadroomSampler(() => ({ level: step === 0 ? "critical" : "normal", step, signals: freePct === undefined ? null : { level: "normal", freePct } })),
+      ...over,
+    });
+  const advance = (ms: number): void => void (lease.clock.ms += ms);
+  /** A cpu.json reading dated now, so `cpuBusy` returns `busy` as stored. */
+  const plantCpu = (busy: number | null): void => writeFileSync(join(dir, "cpu.json"), JSON.stringify({ at: lease.clock.ms, ticks: TICKS, busy }));
+  const holderRec = (name: string) => JSON.parse(readFileSync(join(dir, "holders", `${handles[name]!.id}.json`), "utf8"));
+  const recordOf = (name: keyof typeof pgid) => readSuspensions(dir).find((r) => r.pgid === pgid[name]);
+  const tick = (name: keyof typeof pgid, over: Partial<LeaseOptions> = {}): boolean => suspendNewest(opts(over), handles[name]!, pgid[name], "sleep 100", stop);
+  const owner = (name: keyof typeof pgid, by = "jake"): SuspensionRecord => ({ pgid: pgid[name], by, reason: "mine", at: "2026-10-19T12:00:00.000Z", remindAt: "2026-10-19T14:00:00.000Z", leader: "sleep 100" });
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "lease-suspend-"));
+    lease = scriptedLease(dir);
+    step = 4;
+    freePct = 60;
+    stop = vi.fn(() => true);
+    // a is the oldest, c the newest; each is 5 s younger than the one before, and all are 20 s old or more once 30 s pass.
+    handles = {};
+    for (const name of ["a", "b", "c"] as const) {
+      handles[name] = tryAcquireLease(opts(), { command: `job ${name}`, cwd: "/w", suspendable: true })!;
+      advance(5 * SECOND);
+    }
+    advance(30 * SECOND);
+    plantCpu(0.97);
+  });
+  afterEach(() => {
+    for (const h of Object.values(handles)) h.release();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("suspends the newest at CPU 0.97: record, then holder mark, then SIGSTOP of its own group", () => {
+    stop.mockImplementation(() => {
+      expect(recordOf("c")).toMatchObject({ by: "lease", reason: expect.stringContaining("CPU"), leader: "sleep 100" });
+      expect(holderRec("c").suspended).toBe(true);
+      return true;
+    });
+    expect(tick("c")).toBe(true);
+    expect(stop).toHaveBeenCalledExactlyOnceWith(pgid.c);
+    expect(existsSync(join(dir, "lastSuspend"))).toBe(true);
+    expect(statSync(join(dir, "lastSuspend")).mtimeMs).toBeCloseTo(lease.clock.ms, -1);
+  });
+
+  it.each<[string, () => void, boolean]>([
+    ["CPU 0.95", () => plantCpu(0.95), true],
+    ["CPU 0.94", () => plantCpu(0.94), false],
+    ["a null CPU reading", () => plantCpu(null), false],
+    ["free memory 12%", () => { plantCpu(0.1); freePct = 12; }, true],
+    ["free memory 13%", () => { plantCpu(0.1); freePct = 13; }, false],
+    ["step 0", () => { plantCpu(0.1); step = 0; }, true],
+    ["step 1 with 3 live, more holders than the step allows, which stops admissions and never suspends", () => { plantCpu(0.1); step = 1; }, false],
+  ])("trigger: %s -> suspends %s", (_n, arrange, suspends) => {
+    arrange();
+    expect(tick("c")).toBe(suspends);
+    expect(stop).toHaveBeenCalledTimes(suspends ? 1 : 0);
+    expect(recordOf("c") !== undefined).toBe(suspends);
+    expect(holderRec("c").suspended === true).toBe(suspends);
+  });
+
+  it("never signals for a holder that is not the newest suspendable running one", () => {
+    expect(tick("a")).toBe(false);
+    expect(tick("b")).toBe(false);
+    expect(stop).not.toHaveBeenCalled();
+    expect(readSuspensions(dir)).toEqual([]);
+  });
+
+  it("never suspends the oldest running holder, even when it is the only suspendable one", () => {
+    handles.c!.release();
+    handles.b!.release();
+    expect(tick("a")).toBe(false);
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("skips a newest holder that is not suspendable and suspends the newest one that is", () => {
+    handles.d = tryAcquireLease(opts(), { command: "xcodebuild test", cwd: "/w" })!;
+    advance(SUSPEND_MIN_RUN_MS + SECOND);
+    plantCpu(0.97);
+    expect(tick("c")).toBe(true);
+  });
+
+  it("never suspends a holder younger than 20 s", () => {
+    advance(-20 * SECOND); // c is now 15 s old
+    plantCpu(0.97);
+    expect(tick("c")).toBe(false);
+    advance(5 * SECOND);
+    plantCpu(0.97);
+    expect(tick("c")).toBe(true);
+  });
+
+  it("suspends at most once per 15 s machine-wide, then the next newest running holder", () => {
+    expect(tick("c")).toBe(true);
+    advance(10 * SECOND);
+    plantCpu(0.97);
+    expect(tick("b")).toBe(false);
+    advance(5 * SECOND);
+    plantCpu(0.97);
+    // c is suspended, so b is now the newest running holder, and not the oldest.
+    expect(tick("b")).toBe(true);
+    expect(stop.mock.calls).toEqual([[pgid.c], [pgid.b]]);
+  });
+
+  it("reads a lastSuspend mark from the future as elapsed", () => {
+    const mark = join(dir, "lastSuspend");
+    writeFileSync(mark, "");
+    const future = (lease.clock.ms + 60 * SECOND) / 1000;
+    utimesSync(mark, future, future);
+    expect(tick("c")).toBe(true);
+  });
+
+  it("does nothing while the mutex is busy", () => {
+    const mutex = join(dir, ".mutex");
+    writeFileSync(mutex, "");
+    utimesSync(mutex, lease.clock.ms / 1000, lease.clock.ms / 1000);
+    expect(tick("c")).toBe(false);
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  describe("a record the lease did not write", () => {
+    it("is left alone: no SIGSTOP, no holder mark, record kept", () => {
+      writeSuspension(dir, owner("c"));
+      expect(tick("c")).toBe(false);
+      expect(stop).not.toHaveBeenCalled();
+      expect(holderRec("c").suspended).toBeUndefined();
+      expect(recordOf("c")).toMatchObject({ by: "jake", reason: "mine" });
+    });
+
+    it("is replaced when it is a leftover with by: lease", () => {
+      writeSuspension(dir, owner("c", "lease"));
+      expect(tick("c")).toBe(true);
+      expect(recordOf("c")).toMatchObject({ by: "lease", reason: expect.stringContaining("CPU") });
+    });
+  });
+
+  describe("an interruption at each step", () => {
+    const state = (): { record: boolean; mark: boolean } => ({ record: recordOf("c") !== undefined, mark: holderRec("c").suspended === true });
+
+    it.each<[string, () => () => void]>([
+      ["the record write", () => failFsCall("linkSync", (p) => p.includes("suspensions"), "EIO")],
+      ["the holder mark write", () => failFsCall("renameSync", (p) => p.includes("holders"), "EIO")],
+      ["the lastSuspend mark write", () => failFsCall("renameSync", (p) => p.endsWith("lastSuspend") || /lastSuspend\.\d+\./.test(p), "EIO")],
+    ])("fails %s: no SIGSTOP, and neither record nor mark is left", (_n, inject) => {
+      const restore = inject();
+      try {
+        expect(() => tick("c")).toThrow();
+      } finally {
+        restore();
+      }
+      expect(stop).not.toHaveBeenCalled();
+      expect(state()).toEqual({ record: false, mark: false });
+    });
+
+    it.each<[string, () => boolean]>([
+      ["reports the group gone", () => false],
+      ["throws", () => { throw Object.assign(new Error("kill EPERM"), { code: "EPERM" }); }],
+    ])("a SIGSTOP that %s takes the record and mark back", (_n, fails) => {
+      stop.mockImplementation(fails);
+      try {
+        tick("c");
+      } catch {
+        // The throw is the point of one row.
+      }
+      expect(state()).toEqual({ record: false, mark: false });
+    });
+
+    it("has both the record and the mark in place whenever SIGSTOP is sent", () => {
+      const seen: { record: boolean; mark: boolean }[] = [];
+      stop.mockImplementation(() => (seen.push(state()), true));
+      tick("c");
+      expect(seen).toEqual([{ record: true, mark: true }]);
+    });
+  });
+});
+
+class FakeChild extends EventEmitter {
+  kill = vi.fn((_sig?: NodeJS.Signals) => true);
+  pid = 4321;
+}
+
+describe("runLeased governor tick", () => {
+  let dir: string;
+  let lease: ScriptedLease;
+  let child: FakeChild;
+  let tickFns: (() => void)[];
+  let cancelled: number;
+  let kill: ReturnType<typeof vi.fn>;
+  let errs: string[];
+
+  const deps = (over: Partial<LeaseCliDeps> = {}): LeaseCliDeps => ({
+    leaseOptions: () => lease.opts({
+      policy: WIDE,
+      cpuTimes: () => TICKS,
+      headroom: scriptedHeadroomSampler({ level: "normal", step: 4, signals: { level: "normal", freePct: 60 } }),
+    }),
+    acquire: acquireLease,
+    leaseStatus: () => { throw new Error("unused"); },
+    ancestors: () => [],
+    spawn: () => child,
+    env: {},
+    cwd: "/w",
+    out: () => {},
+    err: (l) => void errs.push(l),
+    signals: Object.assign(new EventEmitter(), { pid: 999, kill }),
+    governor: { every: (fn) => (tickFns.push(fn), () => void cancelled++), processCommand: () => "sleep 100" },
+    ...over,
+  });
+  const args = { kind: "run" as const, argv: ["sleep", "100"], background: true, suspendable: true };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "lease-suspend-run-"));
+    lease = scriptedLease(dir);
+    child = new FakeChild();
+    tickFns = [];
+    cancelled = 0;
+    kill = vi.fn();
+    errs = [];
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("starts no timer without a governor dep, for a plain run, or without a group of its own", async () => {
+    for (const [a, d] of [
+      [args, { governor: undefined }],
+      [{ ...args, suspendable: false }, {}],
+      [{ ...args, background: false }, {}],
+    ] as const) {
+      const done = runLeased({ ...a }, deps(d));
+      await vi.waitFor(() => expect(child.listenerCount("close")).toBe(1));
+      child.emit("close", 0, null);
+      await done;
+      child.removeAllListeners();
+    }
+    expect(tickFns).toEqual([]);
+  });
+
+  it("clears the timer when the run finishes", async () => {
+    const done = runLeased(args, deps());
+    await vi.waitFor(() => expect(tickFns).toHaveLength(1));
+    child.emit("close", 0, null);
+    await done;
+    expect(cancelled).toBe(1);
+  });
+
+  it("SIGSTOPs only its own group on a tick, and a lone holder is never suspended", async () => {
+    const done = runLeased(args, deps());
+    await vi.waitFor(() => expect(tickFns).toHaveLength(1));
+    lease.clock.ms += SUSPEND_MIN_RUN_MS + SECOND;
+    writeFileSync(join(dir, "cpu.json"), JSON.stringify({ at: lease.clock.ms, ticks: TICKS, busy: 0.99 }));
+    tickFns[0]!();
+    expect(kill).not.toHaveBeenCalled();
+    child.emit("close", 0, null);
+    await done;
+  });
+
+  it("suspends its own group when it is the newest of two, and removes its record on exit", async () => {
+    const o = lease.opts({ policy: WIDE, cpuTimes: () => TICKS, headroom: scriptedHeadroomSampler({ level: "normal", step: 4, signals: { level: "normal", freePct: 60 } }) });
+    const first = tryAcquireLease(o, { command: "job a", cwd: "/w", suspendable: true })!;
+    lease.clock.ms += SECOND;
+    const done = runLeased(args, deps());
+    await vi.waitFor(() => expect(tickFns).toHaveLength(1));
+    lease.clock.ms += SUSPEND_MIN_RUN_MS + SECOND;
+    writeFileSync(join(dir, "cpu.json"), JSON.stringify({ at: lease.clock.ms, ticks: TICKS, busy: 0.99 }));
+    tickFns[0]!();
+    expect(kill.mock.calls).toEqual([[-4321, "SIGSTOP"]]);
+    expect(readSuspensions(dir)).toMatchObject([{ pgid: 4321, by: "lease", leader: "sleep 100" }]);
+    child.emit("close", 0, null);
+    await done;
+    expect(readSuspensions(dir)).toEqual([]);
+    first.release();
+  });
+
+  it("reports a failed leader lookup, retries on the next tick and keeps running", async () => {
+    const done = runLeased(args, deps({ governor: { every: (fn) => (tickFns.push(fn), () => {}), processCommand: () => { throw new Error("ps failed"); } } }));
+    await vi.waitFor(() => expect(tickFns).toHaveLength(1));
+    lease.clock.ms += SUSPEND_MIN_RUN_MS + SECOND;
+    expect(() => tickFns[0]!()).not.toThrow();
+    expect(errs.at(-1)).toMatch(/suspend check failed: ps failed/);
+    child.emit("close", 0, null);
+    await done;
+  });
+});

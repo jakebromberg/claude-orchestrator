@@ -560,6 +560,26 @@ describe("runLeased", () => {
       }
     });
 
+    it.each([
+      ["xcodebuild test -scheme App", { argv: ["xcodebuild", "test", "-scheme", "App"] }],
+      ["xcrun simctl boot", { shell: "xcrun simctl boot iPhone" }],
+      ["docker build", { argv: ["docker", "build", "."] }],
+      ["podman run", { argv: ["/usr/local/bin/podman", "run", "x"] }],
+      ["ssh host make", { shell: "cd x && ssh host make" }],
+    ])("is not suspendable for the never-suspend command %s", async (_n, args) => {
+      const done = run({ suspendable: true, argv: undefined, ...args });
+      await finishWith(0);
+      await done;
+      expect(meta().suspendable).toBeFalsy();
+    });
+
+    it("keeps a command that only contains a never-suspend word in another word suspendable", async () => {
+      const done = run({ suspendable: true, argv: ["npm", "run", "sshd-check"] });
+      await finishWith(0);
+      await done;
+      expect(meta().suspendable).toBe(true);
+    });
+
     it("leaves a plain run ungated, unsuspendable and in the caller's group", async () => {
       const done = run();
       await finishWith(0);

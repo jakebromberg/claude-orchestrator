@@ -11,9 +11,10 @@ import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import type { PressureSampler } from "./memory-pressure.js";
 import { weightFor } from "./lease-weights.js";
-import { acquireLease, defaultLeaseOptions, leaseStatus, type LeaseOptions, type LeaseStatus } from "./lease.js";
+import { acquireLease, defaultLeaseOptions, leaseStatus, SUSPEND_MIN_RUN_MS, suspendNewest, type LeaseOptions, type LeaseStatus } from "./lease.js";
 import { formatAdmitted, formatRefusal, refusalExitCode, seconds } from "./lease-messages.js";
-import { psAncestors, signalGroup } from "./ps.js";
+import { psAncestors, psField, signalGroup } from "./ps.js";
+import { removeSuspension } from "./suspensions.js";
 
 const DEFAULT_MAX_WAIT_SEC = 100;
 const ANCESTOR_DEPTH = 32;
@@ -22,6 +23,9 @@ const PROGRESS_MS = 60_000;
 const FORWARDED: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
 const TASKPOLICY = "/usr/sbin/taskpolicy";
 const EX_CONFIG = 78;
+const GOVERN_MS = 2_000;
+/** Commands whose work runs outside their own process group, so SIGSTOP would pause only the client (heavy-queue's `UNSUSPENDABLE`). */
+const NEVER_SUSPEND = /(^|[\s/;&|(])(xcodebuild|simctl|docker|podman|ssh)(\s|$)/;
 
 /** Exactly one of `argv` (spawned directly) and `shell` (run under `/bin/sh -c`) is set. */
 export interface RunArgs {
@@ -63,6 +67,13 @@ export interface LeaseCliDeps {
   /** `process` in production: `kill(pid, sig)` on its own `pid` re-raises a signal that arrives while waiting. */
   signals: { on(sig: NodeJS.Signals, fn: () => void): unknown; off(sig: NodeJS.Signals, fn: () => void): unknown;
     kill(pid: number, sig: NodeJS.Signals): unknown; pid: number };
+  /** What a suspendable, background run needs to suspend itself; absent, it never does. */
+  governor?: {
+    /** Calls `fn` every `ms` until the returned function is called. */
+    every(fn: () => void, ms: number): () => void;
+    /** The command line of the process group's leader; throws when it cannot be read. */
+    processCommand(pgid: number): string;
+  };
 }
 
 function parseSeconds(text: string | undefined): number | undefined {
@@ -152,7 +163,8 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
   const [cmd, cmdArgs] = args.shell !== undefined ? ["/bin/sh", ["-c", args.shell]] : [args.argv![0]!, args.argv!.slice(1)];
   const [file, fileArgs] = args.background ? [TASKPOLICY, ["-b", cmd!, ...cmdArgs!]] : [cmd!, cmdArgs!];
   const ownHolder = args.gated || args.background || args.suspendable;
-  const suspendable = args.suspendable && !args.noSuspend && d.env.HEAVY_QUEUE_NO_SUSPEND !== "1";
+  const command = args.shell ?? args.argv!.join(" ");
+  const suspendable = args.suspendable && !args.noSuspend && d.env.HEAVY_QUEUE_NO_SUSPEND !== "1" && !NEVER_SUSPEND.test(command);
   // A background child leads its own group (pid = pgid), so a signal goes to the group, continued first in case it is stopped.
   const signalChild = (sig: NodeJS.Signals): void => {
     if (!args.background || child!.pid === undefined) return void child!.kill(sig);
@@ -171,6 +183,7 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
   let child: LeaseChild | undefined;
   let signalled: number | undefined;
   let grace: NodeJS.Timeout | undefined;
+  let stopGoverning: (() => void) | undefined;
   let finish = (_code: number): void => {};
   const handlers = FORWARDED.map((sig) => {
     const forward = (): void => {
@@ -194,7 +207,6 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
   // A hook slot the session already holds is borrowed through `inheritedHolderId`, never waited for a second time.
   const hookSlot = opts.inheritedHolderId || ownHolder ? undefined : ancestorHookSlot(opts, d);
   let lastProgress = 0;
-  const command = args.shell ?? args.argv!.join(" ");
   const weight = weightFor(command, d.cwd, d.env, d.err);
   const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command, label: args.label, cwd: d.cwd, gated: args.gated, suspendable, ...(weight !== undefined && { weight }) }, {
     maxWaitMs,
@@ -218,6 +230,7 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
       if (settled) return;
       settled = true;
       clearTimeout(grace);
+      stopGoverning?.();
       unhook();
       got.release({ exitCode: code });
       resolve(code);
@@ -249,6 +262,29 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
       child.kill("SIGKILL");
       d.err(`lease: could not record the child PID: ${(e as Error).message}`);
       finish(1);
+      return;
+    }
+    if (suspendable && args.background && d.governor) {
+      // The group is the child's own (pid = pgid). The leader's command is read once, outside the lease's mutex, after the 20 s a holder must run before it can be suspended.
+      const pgid = child.pid;
+      const now = opts.now ?? Date.now;
+      const startedAt = now();
+      let leader: string | undefined;
+      let suspended = false;
+      const unGovern = d.governor.every(() => {
+        if (settled || now() - startedAt < SUSPEND_MIN_RUN_MS) return;
+        try {
+          leader ??= d.governor!.processCommand(pgid);
+          suspended = suspendNewest(opts, got, pgid, leader, (g) => signalGroup(g, "SIGSTOP", d.signals.kill)) || suspended;
+        } catch (e) {
+          d.err(`lease: suspend check failed: ${(e as Error).message}`);
+        }
+      }, GOVERN_MS);
+      // A group that was suspended and is now going away takes its record with it; the holder file, and with it the mark, goes with the release.
+      stopGoverning = () => {
+        unGovern();
+        if (suspended) removeSuspension(opts.dir, pgid);
+      };
     }
   });
 }
@@ -269,6 +305,7 @@ export function cliLeaseDeps(err: (line: string) => void, base: { env?: NodeJS.P
     acquire: acquireLease,
     leaseStatus,
     ancestors: () => psAncestors(process.ppid, ANCESTOR_DEPTH),
+    governor: { every: (fn, ms) => { const t = setInterval(fn, ms); t.unref(); return () => clearInterval(t); }, processCommand: (pgid) => psField(pgid, "command") },
     spawn: (file, fileArgs, opts) => spawn(file, fileArgs, { stdio: "inherit", env: opts.env, detached: opts.detached }),
     env,
     cwd: process.cwd(),
