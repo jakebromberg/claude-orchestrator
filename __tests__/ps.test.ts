@@ -210,7 +210,9 @@ describe("runsTool", () => {
     ["after &&, no spaces", "cd x&&xcodebuild test", true],
     ["after a tab", "cd x\txcodebuild test", true],
     ["a bare name at the end", "xcrun simctl", true],
-    ["a quoted path", "\"/opt/Xcode Beta/xcodebuild\" test", true],
+    ["a name in double quotes", 'echo "simctl"', false],
+    ["a name before a closing quote", 'git commit -m "fix simctl"', false],
+    ["after a backtick", "echo `xcodebuild test`", false],
   ])("classifies %s", (_name, command, expected) => {
     expect(runsTool(command, XCODE_TOOLS)).toBe(expected);
   });
@@ -218,8 +220,11 @@ describe("runsTool", () => {
   it.each([
     ["an escaped metacharacter", ["a.c"], "run a.c now", true],
     ["an unescaped lookalike", ["a.c"], "run abc now", false],
+    ["ssh in a commit message", ["ssh"], 'git commit -m "fix ssh"', false],
+    ["ssh as a word of a message", ["ssh"], 'git commit -m "ssh fix"', false],
     ["a name that only continues", ["heavy-queue run"], "heavy-queue runner x", false],
-    ["a quoted multi-word path", ["heavy-queue run"], "\"/x/heavy-queue\" run --shell 'a'", true],
+    ["a longer first word", ["heavy-queue run"], "heavy-queue-runner run x", false],
+    ["a multi-word name", ["heavy-queue run"], "/x/heavy-queue  run x", true],
     ["a variable", ["heavy-queue run"], "$HQ run --shell 'a'", false],
   ])("matches %s", (_name, names, command, expected) => {
     expect(runsTool(command, names)).toBe(expected);

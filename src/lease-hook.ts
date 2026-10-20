@@ -69,8 +69,11 @@ const DEFAULT_PATTERNS: readonly (readonly [word: string, pattern: string])[] = 
 ];
 
 const CLI = /cli-lease\.js|claude-orchestrator-lease|cli-heavy-queue\.js|claude-orchestrator-heavy-queue/;
-/** Text that names heavy-queue's `run`; not heavy only while the file at the heavy-queue path is the front-end shim. */
-const HEAVY_QUEUE_RUN = commandWord(["heavy-queue run"]);
+/**
+ * A segment's command text that runs heavy-queue's `run`: the command word, with any leading path, is `heavy-queue` and
+ * `run` follows. Not heavy only while the file at the heavy-queue path is the front-end shim.
+ */
+const HEAVY_QUEUE_RUN = commandWord(["heavy-queue run"], "^(?:\\S*/)?");
 const shimMarker = "cli-heavy-queue.js";
 const defaultHeavyQueuePath = (): string => path.join(homedir(), ".local/share/heavy-queue/heavy-queue");
 
@@ -95,8 +98,9 @@ const WRAPPERS = new Map([["time", /^$/], ["env", /^-[uC]$/], ["nice", /^-n$/], 
  * Whether a token holds an odd number of `"` or `'`. An English contraction's apostrophe (`Let's`, `don't`, `we're`) is not a
  * quote, but any other letter-quote-letter is, so a single-quoted value glued to a letter (`'a;b'c`) still counts.
  */
-const oddQuote = (token: string): boolean =>
-  token.split('"').length % 2 === 0 || token.replace(/[A-Za-z]'(?:[stdm]|re|ve|ll)(?![A-Za-z])/gi, "").split("'").length % 2 === 0;
+const oddQuote = (token: string): boolean => quoteCounts(token).some((n) => n % 2 === 1);
+/** The number of `"` and of `'` in `text`, an English contraction's apostrophe not counted. */
+const quoteCounts = (text: string): [number, number] => [text.split('"').length - 1, text.replace(/[A-Za-z]'(?:[stdm]|re|ve|ll)(?![A-Za-z])/gi, "").split("'").length - 1];
 
 const isRegex = (source: string): boolean => {
   try {
@@ -114,11 +118,27 @@ const isRegex = (source: string): boolean => {
  * ignored; every pattern is anchored at the command word and followed by an end boundary (not `\w`, `.`, `/` or `-`).
  */
 export function isHeavyCommand(command: string, extraPatterns: readonly string[] = [], heavyQueueShim: () => boolean = () => false): boolean {
-  if (CLI.test(command) || (HEAVY_QUEUE_RUN.test(command) && heavyQueueShim())) return false;
+  if (CLI.test(command)) return false;
+  const parts = command.replace(/\\\n/g, " ").split(SEPARATOR);
+  if (runsHeavyQueue(parts) && heavyQueueShim()) return false;
   const patterns = [...DEFAULT_PATTERNS.map(([, p]) => p), ...extraPatterns.filter(isRegex)];
   const heavy = new RegExp(`(?:${patterns.map((p) => `(?:${p})`).join("|")})(?![\\w./-])`, "y");
-  const parts = command.replace(/\\\n/g, " ").split(SEPARATOR);
   return parts.some((segment, i) => i % 2 === 0 && isHeavySegment(segment, heavy, parts[i - 1]));
+}
+
+/**
+ * Whether a segment of the raw split runs `heavy-queue run` as its command word, after its leading words, outside quotes:
+ * the text before that segment holds an even number of `"` and of `'`. A quoted mention (`git commit -m "heavy-queue run"`)
+ * is not one; a quoted path (`"/x/heavy-queue" run`) is, since it is the command word itself.
+ */
+function runsHeavyQueue(parts: readonly string[]): boolean {
+  let open: [number, number] = [0, 0];
+  return parts.some((part, i) => {
+    const runs = i % 2 === 0 && open.every((n) => n % 2 === 0) && part.includes("heavy-queue") && HEAVY_QUEUE_RUN.test(commandText(part) ?? "");
+    const [double, single] = quoteCounts(part);
+    open = [open[0] + double, open[1] + single];
+    return runs;
+  });
 }
 
 /**
@@ -135,40 +155,17 @@ function isHeavySegment(segment: string, heavy: RegExp, after = ""): boolean {
   // A tail that is only punctuation (`): make …`, `), make …`) is prose, not the rest of a word.
   const glued = follows && /^\S/.test(segment) && !/^[,.;:!?]+\s/.test(segment);
   const tokens = segment.split(/\s+/);
-  const word = (i: number): string => tokens[i]?.replace(/^['"]+/, "") ?? "";
   let stripped = false;
   let scanned = false;
   for (let i = 0; i < tokens.length; i++) {
-    const w = word(i);
-    if (!w) continue;
-    const assignment = /^[A-Za-z_]\w*=(['"]?)/.exec(w);
-    if (assignment) {
-      const quote = assignment[1]!;
-      // A quoted value runs to the token that closes it (`FOO='a b'`).
-      if (quote && !w.includes(quote, assignment[0].length)) while (++i < tokens.length && !tokens[i]!.includes(quote));
+    if (!tokenWord(tokens, i)) continue;
+    const end = leadingWordEnd(tokens, i);
+    if (end !== undefined) {
+      i = end;
       continue;
     }
-    if (PREFIX_WORDS.has(w)) continue;
-    const wrapper = WRAPPERS.get(w);
-    if (wrapper) {
-      let j = i + 1;
-      while (word(j).startsWith("-")) j += wrapper.test(word(j)) ? 2 : 1;
-      i = w === "timeout" ? j : j - 1; // `timeout` also takes a duration
-      continue;
-    }
-    const name = w.replace(/['"]/g, "");
-    if (/^(?:ba|z)?sh$/.test(name.slice(name.lastIndexOf("/") + 1))) {
-      // Option tokens up to the flag that ends in `c`; `-o` and `-euo` take an argument (`-o pipefail`).
-      let j = i + 1;
-      while (word(j).startsWith("-") && !/^-[a-z]*c$/.test(word(j))) j += /^-[a-z]*o$/.test(word(j)) ? 2 : 1;
-      if (/^-[a-z]*c$/.test(word(j))) {
-        i = j;
-        continue;
-      }
-    }
-    // A token that is wholly quoted with no other quote inside (`npm "test"`) is tested without its quotes; `""` and
-    // `"O'Brien"` keep theirs, so a pattern that parses quoted values (git's) still sees them.
-    const text = [name, ...tokens.slice(i + 1).map((t) => t.replace(/^(["'])([^\s'"]+)\1$/, "$2"))].join(" ");
+    const name = tokenWord(tokens, i).replace(/['"]/g, "");
+    const text = commandTextAt(tokens, i);
     // From the command word's start, then after each `/` in it (`./scripts/test.sh`, `.venv/bin/pytest`).
     for (let k = 0; k >= 0; k = name.indexOf("/", k) + 1 || -1) {
       heavy.lastIndex = k;
@@ -189,6 +186,59 @@ function isHeavySegment(segment: string, heavy: RegExp, after = ""): boolean {
     return false;
   }
   return false;
+}
+
+const tokenWord = (tokens: readonly string[], i: number): string => tokens[i]?.replace(/^['"]+/, "") ?? "";
+
+/**
+ * When token `i` starts a leading word after which the command still follows (`NAME=value`, a prefix word, a wrapper
+ * with its options, `sh -c`), the index of its last token; else `undefined`.
+ */
+function leadingWordEnd(tokens: readonly string[], i: number): number | undefined {
+  const word = (j: number): string => tokenWord(tokens, j);
+  const w = word(i);
+  const assignment = /^[A-Za-z_]\w*=(['"]?)/.exec(w);
+  if (assignment) {
+    const quote = assignment[1]!;
+    // A quoted value runs to the token that closes it (`FOO='a b'`).
+    if (quote && !w.includes(quote, assignment[0].length)) while (++i < tokens.length && !tokens[i]!.includes(quote));
+    return i;
+  }
+  if (PREFIX_WORDS.has(w)) return i;
+  const wrapper = WRAPPERS.get(w);
+  if (wrapper) {
+    let j = i + 1;
+    while (word(j).startsWith("-")) j += wrapper.test(word(j)) ? 2 : 1;
+    return w === "timeout" ? j : j - 1; // `timeout` also takes a duration
+  }
+  const name = w.replace(/['"]/g, "");
+  if (/^(?:ba|z)?sh$/.test(name.slice(name.lastIndexOf("/") + 1))) {
+    // Option tokens up to the flag that ends in `c`; `-o` and `-euo` take an argument (`-o pipefail`).
+    let j = i + 1;
+    while (word(j).startsWith("-") && !/^-[a-z]*c$/.test(word(j))) j += /^-[a-z]*o$/.test(word(j)) ? 2 : 1;
+    if (/^-[a-z]*c$/.test(word(j))) return j;
+  }
+  return undefined;
+}
+
+/**
+ * The command word at token `i`, without its quotes, and the rest of the segment. A token that is wholly quoted with no
+ * other quote inside (`npm "test"`) is given without its quotes; `""` and `"O'Brien"` keep theirs, so a pattern that
+ * parses quoted values (git's) still sees them.
+ */
+const commandTextAt = (tokens: readonly string[], i: number): string =>
+  [tokenWord(tokens, i).replace(/['"]/g, ""), ...tokens.slice(i + 1).map((t) => t.replace(/^(["'])([^\s'"]+)\1$/, "$2"))].join(" ");
+
+/** A segment's command text (`commandTextAt`) after its leading words, or `undefined` when it has no command word. */
+function commandText(segment: string): string | undefined {
+  const tokens = segment.split(/\s+/);
+  for (let i = 0; i < tokens.length; i++) {
+    if (!tokenWord(tokens, i)) continue;
+    const end = leadingWordEnd(tokens, i);
+    if (end === undefined) return commandTextAt(tokens, i);
+    i = end;
+  }
+  return undefined;
 }
 
 /** `CO_LEASE_PATTERNS_FILE`: a JSON array of extra patterns. A missing or malformed file adds none. */

@@ -219,9 +219,29 @@ describe("heavy-queue run", () => {
     ["after &&", `cd x&&heavy-queue run ${shellArg}`],
     ["in a subshell", `(heavy-queue run ${shellArg})`],
     ["a quoted path", `"$HOME/.local/share/heavy-queue/heavy-queue" run ${shellArg}`],
+    ["a quoted /x path", `"/x/heavy-queue" run ${shellArg}`],
+    ["after cd x &&", `cd x && heavy-queue run ${shellArg}`],
+    ["after a | ", `true | heavy-queue run ${shellArg}`],
+    ["after || ", `false || heavy-queue run ${shellArg}`],
+    ["after leading words", `FOO=1 nohup heavy-queue run ${shellArg}`],
+    ["inside bash -c", `bash -c 'heavy-queue run ${shellArg}'`],
   ])("%s: exempt with the shim, heavy without", (_name, command) => {
     expect(isHeavyCommand(command, [], shimmed(true))).toBe(false);
     expect(isHeavyCommand(command, [], shimmed(false))).toBe(true);
+  });
+
+  it.each([
+    ["a commit message", `git commit -m "docs: heavy-queue run" && git push`],
+    ["a grep pattern", `grep 'heavy-queue run' log; npm test`],
+    ["an echo", `echo "heavy-queue run" && npm test`],
+    ["a quoted mention split at ;", `echo "x; heavy-queue run y" && npm test`],
+    ["a quoted mention split at &&", `echo 'cd x && heavy-queue run y'; npm test`],
+    ["a path argument", `cat /x/heavy-queue run; npm test`],
+    ["a variable, not expanded", `$HQ run --shell "a && npm test"`],
+    ["a longer command word", `heavy-queue-runner run && npm test`],
+    ["a longer subcommand", `heavy-queue runner && npm test`],
+  ])("%s: heavy with the shim, since heavy-queue run is not the command word", (_name, command) => {
+    expect(isHeavyCommand(command, [], shimmed(true))).toBe(true);
   });
 
   it.each<[string, string, boolean, boolean]>([

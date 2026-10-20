@@ -102,12 +102,19 @@ export const isSimulatorCommand = (command: string): boolean => /\/CoreSimulator
 /** The Xcode tools whose running marks a simulator as in use and a command as unsuspendable. */
 export const XCODE_TOOLS = ["xcodebuild", "simctl"];
 
-/** A regexp for a command naming one of `words` (a multi-word name joins its words with whitespace, a closing quote allowed between them): each word escaped, preceded by the start, whitespace, `/`, a shell separator (`;`, `&`, `|`, `(`, a backtick) or a quote, and followed by whitespace, a quote or the end. A shell variable such as `$HQ run` is not expanded, so it does not match. */
-export const commandWord = (words: readonly string[]): RegExp =>
-  new RegExp(`(?:^|[\\s/;&|(\`"'])(?:${words.map((w) => w.split(/\s+/).map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\"']?\\s+")).join("|")})(?:[\\s\"']|$)`);
+/** `runsTool`'s boundary before a name: the start, whitespace, `/` or a shell separator (`;`, `&`, `|`, `(`). */
+const TOOL_BEFORE = "^|[\\s/;&|(]";
+
+/**
+ * A regexp for a command line naming one of `words`: each word escaped, the words of a multi-word name joined by
+ * whitespace, preceded by `before` (a regexp source, default `runsTool`'s boundary) and followed by whitespace or the end.
+ * A shell variable such as `$HQ run` is not expanded, so it does not match.
+ */
+export const commandWord = (words: readonly string[], before: string = TOOL_BEFORE): RegExp =>
+  new RegExp(`(?:${before})(?:${words.map((w) => w.split(/\s+/).map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")).join("|")})(?:\\s|$)`);
 
 const toolPatterns = new Map<string, RegExp>();
-/** True when `command` runs one of `names`, by `commandWord`'s boundary rule, so a tool path with spaces still counts and `mysimctl` does not. */
+/** True when `command` runs one of `names`: preceded by the start, whitespace, `/` or a shell separator and followed by whitespace or the end, so a tool path with spaces still counts and `mysimctl`, `echo "simctl"` do not. Compiled once per name list. */
 export const runsTool = (command: string, names: readonly string[]): boolean => {
   const key = names.join("\0");
   let re = toolPatterns.get(key);
