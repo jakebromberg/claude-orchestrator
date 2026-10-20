@@ -34,8 +34,10 @@ export interface ProcRow {
 }
 /** The rows of `PS_TABLE_ARGS` output; a line that is not a row is skipped. */
 export declare function parsePsTable(text: string): ProcRow[];
+/** A command whose first word's basename is `claude`, the one rule of what a Claude process is (the watchdog and the unowned-memory report). */
+export declare const isClaudeCommand: (command: string) => boolean;
 /** `pid` and its parents through `rows`, nearest first, without pid 1. `complete` is false when a link is missing from the scan or the chain is not finished within `max` rows (a loop), so a caller that guards on the chain can fail closed. */
-export declare function ancestry(rows: ProcRow[], pid: number, max: number): {
-    chain: ProcRow[];
+export declare function ancestry<R extends Pick<ProcRow, "pid" | "ppid">>(rows: R[], pid: number, max: number): {
+    chain: R[];
     complete: boolean;
 };

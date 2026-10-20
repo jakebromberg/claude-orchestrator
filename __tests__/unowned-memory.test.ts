@@ -49,8 +49,9 @@ describe("summarizeUnowned", () => {
     ["no heavy holder: the leased command is an other", [], [40, 41, 43]],
     ["a heavy holder's child and its descendants are left out", [40], [43]],
     ["a recorded child pid that is not in the table changes nothing", [99], [40, 41, 43]],
+    ["a hook holder's session pid leaves out the commands under it", [39], [43]],
   ])("%s", (_name, heavyChildPids, pids) => {
-    const text = [row(40, 1, 2000, "npm test"), row(41, 40, 1500, "node vitest"), row(42, 41, 100, "node worker"), row(43, 1, 900, "/bin/other")].join("\n");
+    const text = [row(39, 1, 300, "claude"), row(40, 39, 2000, "npm test"), row(41, 40, 1500, "node vitest"), row(42, 41, 100, "node worker"), row(43, 1, 900, "/bin/other")].join("\n");
     expect(summarizeUnowned(text, [], heavyChildPids).others.map((o) => o.pid)).toEqual(pids);
   });
 });
@@ -82,6 +83,21 @@ describe("sampleUnowned", () => {
   it("returns undefined and writes nothing when ps fails", () => {
     expect(sample(new Error("boom"))).toBeUndefined();
     expect(() => readFileSync(join(dir, "unowned.json"))).toThrow();
+  });
+
+  it("re-reads when the holder pids differ from the cached sample's", () => {
+    sample();
+    expect(sampleUnowned({ dir, now: () => now, ps: () => { calls++; return ""; } }, [501])?.simulators).toBe(0);
+    expect(calls).toBe(2);
+  });
+
+  it.each([
+    ["a malformed others entry", { simulators: 1, claude: 1, others: [1, null] }],
+    ["an others entry with a string pid", { simulators: 1, claude: 1, others: [{ pid: "x", command: "c", bytes: 1 }] }],
+  ])("ignores a cache record with %s", (_name, record) => {
+    writeFileSync(join(dir, "unowned.json"), JSON.stringify({ at: now, key: JSON.stringify([[500], []]), ...record }));
+    expect(sample()?.simulators).toBe(900 * MB);
+    expect(calls).toBe(1);
   });
 
   it("ignores a malformed cache record", () => {

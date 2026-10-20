@@ -682,12 +682,12 @@ describe("runLeased", () => {
       const seen: number[][][] = [];
       const status = (u: typeof unowned | undefined) =>
         deps({
-          leaseStatus: () => ({ level: "normal", capacity: 3, step: 3, signals: null, live: [holder(), holder({ childPid: 88 })], sessions: { capacity: 6, live: [holder({ pid: 77 })] } }),
+          leaseStatus: () => ({ level: "normal", capacity: 3, step: 3, signals: null, live: [holder(), holder({ childPid: 88 }), holder({ pid: 99, expiresAt: 1 })], sessions: { capacity: 6, live: [holder({ pid: 77 })] } }),
           unowned: (_opts: LeaseOptions, pids: number[], heavyChildPids: number[]) => (seen.push([pids, heavyChildPids]), u),
         });
       expect(runStatus(status(unowned))).toBe(0);
       expect(JSON.parse(out.join(""))).toMatchObject({ unowned });
-      expect(seen).toEqual([[[77], [88]]]);
+      expect(seen).toEqual([[[77], [88, 99]]]);
       out.length = 0;
       expect(runStatus(status(undefined))).toBe(0);
       expect(JSON.parse(out.join(""))).not.toHaveProperty("unowned");

@@ -79,7 +79,7 @@ describe("heavy admission against free memory", () => {
     expect(take(o, 3 * GB)).not.toBeNull();
     expect(take(o, 3 * GB)).not.toBeNull();
     expect(take(o, 3 * GB)).toBeNull();
-    expect(leaseStatus(o).weights).toMatchObject({ used: 6 * GB, budget: 6 * GB });
+    expect(leaseStatus(o).weights).toEqual({ used: 6 * GB, budget: 6 * GB, free: expect.any(Object) });
   });
 
   it("adds a holder's weight back once it is older than the ramp window", () => {
@@ -87,10 +87,10 @@ describe("heavy admission against free memory", () => {
     take(o, 3 * GB);
     lease.clock.ms += RAMP_MS - 1;
     beat();
-    expect(leaseStatus(o).weights).toMatchObject({ used: 3 * GB, budget: 6 * GB });
+    expect(leaseStatus(o).weights).toEqual({ used: 3 * GB, budget: 6 * GB, free: expect.any(Object) });
     lease.clock.ms += 1;
     beat();
-    expect(leaseStatus(o).weights).toMatchObject({ used: 3 * GB, budget: 9 * GB });
+    expect(leaseStatus(o).weights).toEqual({ used: 3 * GB, budget: 9 * GB, free: expect.any(Object) });
     const beating = (): LeaseHandle | null => {
       const h = take(o, 3 * GB);
       beat();
@@ -105,20 +105,20 @@ describe("heavy admission against free memory", () => {
     const o = at(reading(4, 62.5));
     plantHolder(lease, "4242-old", { startedAt: lease.clock.ms - RAMP_MS - 1, weight: 2 * GB });
     plantHolder(lease, "4242-young", { startedAt: lease.clock.ms - 1000, weight: 3 * GB });
-    expect(leaseStatus(o).weights).toMatchObject({ used: 5 * GB, budget: 8 * GB });
+    expect(leaseStatus(o).weights).toEqual({ used: 5 * GB, budget: 8 * GB, free: expect.any(Object) });
   });
 
   it("charges a holder dated in the future as young", () => {
     const o = at(reading(4, 62.5));
     plantHolder(lease, "4242-future", { startedAt: lease.clock.ms + 10 * RAMP_MS, weight: 3 * GB });
-    expect(leaseStatus(o).weights).toMatchObject({ used: 3 * GB, budget: 6 * GB });
+    expect(leaseStatus(o).weights).toEqual({ used: 3 * GB, budget: 6 * GB, free: expect.any(Object) });
   });
 
   it("reports one budget in status, the admission and the acquire event", () => {
     const o = at(reading(4, 62.5));
     plantHolder(lease, "4242-old", { startedAt: lease.clock.ms - RAMP_MS - 1, weight: 2 * GB });
     const h = take(o, GB)!;
-    expect(leaseStatus(o).weights).toMatchObject({ used: 3 * GB, budget: 8 * GB });
+    expect(leaseStatus(o).weights).toEqual({ used: 3 * GB, budget: 8 * GB, free: expect.any(Object) });
     expect(h.admission.weights).toEqual({ used: 3 * GB, budget: 8 * GB, weight: GB });
     expect(lease.events.filter((e) => e.type === "acquire").at(-1)).toMatchObject({ weights: { budget: 8 * GB } });
   });

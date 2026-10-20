@@ -5,11 +5,11 @@
  * engine's liveness is whether its pid has a row in the scan for a process that started no later than the record.
  */
 import { lstatSync, readdirSync, statfsSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
 import { appendOwnLine, isOwnDir, readLeaseRecord, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
-import { ancestry, isPid, parsePsTable, ps, PS_TABLE_ARGS } from "./ps.js";
+import { ancestry, isClaudeCommand, isPid, parsePsTable, ps, PS_TABLE_ARGS } from "./ps.js";
 import { readSuspensions } from "./suspensions.js";
 const EX_USAGE = 64;
 const USAGE = "usage: claude-orchestrator-watchdog check | brief | print-plist | print-status-line";
@@ -100,7 +100,7 @@ function readEngines(dir, now, procs) {
 }
 /** Groups whose every member is stopped (`stat` starts with `T`) and that contain or descend from a `claude` process, or belong to a live registered engine. */
 function stoppedGroups(procs, engines) {
-    const isClaude = (p) => basename(p.command.trim().split(/\s+/)[0]) === "claude";
+    const isClaude = (p) => isClaudeCommand(p.command);
     const underClaude = (p) => ancestry(procs, p.pid, 64).chain.some(isClaude);
     const enginePgids = new Set(engines.filter((e) => e.alive).map((e) => e.pgid));
     const groups = new Map();
