@@ -148,9 +148,9 @@ describe("resuming the oldest suspended holder", () => {
       freePct = undefined; // the step's share of usable: 12 GiB at step 4
     });
     /** Admission would refuse weights that do not fit together, so they are written into the holder files after the holders are in. */
-    const setUp = (weights: Partial<Record<Name, number>>): void => {
+    const setUp = (weights: Partial<Record<Name, number>>, suspended: Name[] = ["a"]): void => {
       acquireAll();
-      suspend("a");
+      suspended.forEach(suspend);
       for (const [name, weight] of Object.entries(weights)) {
         const file = join(dir, "holders", `${handles[name]!.id}.json`);
         writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), weight }));
@@ -175,6 +175,17 @@ describe("resuming the oldest suspended holder", () => {
       advance(RAMP_MS);
       beat();
       plantCpu(lease, 0.1, TICKS);
+      expect(tick("a")).toBe("resumed");
+    });
+
+    it("does not count another suspended holder's weight as room: two suspended and free memory inside the reserve stay stopped", () => {
+      setUp({ a: 4 * GIB, b: 4 * GIB, c: 4 * GIB }, ["a", "b"]);
+      freePct = 12.5; // 2 GiB free, inside the 4 GiB reserve
+      advance(RAMP_MS);
+      beat();
+      plantCpu(lease, 0.1, TICKS);
+      expect(tick("a")).toBeUndefined();
+      freePct = 40; // 6.4 GiB free: 2.4 GiB of room beyond the reserve, and the running holder plus the oldest settle
       expect(tick("a")).toBe("resumed");
     });
 

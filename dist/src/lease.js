@@ -370,8 +370,9 @@ export function resumeOldest(opts, handle, pgid, cont) {
         const { live } = scanHolders(opts, HEAVY);
         const [oldest] = live.filter((h) => h.suspended).sort(byAge);
         if (oldest?.id === handle.id && busy !== null && busy < RESUME_CPU_BUSY) {
-            const { usable, budget, of } = weigh(opts, HEAVY, snap, live);
             const running = live.filter((h) => !h.suspended);
+            // Weighed over the holders summed below only: another suspended holder's weight would otherwise be added back to the free budget without being charged against it.
+            const { usable, budget, of } = weigh(opts, HEAVY, snap, [...running, oldest]);
             const alone = running.length === 0;
             const free = snap.signals?.freePct;
             const recovered = usable !== undefined || (free !== undefined && free > RESUME_FREE_PCT);
