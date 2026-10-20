@@ -191,6 +191,8 @@ export interface GatherCollisionInputsDeps {
   baseBranch: string;
   /** Optional logger for swallowed peer errors. */
   onPeerError?: (slug: string, err: Error) => void;
+  /** Optional logger for a failed fetch; the scan then compares against the locally known `origin/<baseBranch>`. */
+  onFetchError?: (baseBranch: string, err: Error) => void;
 }
 
 export function gatherCollisionInputs(
@@ -202,8 +204,9 @@ export function gatherCollisionInputs(
   // Best-effort fetch — never fail the scan because origin is unreachable.
   try {
     runCommand("git", ["-C", currentWorktree, "fetch", "origin", baseBranch]);
-  } catch {
-    // ignore — we proceed with whatever origin/<baseBranch> currently points to
+  } catch (err) {
+    // we proceed with whatever origin/<baseBranch> currently points to
+    deps.onFetchError?.(baseBranch, err instanceof Error ? err : new Error(String(err)));
   }
 
   const myMergeBase = safeMergeBase(runCommand, currentWorktree, baseBranch);

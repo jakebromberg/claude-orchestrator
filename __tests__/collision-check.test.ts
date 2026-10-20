@@ -210,6 +210,30 @@ describe("gatherCollisionInputs", () => {
     expect(fetchCall).toBeDefined();
   });
 
+  it.each([
+    ["a timeout", Object.assign(new Error("spawnSync git ETIMEDOUT"), { code: "ETIMEDOUT" })],
+    ["an unreachable origin", new Error("fatal: unable to access origin")],
+  ])("reports %s from the fetch once and scans as before", (_name, fetchError) => {
+    const runCommand = vi.fn((file: string, args: string[]) => {
+      if (args.includes("fetch")) throw fetchError;
+      if (args.includes("merge-base")) return "abc123\n";
+      if (args.some((a) => a === "abc123..HEAD")) return "migrations/0056_add_x.sql\n";
+      return "";
+    });
+    const onFetchError = vi.fn();
+    const result = gatherCollisionInputs({
+      runCommand,
+      existsSync: () => false,
+      currentWorktree: "/tmp/wt/foo",
+      peers: [],
+      entries: [sqlEntry],
+      baseBranch: "main",
+      onFetchError,
+    });
+    expect(onFetchError).toHaveBeenCalledExactlyOnceWith("main", fetchError);
+    expect(result.current[0]).toEqual([{ key: "0056", path: "migrations/0056_add_x.sql" }]);
+  });
+
   it("collects current's added files via diff against merge-base..HEAD", () => {
     const runCommand = vi.fn((file: string, args: string[]) => {
       if (args.includes("merge-base") && args.includes("HEAD")) return "abc123\n";

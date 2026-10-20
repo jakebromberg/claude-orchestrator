@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gatherCollisionInputs } from "../src/collision-check.js";
 import { weightForCommands, type GitLookup } from "../src/lease-weights.js";
 import {
   BLOCKING_BUDGET_MS,
@@ -55,8 +56,22 @@ describe("synchronous call budgets", () => {
     expect((MAX_PR_CANDIDATES_VERIFIED + 3) * SYNC_CALL_TIMEOUT_MS).toBeLessThanOrEqual(BLOCKING_BUDGET_MS);
   });
 
+  // The fetch plus the git calls gatherCollisionInputs makes per peer worktree (merge-base, one diff per entry).
+  const callsPerPeer = (): number => {
+    let total = 0;
+    gatherCollisionInputs({
+      runCommand: (_file, args) => (args.includes("/peer") && total++, "abc\n"),
+      existsSync: () => true,
+      currentWorktree: "/wt",
+      peers: [{ slug: "p", worktreePath: "/peer" }],
+      entries: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+      baseBranch: "main",
+    });
+    return total;
+  };
+
   it.fails("keeps the collision check with many peers within the heartbeat window", () => {
     const peers = 10; // the number of peers is not bounded
-    expect(peers * SYNC_CALL_TIMEOUT_MS).toBeLessThanOrEqual(BLOCKING_BUDGET_MS);
+    expect((1 + peers * callsPerPeer()) * SYNC_CALL_TIMEOUT_MS).toBeLessThanOrEqual(BLOCKING_BUDGET_MS);
   });
 });

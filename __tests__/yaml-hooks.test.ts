@@ -486,6 +486,43 @@ describe("deriveHooks", () => {
       warn.mockRestore();
     });
 
+    it.each([
+      ["a timeout", Object.assign(new Error("spawnSync git ETIMEDOUT"), { code: "ETIMEDOUT" }), /10 s bound/],
+      ["an unreachable origin", new Error("unable to access origin"), /unable to access origin/],
+    ])("logs one stale-base warning when the fetch fails with %s", async (_name, fetchError, text) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const runGitCommand = vi.fn((file: string, args: string[]) => {
+        if (args.includes("fetch")) throw fetchError;
+        return "";
+      });
+      const hooks = deriveHooks(
+        makeYaml({
+          sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+        }),
+        { runGitCommand, existsSync: () => false },
+      );
+      const result = await hooks.postSessionCheck!(makeIssue({ slug: "foo" }), "/tmp/worktrees/foo");
+      expect(result.passed).toBe(true);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/main.*stale/s));
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(text));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("/tmp/worktrees/foo"));
+      warn.mockRestore();
+    });
+
+    it("logs no warning when the fetch succeeds", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const hooks = deriveHooks(
+        makeYaml({
+          sequentialPaths: [{ dir: "migrations", pattern: "(\\d{4})_.*\\.sql" }],
+        }),
+        { runGitCommand: () => "", existsSync: () => false },
+      );
+      await hooks.postSessionCheck!(makeIssue({ slug: "foo" }), "/tmp/worktrees/foo");
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
     it("short-circuits before scanning when configured commands fail", async () => {
       const runCommand = vi.fn((cmd: string) => {
         if (cmd === "npm test") throw new Error("test fail");
