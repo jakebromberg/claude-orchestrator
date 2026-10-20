@@ -190,7 +190,8 @@ function acquireCheckLease(
   let lastLogged: number | undefined;
   const warn = lease.warn ?? defaultWarn;
   // One table read and at most one git call per fact for the whole check, not per command: the engine's event loop waits on each.
-  const table = loadWeightTable(process.env, warn);
+  // The table comes from the handed lease's own directory, so holders and weight rules can never disagree about where the lease lives.
+  const table = loadWeightTable({ ...process.env, CO_LEASE_DIR: lease.dir }, warn);
   const facts = new Map<string, string>();
   const once = (key: string, get: () => string): string => {
     if (!facts.has(key)) {

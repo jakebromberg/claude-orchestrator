@@ -527,7 +527,7 @@ function borrowedHandle(id: string, level: PressureLevel, capacity: number, live
  * the unmatched `usable / ceiling`), else every weight is 1 and the budget is the capacity, which is the count rule. `report` is the
  * used/budget pair for the given holders, or `undefined` in count mode.
  */
-function weigh(opts: LeaseOptions, cls: LeaseClass, { step, capacity, signals }: Pick<Snapshot, "step" | "capacity" | "signals">) {
+function weigh(opts: LeaseOptions, cls: LeaseClass, { step, capacity = 0, signals }: Pick<Snapshot, "step" | "signals"> & Partial<Pick<Snapshot, "capacity">>) {
   const memsize = positive(signals?.memsizeBytes);
   const usable = cls.budget && memsize !== undefined ? usableBytes(memsize, opts.reservePct ?? DEFAULT_RESERVE_PCT) : undefined;
   const unmatched = usable === undefined ? 1 : usable / cls.ceiling(opts);
@@ -830,8 +830,10 @@ export function defaultLeaseOptions(
   let opts: LeaseOptions;
   const headroom = overrides.level ? undefined : defaultHeadroomSampler(env, {
         log: tagged,
-        heavyLive: () => scanHolders(opts, HEAVY).live.length,
-        heavyWeights: (step, signals) => weigh(opts, HEAVY, { step, capacity: HEAVY.capacity(step, HEAVY.ceiling(opts)), signals }).report(scanHolders(opts, HEAVY).live),
+        heavy: (step, signals) => {
+          const { live } = scanHolders(opts, HEAVY);
+          return { live: live.length, weights: weigh(opts, HEAVY, { step, signals }).report(live) };
+        },
       });
   const level = overrides.level ?? levelView(headroom!);
   return (opts = {

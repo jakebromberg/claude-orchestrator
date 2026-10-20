@@ -32,11 +32,11 @@ function validSignals(s) {
  * steps from the last good reading under 60 s old (in-process, else `level.json`), and otherwise from `critical`; it is
  * not shared. `CO_PRESSURE_OVERRIDE=critical-as-warning` maps `critical` to `warning` and step 0 to 1 in this process
  * only. Each sample that changed the level, the step or free % (by 5 points) from the stored record, or that finds `sampledAt`
- * 60 s old, also appends a line to `pressure.jsonl`; `heavyLive` counts live heavy holders and `heavyWeights` reports their `weights` (weight mode only) for it (the sampler has no lease
- * options); each line has `type: "sample"`, and a failed count, weighing or append is swallowed. Throws when `leaseDirectory(env)` does. `deps` exists for tests.
+ * 60 s old, also appends a line to `pressure.jsonl`; `heavy` (one scan of the live heavy holders, so the two fields describe the same set) returns their `live` count and `weights` (weight mode only) for it (the sampler has no lease
+ * options); each line has `type: "sample"`, and a failed scan, weighing or append is swallowed. Throws when `leaseDirectory(env)` does. `deps` exists for tests.
  */
 export function defaultHeadroomSampler(env = process.env, deps = {}) {
-    const { read = () => readMemorySignals(), now = Date.now, log: emit = warnOnce, table = DEFAULT_STEP_TABLE, heavyLive, heavyWeights } = deps;
+    const { read = () => readMemorySignals(), now = Date.now, log: emit = warnOnce, table = DEFAULT_STEP_TABLE, heavy } = deps;
     const logged = new Set();
     const log = (msg) => {
         if (!logged.has(msg)) {
@@ -57,21 +57,14 @@ export function defaultHeadroomSampler(env = process.env, deps = {}) {
         const moved = !before || before.level !== signals.level || before.step !== step || (before.freePct !== undefined && signals.freePct !== undefined && Math.abs(before.freePct - signals.freePct) >= FREE_PCT_MOVE);
         if (!moved && sampledAt !== undefined && isFresh(sampledAt, at, HEARTBEAT_MS))
             return sampledAt;
-        let live;
+        let found;
         try {
-            live = heavyLive?.();
+            found = heavy?.(step, signals);
         }
         catch {
-            // The count is optional; the line is still worth writing.
+            // The holder count and weights are optional; the line is still worth writing.
         }
-        let weights;
-        try {
-            weights = heavyWeights?.(step, signals);
-        }
-        catch {
-            // Optional like the count.
-        }
-        history({ type: "sample", level: signals.level, freePct: signals.freePct, freeBytes: freeBytes(signals), swapUsedBytes: signals.swapUsedBytes, step, heavyLive: live, weights });
+        history({ type: "sample", level: signals.level, freePct: signals.freePct, freeBytes: freeBytes(signals), swapUsedBytes: signals.swapUsedBytes, step, heavyLive: found?.live, weights: found?.weights });
         return at;
     };
     const stored = () => {
