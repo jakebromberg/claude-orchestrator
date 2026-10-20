@@ -40,7 +40,7 @@ export async function runHeavyQueue(argv, d) {
     }
     return args.kind === "status" ? runStatus(d) : runLeased(args, d);
 }
-if (isEntryPoint(import.meta.url)) {
+if (isEntryPoint(import.meta.url, import.meta.main)) {
     runHeavyQueue(process.argv.slice(2), cliLeaseDeps((line) => void process.stderr.write(`${line}\n`))).then((code) => {
         process.exitCode = code;
     }, (err) => {

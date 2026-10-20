@@ -53,7 +53,7 @@ async function main(argv) {
     });
     return args.kind === "status" ? runStatus(deps) : runLeased(args, deps);
 }
-if (isEntryPoint(import.meta.url)) {
+if (isEntryPoint(import.meta.url, import.meta.main)) {
     main(process.argv.slice(2)).then((code) => {
         process.exitCode = code;
     }, (err) => {
