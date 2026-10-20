@@ -92,8 +92,34 @@ export function resolveWeight(command, cwd, table, lookup = realGit) {
     }
     return undefined;
 }
+/** `lookup` answering each fact once per directory; a throw is cached as unknown (""). */
+export function memoizedGit(lookup) {
+    const facts = new Map();
+    const once = (fact, d) => {
+        const key = `${fact}\0${d}`;
+        if (!facts.has(key)) {
+            try {
+                facts.set(key, lookup[fact](d));
+            }
+            catch {
+                facts.set(key, "");
+            }
+        }
+        return facts.get(key);
+    };
+    return { toplevel: (d) => once("toplevel", d), origin: (d) => once("origin", d) };
+}
+/**
+ * The largest weight over `commands` in `cwd` from the table `env` names; `undefined` when none matches. One table read and at most one git call per fact per directory, because each blocks the caller's event loop.
+ */
+export function weightForCommands(commands, cwd, env, warn, lookup = realGit) {
+    const table = loadWeightTable(env, warn);
+    const git = memoizedGit(lookup);
+    const weights = commands.map((c) => resolveWeight(c, cwd, table, git)).filter((w) => w !== undefined);
+    return weights.length ? Math.max(...weights) : undefined;
+}
 /** The weight for a command in `cwd` from the table `env` names; the one call the hook and the CLI make. */
 export function weightFor(command, cwd, env, warn) {
-    return resolveWeight(command, cwd, loadWeightTable(env, warn));
+    return weightForCommands([command], cwd, env, warn);
 }
 //# sourceMappingURL=lease-weights.js.map
