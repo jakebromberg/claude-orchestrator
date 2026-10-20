@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DISK_FULL_FRACTION } from "../src/watchdog.js";
-import { checkoutOf, isGitWorktree, plistText, runPrint, START_INTERVAL_S, STALE_AFTER_INTERVALS, statusLineSnippet, type PrintDeps } from "../src/watchdog-install.js";
+import { checkoutOf, claudeMdLine, isGitWorktree, plistText, runPrint, stableNode, START_INTERVAL_S, STALE_AFTER_INTERVALS, statusLineSnippet, type PrintDeps } from "../src/watchdog-install.js";
 
 const LEASE = "/Users/me/.local/state/claude-orchestrator";
 
@@ -32,6 +32,41 @@ describe("plistText", () => {
     const escaped = plistText({ node: "/a&b/node", checkout: "/c", dir: "/d<&>" });
     expect(escaped).toContain("<string>/a&amp;b/node</string>");
     expect(escaped).toContain("<key>CO_LEASE_DIR</key>\n    <string>/d&lt;&amp;&gt;</string>");
+  });
+});
+
+describe("stableNode", () => {
+  const CELLAR = "/opt/homebrew/Cellar/node/26.12.0/bin/node";
+  const links: Record<string, string> = { "/opt/homebrew/bin/node": CELLAR, [CELLAR]: CELLAR, "/Users/me/.nvm/bin/node": "/Users/me/.nvm/versions/22/bin/node" };
+  const realpath = (p: string): string => {
+    if (!(p in links)) throw Object.assign(new Error(`ENOENT: ${p}`), { code: "ENOENT" });
+    return links[p];
+  };
+
+  it.each([
+    ["the PATH link that resolves to the running node", "/usr/bin:/opt/homebrew/bin", "/opt/homebrew/bin/node"],
+    ["the first such link, skipping a node that is a different binary", "/Users/me/.nvm/bin:/opt/homebrew/bin", "/opt/homebrew/bin/node"],
+    ["the running path when no PATH entry resolves to it", "/Users/me/.nvm/bin:/usr/bin", CELLAR],
+    ["the running path, ignoring a relative PATH entry", "bin:.", CELLAR],
+    ["the running path when PATH is unset", undefined, CELLAR],
+  ] as const)("%s", (_name, path, expected) => {
+    expect(stableNode(CELLAR, path, realpath)).toBe(expected);
+  });
+
+  it("keeps the running path when it cannot itself be resolved", () => {
+    expect(stableNode("/gone/node", "/opt/homebrew/bin", realpath)).toBe("/gone/node");
+  });
+});
+
+describe("claudeMdLine", () => {
+  it("names the checkout's cli-lease.js by absolute path for suspend and resume, and rules out kill -STOP", () => {
+    expect(claudeMdLine("/Users/me/Developer/claude-orchestrator")).toBe(
+      "- To stop a process group on purpose, run `node /Users/me/Developer/claude-orchestrator/dist/src/cli-lease.js suspend <pgid> --by <who> --reason <why>` and later `node /Users/me/Developer/claude-orchestrator/dist/src/cli-lease.js resume <pgid>`, each alone in its own Bash call; never `kill -STOP`, which the watchdog reports as an unexplained stop.",
+    );
+  });
+
+  it("shell-quotes a checkout path that needs it", () => {
+    expect(claudeMdLine("/Users/me/My Code")).toContain("`node '/Users/me/My Code/dist/src/cli-lease.js' suspend");
   });
 });
 
@@ -173,11 +208,17 @@ describe("runPrint", () => {
     expect(out.join("\n")).toContain(`f=${DISK_FULL_FRACTION}`);
   });
 
-  it("refuses to print the plist from a git worktree", () => {
+  it("prints the CLAUDE.md line for the checkout", () => {
+    out.length = 0;
+    expect(runPrint(["print-claude-md-line"], deps())).toBe(0);
+    expect(out).toEqual([claudeMdLine("/c")]);
+  });
+
+  it.each(["print-plist", "print-claude-md-line"])("refuses %s from a git worktree", (cmd) => {
     out.length = 0;
     err.length = 0;
-    expect(runPrint(["print-plist"], deps({ isWorktree: () => true }))).toBe(1);
+    expect(runPrint([cmd], deps({ isWorktree: () => true }))).toBe(1);
     expect(out).toEqual([]);
-    expect(err.join("\n")).toMatch(/worktree/);
+    expect(err.join("\n")).toMatch(new RegExp(`worktree.*${cmd}`));
   });
 });
