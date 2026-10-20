@@ -2,14 +2,13 @@
  * JSONL sink for the lease's `onEvent` seam: one `{ ts, ...event }` line per event appended to
  * `<lease dir>/events.jsonl`. Events pass through unchanged, so a new event type or reap reason needs no change here.
  */
-import { appendFileSync, closeSync, constants, lstatSync, renameSync } from "node:fs";
+import { lstatSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { isOwnDir, openOwnFile } from "./lease-dir.js";
+import { appendOwnLine, isOwnDir } from "./lease-dir.js";
 import { defaultWarn, type LeaseEvent } from "./lease.js";
 
 /** Size past which a sink rotates its file to `<file>.1`; one generation of each is kept. */
 export const ROTATE_BYTES = 5 * 1024 * 1024;
-const OPEN_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT;
 
 type SinkDeps = { now?: () => number; maxBytes?: number; warn?: (msg: string) => void; rename?: (from: string, to: string) => void };
 
@@ -41,13 +40,7 @@ export function jsonlSink<T extends object>(dir: string, name: string, deps: Sin
           }
         }
       }
-      const fd = openOwnFile(file, OPEN_FLAGS, 0o600)?.fd;
-      if (fd === undefined) return;
-      try {
-        appendFileSync(fd, `${JSON.stringify({ ts: new Date(now()).toISOString(), ...e })}\n`);
-      } finally {
-        closeSync(fd);
-      }
+      appendOwnLine(file, JSON.stringify({ ts: new Date(now()).toISOString(), ...e }));
     } catch {
       // Nothing to report to: the lease's own `warn` is for lease problems.
     }

@@ -2,7 +2,7 @@
  * The lease directory's one rule: a real directory (not a symlink) that this user owns, at mode 0700. Every writer in
  * the lease directory goes through it. No load-time side effects.
  */
-import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { join } from "node:path";
 import { isPid } from "./ps.js";
@@ -71,6 +71,19 @@ export function openOwnFile(path, flags, mode) {
             closeSync(fd);
     }
     return st ? { fd, st } : undefined;
+}
+/** Appends `line` and a newline to `path` through `openOwnFile` (a new file has mode 0600); false when the target is refused. I/O errors propagate, so each caller keeps its own swallow. */
+export function appendOwnLine(path, line) {
+    const own = openOwnFile(path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT, 0o600);
+    if (!own)
+        return false;
+    try {
+        appendFileSync(own.fd, `${line}\n`);
+    }
+    finally {
+        closeSync(own.fd);
+    }
+    return true;
 }
 /**
  * The text and mtime of `path` through `openOwnFile`, or `undefined` when it is not a regular file this user owns (a

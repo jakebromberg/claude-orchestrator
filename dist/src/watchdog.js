@@ -4,11 +4,11 @@
  * stopped tree cannot silence it. It sends no signal: its dependencies are `ps`, the clock and the file system, and an
  * engine's liveness is whether its pid has a row in the scan for a process that started no later than the record.
  */
-import { appendFileSync, closeSync, constants, lstatSync, readdirSync, statfsSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, statfsSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
-import { isOwnDir, openOwnFile, readLeaseRecord, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
+import { appendOwnLine, isOwnDir, readLeaseRecord, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
 import { ancestry, isPid, parsePsTable, ps, PS_TABLE_ARGS } from "./ps.js";
 import { readSuspensions } from "./suspensions.js";
 const EX_USAGE = 64;
@@ -21,7 +21,6 @@ export const ENGINE_FRESH_MS = 3 * REFRESH_MS;
 export const STALLED_MARGIN_MS = 10 * 60_000;
 /** A lease suspension (`by: "lease"`) older than this is reported. */
 export const LEASE_SUSPENSION_MAX_MS = 30 * 60_000;
-const LOG_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT;
 const minutes = (ms) => Math.floor(ms / 60_000);
 /** Slack on the pid-reuse check: `etime` has one-second resolution and the registry stamps `startedAt` just after the engine starts. */
 const START_SLACK_MS = 5_000;
@@ -118,18 +117,10 @@ function readState(dir) {
         return { stoppedSince: {}, reported: [], findings: [] };
     }
 }
-/** Appends one line to `watchdog.log` through `openOwnFile`: only a regular file this user owns is appended to (a symlink is not followed, a FIFO not waited on), and a new one has mode 0600. A failure is swallowed: the log is a diagnostic. */
+/** Appends one line to `watchdog.log` through `appendOwnLine`: only a regular file this user owns is appended to (a symlink is not followed, a FIFO not waited on), and a new one has mode 0600. A failure is swallowed: the log is a diagnostic. */
 function appendLog(dir, now, text) {
     try {
-        const fd = openOwnFile(join(dir, "watchdog.log"), LOG_FLAGS, 0o600)?.fd;
-        if (fd === undefined)
-            return;
-        try {
-            appendFileSync(fd, `${new Date(now).toISOString()} ${text}\n`);
-        }
-        finally {
-            closeSync(fd);
-        }
+        appendOwnLine(join(dir, "watchdog.log"), `${new Date(now).toISOString()} ${text}`);
     }
     catch { }
 }

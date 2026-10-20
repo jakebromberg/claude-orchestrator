@@ -28,6 +28,8 @@ export declare function openOwnFile(path: string, flags: number, mode?: number):
     fd: number;
     st: Stats;
 } | undefined;
+/** Appends `line` and a newline to `path` through `openOwnFile` (a new file has mode 0600); false when the target is refused. I/O errors propagate, so each caller keeps its own swallow. */
+export declare function appendOwnLine(path: string, line: string): boolean;
 /**
  * The text and mtime of `path` through `openOwnFile`, or `undefined` when it is not a regular file this user owns (a
  * symlink, FIFO, directory, foreign file). Never blocks. A missing file or any other I/O error throws, for a caller that
