@@ -82,7 +82,7 @@ describe("engine session slots", () => {
     count: number,
     opts: {
       tally?: ReturnType<typeof newTally>; firstPid?: number; run?: RunOptions; hooks?: Partial<OrchestratorHooks>;
-      retries?: number; logSize?: number; lease?: Partial<LeaseOptions>; pool?: PressureLevel;
+      retries?: number; logSize?: number | ((logFile: string) => number); lease?: Partial<LeaseOptions>; pool?: PressureLevel;
     } = {},
   ) {
     const issues = Array.from({ length: count }, (_, i) => makeIssue(i + 1));
@@ -116,7 +116,7 @@ describe("engine session slots", () => {
       logger,
       generateSessionId: () => "sid",
       commandExists: () => true,
-      getLogFileSize: () => opts.logSize ?? 100,
+      getLogFileSize: (f: string) => (typeof opts.logSize === "function" ? opts.logSize(f) : opts.logSize ?? 100),
       readFile: () => "",
       runCommand: vi.fn((cmd: string) => (cmd.includes("rev-list --count") ? "3" : "")),
       runCommandAsync: vi.fn(async () => ""),
@@ -351,13 +351,50 @@ describe("engine session slots", () => {
   });
 
   describe("per-engine capacity", () => {
-    it.each([4, 3, 2, 1])("is K at step %i", async (s) => {
-      step = s;
-      level = s === 4 ? "normal" : "warning";
-      const e = engine(3, { run: { maxParallel: 3, adaptive: false }, pool: level });
+    it.each(["normal", "warning"] as const)("is K at %s", async (pool) => {
+      const e = engine(3, { run: { maxParallel: 3 }, pool });
       const wave = e.orchestrator.runWave(1);
       await until(() => e.runner.exits.size === 3, "all three spawns");
       await drain([e], [wave]);
+    });
+
+    it("re-checks the pool after a session wait, so a launch never runs past a limit that dropped meanwhile", async () => {
+      let openCheck!: () => void;
+      const gate = new Promise<void>((r) => (openCheck = r));
+      const e = engine(4, {
+        run: { maxParallel: 3 }, lease: { sessionSlots: 3 },
+        logSize: (f) => (f.endsWith("/issue-1.log") ? 0 : 100),
+        hooks: { postSessionCheck: async (i: Issue) => (i.number === 2 && await gate, { passed: true }) },
+      });
+      const wave = e.orchestrator.runWave(1);
+      await until(() => e.runner.exits.size === 3, "issues 1 to 3");
+      e.runner.exits.get(1001)!.resolve(0); // issue 2 exits; its pipeline keeps its pool slot through the check
+      await until(() => e.live() === 2, "issue 2's session slot to free");
+      const other = (await acquireSessionLease(leaseOptions({ sessionSlots: 3 }), { command: "claude", cwd: "/x" })) as LeaseHandle;
+      e.runner.exits.get(1000)!.resolve(1); // issue 1's 0-byte exit; its retry takes the freed slot
+      await until(() => e.runner.exits.size === 4, "issue 1's retry");
+      openCheck(); // the pool frees a slot and issue 4 waits for a session slot
+      for (let i = 0; i < 50; i++) await tick();
+      e.runner.exits.get(1003)!.resolve(1); // the retry fails 0-byte too: the pool falls back to 1 and its session slot frees
+      for (let i = 0; i < 100; i++) await tick();
+      expect(e.runner.exits.size).toBe(4); // issue 3 still runs, so issue 4 must not start
+
+      other.release();
+      e.runner.exits.get(1002)!.resolve(0);
+      await until(() => e.runner.exits.size === 5, "issue 4");
+      e.runner.exits.get(1004)!.resolve(0);
+      await wave;
+      expect(e.live()).toBe(0);
+    });
+
+    it("releases the session slot when the launch throws before the spawn", async () => {
+      const e = engine(1);
+      e.deps.metadataStore.update = (_ref, fields) => {
+        if ("startedAt" in fields) throw new Error("store write failed");
+      };
+      await expect(e.orchestrator.runWave(1)).rejects.toThrow("store write failed");
+      expect(e.runner.exits.size).toBe(0);
+      expect(e.live()).toBe(0);
     });
   });
 

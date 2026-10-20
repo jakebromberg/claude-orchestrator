@@ -9,13 +9,6 @@ import type { Issue, OrchestratorConfig, RunOptions, Deps, Logger } from "./type
  * handful of the newest candidates is all that is worth paying for.
  */
 export declare const MAX_PR_CANDIDATES_VERIFIED = 5;
-/**
- * Bound on each synchronous gh/git call the engine makes (`verifyPrIdentity`, `producedNoCommits`): a hung tool must
- * fail its step, not freeze the process past the lease's 90 s heartbeat reap window. A blocking stretch can begin up
- * to 30 s after the last beat, so it must end within 60 s: verification runs up to `MAX_PR_CANDIDATES_VERIFIED`
- * calls back to back, and `producedNoCommits` can follow with no yield, so (5 + 1) × 10 s fits.
- */
-export declare const SYNC_CALL_TIMEOUT_MS = 10000;
 export declare class Orchestrator {
     private config;
     private deps;
