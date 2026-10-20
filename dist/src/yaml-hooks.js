@@ -13,7 +13,7 @@ import { claudeExecOptions } from "./claude-env.js";
 import { acquireLease, defaultWarn } from "./lease.js";
 import { formatPostCheckStop, refusalStopReason, throttledProgress } from "./lease-messages.js";
 import { weightForCommands } from "./lease-weights.js";
-import { SYNC_CALL_TIMEOUT_MS } from "./worktree-hooks.js";
+import { SYNC_CALL_TIMEOUT_MS } from "./sync-budget.js";
 import { stopAtCritical } from "./memory-pressure.js";
 import { groupAlive, signalGroup } from "./ps.js";
 const OUTPUT_TAIL_BYTES = 64 * 1024;

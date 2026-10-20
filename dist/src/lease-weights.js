@@ -8,8 +8,9 @@
 import { execFileSync } from "node:child_process";
 import { isAbsolute, join } from "node:path";
 import { readOwnFile, readRegularFile } from "./lease-dir.js";
+import { WEIGHT_GIT_TIMEOUT_MS } from "./sync-budget.js";
 import { leaseDirectory } from "./memory-pressure.js";
-const git = (cwd, args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+const git = (cwd, args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: WEIGHT_GIT_TIMEOUT_MS, stdio: ["ignore", "pipe", "ignore"] }).trim();
 export const realGit = {
     toplevel: (cwd) => git(cwd, ["rev-parse", "--show-toplevel"]),
     origin: (cwd) => git(cwd, ["remote", "get-url", "origin"]),

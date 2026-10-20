@@ -9,6 +9,7 @@
 import { execFileSync } from "node:child_process";
 import { isAbsolute, join } from "node:path";
 import { readOwnFile, readRegularFile } from "./lease-dir.js";
+import { WEIGHT_GIT_TIMEOUT_MS } from "./sync-budget.js";
 import { leaseDirectory } from "./memory-pressure.js";
 
 export interface WeightRule {
@@ -24,7 +25,7 @@ export interface GitLookup {
 }
 
 const git = (cwd: string, args: string[]): string =>
-  execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+  execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: WEIGHT_GIT_TIMEOUT_MS, stdio: ["ignore", "pipe", "ignore"] }).trim();
 
 export const realGit: GitLookup = {
   toplevel: (cwd) => git(cwd, ["rev-parse", "--show-toplevel"]),

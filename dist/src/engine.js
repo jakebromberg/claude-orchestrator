@@ -11,7 +11,7 @@ import { shellQuote } from "./shell-quote.js";
 import { createCapacityGovernor } from "./capacity-governor.js";
 import { jsonlSink } from "./lease-events.js";
 import { MAX_STEP } from "./headroom.js";
-import { SYNC_CALL_TIMEOUT_MS } from "./worktree-hooks.js";
+import { MAX_PR_CANDIDATES_VERIFIED, SYNC_CALL_TIMEOUT_MS } from "./sync-budget.js";
 import { acquireSessionLease } from "./lease.js";
 import { refusalStopReason, throttledProgress } from "./lease-messages.js";
 import { stopAtCritical } from "./memory-pressure.js";
@@ -20,15 +20,6 @@ const STALL_CHECK_INTERVAL_MS = 10_000;
 const PRESSURE_CHECK_INTERVAL_MS = 10_000;
 /** Merged into metadata updates so a stale stop marker never misclassifies a later model failure. */
 const NO_STOP = { failureReason: undefined, stopStage: undefined };
-/**
- * How many scraped PR URLs to put to `gh pr view` before giving up.
- *
- * Verification is a blocking network call per candidate, so an unbounded loop
- * would let a transcript that name-drops many same-repo PRs stall a wave. The
- * run's own PR is near the newest end in every case this defends against, so a
- * handful of the newest candidates is all that is worth paying for.
- */
-export const MAX_PR_CANDIDATES_VERIFIED = 5;
 const DEFAULT_ALLOWED_TOOLS = [
     "Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "Task",
 ];
