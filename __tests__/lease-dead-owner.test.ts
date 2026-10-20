@@ -179,17 +179,38 @@ describe("continuing a dead owner's suspended group", () => {
     expect(holderRec("dead").suspended).toBe(true);
   });
 
-  it("says so when the mark cannot be put back because the mutex is busy", () => {
+  it("puts the mark back even while another process holds the mutex, so a later acquire continues the group", () => {
     plant("dead", 7001);
+    let failing = true;
     commands = new Proxy({} as Record<number, string | Error>, {
       get: () => {
+        if (!failing) return "sleep 100";
         writeFileSync(join(dir, ".mutex"), "someone else");
         return new Error("ps: timed out");
       },
     });
     acquire();
+    expect(holderRec("dead").suspended).toBe(true);
+    expect(sigconts()).toEqual([]);
+    failing = false;
+    rmSync(join(dir, ".mutex"));
+    handle?.release();
+    acquire();
+    expect(sigconts()).toEqual([-7001]);
+  });
+
+  it("says so when the mark cannot be put back", () => {
+    plant("dead", 7001);
+    commands[7001] = new Error("ps: timed out");
+    // The claim writes before the lookup asks; only the put-back after it fails.
+    const restore = failFsCall("renameSync", (p) => p.includes(join("holders", "dead.json.")) && asked.length > 0, "EIO");
+    try {
+      acquire();
+    } finally {
+      restore();
+    }
     expect(holderRec("dead").suspended).toBeUndefined();
-    expect(lease.warnings.at(-1)).toMatch(/could not mark group 7001 for another try: the lease mutex is busy/);
+    expect(lease.warnings.at(-1)).toMatch(/could not mark group 7001 for another try: EIO/);
   });
 
   it("never touches an owner's record or signals for it", () => {

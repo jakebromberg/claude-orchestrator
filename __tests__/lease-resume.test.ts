@@ -6,7 +6,7 @@ import { resumeOldest, tryAcquireLease, type LeaseHandle, type LeaseOptions } fr
 import { RAMP_MS } from "../src/headroom.js";
 import { readSuspensions, writeSuspension } from "../src/suspensions.js";
 import { scriptedHeadroomSampler } from "../src/testing.js";
-import { failFsCall, plantCpu, plantHolder, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
+import { failFsCall, plantCpu, plantHolder, plantTicket, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
 
 const WIDE = { heavyCeiling: 4, heavyWarning: 4 };
 const TICKS = { idle: 1, total: 10 };
@@ -141,6 +141,16 @@ describe("resuming the oldest suspended holder", () => {
     expect(tick("a")).toBe("resumed");
   });
 
+  it("is not held back by an older suspended holder whose front end is alive but has stopped beating, and its group is not signalled", () => {
+    lease.alive.add(4343);
+    plantHolder(lease, "stopped", { pid: 4343, childPid: 4343, pgid: 9100, suspended: true, startedAt: lease.clock.ms - 3600 * SECOND }, { beatAgoMs: 100 * SECOND });
+    writeSuspension(dir, { pgid: 9100, by: "lease", reason: "CPU 97% busy", at: "2026-10-19T12:00:00.000Z", remindAt: "2026-10-19T14:00:00.000Z", leader: "sleep 100" });
+    expect(tick("a")).toBe("resumed");
+    expect(cont).toHaveBeenCalledExactlyOnceWith(pgid.a);
+    expect(readSuspensions(dir).map((r) => r.pgid)).toEqual([9100]);
+    expect(holderRec("a").suspended).toBeUndefined();
+  });
+
   it("does nothing while the mutex is busy", () => {
     const mutex = join(dir, ".mutex");
     writeFileSync(mutex, "");
@@ -197,6 +207,16 @@ describe("resuming the oldest suspended holder", () => {
       expect(tick("a")).toBeUndefined();
       freePct = 40; // 6.4 GiB free: 2.4 GiB of room beyond the reserve, and the running holder plus the oldest settle
       expect(tick("a")).toBe("resumed");
+    });
+
+    // Admission counts a suspended holder's weight among the live ones, so a ticket was never admitted into its room: a suspended holder goes before waiters.
+    it("a ready ticket ahead whose weight fills the budget does not keep a suspended holder stopped, and the ticket waits behind it", () => {
+      setUp({ a: 4 * GIB, b: 4 * GIB, c: 4 * GIB });
+      plantTicket(lease, "t", 1, { weight: 4 * GIB, ready: true, ceiling: 4 });
+      expect(tryAcquireLease(opts(), { command: "d", cwd: "/w", weight: 4 * GIB })).toBeNull();
+      expect(tick("a")).toBe("resumed");
+      expect(cont).toHaveBeenCalledExactlyOnceWith(pgid.a);
+      expect(tryAcquireLease(opts(), { command: "d", cwd: "/w", weight: 4 * GIB })).toBeNull();
     });
 
     it("a holder heavier than the budget resumes alone, and not beside a running one", () => {

@@ -152,6 +152,8 @@ interface HolderRecord {
 /** A live holder as `leaseStatus` reports it. */
 export interface HolderInfo extends HolderRecord {
     ageSec: number;
+    /** Set when a holder with a heartbeat is live only by its child PID: its front end has stopped beating, so it cannot tick. */
+    silent?: true;
 }
 /** Bytes the live holders weigh and the bytes the budget allows (free memory less the reserve plus the settled holders' weight with a free reading, the step's share of the usable bytes without one); reported only while holders are weighed. */
 export interface Weights {
