@@ -26,8 +26,7 @@ export interface HeadroomState {
  * How long a heavy holder takes to grow into the memory it will use. Until a holder is this old, admission charges its full weight and
  * the free reading is not trusted to include it. A conservative placeholder, not a measured ramp: `pressure.jsonl` from 2026-10-19 (13:37 PDT
  * onward) is too thin to give a value (samples 10 to 60 s apart, free memory moving 10 points in 10 s with other use, holders living seconds
- * to minutes). Its clearest admissions, 15:01 to 15:06 and 15:51 to 15:56 PDT, show free memory falling in the first minute and then holding
- * flat, which would favor a shorter window. It is also `riseHoldMs`. Revisit when a long-lived holder can be followed through its growth.
+ * to minutes, all of them short hook holders, so no reading shows a heavy holder growing). It is also `riseHoldMs`. Revisit when a long-lived holder can be followed through its growth.
  */
 export declare const RAMP_MS = 300000;
 /** The owner's Q1 table: `normal` 4, `warning` 3 at 40% free or more, 2 at 30 to 39%, 1 under 30%, `critical` 0, and a rise of one step per ramp window (a rise must not outrun holders that have not grown yet; the session row shares it). */
