@@ -564,7 +564,8 @@ export function suspendNewest(opts: LeaseOptions, handle: LeaseHandle, pgid: num
 }
 
 /**
- * One tick of a suspended holder's front end: continues `handle`'s own group, `pgid`, when `handle` is the oldest suspended holder and the machine
+ * One tick of a suspended holder's front end: continues `handle`'s own group, `pgid`, when `handle` is the oldest suspended holder whose front end
+ * is alive (a dead owner's group is `attempt()`'s to continue) and the machine
  * has recovered, and returns `"resumed"`. The signals are sampled before the mutex; under it the decision is made and `cont` (SIGCONT of `pgid`) runs
  * after it is released, then the holder's mark is cleared, then the record is removed, so a crash leaves a mark or a record on a running group and never
  * a stopped group without either. Recovered is CPU busy under 0.85 (`cpuBusy`; null means not yet), in count mode a free percentage above 20 (none
@@ -588,7 +589,8 @@ export function resumeOldest(opts: LeaseOptions, handle: LeaseHandle, pgid: numb
   try {
     const busy = cpuBusy(opts, (opts.now ?? Date.now)());
     const { live } = scanHolders(opts, HEAVY);
-    const [oldest] = live.filter((h) => h.suspended).sort(byAge);
+    // A suspended holder whose front end is gone cannot tick; `attempt()` continues it, so it does not hold the line here.
+    const [oldest] = live.filter((h) => h.suspended && (opts.isAlive ?? pidAlive)(h.pid)).sort(byAge);
     if (oldest?.id === handle.id && busy !== null && busy < RESUME_CPU_BUSY) {
       const running = live.filter((h) => !h.suspended);
       // Weighed over the holders summed below only: another suspended holder's weight would otherwise be added back to the free budget without being charged against it.
