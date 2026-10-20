@@ -8,11 +8,13 @@ export declare const seconds: (ms: number) => number;
 export declare const WAIT_LOG_INTERVAL_MS = 60000;
 /**
  * A wait's `onWait` that calls `write` on the first poll and then at most once per {@link WAIT_LOG_INTERVAL_MS} of
- * `waitedMs`. A throwing `write` is swallowed, so a progress line never changes what the wait does.
+ * `waitedMs`; with `skipFirst` the first line waits for the first interval instead (the CLI's rule). A throwing `write` is swallowed, so a progress line never changes what the wait does.
  */
 export declare function throttledProgress<S extends {
     waitedMs: number;
-}>(write: (s: S) => void): (s: S) => void;
+}>(write: (s: S) => void, { skipFirst }?: {
+    skipFirst?: boolean | undefined;
+}): (s: S) => void;
 /** The admitted line; the hook prints the same text as `additionalContext`. */
 export declare function formatAdmitted(a: LeaseHandle["admission"]): string;
 /** The no-slot line; the hook denies with it as the reason. */
