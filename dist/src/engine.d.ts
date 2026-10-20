@@ -1,14 +1,5 @@
 import type { MergeResult } from "./merge.js";
 import type { Issue, OrchestratorConfig, RunOptions, Deps, Logger } from "./types.js";
-/**
- * How many scraped PR URLs to put to `gh pr view` before giving up.
- *
- * Verification is a blocking network call per candidate, so an unbounded loop
- * would let a transcript that name-drops many same-repo PRs stall a wave. The
- * run's own PR is near the newest end in every case this defends against, so a
- * handful of the newest candidates is all that is worth paying for.
- */
-export declare const MAX_PR_CANDIDATES_VERIFIED = 5;
 export declare class Orchestrator {
     private config;
     private deps;

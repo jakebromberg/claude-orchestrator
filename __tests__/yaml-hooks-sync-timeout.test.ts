@@ -8,7 +8,7 @@ vi.mock("node:child_process", async (orig) => ({
   execFileSync,
 }));
 
-import { SYNC_CALL_TIMEOUT_MS } from "../src/worktree-hooks.js";
+import { SYNC_CALL_TIMEOUT_MS } from "../src/sync-budget.js";
 import { deriveHooks } from "../src/yaml-hooks.js";
 import type { Issue } from "../src/types.js";
 import type { YamlConfig } from "../src/yaml-types.js";

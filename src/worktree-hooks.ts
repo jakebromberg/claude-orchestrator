@@ -20,6 +20,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync as fsExistsSync, mkdirSync as fsMkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { GIT_TIMEOUT_MS } from "./sync-budget.js";
 import type { Issue, OrchestratorHooks } from "./types.js";
 
 /** The subset of hooks this helper provides. Spread into a config's overrides. */
@@ -79,22 +80,6 @@ function defaultRepoOf(issue: Issue): string {
   const slash = repo.lastIndexOf("/");
   return slash >= 0 ? repo.slice(slash + 1) : repo;
 }
-
-/**
- * Bounds each `defaultRunGit` call so a hung synchronous git fails its step instead of outlasting the lease's 90 s
- * heartbeat reap window. A blocking stretch must end within 60 s, and `setUpWorktree` makes up to four calls back to
- * back (rev-parse, prune, `worktree add -b`, and on its failure `worktree add <path> <branch>`), so 4 × 12 s = 48 s.
- */
-export const GIT_TIMEOUT_MS = 12_000;
-
-/**
- * Bound on each synchronous gh/git call made while sessions run (the engine's `verifyPrIdentity` and
- * `producedNoCommits`, label sync's `gh`, the collision check's `git`): a hung tool must fail its step, not freeze the
- * process past the lease's 90 s heartbeat reap window. A blocking stretch can begin up to 30 s after the last beat, so
- * it must end within 60 s: the engine's PR verification runs up to `MAX_PR_CANDIDATES_VERIFIED` calls back to back, and
- * `producedNoCommits` can follow with no yield, so (5 + 1) × 10 s fits.
- */
-export const SYNC_CALL_TIMEOUT_MS = 10_000;
 
 function defaultRunGit(args: string[], cwd: string): string {
   return execFileSync("git", args, {
