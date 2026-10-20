@@ -6,6 +6,7 @@
  */
 import { lstatSync, readdirSync, statfsSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
+import { describeBoundedFailure } from "./bounded-failure.js";
 import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
 import { appendOwnLine, isOwnDir, readLeaseRecord, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
@@ -133,8 +134,10 @@ const idleSimulator: Rule = (c) =>
 /** The rules, in report order. A rule reads the context and returns findings; the reporters never change. */
 export const RULES: Rule[] = [unrecordedStoppedGroup, dueReminder, oldLeaseSuspension, stalledEngine, silentEngine, deadEngine, idleSimulator];
 
-/** The default scan: one bounded `ps`, 60 s because it can be slow at background priority. A throw skips the cycle. */
-export const scanProcessTable = (): string => ps(PS_TABLE_ARGS, { timeoutMs: 60_000 });
+/** The scan's bound, 60 s because `ps` can be slow at background priority. */
+export const SCAN_TIMEOUT_MS = 60_000;
+/** The default scan: one bounded `ps`. A throw skips the cycle. */
+export const scanProcessTable = (): string => ps(PS_TABLE_ARGS, { timeoutMs: SCAN_TIMEOUT_MS });
 
 export interface WatchdogDeps {
   /** The lease directory. */
@@ -251,7 +254,7 @@ export function check(d: WatchdogDeps): void {
     procs = parsePsTable(d.scan());
     if (procs.length === 0) throw new Error("empty process table");
   } catch (err) {
-    appendLog(d.dir, now, `scan skipped: ${(err as Error).message}`);
+    appendLog(d.dir, now, `scan skipped: ${describeBoundedFailure(err, SCAN_TIMEOUT_MS)}`);
     return;
   }
   const engines = readEngines(d.dir, now, procs);
