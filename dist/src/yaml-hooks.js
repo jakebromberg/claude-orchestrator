@@ -11,7 +11,7 @@ import { perIssueSpawnArgs } from "./model-effort.js";
 import { shellQuote } from "./shell-quote.js";
 import { claudeExecOptions } from "./claude-env.js";
 import { acquireLease, defaultWarn } from "./lease.js";
-import { formatPostCheckStop, refusalStopReason, WAIT_LOG_INTERVAL_MS } from "./lease-messages.js";
+import { formatPostCheckStop, refusalStopReason, throttledProgress } from "./lease-messages.js";
 import { SYNC_CALL_TIMEOUT_MS } from "./worktree-hooks.js";
 import { stopAtCritical } from "./memory-pressure.js";
 import { groupAlive, signalGroup } from "./ps.js";
@@ -164,18 +164,8 @@ export function runShellAsync(cmd, cwd, env, onSpawn, timeoutMs, killGraceMs = K
  * relieve the pressure. The engine never inherits a holder id, so `inheritedHolderId` is dropped.
  */
 function acquireCheckLease(lease, issue, cwd, command, runningSessions = () => 0) {
-    let lastLogged;
     return acquireLease({ ...lease, inheritedHolderId: undefined }, { command, label: `post-check ${issue.ref}`, cwd }, {
-        onWait: (s) => {
-            if (lastLogged !== undefined && s.waitedMs - lastLogged < WAIT_LOG_INTERVAL_MS)
-                return;
-            lastLogged = s.waitedMs;
-            // A throwing writer must never change what the check does.
-            try {
-                (lease.warn ?? defaultWarn)(`Issue #${issue.number} post-check waiting for a lease slot (${s.level}, ${s.live.length}/${s.capacity} slots held)`);
-            }
-            catch { }
-        },
+        onWait: throttledProgress((s) => (lease.warn ?? defaultWarn)(`Issue #${issue.number} post-check waiting for a lease slot (${s.level}, ${s.live.length}/${s.capacity} slots held)`)),
         stopWhen: (s) => stopAtCritical(s.level, s.live.length + runningSessions()),
     });
 }

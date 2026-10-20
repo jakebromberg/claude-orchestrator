@@ -268,6 +268,16 @@ describe("engine session slots", () => {
       await drain([e], [wave]);
     });
 
+    it("does not lift the step 1 that CO_PRESSURE_OVERRIDE makes from a real step 0", async () => {
+      const headroom = scriptedHeadroomSampler(() => reading(1, "warning"), { overridden: true });
+      const e = engine(3, { run: { maxParallel: 3, adaptive: false }, lease: { headroom } });
+      const wave = e.orchestrator.runWave(1);
+      await until(() => e.runner.exits.size >= 1, "a spawn");
+      for (let i = 0; i < 100; i++) await tick();
+      expect(e.runner.exits.size).toBe(1);
+      await drain([e], [wave]);
+    });
+
     it("still closes the session row at step 0", async () => {
       step = 0;
       level = "critical";

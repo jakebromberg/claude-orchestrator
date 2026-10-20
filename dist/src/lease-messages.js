@@ -1,6 +1,22 @@
 export const seconds = (ms) => Math.round(ms / 1000);
 /** The least time between two progress lines of one wait for a lease slot (the post-check's and the engine's session wait). */
 export const WAIT_LOG_INTERVAL_MS = 60_000;
+/**
+ * A wait's `onWait` that calls `write` on the first poll and then at most once per {@link WAIT_LOG_INTERVAL_MS} of
+ * `waitedMs`. A throwing `write` is swallowed, so a progress line never changes what the wait does.
+ */
+export function throttledProgress(write) {
+    let last;
+    return (s) => {
+        if (last !== undefined && s.waitedMs - last < WAIT_LOG_INTERVAL_MS)
+            return;
+        last = s.waitedMs;
+        try {
+            write(s);
+        }
+        catch { }
+    };
+}
 /** The admitted line; the hook prints the same text as `additionalContext`. */
 export function formatAdmitted(a) {
     return `lease: admitted after ${seconds(a.waitedMs)}s (pressure=${a.level}, ${a.live}/${a.capacity} live)`;
