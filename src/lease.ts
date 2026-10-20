@@ -192,6 +192,8 @@ interface HolderRecord {
 /** A live holder as `leaseStatus` reports it. */
 export interface HolderInfo extends HolderRecord {
   ageSec: number;
+  /** Set when a holder with a heartbeat is live only by its child PID: its front end has stopped beating, so it cannot tick. */
+  silent?: true;
 }
 
 /** Bytes the live holders weigh and the bytes the budget allows (free memory less the reserve plus the settled holders' weight with a free reading, the step's share of the usable bytes without one); reported only while holders are weighed. */
@@ -369,7 +371,7 @@ function scanHolders(opts: LeaseOptions, cls: LeaseClass): { live: HolderInfo[];
     if (entry === undefined) continue;
     const rec = parseHolder(entry.text);
     const v = verdict(rec, entry.mtimeMs, nowMs, isAlive, cls.heartbeatOnly);
-    if (v === "live") found.live.push({ ...rec!, ageSec: Math.round((nowMs - rec!.startedAt) / 1000) });
+    if (v === "live") found.live.push({ ...rec!, ageSec: Math.round((nowMs - rec!.startedAt) / 1000), ...(rec!.expiresAt === undefined && !isWithinWindow(entry.mtimeMs, nowMs, HEARTBEAT_STALE_MS) && { silent: true as const }) });
     else found.dead.push({ id: name.slice(0, -".json".length), reason: v });
   }
   return found;
@@ -600,8 +602,8 @@ export function resumeOldest(opts: LeaseOptions, handle: LeaseHandle, pgid: numb
   try {
     const busy = cpuBusy(opts, (opts.now ?? Date.now)());
     const { live } = scanHolders(opts, HEAVY);
-    // A suspended holder whose front end is gone cannot tick; `attempt()` continues it, so it does not hold the line here.
-    const [oldest] = live.filter((h) => h.suspended && (opts.isAlive ?? pidAlive)(h.pid)).sort(byAge);
+    // A suspended holder whose front end cannot tick does not hold the line: one whose front end is gone is `attempt()`'s to continue, and one that has stopped beating (a stopped shell) stays stopped, as its owner left it.
+    const [oldest] = live.filter((h) => h.suspended && !h.silent && (opts.isAlive ?? pidAlive)(h.pid)).sort(byAge);
     if (oldest?.id === handle.id && busy !== null && busy < RESUME_CPU_BUSY) {
       const running = live.filter((h) => !h.suspended);
       // Weighed over the holders summed below only: another suspended holder's weight would otherwise be added back to the free budget without being charged against it.
@@ -631,7 +633,7 @@ export function resumeOldest(opts: LeaseOptions, handle: LeaseHandle, pgid: numb
   return "resumed";
 }
 
-/** Under the mutex only: sets or clears the `suspended` mark in the holder file of `id`, keeping its heartbeat mtime; a holder that is gone, or already so, is left alone. */
+/** Under the mutex, or by the claimant of a holder whose mark it cleared (`continueDeadOwner`): sets or clears the `suspended` mark in the holder file of `id`, keeping its heartbeat mtime; a holder that is gone, or already so, is left alone. */
 function markHolder(opts: LeaseOptions, id: string, on: boolean): void {
   const file = join(opts.dir, HEAVY.holders, `${id}.json`);
   const entry = unlessGone(() => readOwnFile(file));
@@ -647,7 +649,9 @@ function markHolder(opts: LeaseOptions, id: string, on: boolean): void {
  * mutex, so no other acquire picks it too. No resume gate applies, since only the owner's own tick could pass one. The group is signalled only
  * when the record's `leader` is the command `processCommand` now reads for the group: a null leader, a missing or an owner's record, or a
  * changed command means no signal, and the record stays for the watchdog. A lookup that throws also means no signal, and the mark is put back
- * under the mutex (when it is free) so a later acquire tries again; at most one lookup runs per `attempt()`. Never throws.
+ * so a later acquire tries again; at most one lookup runs per `attempt()`. The put-back takes no mutex: waiters poll it in a loop, so it is busy most
+ * often exactly when the lookup times out under load, and the claim already excludes every other writer (the mark is clear, so no scan picks the holder,
+ * and its front end is dead). Never throws.
  */
 function continueDeadOwner(opts: LeaseOptions, holder: HolderInfo): void {
   const pgid = holder.pgid!;
@@ -658,14 +662,10 @@ function continueDeadOwner(opts: LeaseOptions, holder: HolderInfo): void {
     current = typeof leader === "string" ? opts.processCommand?.(pgid) : undefined;
   } catch (err) {
     warn(opts, `lease: could not read the leader of group ${pgid}: ${describeBoundedFailure(err, PROCESS_COMMAND_TIMEOUT_MS)}`);
-    const lock = tryLockOnce(join(opts.dir, ".mutex"), { staleAfterMs: MUTEX_STALE_MS, now: opts.now });
     try {
-      if (!lock) throw new Error("the lease mutex is busy");
       markHolder(opts, holder.id, true);
     } catch (e) {
       warn(opts, `lease: could not mark group ${pgid} for another try: ${(e as Error).message}`);
-    } finally {
-      lock?.release();
     }
     return;
   }
