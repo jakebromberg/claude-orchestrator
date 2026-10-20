@@ -20,7 +20,7 @@ export declare function isOwnDir(st: Stats): boolean;
 export declare function writeLeaseRecord(dir: string, name: string, text: string, opts?: AtomicWriteOptions): boolean;
 /**
  * Opens `path` with `flags` plus `O_NOFOLLOW | O_NONBLOCK` (a planted symlink is not followed and a planted FIFO is not
- * waited on) and returns the descriptor and its stats only for a regular file this user owns; a symlink or any other kind
+ * waited on; a UNIX socket cannot be opened and is refused too) and returns the descriptor and its stats only for a regular file this user owns; a symlink or any other kind
  * of entry reads as `undefined` (a descriptor it opened is closed). Any other failed open throws. The one open rule of
  * every lease-directory read and append; the caller closes the descriptor.
  */

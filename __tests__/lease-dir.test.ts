@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
+import { createServer, type Server } from "node:net";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readLeaseRecord, readRecordDir, readRegularFile, writeLeaseRecord } from "../src/lease-dir.js";
+import { readLeaseRecord, readOwnFile, readRecordDir, readRegularFile, writeLeaseRecord } from "../src/lease-dir.js";
 
 describe("writeLeaseRecord", () => {
   let tmp: string;
@@ -154,5 +155,28 @@ describe("readLeaseRecord and readRegularFile", () => {
   ])("readRegularFile throws for %s", (_n, plant) => {
     plant();
     expect(() => readRegularFile(join(tmp, "rec.json"))).toThrow();
+  });
+});
+
+// Opening a UNIX socket fails (ENXIO on Linux, EOPNOTSUPP on macOS): that is a refusal, not an I/O error.
+describe("a UNIX socket entry", () => {
+  let tmp: string;
+  let server: Server | undefined;
+  beforeEach(async () => {
+    tmp = mkdtempSync(join(tmpdir(), "lease-dir-sock-"));
+    server = createServer();
+    await new Promise<void>((resolve) => server!.listen(join(tmp, "rec.json"), resolve));
+  });
+  afterEach(async () => {
+    await new Promise((resolve) => server!.close(resolve));
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("readOwnFile reads it as undefined", () => {
+    expect(readOwnFile(join(tmp, "rec.json"))).toBeUndefined();
+  });
+
+  it("readLeaseRecord reads it as undefined", () => {
+    expect(readLeaseRecord(tmp, "rec.json")).toBeUndefined();
   });
 });
