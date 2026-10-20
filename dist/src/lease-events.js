@@ -39,7 +39,7 @@ export function jsonlSink(dir, name, deps = {}) {
                     }
                 }
             }
-            const fd = openOwnFile(file, OPEN_FLAGS, 0o600);
+            const fd = openOwnFile(file, OPEN_FLAGS, 0o600)?.fd;
             if (fd === undefined)
                 return;
             try {

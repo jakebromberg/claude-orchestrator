@@ -21,7 +21,6 @@ export const ENGINE_FRESH_MS = 3 * REFRESH_MS;
 export const STALLED_MARGIN_MS = 10 * 60_000;
 /** A lease suspension (`by: "lease"`) older than this is reported. */
 export const LEASE_SUSPENSION_MAX_MS = 30 * 60_000;
-// A planted symlink is not followed and a planted FIFO is not waited on.
 const LOG_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT;
 const minutes = (ms) => Math.floor(ms / 60_000);
 /** Slack on the pid-reuse check: `etime` has one-second resolution and the registry stamps `startedAt` just after the engine starts. */
@@ -119,10 +118,10 @@ function readState(dir) {
         return { stoppedSince: {}, reported: [], findings: [] };
     }
 }
-/** Appends one line to `watchdog.log`; only a regular file is appended to, and a new one has mode 0600. A failure is swallowed: the log is a diagnostic. */
+/** Appends one line to `watchdog.log` through `openOwnFile`: only a regular file this user owns is appended to (a symlink is not followed, a FIFO not waited on), and a new one has mode 0600. A failure is swallowed: the log is a diagnostic. */
 function appendLog(dir, now, text) {
     try {
-        const fd = openOwnFile(join(dir, "watchdog.log"), LOG_FLAGS, 0o600);
+        const fd = openOwnFile(join(dir, "watchdog.log"), LOG_FLAGS, 0o600)?.fd;
         if (fd === undefined)
             return;
         try {

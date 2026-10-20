@@ -11,14 +11,14 @@
  * engine's implementer sessions (`acquireSessionLease`), on the same tickets and holders with heartbeat-only liveness.
  */
 import { randomBytes } from "node:crypto";
-import { lstatSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, utimesSync } from "node:fs";
+import { lstatSync, readdirSync, rmSync, statSync, unlinkSync, utimesSync } from "node:fs";
 import { cpus } from "node:os";
 import { join } from "node:path";
 import { sweepDeadTemps, writeFileAtomic } from "./atomic-write.js";
 import { isWithinWindow, tryLockOnce } from "./file-lock.js";
 import { headroomCapacity, heavyBudget, MAX_STEP, sessionHeadroomCapacity } from "./headroom.js";
 import { defaultHeadroomSampler, levelView } from "./headroom-sampler.js";
-import { ensureOwnSubdir, isOwnDir, readLeaseRecord } from "./lease-dir.js";
+import { ensureOwnSubdir, isOwnDir, readLeaseRecord, readOwnFile } from "./lease-dir.js";
 import { leaseEventSink } from "./lease-events.js";
 import { DEFAULT_RESERVE_PCT, DEFAULT_SESSION_SLOTS, leaseDirectory, pressurePolicyFromEnv, reservePctFromEnv, sessionSlotsFromEnv, usableBytes, } from "./memory-pressure.js";
 import { isPid, pidAlive } from "./ps.js";
@@ -128,7 +128,11 @@ function parseHolder(text) {
         return null;
     }
 }
-/** Throws on an I/O error; a file released since the `readdir` is skipped, and only an unparseable or malformed one is corrupt. */
+/**
+ * Throws on an I/O error; a file released since the `readdir` is skipped, and only an unparseable or malformed one is corrupt.
+ * Each entry is read through `readOwnFile`, so one that is not a regular file this user owns (a symlink, FIFO, directory or
+ * another user's file) is skipped, never followed, waited on or reaped.
+ */
 function scanHolders(opts, cls) {
     const { isAlive = pidAlive, now = Date.now } = opts;
     const dir = join(opts.dir, cls.holders);
@@ -136,14 +140,11 @@ function scanHolders(opts, cls) {
     const names = unlessGone(() => readdirSync(dir)) ?? [];
     const nowMs = now();
     for (const name of names.filter((n) => n.endsWith(".json"))) {
-        const text = unlessGone(() => readFileSync(join(dir, name), "utf8"));
-        if (text === undefined)
+        const entry = unlessGone(() => readOwnFile(join(dir, name)));
+        if (entry === undefined)
             continue;
-        const rec = parseHolder(text);
-        const mtimeMs = unlessGone(() => statSync(join(dir, name)).mtimeMs);
-        if (mtimeMs === undefined)
-            continue;
-        const v = verdict(rec, mtimeMs, nowMs, isAlive, cls.heartbeatOnly);
+        const rec = parseHolder(entry.text);
+        const v = verdict(rec, entry.mtimeMs, nowMs, isAlive, cls.heartbeatOnly);
         if (v === "live")
             found.live.push({ ...rec, ageSec: Math.round((nowMs - rec.startedAt) / 1000) });
         else
@@ -167,7 +168,7 @@ function parseTicket(text) {
 /**
  * Under the mutex: removes the tickets of dead processes and unparseable files, and returns the rest. A ticket is
  * `eligible` while its mtime is within 15 s of the clock; a stale one (its waiter was stopped) is passed over, not reaped,
- * and keeps its `seq` for when the waiter resumes.
+ * and keeps its `seq` for when the waiter resumes. An entry that is not a regular file this user owns is skipped, as in `scanHolders`.
  */
 function scanTickets(opts, cls) {
     const { isAlive = pidAlive, now = Date.now } = opts;
@@ -175,15 +176,14 @@ function scanTickets(opts, cls) {
     const nowMs = now();
     const found = [];
     for (const name of (unlessGone(() => readdirSync(dir)) ?? []).filter((n) => n.endsWith(".json"))) {
-        const text = unlessGone(() => readFileSync(join(dir, name), "utf8"));
-        const mtimeMs = unlessGone(() => statSync(join(dir, name)).mtimeMs);
-        if (text === undefined || mtimeMs === undefined)
+        const entry = unlessGone(() => readOwnFile(join(dir, name)));
+        if (entry === undefined)
             continue;
-        const t = parseTicket(text);
+        const t = parseTicket(entry.text);
         if (!t || !isAlive(t.pid))
             rmSync(join(dir, name), { force: true });
         else
-            found.push({ ...t, eligible: isWithinWindow(mtimeMs, nowMs, TICKET_FRESH_MS) });
+            found.push({ ...t, eligible: isWithinWindow(entry.mtimeMs, nowMs, TICKET_FRESH_MS) });
     }
     return found;
 }
@@ -599,7 +599,7 @@ export function releaseHolder(opts, id) {
     if (!ownDir(opts.dir) || !ownDir(dir))
         return false;
     const file = join(dir, `${id}.json`);
-    const text = unlessGone(() => readFileSync(file, "utf8"));
+    const text = unlessGone(() => readOwnFile(file))?.text;
     const rec = text === undefined ? null : parseHolder(text);
     if (rec?.expiresAt === undefined || unlessGone(() => (unlinkSync(file), true)) === undefined)
         return false;

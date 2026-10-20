@@ -18,7 +18,11 @@ export interface GitLookup {
 export declare const realGit: GitLookup;
 /** `owner/repo` from an ssh or https remote URL, with or without `.git`; `undefined` for any other shape. */
 export declare function normalizeRemote(url: string): string | undefined;
-/** The rules of the weights file: a missing file is silent, an unreadable or malformed one or a bad entry gives one warning, and only valid entries are kept. */
+/**
+ * The rules of the weights file: a missing file is silent, an unreadable or malformed one or a bad entry gives one warning, and only valid entries are kept.
+ * `<lease dir>/weights.json` is read through `readOwnFile`, so one that is a symlink, FIFO, directory or another user's file is unreadable (one warning);
+ * an explicit `CO_LEASE_WEIGHTS_FILE` may be a symlink and is read through `readRegularFile`.
+ */
 export declare function loadWeightTable(env: NodeJS.ProcessEnv, warn: (line: string) => void): WeightRule[];
 /** Bytes for the first rule matching `command` (and `cwd`'s repo, when keyed); `undefined` when none does. */
 export declare function resolveWeight(command: string, cwd: string, table: WeightRule[], lookup?: GitLookup): number | undefined;

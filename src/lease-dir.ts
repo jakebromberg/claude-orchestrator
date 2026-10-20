@@ -40,31 +40,49 @@ export function writeLeaseRecord(dir: string, name: string, text: string, opts?:
 
 /**
  * Opens `path` with `flags` plus `O_NOFOLLOW | O_NONBLOCK` (a planted symlink is not followed and a planted FIFO is not
- * waited on) and returns the descriptor only for a regular file this user owns; any other kind of entry is closed and
- * reads as `undefined`. A failed open throws. The one open rule of every lease-directory read and append; the caller closes the descriptor.
+ * waited on) and returns the descriptor and its stats only for a regular file this user owns; a symlink or any other kind
+ * of entry reads as `undefined` (a descriptor it opened is closed). Any other failed open throws. The one open rule of
+ * every lease-directory read and append; the caller closes the descriptor.
  */
-export function openOwnFile(path: string, flags: number, mode?: number): number | undefined {
-  const fd = openSync(path, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK, mode);
-  let owned = false;
+export function openOwnFile(path: string, flags: number, mode?: number): { fd: number; st: Stats } | undefined {
+  let fd: number;
   try {
-    const st = fstatSync(fd);
-    owned = st.isFile() && !(process.getuid && st.uid !== process.getuid());
-  } finally {
-    if (!owned) closeSync(fd);
+    fd = openSync(path, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK, mode);
+  } catch (err) {
+    // O_NOFOLLOW on a symlink: ELOOP (macOS, Linux), EMLINK (FreeBSD).
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ELOOP" || code === "EMLINK") return undefined;
+    throw err;
   }
-  return owned ? fd : undefined;
+  let st: Stats | undefined;
+  try {
+    const s = fstatSync(fd);
+    if (s.isFile() && !(process.getuid && s.uid !== process.getuid())) st = s;
+  } finally {
+    if (!st) closeSync(fd);
+  }
+  return st ? { fd, st } : undefined;
+}
+
+/**
+ * The text and mtime of `path` through `openOwnFile`, or `undefined` when it is not a regular file this user owns (a
+ * symlink, FIFO, directory, foreign file). Never blocks. A missing file or any other I/O error throws, for a caller that
+ * tells them apart (the lease's holder and ticket scans).
+ */
+export function readOwnFile(path: string): { text: string; mtimeMs: number } | undefined {
+  const own = openOwnFile(path, constants.O_RDONLY);
+  if (!own) return undefined;
+  try {
+    return { text: readFileSync(own.fd, "utf-8"), mtimeMs: own.st.mtimeMs };
+  } finally {
+    closeSync(own.fd);
+  }
 }
 
 /** The text and mtime of the record `<dir>/<name>`, or `undefined` when it is missing, unreadable, or not a regular file this user owns (a symlink, FIFO, directory, foreign file). Never blocks; the caller keeps its own body validation. */
 export function readLeaseRecord(dir: string, name: string): { text: string; mtimeMs: number } | undefined {
   try {
-    const fd = openOwnFile(join(dir, name), constants.O_RDONLY);
-    if (fd === undefined) return undefined;
-    try {
-      return { text: readFileSync(fd, "utf-8"), mtimeMs: fstatSync(fd).mtimeMs };
-    } finally {
-      closeSync(fd);
-    }
+    return readOwnFile(join(dir, name));
   } catch {
     return undefined;
   }

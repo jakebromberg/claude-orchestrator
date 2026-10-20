@@ -41,7 +41,7 @@ export function jsonlSink<T extends object>(dir: string, name: string, deps: Sin
           }
         }
       }
-      const fd = openOwnFile(file, OPEN_FLAGS, 0o600);
+      const fd = openOwnFile(file, OPEN_FLAGS, 0o600)?.fd;
       if (fd === undefined) return;
       try {
         appendFileSync(fd, `${JSON.stringify({ ts: new Date(now()).toISOString(), ...e })}\n`);
