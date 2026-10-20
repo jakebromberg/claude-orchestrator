@@ -268,6 +268,7 @@ describe("resuming the oldest suspended holder", () => {
     expect(cont).not.toHaveBeenCalled();
     expect(recordOf("a")?.by).toBe("jake");
     expect(holderRec("a").suspended).toBeUndefined();
+    expect(holderRec("a").resumedAt).toBe(lease.clock.ms);
   });
 
   describe("a record the lease no longer holds", () => {
@@ -286,6 +287,7 @@ describe("resuming the oldest suspended holder", () => {
       expect(tick("a")).toBe("cleared");
       expect(cont).not.toHaveBeenCalled();
       expect(holderRec("a").suspended).toBeUndefined();
+      expect(holderRec("a").resumedAt).toBe(lease.clock.ms);
       expect(recordOf("a")?.by).toBe(_n.includes("replaced") ? "jake" : undefined);
     });
 
