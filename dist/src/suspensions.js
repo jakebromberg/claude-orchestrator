@@ -1,7 +1,7 @@
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { sweepDeadTemps, writeFileAtomic } from "./atomic-write.js";
-import { ensureOwnSubdir, readRecordDir } from "./lease-dir.js";
+import { ensureOwnSubdir, isOwnDir, readOwnFile, readRecordDir } from "./lease-dir.js";
 import { leaseDirectory } from "./memory-pressure.js";
 import { ancestry, isPid, parsePsTable, pidAlive, ps, PS_TABLE_ARGS, signalGroup } from "./ps.js";
 const EX_USAGE = 64;
@@ -94,27 +94,48 @@ export function removeSuspension(dir, pgid) {
 }
 /** Whether the lease wrote `record` (`by: "lease"`) rather than an owner; the one place that tells the two apart. */
 export const isLeaseRecord = (record) => record.by === "lease";
-/** The record of `pgid` when the lease wrote it; an owner's record, or none, is `undefined`. */
+/**
+ * The record of `pgid`, read from its one canonical file (`readOwnFile`'s rule), or `undefined` when there is none: a missing file or `suspensions/`,
+ * a refused entry (symlink, FIFO, directory, foreign) or `suspensions/` (symlink, foreign), or a body that does not validate as `readSuspensions` does.
+ * Any other I/O error throws, so a failed read is never taken for "no record" (`readSuspensions` and the directory readers read it that way).
+ */
+export function suspensionOf(dir, pgid) {
+    try {
+        if (!isOwnDir(lstatSync(join(dir, "suspensions"))))
+            return undefined;
+        const entry = readOwnFile(suspensionFile(dir, pgid));
+        return entry && parseSuspension(entry.text, pgid);
+    }
+    catch (err) {
+        if (err.code === "ENOENT")
+            return undefined;
+        throw err;
+    }
+}
+/** The record of `pgid` when the lease wrote it; an owner's record, or none, is `undefined`. Throws as `suspensionOf` does. */
 export function leaseSuspension(dir, pgid) {
-    return readSuspensions(dir).find((r) => r.pgid === pgid && isLeaseRecord(r));
+    const record = suspensionOf(dir, pgid);
+    return record && isLeaseRecord(record) ? record : undefined;
 }
 /** Removes the record of `pgid` only when it is the lease's; returns whether one was removed. */
 export function removeLeaseSuspension(dir, pgid) {
     return leaseSuspension(dir, pgid) !== undefined && removeSuspension(dir, pgid);
 }
-/** The valid records in `<dir>/suspensions` (`readRecordDir`'s name and directory rule): an unreadable or invalid body (`at` and `remindAt` must parse as dates), or a body whose pgid is not its name, is skipped. */
+/** `text` as the record of `pgid`, or `undefined` when it is not JSON, a field is missing or mistyped (`at` and `remindAt` must parse as dates), or its pgid is not `pgid`. */
+function parseSuspension(text, pgid) {
+    try {
+        const r = JSON.parse(text);
+        const isDate = (v) => typeof v === "string" && Number.isFinite(Date.parse(v));
+        const ok = r?.pgid === pgid && typeof r.by === "string" && typeof r.reason === "string" && isDate(r.at) && isDate(r.remindAt) && (r.leader === null || typeof r.leader === "string");
+        return ok ? { pgid: r.pgid, by: r.by, reason: r.reason, at: r.at, remindAt: r.remindAt, leader: r.leader } : undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
+/** The valid records in `<dir>/suspensions` (`readRecordDir`'s name and directory rule): an unreadable or invalid body, or a body whose pgid is not its name, is skipped. */
 export function readSuspensions(dir) {
-    return readRecordDir(dir, "suspensions").flatMap(({ stem, text }) => {
-        try {
-            const r = JSON.parse(text);
-            const isDate = (v) => typeof v === "string" && Number.isFinite(Date.parse(v));
-            const ok = r?.pgid === stem && typeof r.by === "string" && typeof r.reason === "string" && isDate(r.at) && isDate(r.remindAt) && (r.leader === null || typeof r.leader === "string");
-            return ok ? [{ pgid: r.pgid, by: r.by, reason: r.reason, at: r.at, remindAt: r.remindAt, leader: r.leader }] : [];
-        }
-        catch {
-            return [];
-        }
-    });
+    return readRecordDir(dir, "suspensions").flatMap(({ stem, text }) => parseSuspension(text, stem) ?? []);
 }
 /** Runs `suspend` or `resume` (`argv[0]`): exit 0 done, 1 refused or failed, 64 usage. A suspend writes the record before the signal; a resume signals before it removes the record. */
 export function runSuspension(argv, d) {

@@ -280,6 +280,46 @@ describe("resuming the oldest suspended holder", () => {
       expect(recordOf("a")).toBeDefined();
     });
 
+    it("a record that cannot be read keeps the mark and sends no signal, and a later tick resumes once it can", () => {
+      const restore = failFsCall("openSync", (p) => p.includes("suspensions"), "EIO");
+      try {
+        expect(() => tick("a")).toThrow(expect.objectContaining({ code: "EIO" }));
+      } finally {
+        restore();
+      }
+      expect(cont).not.toHaveBeenCalled();
+      expect(holderRec("a").suspended).toBe(true);
+      expect(recordOf("a")).toBeDefined();
+      expect(tick("a")).toBe("resumed");
+    });
+
+    it("a record that cannot be read right before the signal keeps the mark and sends no signal", () => {
+      let reads = 0;
+      const restore = failFsCall("openSync", (p) => p.includes("suspensions") && ++reads === 2, "EIO");
+      try {
+        expect(() => tick("a")).toThrow(expect.objectContaining({ code: "EIO" }));
+      } finally {
+        restore();
+      }
+      expect(cont).not.toHaveBeenCalled();
+      expect(holderRec("a").suspended).toBe(true);
+      expect(existsSync(join(dir, ".mutex"))).toBe(false);
+    });
+
+    it("a record that cannot be read for its removal leaves it for the watchdog, with the group resumed and the mark cleared", () => {
+      let reads = 0;
+      const restore = failFsCall("openSync", (p) => p.includes("suspensions") && ++reads === 3, "EIO");
+      try {
+        expect(tick("a")).toBe("resumed");
+      } finally {
+        restore();
+      }
+      expect(cont).toHaveBeenCalledOnce();
+      expect(holderRec("a").suspended).toBeUndefined();
+      expect(recordOf("a")).toBeDefined();
+      expect(lease.warnings.at(-1)).toMatch(/could not remove the suspension record for group 9001: EIO/);
+    });
+
     it("a group that is gone still has its mark and record cleared", () => {
       cont.mockReturnValue(false);
       expect(tick("a")).toBe("resumed");

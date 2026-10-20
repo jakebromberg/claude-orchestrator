@@ -181,6 +181,52 @@ describe("suspending the newest suspendable holder", () => {
       expect(tick("c")).toBe(true);
       expect(recordOf("c")).toMatchObject({ by: "lease", reason: expect.stringContaining("CPU") });
     });
+
+    describe("is ranked as stopped", () => {
+      const own = (name: keyof typeof pgid): void => void handles[name]!.setChildPid(process.pid, pgid[name]);
+      const mutexTries = (run: () => void): number => {
+        const seen: string[] = [];
+        const restore = failFsCall("openSync", (p) => (p.endsWith(".mutex") && seen.push(p), false), "EIO");
+        try {
+          run();
+        } finally {
+          restore();
+        }
+        return seen.length;
+      };
+
+      it("so the next-newest suspendable running holder is suspended in its place", () => {
+        for (const name of ["a", "b", "c"] as const) own(name);
+        writeSuspension(dir, owner("c"));
+        expect(tick("c")).toBe(false);
+        expect(tick("b")).toBe(true);
+        expect(stop).toHaveBeenCalledExactlyOnceWith(pgid.b);
+        expect(recordOf("c")).toMatchObject({ by: "jake" });
+      });
+
+      it("also when it is the lease's record on a group whose mark was cleared (a refused dead-owner continue)", () => {
+        for (const name of ["a", "b", "c"] as const) own(name);
+        writeSuspension(dir, owner("c", "lease"));
+        expect(tick("b")).toBe(true);
+        expect(stop).toHaveBeenCalledExactlyOnceWith(pgid.b);
+      });
+
+      it("except for the holder whose tick it is, which replaces its own leftover lease record", () => {
+        for (const name of ["a", "b", "c"] as const) own(name);
+        writeSuspension(dir, owner("c", "lease"));
+        expect(tick("c")).toBe(true);
+        expect(stop).toHaveBeenCalledExactlyOnceWith(pgid.c);
+      });
+
+      it("and the governor tick of the stopped group returns before it takes the mutex or writes", () => {
+        writeSuspension(dir, owner("c"));
+        let result = true;
+        expect(mutexTries(() => void (result = tick("c")))).toBe(0);
+        expect(result).toBe(false);
+        expect(readSuspensions(dir)).toEqual([owner("c")]);
+        expect(mutexTries(() => void tick("b"))).toBeGreaterThan(0);
+      });
+    });
   });
 
   describe("an interruption at each step", () => {

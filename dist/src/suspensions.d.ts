@@ -45,11 +45,17 @@ export declare function writeSuspension(dir: string, record: SuspensionRecord): 
 export declare function removeSuspension(dir: string, pgid: number): boolean;
 /** Whether the lease wrote `record` (`by: "lease"`) rather than an owner; the one place that tells the two apart. */
 export declare const isLeaseRecord: (record: SuspensionRecord) => boolean;
-/** The record of `pgid` when the lease wrote it; an owner's record, or none, is `undefined`. */
+/**
+ * The record of `pgid`, read from its one canonical file (`readOwnFile`'s rule), or `undefined` when there is none: a missing file or `suspensions/`,
+ * a refused entry (symlink, FIFO, directory, foreign) or `suspensions/` (symlink, foreign), or a body that does not validate as `readSuspensions` does.
+ * Any other I/O error throws, so a failed read is never taken for "no record" (`readSuspensions` and the directory readers read it that way).
+ */
+export declare function suspensionOf(dir: string, pgid: number): SuspensionRecord | undefined;
+/** The record of `pgid` when the lease wrote it; an owner's record, or none, is `undefined`. Throws as `suspensionOf` does. */
 export declare function leaseSuspension(dir: string, pgid: number): SuspensionRecord | undefined;
 /** Removes the record of `pgid` only when it is the lease's; returns whether one was removed. */
 export declare function removeLeaseSuspension(dir: string, pgid: number): boolean;
-/** The valid records in `<dir>/suspensions` (`readRecordDir`'s name and directory rule): an unreadable or invalid body (`at` and `remindAt` must parse as dates), or a body whose pgid is not its name, is skipped. */
+/** The valid records in `<dir>/suspensions` (`readRecordDir`'s name and directory rule): an unreadable or invalid body, or a body whose pgid is not its name, is skipped. */
 export declare function readSuspensions(dir: string): SuspensionRecord[];
 /** Runs `suspend` or `resume` (`argv[0]`): exit 0 done, 1 refused or failed, 64 usage. A suspend writes the record before the signal; a resume signals before it removes the record. */
 export declare function runSuspension(argv: string[], d: SuspensionDeps): number;
