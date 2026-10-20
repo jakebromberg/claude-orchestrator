@@ -78,7 +78,7 @@ export interface ScriptedLease {
 /**
  * The one way a lease test builds `LeaseOptions`: `dir`, a scripted sampler (default `normal`; `fresh` models a stale
  * cache), a one-slot policy unless `policy` says otherwise, the fake clock's `now`/`sleep`, `isAlive` over `alive`
- * (default: this process), and `onEvent`/`warn` collectors. Forgetting one of these falls back to `Date.now` or a real
+ * (default: this process), a scripted `processCommand` (`sleep 100`, so no test spawns `ps`), and `onEvent`/`warn` collectors. Forgetting one of these falls back to `Date.now` or a real
  * `process.kill(pid, 0)`, which is what this builder exists to prevent. The caller supplies `dir`, always a temp directory.
  */
 export function scriptedLease(
@@ -103,6 +103,8 @@ export function scriptedLease(
         level: scriptedPressureSampler(init.level ?? "normal", init.fresh ? { fresh: init.fresh } : {}),
         policy: init.policy ?? { heavyCeiling: 1, heavyWarning: 1 },
         isAlive: (pid) => alive.has(pid),
+        // Scripted, so no test spawns `ps`; a row about the leader's command passes its own.
+        processCommand: () => "sleep 100",
         now: clock.now,
         sleep: clock.sleep,
         onEvent: (e) => void events.push(e),

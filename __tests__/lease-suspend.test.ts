@@ -147,6 +147,18 @@ describe("suspending the newest suspendable holder", () => {
     expect(stop).toHaveBeenCalledOnce();
   });
 
+  it("emits one suspend event after the SIGSTOP, and none when the signal fails", () => {
+    stop.mockImplementation(() => (expect(lease.events.filter((e) => e.type === "suspend")).toEqual([]), true));
+    expect(tick("c")).toBe(true);
+    expect(lease.events.filter((e) => e.type === "suspend")).toEqual([{ type: "suspend", id: handles.c!.id, pgid: pgid.c, reason: expect.stringContaining("CPU"), class: "heavy" }]);
+    lease.events.length = 0;
+    advance(20 * SECOND);
+    plantCpu(lease, 0.97, TICKS);
+    stop.mockReturnValue(false);
+    expect(tick("b")).toBe(false);
+    expect(lease.events.filter((e) => e.type === "suspend")).toEqual([]);
+  });
+
   it("never selects a session holder, even a newer one", async () => {
     const session = (await acquireSessionLease(opts(), { command: "claude", cwd: "/w" })) as LeaseHandle;
     advance(SUSPEND_MIN_RUN_MS + SECOND);
@@ -221,13 +233,17 @@ describe("runLeased governor tick", () => {
   let cancelled: number;
   let kill: ReturnType<typeof vi.fn>;
   let errs: string[];
+  let freePct: number;
 
-  const deps = (over: Partial<LeaseCliDeps> = {}): LeaseCliDeps => ({
-    leaseOptions: () => lease.opts({
+  const leaseOpts = (over: Partial<LeaseOptions> = {}): LeaseOptions =>
+    lease.opts({
       policy: WIDE,
       cpuTimes: () => TICKS,
-      headroom: scriptedHeadroomSampler({ level: "normal", step: 4, signals: { level: "normal", freePct: 60 } }),
-    }),
+      headroom: scriptedHeadroomSampler(() => ({ level: "normal", step: 4, signals: { level: "normal", freePct } })),
+      ...over,
+    });
+  const deps = (over: Partial<LeaseCliDeps> = {}): LeaseCliDeps => ({
+    leaseOptions: () => leaseOpts(),
     acquire: acquireLease,
     leaseStatus: () => { throw new Error("unused"); },
     ancestors: () => [],
@@ -237,7 +253,7 @@ describe("runLeased governor tick", () => {
     out: () => {},
     err: (l) => void errs.push(l),
     signals: Object.assign(new EventEmitter(), { pid: 999, kill }),
-    governor: { every: (fn) => (tickFns.push(fn), () => void cancelled++), processCommand: () => "sleep 100" },
+    governor: { every: (fn) => (tickFns.push(fn), () => void cancelled++) },
     ...over,
   });
   const args = { kind: "run" as const, argv: ["sleep", "100"], background: true, suspendable: true };
@@ -250,6 +266,7 @@ describe("runLeased governor tick", () => {
     cancelled = 0;
     kill = vi.fn();
     errs = [];
+    freePct = 60;
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -330,7 +347,7 @@ describe("runLeased governor tick", () => {
       if (lookups++ === 0) throw new Error("ps failed");
       return "sleep 100";
     };
-    const { done, first } = await startNewest({ governor: { every: (fn) => (tickFns.push(fn), () => {}), processCommand } });
+    const { done, first } = await startNewest({ leaseOptions: () => leaseOpts({ processCommand }) });
     expect(() => tickFns[0]!()).not.toThrow();
     expect(errs.at(-1)).toMatch(/suspend check failed: ps failed/);
     expect(sigstops()).toEqual([]);
@@ -384,6 +401,64 @@ describe("runLeased governor tick", () => {
     writeSuspension(dir, { pgid: 4321, by: "jake", reason: "mine", at: "2026-10-19T12:00:00.000Z", remindAt: "2026-10-19T14:00:00.000Z", leader: "sleep 100" });
     child.emit("close", 0, null);
     expect(await done).toBe(0);
+    expect(readSuspensions(dir)).toMatchObject([{ pgid: 4321, by: "jake" }]);
+    first.release();
+  });
+
+  /** Suspends the run's group (it is the newer of two), then lets the machine recover. */
+  const suspendThenRecover = async (): Promise<{ done: Promise<number>; first: LeaseHandle }> => {
+    const started = await startNewest();
+    tickFns[0]!();
+    expect(sigstops()).toHaveLength(1);
+    lease.clock.ms += SECOND;
+    plantCpu(lease, 0.1, TICKS);
+    return started;
+  };
+  const sigconts = (): unknown[] => kill.mock.calls.filter((c) => c[1] === "SIGCONT");
+
+  it("resumes its own group on a later tick once the machine has recovered, and reports it", async () => {
+    const { done, first } = await suspendThenRecover();
+    tickFns[0]!();
+    expect(kill.mock.calls).toEqual([[-4321, "SIGSTOP"], [-4321, "SIGCONT"]]);
+    expect(readSuspensions(dir)).toEqual([]);
+    expect(errs.at(-1)).toMatch(/resumed \(SIGCONT\)/);
+    expect(lease.events.map((e) => e.type).filter((t) => t === "suspend" || t === "resume")).toEqual(["suspend", "resume"]);
+    child.emit("close", 0, null);
+    await done;
+    first.release();
+  });
+
+  it("stays stopped while the machine is still loaded", async () => {
+    const { done, first } = await suspendThenRecover();
+    plantCpu(lease, 0.9, TICKS);
+    tickFns[0]!();
+    expect(sigconts()).toEqual([]);
+    expect(readSuspensions(dir)).toHaveLength(1);
+    child.emit("close", 0, null);
+    await done;
+    first.release();
+  });
+
+  it("clears its mark on the next tick after an owner's resume, whatever the load, and sends no signal", async () => {
+    const { done, first } = await suspendThenRecover();
+    rmSync(join(dir, "suspensions", "4321.json"));
+    freePct = 3;
+    plantCpu(lease, 0.99, TICKS);
+    tickFns[0]!();
+    expect(sigconts()).toEqual([]);
+    const holders = readdirSync(join(dir, "holders")).filter((f) => f.endsWith(".json"));
+    expect(holders.map((f) => JSON.parse(readFileSync(join(dir, "holders", f), "utf8")).suspended)).toEqual([undefined, undefined]);
+    child.emit("close", 0, null);
+    await done;
+    first.release();
+  });
+
+  it("does not try to remove a record on exit after it resumed", async () => {
+    const { done, first } = await suspendThenRecover();
+    tickFns[0]!();
+    writeSuspension(dir, { pgid: 4321, by: "jake", reason: "mine", at: "2026-10-19T12:00:00.000Z", remindAt: "2026-10-19T14:00:00.000Z", leader: "sleep 100" });
+    child.emit("close", 0, null);
+    await done;
     expect(readSuspensions(dir)).toMatchObject([{ pgid: 4321, by: "jake" }]);
     first.release();
   });

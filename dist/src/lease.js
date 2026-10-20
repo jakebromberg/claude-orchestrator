@@ -21,8 +21,8 @@ import { defaultHeadroomSampler, levelView } from "./headroom-sampler.js";
 import { ensureOwnSubdir, isOwnDir, readLeaseRecord, readOwnFile } from "./lease-dir.js";
 import { leaseEventSink } from "./lease-events.js";
 import { DEFAULT_RESERVE_PCT, DEFAULT_SESSION_SLOTS, freeBytes, leaseDirectory, pressurePolicyFromEnv, reservePctFromEnv, sessionSlotsFromEnv, usableBytes, } from "./memory-pressure.js";
-import { isPid, pidAlive } from "./ps.js";
-import { readSuspensions, removeSuspension, writeSuspension } from "./suspensions.js";
+import { isPid, pidAlive, psField, signalGroup } from "./ps.js";
+import { leaseSuspension, removeLeaseSuspension, removeSuspension, writeSuspension } from "./suspensions.js";
 export { ensureOwnSubdir, isOwnDir, isPid, pidAlive };
 const MUTEX_STALE_MS = 10_000;
 const ORPHAN_MAX_MS = 2 * 60 * 60_000;
@@ -45,6 +45,9 @@ const SUSPEND_FREE_PCT = 12;
 /** A holder is suspended only after running this long, and at most one is suspended per `SUSPEND_SPACING_MS`, machine-wide. */
 export const SUSPEND_MIN_RUN_MS = 20_000;
 const SUSPEND_SPACING_MS = 15_000;
+/** A suspended holder is resumed only while CPU busy is under this and, in count mode, the free memory percentage is above the second (heavy-queue's thresholds). */
+const RESUME_CPU_BUSY = 0.85;
+const RESUME_FREE_PCT = 20;
 /** The `remindAt` of a record the lease writes; the watchdog reports a lease suspension this old. */
 const SUSPEND_REMIND_MS = 30 * 60_000;
 /** A stored CPU reading younger than this is gated on as it is; one up to `CPU_DELTA_MAX_MS` old is the base of a new delta; an older one is replaced and fails the poll. */
@@ -254,6 +257,7 @@ function gatesPass(opts, live, nowMs) {
     const spaced = markElapsed(opts.dir, "lastAdmit", nowMs, GATE_SPACING_MS);
     return busy !== null && busy < GATE_CPU_BUSY && spaced && !live.some((h) => h.suspended);
 }
+const byAge = (a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1);
 /** Writes the lease's record for `pgid`; false when the owner's record is there. A leftover with `by: "lease"` on a group that is running is replaced (the record is written before the signal, so a front end that died between the two leaves one). */
 function recordSuspension(dir, record) {
     try {
@@ -262,9 +266,8 @@ function recordSuspension(dir, record) {
     catch (err) {
         if (err.code !== "EEXIST")
             throw err;
-        if (!readSuspensions(dir).some((r) => r.pgid === record.pgid && r.by === "lease"))
+        if (!removeLeaseSuspension(dir, record.pgid))
             return false;
-        removeSuspension(dir, record.pgid);
         writeSuspension(dir, record);
     }
     return true;
@@ -294,17 +297,18 @@ export function suspendNewest(opts, handle, pgid, leader, stop) {
         }
     };
     let go = false;
+    let why = "";
     try {
         const nowMs = (opts.now ?? Date.now)();
         const busy = cpuBusy(opts, nowMs);
         const free = signals?.freePct;
-        const why = [
+        why = [
             step === 0 && "step 0",
             busy !== null && busy >= SUSPEND_CPU_BUSY && `CPU ${Math.round(busy * 100)}% busy`,
             free !== undefined && free <= SUSPEND_FREE_PCT && `${free}% memory free`,
         ].filter(Boolean).join(", ");
         if (why && markElapsed(opts.dir, "lastSuspend", nowMs, SUSPEND_SPACING_MS)) {
-            const running = scanHolders(opts, HEAVY).live.filter((h) => !h.suspended).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
+            const running = scanHolders(opts, HEAVY).live.filter((h) => !h.suspended).sort(byAge);
             const newest = running.slice(1).filter((h) => h.suspendable).at(-1);
             if (newest?.id === handle.id && nowMs - newest.startedAt >= SUSPEND_MIN_RUN_MS) {
                 const at = new Date(nowMs).toISOString();
@@ -335,7 +339,96 @@ export function suspendNewest(opts, handle, pgid, leader, stop) {
         if (!stopped)
             undo();
     }
+    if (stopped)
+        emit(opts, HEAVY, { type: "suspend", id: handle.id, pgid, reason: why });
     return stopped;
+}
+/**
+ * One tick of a suspended holder's front end: continues `handle`'s own group, `pgid`, when `handle` is the oldest suspended holder and the machine
+ * has recovered, and returns `"resumed"`. The signals are sampled before the mutex; under it the decision is made and `cont` (SIGCONT of `pgid`) runs
+ * after it is released, then the holder's mark is cleared, then the record is removed, so a crash leaves a mark or a record on a running group and never
+ * a stopped group without either. Recovered is CPU busy under 0.85 (`cpuBusy`; null means not yet), and in count mode a free percentage above 20 (none
+ * means not yet; in weight mode the room test below is stricter, since it cannot hold inside the reserve), a step of at least 1, and room: the weights
+ * `weigh` gives the running holders plus this one fit its budget, with admission's slack. When no other holder is running, step 0 and room do not apply.
+ * When the group has no record of the lease's (the owner resumed it, or replaced the record with their own) the mark is cleared at once, whatever the
+ * load, with no signal and no mutex, and the result is `"cleared"`. A `cont` that reports the group gone still clears the mark and the record.
+ */
+export function resumeOldest(opts, handle, pgid, cont) {
+    if (!handle.setSuspended)
+        return undefined;
+    if (!leaseSuspension(opts.dir, pgid)) {
+        handle.setSuspended(false);
+        return "cleared";
+    }
+    const snap = snapshot(opts, HEAVY);
+    const lock = tryLockOnce(join(opts.dir, ".mutex"), { staleAfterMs: MUTEX_STALE_MS, now: opts.now });
+    if (!lock)
+        return undefined;
+    let why = "";
+    try {
+        const busy = cpuBusy(opts, (opts.now ?? Date.now)());
+        const { live } = scanHolders(opts, HEAVY);
+        const [oldest] = live.filter((h) => h.suspended).sort(byAge);
+        if (oldest?.id === handle.id && busy !== null && busy < RESUME_CPU_BUSY) {
+            const { usable, budget, of } = weigh(opts, HEAVY, snap, live);
+            const running = live.filter((h) => !h.suspended);
+            const alone = running.length === 0;
+            const free = snap.signals?.freePct;
+            const recovered = usable !== undefined || (free !== undefined && free > RESUME_FREE_PCT);
+            const room = alone || running.reduce((sum, h) => sum + of(h), of(oldest)) <= budget * (1 + 1e-12);
+            if (recovered && room && (snap.step > 0 || alone))
+                why = `CPU ${Math.round(busy * 100)}% busy, step ${snap.step}`;
+        }
+    }
+    finally {
+        lock.release();
+    }
+    if (!why)
+        return undefined;
+    if (cont(pgid))
+        emit(opts, HEAVY, { type: "resume", id: handle.id, pgid, reason: why });
+    handle.setSuspended(false);
+    removeLeaseSuspension(opts.dir, pgid);
+    return "resumed";
+}
+/** Rewrites the holder file of `id` without its `suspended` mark, keeping its heartbeat mtime; a holder that is gone, or not marked, is left alone. */
+function unmarkHolder(opts, id) {
+    const file = join(opts.dir, HEAVY.holders, `${id}.json`);
+    const entry = unlessGone(() => readOwnFile(file));
+    const rec = entry && parseHolder(entry.text);
+    if (!entry || !rec?.suspended)
+        return;
+    delete rec.suspended;
+    writeFileAtomic(file, JSON.stringify(rec), { mtimeMs: entry.mtimeMs });
+}
+/**
+ * After the mutex: continues the group of a suspended holder whose front end is gone (`attempt()` chose it). No resume gate applies, since
+ * only the owner's own tick could pass one. The group is signalled only when the record's `leader` is the command `processCommand` now reads
+ * for the group: a null leader, a missing or an owner's record, or a lookup that throws counts as changed, and nothing is signalled and the
+ * record stays for the watchdog. The mark is cleared in every case, so the holder is not looked at again on every acquire. Never throws.
+ */
+function continueDeadOwner(opts, holder) {
+    const pgid = holder.pgid;
+    let done = false;
+    try {
+        const leader = leaseSuspension(opts.dir, pgid)?.leader;
+        if (typeof leader === "string" && opts.processCommand?.(pgid) === leader) {
+            if (signalGroup(pgid, "SIGCONT"))
+                emit(opts, HEAVY, { type: "resume", id: holder.id, pgid, reason: "dead-owner" });
+            done = true;
+        }
+    }
+    catch (err) {
+        warn(opts, `lease: could not continue group ${pgid}: ${err.message}`);
+    }
+    try {
+        unmarkHolder(opts, holder.id);
+        if (done)
+            removeLeaseSuspension(opts.dir, pgid);
+    }
+    catch (err) {
+        warn(opts, `lease: could not clear the suspension of group ${pgid}: ${err.message}`);
+    }
 }
 const removeTicket = (opts, cls, id) => rmSync(join(opts.dir, cls.waiting, `${id}.json`), { force: true });
 // Paste-safety for `status` output and the event log, not a security boundary: the lease does no shell parsing. Nothing
@@ -462,6 +555,7 @@ function attempt(opts, cls, meta, waitedMs, ticketId) {
     const overridden = (opts.headroom ?? opts.level).overridden?.() === true;
     const command = recordedCommand(meta);
     const reaped = [];
+    let orphan;
     let r;
     try {
         ensureOwnSubdir(opts.dir, cls.holders);
@@ -482,6 +576,9 @@ function attempt(opts, cls, meta, waitedMs, ticketId) {
             // A writer killed between its write and rename leaves a uniquely named temp file: remove those of dead writers in this class's directories and the root. Only here, under the mutex; the scanners and `leaseStatus` never delete.
             for (const d of [cls.holders, cls.waiting, ""])
                 sweepDeadTemps(join(opts.dir, d), opts.isAlive ?? pidAlive);
+            // The oldest suspended holder whose front end is gone (ESRCH; a stopped one is alive and is left alone); its group is continued after the mutex.
+            if (cls === HEAVY)
+                orphan = live.filter((h) => h.suspended && h.pgid !== undefined && !(opts.isAlive ?? pidAlive)(h.pid)).sort(byAge)[0];
             const { usable, budget, of: weightOf, report } = weigh(opts, cls, snap, live);
             const myWeight = weightOf({ weight: positive(meta.weight) });
             const weights = report([...live, { weight: myWeight }]);
@@ -545,6 +642,8 @@ function attempt(opts, cls, meta, waitedMs, ticketId) {
     }
     if (r.kind === "admitted" && !r.borrowed)
         emit(opts, cls, { type: "acquire", id: r.handle.id, ...r.handle.admission, step: snap.step });
+    if (orphan)
+        continueDeadOwner(opts, orphan);
     return r;
 }
 /** The one default diagnostics writer, shared with the event sink. Messages carry their own `lease:` prefix. */
@@ -761,6 +860,7 @@ export function defaultLeaseOptions(env = process.env, overrides = {}) {
         reservePct: reservePctFromEnv(env, tagged),
         inheritedHolderId: env.CO_LEASE_HOLDER || undefined,
         cpuTimes: osCpuTicks,
+        processCommand: (pgid) => psField(pgid, "command"),
         onEvent: leaseEventSink(dir, { warn }),
         warn,
     });

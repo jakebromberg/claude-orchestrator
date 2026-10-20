@@ -48,6 +48,13 @@ export type LeaseEvent = ({
     waitedMs: number;
     code?: string;
     message?: string;
+}
+/** A SIGSTOP or SIGCONT the lease sent to a holder's group; `reason` is the trigger, or `dead-owner` for the continue of a group whose front end is gone. */
+ | {
+    type: "suspend" | "resume";
+    id: string;
+    pgid: number;
+    reason: string;
 }) & {
     /** The holder class the event is about; absent in a record an older writer wrote, which means `heavy`. */
     class?: "heavy" | "sessions";
@@ -85,6 +92,8 @@ export interface LeaseOptions {
     cpuTimes?(): CpuTicks;
     /** The `CO_LEASE_HOLDER` id this process inherited; a live one admits a nested acquire at once. */
     inheritedHolderId?: string;
+    /** The command line of a process group's leader (`ps -o command=` by default); throws when it cannot be read. `attempt()` compares it with a suspension record's `leader` before continuing a dead owner's group; absent, none is continued. */
+    processCommand?(pgid: number): string;
     /** A throw is warned about once per callback and never changes what the lease does. */
     onEvent?(e: LeaseEvent): void;
     warn?(msg: string): void;
@@ -222,6 +231,17 @@ export declare function writeMark(dir: string, name: string, nowMs: number): voi
  * under 20 s old, and more holders than the step allows is not a trigger. `leader` is the group leader's command, for the record.
  */
 export declare function suspendNewest(opts: LeaseOptions, handle: LeaseHandle, pgid: number, leader: string | null, stop: (pgid: number) => boolean): boolean;
+/**
+ * One tick of a suspended holder's front end: continues `handle`'s own group, `pgid`, when `handle` is the oldest suspended holder and the machine
+ * has recovered, and returns `"resumed"`. The signals are sampled before the mutex; under it the decision is made and `cont` (SIGCONT of `pgid`) runs
+ * after it is released, then the holder's mark is cleared, then the record is removed, so a crash leaves a mark or a record on a running group and never
+ * a stopped group without either. Recovered is CPU busy under 0.85 (`cpuBusy`; null means not yet), and in count mode a free percentage above 20 (none
+ * means not yet; in weight mode the room test below is stricter, since it cannot hold inside the reserve), a step of at least 1, and room: the weights
+ * `weigh` gives the running holders plus this one fit its budget, with admission's slack. When no other holder is running, step 0 and room do not apply.
+ * When the group has no record of the lease's (the owner resumed it, or replaced the record with their own) the mark is cleared at once, whatever the
+ * load, with no signal and no mutex, and the result is `"cleared"`. A `cont` that reports the group gone still clears the mark and the record.
+ */
+export declare function resumeOldest(opts: LeaseOptions, handle: LeaseHandle, pgid: number, cont: (pgid: number) => boolean): "resumed" | "cleared" | undefined;
 /** The one default diagnostics writer, shared with the event sink. Messages carry their own `lease:` prefix. */
 export declare function defaultWarn(msg: string): void;
 /** A single non-blocking attempt: a handle, or `null` when not admitted this poll (a full disk included: it is never failed open, and emits a `timeout` event with `refused: "disk-full"`). Throws a `TypeError` on an invalid detached id, session PID or `expiresAt`. */
