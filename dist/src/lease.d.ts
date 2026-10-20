@@ -266,6 +266,9 @@ export declare function suspendNewest(opts: LeaseOptions, handle: LeaseHandle, p
  * When the group has no record of the lease's (the owner resumed it, or replaced the record with their own) the mark is cleared at once, whatever the
  * load, with no signal and no mutex, and the result is `"cleared"`; the record is checked again right before `cont`, which narrows the window in which
  * an owner's suspend between the decision and the signal is undone. A `cont` that reports the group gone still clears the mark and the record.
+ * Every exit that clears the mark, `"cleared"` included, stamps `resumedAt` with the same write, so an owner's resume gets the 20 s run time too. The stamp
+ * is written after the `SIGCONT` (or, on `"cleared"`, with no signal) and outside the mutex, which is safe: only a holder's own front end suspends its group,
+ * synchronously in the tick that is running this call, and the mark stays set until that one write clears it and stamps `resumedAt`.
  */
 export declare function resumeOldest(opts: LeaseOptions, handle: LeaseHandle, pgid: number, cont: (pgid: number) => boolean): "resumed" | "cleared" | undefined;
 /** The one default diagnostics writer, shared with the event sink. Messages carry their own `lease:` prefix. */

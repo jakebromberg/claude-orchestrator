@@ -329,7 +329,9 @@ export function suspendNewest(opts, handle, pgid, leader, stop) {
             const stopped = new Set(readSuspensions(opts.dir).map((r) => r.pgid));
             const running = scanHolders(opts, HEAVY).live.filter((h) => !h.suspended && (h.id === handle.id || h.pgid === undefined || !stopped.has(h.pgid))).sort(byAge);
             const newest = running.slice(1).filter((h) => h.suspendable).at(-1);
-            if (newest?.id === handle.id && nowMs - Math.max(newest.startedAt, newest.resumedAt ?? 0) >= SUSPEND_MIN_RUN_MS) {
+            // A resumedAt after now is read as absent, like a future-dated mark in `markElapsed`: it must not hold the newest holder, and with it every suspension, until the clock catches up.
+            const resumedAt = newest?.resumedAt !== undefined && newest.resumedAt <= nowMs ? newest.resumedAt : 0;
+            if (newest?.id === handle.id && nowMs - Math.max(newest.startedAt, resumedAt) >= SUSPEND_MIN_RUN_MS) {
                 const at = new Date(nowMs).toISOString();
                 go = recordSuspension(opts.dir, { pgid, by: "lease", reason: why, at, remindAt: new Date(nowMs + SUSPEND_REMIND_MS).toISOString(), leader });
                 if (go) {
@@ -374,12 +376,15 @@ export function suspendNewest(opts, handle, pgid, leader, stop) {
  * When the group has no record of the lease's (the owner resumed it, or replaced the record with their own) the mark is cleared at once, whatever the
  * load, with no signal and no mutex, and the result is `"cleared"`; the record is checked again right before `cont`, which narrows the window in which
  * an owner's suspend between the decision and the signal is undone. A `cont` that reports the group gone still clears the mark and the record.
+ * Every exit that clears the mark, `"cleared"` included, stamps `resumedAt` with the same write, so an owner's resume gets the 20 s run time too. The stamp
+ * is written after the `SIGCONT` (or, on `"cleared"`, with no signal) and outside the mutex, which is safe: only a holder's own front end suspends its group,
+ * synchronously in the tick that is running this call, and the mark stays set until that one write clears it and stamps `resumedAt`.
  */
 export function resumeOldest(opts, handle, pgid, cont) {
     if (!handle.setSuspended)
         return undefined;
     if (!leaseSuspension(opts.dir, pgid)) {
-        handle.setSuspended(false);
+        handle.setSuspended(false, (opts.now ?? Date.now)());
         return "cleared";
     }
     const snap = snapshot(opts, HEAVY);
@@ -412,7 +417,7 @@ export function resumeOldest(opts, handle, pgid, cont) {
     if (!why)
         return undefined;
     if (!leaseSuspension(opts.dir, pgid)) {
-        handle.setSuspended(false);
+        handle.setSuspended(false, (opts.now ?? Date.now)());
         return "cleared";
     }
     if (cont(pgid))

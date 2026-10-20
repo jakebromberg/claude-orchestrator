@@ -118,6 +118,7 @@ describe("suspending the newest suspendable holder", () => {
     ["resumed 20 s ago", 20 * SECOND, true],
     ["never resumed", undefined, true],
     ["a wrongly typed resumedAt", -1, true],
+    ["a resumedAt 10 minutes in the future, read as absent", -10 * 60 * SECOND, true],
   ])("measures run time from the later of startedAt and resumedAt: %s", (_n, ago, suspends) => {
     const file = join(dir, "holders", `${handles.c!.id}.json`);
     const rec = JSON.parse(readFileSync(file, "utf8"));
