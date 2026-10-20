@@ -12,6 +12,7 @@ import { weightFor } from "./lease-weights.js";
 import { acquireLease, defaultLeaseOptions, leaseStatus, SUSPEND_MIN_RUN_MS, suspendNewest } from "./lease.js";
 import { formatAdmitted, formatRefusal, refusalExitCode, seconds, throttledProgress } from "./lease-messages.js";
 import { psAncestors, psField, signalGroup } from "./ps.js";
+import { sampleUnowned } from "./unowned-memory.js";
 import { readSuspensions, removeSuspension } from "./suspensions.js";
 const DEFAULT_MAX_WAIT_SEC = 100;
 const ANCESTOR_DEPTH = 32;
@@ -100,9 +101,10 @@ export function runStatus(d) {
     const opts = optionsOrReport(d);
     if (!opts)
         return EX_CONFIG;
-    const { level, capacity, live, weights } = d.leaseStatus(opts);
+    const { level, capacity, live, weights, sessions } = d.leaseStatus(opts);
+    const unowned = d.unowned?.(opts, (sessions?.live ?? []).map((h) => h.pid));
     const holders = live.map((h) => ({ pid: h.pid, command: h.command, ageSec: h.ageSec, ...(h.override && { override: true }) }));
-    d.out(`${JSON.stringify({ level, capacity, live: holders, ...(weights && { weights }) }, null, 2)}\n`);
+    d.out(`${JSON.stringify({ level, capacity, live: holders, ...(weights && { weights }), ...(unowned && { unowned }) }, null, 2)}\n`);
     return 0;
 }
 /** Waits for a slot, runs the command with it held, and returns the exit code to pass through. */
@@ -274,6 +276,7 @@ export function cliLeaseDeps(err, base = {}) {
         leaseOptions: () => defaultLeaseOptions(env, { warn: err, level }),
         acquire: acquireLease,
         leaseStatus,
+        unowned: (opts, sessionPids) => sampleUnowned({ dir: opts.dir, now: opts.now }, sessionPids),
         ancestors: () => psAncestors(process.ppid, ANCESTOR_DEPTH),
         governor: { every: (fn, ms) => { const t = setInterval(fn, ms); t.unref(); return () => clearInterval(t); }, processCommand: (pgid) => psField(pgid, "command") },
         spawn: (file, fileArgs, opts) => spawn(file, fileArgs, { stdio: "inherit", env: opts.env, detached: opts.detached }),

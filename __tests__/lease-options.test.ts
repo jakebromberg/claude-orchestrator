@@ -82,7 +82,7 @@ describe("defaultLeaseOptions sampler wiring", () => {
     plantHolder(planted, `${process.pid}-old`, { pid: process.pid, startedAt: planted.clock.ms - RAMP_MS - 1000, weight: 2 * gib });
     const status = leaseStatus({ ...o, headroom: scriptedHeadroomSampler({ level: "normal", step: 3, signals }) });
     // 8 GB free less the 4 GB reserve is 4 GB, plus the settled holder's 2 GB.
-    expect(status.weights).toEqual({ used: 2 * gib, budget: 6 * gib });
-    expect(heavy(3, signals)).toEqual({ live: 1, weights: status.weights });
+    expect(status.weights).toEqual({ used: 2 * gib, budget: 6 * gib, free: { freeBytes: 8 * gib, reserve: 4 * gib, settled: 2 * gib } });
+    expect(heavy(3, signals)).toEqual({ live: 1, weights: { used: 2 * gib, budget: 6 * gib } });
   });
 });

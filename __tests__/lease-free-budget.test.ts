@@ -79,7 +79,7 @@ describe("heavy admission against free memory", () => {
     expect(take(o, 3 * GB)).not.toBeNull();
     expect(take(o, 3 * GB)).not.toBeNull();
     expect(take(o, 3 * GB)).toBeNull();
-    expect(leaseStatus(o).weights).toEqual({ used: 6 * GB, budget: 6 * GB });
+    expect(leaseStatus(o).weights).toMatchObject({ used: 6 * GB, budget: 6 * GB });
   });
 
   it("adds a holder's weight back once it is older than the ramp window", () => {
@@ -87,10 +87,10 @@ describe("heavy admission against free memory", () => {
     take(o, 3 * GB);
     lease.clock.ms += RAMP_MS - 1;
     beat();
-    expect(leaseStatus(o).weights).toEqual({ used: 3 * GB, budget: 6 * GB });
+    expect(leaseStatus(o).weights).toMatchObject({ used: 3 * GB, budget: 6 * GB });
     lease.clock.ms += 1;
     beat();
-    expect(leaseStatus(o).weights).toEqual({ used: 3 * GB, budget: 9 * GB });
+    expect(leaseStatus(o).weights).toMatchObject({ used: 3 * GB, budget: 9 * GB });
     const beating = (): LeaseHandle | null => {
       const h = take(o, 3 * GB);
       beat();
@@ -105,20 +105,20 @@ describe("heavy admission against free memory", () => {
     const o = at(reading(4, 62.5));
     plantHolder(lease, "4242-old", { startedAt: lease.clock.ms - RAMP_MS - 1, weight: 2 * GB });
     plantHolder(lease, "4242-young", { startedAt: lease.clock.ms - 1000, weight: 3 * GB });
-    expect(leaseStatus(o).weights).toEqual({ used: 5 * GB, budget: 8 * GB });
+    expect(leaseStatus(o).weights).toMatchObject({ used: 5 * GB, budget: 8 * GB });
   });
 
   it("charges a holder dated in the future as young", () => {
     const o = at(reading(4, 62.5));
     plantHolder(lease, "4242-future", { startedAt: lease.clock.ms + 10 * RAMP_MS, weight: 3 * GB });
-    expect(leaseStatus(o).weights).toEqual({ used: 3 * GB, budget: 6 * GB });
+    expect(leaseStatus(o).weights).toMatchObject({ used: 3 * GB, budget: 6 * GB });
   });
 
   it("reports one budget in status, the admission and the acquire event", () => {
     const o = at(reading(4, 62.5));
     plantHolder(lease, "4242-old", { startedAt: lease.clock.ms - RAMP_MS - 1, weight: 2 * GB });
     const h = take(o, GB)!;
-    expect(leaseStatus(o).weights).toEqual({ used: 3 * GB, budget: 8 * GB });
+    expect(leaseStatus(o).weights).toMatchObject({ used: 3 * GB, budget: 8 * GB });
     expect(h.admission.weights).toEqual({ used: 3 * GB, budget: 8 * GB, weight: GB });
     expect(lease.events.filter((e) => e.type === "acquire").at(-1)).toMatchObject({ weights: { budget: 8 * GB } });
   });
@@ -157,5 +157,29 @@ describe("the step's rise", () => {
     const steps = climb();
     expect(steps).toEqual([1, 1, 2, 2, 3, 3, 4]);
     expect(steps.map((s) => sessionHeadroomCapacity(s, 6))).toEqual([1, 1, 2, 2, 4, 4, 6]);
+  });
+});
+
+describe("status weights.free", () => {
+  let tmp: string;
+  let lease: ScriptedLease;
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "lease-free-status-"));
+    lease = scriptedLease(join(tmp, "lease"), { policy: { heavyCeiling: 4, heavyWarning: 1 }, alive: [process.pid] });
+  });
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  it.each<[name: string, freePct: number | undefined, memsize: number | undefined, free: object | undefined]>([
+    ["is the FreeBudget admission used", 50, MEMSIZE, { freeBytes: 8 * GB, reserve: 4 * GB, settled: 0 }],
+    ["is absent without a free reading", undefined, MEMSIZE, undefined],
+    ["is absent in count mode", 50, undefined, undefined],
+  ])("%s", (_name, freePct, memsize, free) => {
+    const r: HeadroomReading = { level: "normal", step: 4, signals: { level: "normal", ...(memsize && { memsizeBytes: memsize }), ...(freePct && { freePct }) } };
+    const o = lease.opts({ headroom: scriptedHeadroomSampler(r) });
+    tryAcquireLease(o, meta);
+    const w = leaseStatus(o).weights;
+    if (free) expect(w?.free).toEqual(free);
+    else expect(w?.free).toBeUndefined();
+    if (free) expect(w?.budget).toBe(heavyBudget(4, 12 * GB, free as never));
   });
 });
