@@ -130,6 +130,16 @@ describe("heavy admission against free memory", () => {
     expect(lease.events.filter((e) => e.type === "acquire").at(-1)).toMatchObject({ weights: { budget: 8 * GB } });
   });
 
+  it("keeps an older waiting ticket ahead of a younger request when free memory inside the reserve leaves a budget of 0 above step 0", () => {
+    const o = at(reading(4, 20));
+    mkdirSync(join(dir, "waiting"), { recursive: true, mode: 0o700 });
+    const ticket = join(dir, "waiting", "older.json");
+    writeFileSync(ticket, JSON.stringify({ seq: 1, id: "older", pid: 4242, label: "other", gated: false, capacity: 4, ceiling: 4, ready: true }));
+    utimesSync(ticket, (lease.clock.ms + 0.5) / 1000, (lease.clock.ms + 0.5) / 1000);
+    expect(leaseStatus(o).weights?.budget).toBe(0);
+    expect(take(o)).toBeNull();
+  });
+
   it("keeps a session row at its own capacity whatever the free memory", async () => {
     const o = at(reading(4, 20), { sessionSlots: 3 });
     let n = 0;

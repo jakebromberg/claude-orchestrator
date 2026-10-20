@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MemorySignals } from "../src/memory-pressure.js";
@@ -17,7 +17,9 @@ vi.mock("../src/headroom-sampler.js", async (importOriginal) => {
 });
 
 const { scriptedPressureSampler } = await import("../src/testing.js");
-const { defaultLeaseOptions, tryAcquireLease } = await import("../src/lease.js");
+const { defaultLeaseOptions, leaseStatus, tryAcquireLease } = await import("../src/lease.js");
+const { RAMP_MS } = await import("../src/headroom.js");
+const { scriptedHeadroomSampler } = await import("../src/testing.js");
 
 describe("defaultLeaseOptions sampler wiring", () => {
   let dir: string;
@@ -68,5 +70,18 @@ describe("defaultLeaseOptions sampler wiring", () => {
     } finally {
       if (handle && "release" in handle) handle.release();
     }
+  });
+
+  it("samples the same budget admission and status use when a holder is older than the ramp window", () => {
+    const o = defaultLeaseOptions({ CO_LEASE_DIR: dir });
+    const heavy = built.deps.at(-1)!.heavy!;
+    const gib = 2 ** 30;
+    const signals: MemorySignals = { level: "normal", freePct: 50, memsizeBytes: 16 * gib };
+    mkdirSync(join(dir, "holders"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(dir, "holders", `${process.pid}-old.json`), JSON.stringify({ id: `${process.pid}-old`, pid: process.pid, command: "x", cwd: "/", startedAt: Date.now() - RAMP_MS - 1000, level: "normal", weight: 2 * gib }));
+    const status = leaseStatus({ ...o, headroom: scriptedHeadroomSampler({ level: "normal", step: 3, signals }) });
+    // 8 GB free less the 4 GB reserve is 4 GB, plus the settled holder's 2 GB.
+    expect(status.weights).toEqual({ used: 2 * gib, budget: 6 * gib });
+    expect(heavy(3, signals)).toEqual({ live: 1, weights: status.weights });
   });
 });

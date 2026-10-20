@@ -60,7 +60,7 @@ describe("weights in the lease's reports", () => {
 
 /**
  * The 2026-10-18 window: two pre-push runs, an xcodebuild and an unmatched command ask while the step climbs 1 to 4. Each request's weight
- * comes from `resolveWeight` over a rule table with an injected `GitLookup`, and Σ admitted weight must stay within the step's budget unless one holder runs alone.
+ * comes from `resolveWeight` over a rule table with an injected `GitLookup`, and Σ admitted weight must stay within the budget (the step's share, or free memory less the reserve when `outsideGB` is set) unless one holder runs alone.
  * With `outsideGB` set, that much memory is already used outside the lease and the reading carries the free memory (every holder is young, so none has grown yet):
  * the budget is free memory less the reserve whatever the step.
  */
@@ -82,13 +82,13 @@ describe("replay of the 2026-10-18 window", () => {
   // 24 GB with 8 GB used outside the lease (the 2026-10-18 case): free memory less the 6 GB reserve is 10 GB at every step, so one pre-push runs alone and
   // nothing else fits, where the step rule admitted a second command at step 4. 64 GB with 8 GB outside has a 40 GB budget: the first three requests fit at
   // step 1 and the 12 GB unmatched command would make 44 GB, so it never does.
-  it.each<[gb: number, liveByStep: number[], oversizeAdmissions: number, outsideGB?: number]>([
-    [16, [1, 1, 1, 1], 1],
-    [24, [1, 1, 1, 2], 1],
-    [64, [1, 2, 3, 4], 0],
-    [24, [1, 1, 1, 1], 1, 8],
-    [64, [3, 3, 3, 3], 0, 8],
-  ])("keeps the admitted weight within the budget on a %i GB machine", (gb, liveByStep, oversizeAdmissions, outsideGB) => {
+  it.each<[gb: number, outside: string, liveByStep: number[], oversizeAdmissions: number, outsideGB?: number]>([
+    [16, "no free reading", [1, 1, 1, 1], 1, undefined],
+    [24, "no free reading", [1, 1, 1, 2], 1, undefined],
+    [64, "no free reading", [1, 2, 3, 4], 0, undefined],
+    [24, "8 GB used outside", [1, 1, 1, 1], 1, 8],
+    [64, "8 GB used outside", [3, 3, 3, 3], 0, 8],
+  ])("keeps the admitted weight within the budget on a %i GB machine with %s", (gb, _outside, liveByStep, oversizeAdmissions, outsideGB) => {
     const usable = gb * GB * 0.75;
     const freePct = outsideGB === undefined ? undefined : ((gb - outsideGB) / gb) * 100;
     let step = 1;
