@@ -24,7 +24,8 @@
  *   because this one stalled there past `staleAfterMs`.
  */
 import { randomBytes } from "node:crypto";
-import { closeSync, lstatSync, openSync, readFileSync, rmSync, writeSync, type Stats } from "node:fs";
+import { closeSync, lstatSync, openSync, rmSync, writeSync, type Stats } from "node:fs";
+import { readOwnFile } from "./lease-dir.js";
 
 export interface TryLockOptions {
   /** A lock file whose mtime is more than this far from `now()`, before or after, is stale, whatever its contents. */
@@ -51,7 +52,8 @@ export function tryLockOnce(lockFile: string, { staleAfterMs, now = Date.now }: 
   const lock: FileLock = {
     release() {
       try {
-        if (readFileSync(lockFile, "utf8") === token) rmSync(lockFile);
+        // Through the lease directory's read rule, so a lock file replaced by a FIFO or symlink is never waited on or followed.
+        if (readOwnFile(lockFile)?.text === token) rmSync(lockFile);
       } catch {
         // Already reaped as stale; nothing to release.
       }

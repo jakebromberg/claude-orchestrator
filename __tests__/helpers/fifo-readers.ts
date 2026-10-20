@@ -1,4 +1,6 @@
+import { lstatSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import { tryLockOnce } from "../../src/file-lock.js";
 import { defaultHeadroomSampler } from "../../src/headroom-sampler.js";
 import { cpuBusy, leaseStatus, releaseHolder, tryAcquireLease, type LeaseOptions } from "../../src/lease.js";
 import { readLeaseRecord, readRecordDir, readRegularFile } from "../../src/lease-dir.js";
@@ -76,6 +78,17 @@ export const FIFO_READERS: Record<string, { file: string; expected: unknown; run
   "waiting/ (scanTickets)": { file: "waiting/4242-aaaa.json", expected: true, run: (dir) => admits(dir) },
   "sessions/ (scanHolders)": { file: "sessions/4242-aaaa.json", expected: [], run: (dir) => leaseStatus(leaseOpts(dir)).sessions?.live },
   releaseHolder: { file: "holders/hook-x.json", expected: false, run: (dir) => releaseHolder(leaseOpts(dir), "hook-x") },
+  // The FIFO replaces the held mutex before its release, which reads the token back; the FIFO is left in place.
+  ".mutex release": {
+    file: "fifo",
+    expected: true,
+    run: (dir) => {
+      const lock = tryLockOnce(join(dir, ".mutex"), { staleAfterMs: 10_000 })!;
+      renameSync(join(dir, "fifo"), join(dir, ".mutex"));
+      lock.release();
+      return lstatSync(join(dir, ".mutex")).isFIFO();
+    },
+  },
   "watchdog.json": {
     file: "watchdog.json",
     expected: [],
