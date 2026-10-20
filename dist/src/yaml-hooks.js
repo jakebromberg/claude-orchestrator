@@ -397,10 +397,11 @@ export function deriveHooks(yaml, deps = {}) {
                     entries: sequentialEntries,
                     baseBranch,
                     onFetchError: (branch, err) => {
+                        // git's error spans several lines; its stderr already reached the engine's, so keep the warning to one.
                         const why = err.code === "ETIMEDOUT"
                             ? `timed out at the ${SYNC_CALL_TIMEOUT_MS / 1000} s bound`
-                            : err.message;
-                        console.warn(`[collision-check] fetch of origin/${branch} in ${worktreePath} failed (${why}); scanned the locally known origin/${branch}, which may be stale`);
+                            : err.message.split("\n").map((l) => l.trim()).filter(Boolean).join("; ");
+                        (ctx?.lease?.warn ?? console.warn)(`[collision-check] fetch of origin/${branch} in ${worktreePath} failed (${why}); scanned the locally known origin/${branch}, which may be stale`);
                     },
                     onPeerError: (slug, err) => {
                         console.warn(`[collision-check] skipping peer ${slug}: ${err.message}`);
