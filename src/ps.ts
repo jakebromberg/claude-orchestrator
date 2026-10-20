@@ -99,6 +99,9 @@ export const isClaudeCommand = (command: string): boolean => basename(command.tr
 /** A command under CoreSimulator: a device's own files (`Devices/<udid>/...`) or a runtime's processes (`Volumes/...` or any `.simruntime/` root); the one rule of what a simulator process is (the unowned-memory report). */
 export const isSimulatorCommand = (command: string): boolean => /\/CoreSimulator\/(Devices|Volumes)\/|\.simruntime\//.test(command);
 
+/** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */
+export const simulatorUdid = (command: string): string | undefined => /\/CoreSimulator\/Devices\/([0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12})\//i.exec(command)?.[1]?.toUpperCase();
+
 /** `pid` and its parents through `rows`, nearest first, without pid 1. `complete` is false when a link is missing from the scan or the chain is not finished within `max` rows (a loop), so a caller that guards on the chain can fail closed. */
 export function ancestry<R extends Pick<ProcRow, "pid" | "ppid">>(rows: R[], pid: number, max: number): { chain: R[]; complete: boolean } {
   const byPid = new Map(rows.map((r) => [r.pid, r]));

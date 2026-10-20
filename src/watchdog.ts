@@ -5,11 +5,11 @@
  * engine's liveness is whether its pid has a row in the scan for a process that started no later than the record.
  */
 import { lstatSync, readdirSync, statfsSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
 import { appendOwnLine, isOwnDir, readLeaseRecord, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
-import { ancestry, isClaudeCommand, isPid, parsePsTable, ps, PS_TABLE_ARGS, type ProcRow } from "./ps.js";
+import { ancestry, isClaudeCommand, isPid, isSimulatorCommand, parsePsTable, ps, PS_TABLE_ARGS, simulatorUdid, type ProcRow } from "./ps.js";
 import { isLeaseRecord, readSuspensions, type SuspensionRecord } from "./suspensions.js";
 
 const EX_USAGE = 64;
@@ -22,6 +22,9 @@ export const ENGINE_FRESH_MS = 3 * REFRESH_MS;
 export const STALLED_MARGIN_MS = 10 * 60_000;
 /** A lease suspension (`by: "lease"`) older than this is reported. */
 export const LEASE_SUSPENSION_MAX_MS = 30 * 60_000;
+
+/** A booted simulator with no `xcodebuild` or `simctl` running is reported this long after it was first seen idle. */
+export const SIMULATOR_IDLE_AFTER_MS = 5 * 60_000;
 
 /** An `engines/<pid>.json` record (see `engine-registry.ts`) with the verdicts the rules need. */
 export interface Engine {
@@ -61,6 +64,8 @@ export interface Context {
   records: SuspensionRecord[];
   /** In-scope stopped groups, with the time each was first seen stopped. */
   stoppedSince: Map<number, number>;
+  /** Booted simulators with no `xcodebuild` or `simctl` anywhere in the scan, by UDID: when each was first seen idle and its readable rss total (`undefined` when no row's rss is readable). */
+  idleSimulators: Map<string, { since: number; rssBytes: number | undefined }>;
 }
 
 export type Rule = (c: Context) => Finding[];
@@ -115,8 +120,18 @@ const silentEngine: Rule = (c) =>
     .filter((e) => e.fresh && e.stallTimeout > 0 && c.now - e.activityMs > e.stallTimeout * 1000 + STALLED_MARGIN_MS)
     .map((e) => ({ key: `silent:${e.runId}`, message: `engine ${e.runId} (pid ${e.pid}) wrote no session log for ${minutes(c.now - e.activityMs)}m` }));
 
+// Report only: the owner runs the suggested `simctl shutdown`, the watchdog never does.
+const idleSimulator: Rule = (c) =>
+  [...c.idleSimulators]
+    .filter(([, d]) => c.now - d.since >= SIMULATOR_IDLE_AFTER_MS)
+    .map(([udid, d]) => ({
+      key: `sim-idle:${udid}`,
+      message: `simulator ${udid} booted and idle ${minutes(c.now - d.since)}m${d.rssBytes === undefined ? "" : `, holding ${(d.rssBytes / 2 ** 30).toFixed(1)} GB`}; to reclaim it run: xcrun simctl shutdown ${udid}`,
+      once: true,
+    }));
+
 /** The rules, in report order. A rule reads the context and returns findings; the reporters never change. */
-export const RULES: Rule[] = [unrecordedStoppedGroup, dueReminder, oldLeaseSuspension, stalledEngine, silentEngine, deadEngine];
+export const RULES: Rule[] = [unrecordedStoppedGroup, dueReminder, oldLeaseSuspension, stalledEngine, silentEngine, deadEngine, idleSimulator];
 
 /** The default scan: one bounded `ps`, 60 s because it can be slow at background priority. A throw skips the cycle. */
 export const scanProcessTable = (): string => ps(PS_TABLE_ARGS, { timeoutMs: 60_000 });
@@ -134,6 +149,8 @@ export interface WatchdogDeps {
 
 interface State {
   stoppedSince: Record<string, number>;
+  /** When each booted simulator, by UDID, was first seen idle. */
+  idleSimulators: Record<string, number>;
   /** Keys of `once` findings already emitted. */
   reported: string[];
   /** The latest cycle's emitted findings. */
@@ -185,12 +202,29 @@ function stoppedGroups(procs: ProcRow[], engines: Engine[]): number[] {
   return [...groups].filter(([pgid, members]) => members.every((p) => p.stat.startsWith("T")) && (enginePgids.has(pgid) || members.some(underClaude))).map(([pgid]) => pgid);
 }
 
+/** Booted simulators by UDID (the `launchd_sim` row naming `Devices/<udid>/`) with the readable rss of every simulator process under it, one pid map for the scan. Idle ones only: none when an `xcodebuild` or `simctl` is running. */
+function idleSimulatorRss(procs: ProcRow[]): Map<string, number | undefined> {
+  const toolRunning = procs.some((p) => p.command.trim().split(/\s+/).slice(0, 2).some((w) => ["xcodebuild", "simctl"].includes(basename(w))));
+  const byPid = new Map(procs.map((p) => [p.pid, p]));
+  const roots = new Map(procs.flatMap((p) => (p.command.includes("launchd_sim") && simulatorUdid(p.command) ? [[p.pid, simulatorUdid(p.command)!] as const] : [])));
+  const totals = new Map<string, number | undefined>();
+  if (toolRunning) return totals;
+  for (const udid of roots.values()) totals.set(udid, undefined);
+  for (const p of procs.filter((p) => isSimulatorCommand(p.command))) {
+    let up: ProcRow | undefined = p;
+    for (let i = 0; up && i < 64 && !roots.has(up.pid); i++) up = byPid.get(up.ppid);
+    const udid = up && roots.get(up.pid);
+    if (udid && Number.isFinite(p.rssBytes)) totals.set(udid, (totals.get(udid) ?? 0) + p.rssBytes);
+  }
+  return totals;
+}
+
 function readState(dir: string): State {
   try {
     const s = JSON.parse(readLeaseRecord(dir, "watchdog.json")?.text ?? "{}");
-    return { stoppedSince: s.stoppedSince ?? {}, reported: s.reported ?? [], findings: s.findings ?? [] };
+    return { stoppedSince: s.stoppedSince ?? {}, idleSimulators: s.idleSimulators ?? {}, reported: s.reported ?? [], findings: s.findings ?? [] };
   } catch {
-    return { stoppedSince: {}, reported: [], findings: [] };
+    return { stoppedSince: {}, idleSimulators: {}, reported: [], findings: [] };
   }
 }
 
@@ -222,11 +256,12 @@ export function check(d: WatchdogDeps): void {
   }
   const engines = readEngines(d.dir, now, procs);
   const stoppedSince = new Map(stoppedGroups(procs, engines).map((pgid) => [pgid, prev.stoppedSince[pgid] ?? now]));
+  const idleSimulators = new Map([...idleSimulatorRss(procs)].map(([udid, rssBytes]) => [udid, { since: prev.idleSimulators[udid] ?? now, rssBytes }]));
   const records = readSuspensions(d.dir);
   const suspended = new Set(records.map((r) => r.pgid));
-  const found = RULES.flatMap((rule) => rule({ now, procs, engines, suspended, records, stoppedSince }));
+  const found = RULES.flatMap((rule) => rule({ now, procs, engines, suspended, records, stoppedSince, idleSimulators }));
   const findings = found.filter((f) => !(f.once && prev.reported.includes(f.key)));
-  const state: State = { stoppedSince: Object.fromEntries(stoppedSince), reported: found.filter((f) => f.once).map((f) => f.key), findings };
+  const state: State = { stoppedSince: Object.fromEntries(stoppedSince), idleSimulators: Object.fromEntries([...idleSimulators].map(([udid, d]) => [udid, d.since])), reported: found.filter((f) => f.once).map((f) => f.key), findings };
   writeLeaseRecord(d.dir, "watchdog.json", JSON.stringify({ checkedAt: new Date(now).toISOString(), ...state }));
   writeLeaseRecord(d.dir, "watchdog.brief", findings.length ? `watchdog: ${findings.map((f) => f.message).join("; ")}` : "");
   for (const f of findings) if (!prev.findings.some((p) => p.key === f.key)) appendLog(d.dir, now, f.message);
