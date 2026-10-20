@@ -138,7 +138,8 @@ export function runShellAsync(
     let recheck: NodeJS.Timeout | undefined;
     const settleGroup = () => {
       clearTimeout(recheck);
-      if (child.pid === undefined) return;
+      // Once this call dropped its group, a later 'close' must not probe or poll the pgid: another command may own it now.
+      if (child.pid === undefined || dropped) return;
       if (groupAlive(child.pid)) {
         recheck = setTimeout(settleGroup, GROUP_RECHECK_MS);
         recheck.unref();
