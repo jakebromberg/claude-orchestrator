@@ -24,7 +24,8 @@
  *   because this one stalled there past `staleAfterMs`.
  */
 import { randomBytes } from "node:crypto";
-import { closeSync, lstatSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
+import { closeSync, lstatSync, openSync, rmSync, writeSync } from "node:fs";
+import { readOwnFile } from "./lease-dir.js";
 /**
  * One `O_EXCL` create; on `EEXIST`, reaps a stale lock and retries once. Returns
  * `null` while another holder has it. Throws on any other I/O error.
@@ -34,7 +35,8 @@ export function tryLockOnce(lockFile, { staleAfterMs, now = Date.now }) {
     const lock = {
         release() {
             try {
-                if (readFileSync(lockFile, "utf8") === token)
+                // Through the lease directory's read rule, so a lock file replaced by a FIFO or symlink is never waited on or followed.
+                if (readOwnFile(lockFile)?.text === token)
                     rmSync(lockFile);
             }
             catch {
