@@ -13,7 +13,7 @@ import { claudeExecOptions } from "./claude-env.js";
 import { acquireLease, defaultWarn } from "./lease.js";
 import { formatPostCheckStop, refusalStopReason, throttledProgress } from "./lease-messages.js";
 import { weightForCommands } from "./lease-weights.js";
-import { SYNC_CALL_TIMEOUT_MS } from "./sync-budget.js";
+import { SYNC_CALL_TIMEOUT_MS, describeBoundedFailure } from "./sync-budget.js";
 import { stopAtCritical } from "./memory-pressure.js";
 import { groupAlive, signalGroup } from "./ps.js";
 const OUTPUT_TAIL_BYTES = 64 * 1024;
@@ -398,13 +398,10 @@ export function deriveHooks(yaml, deps = {}) {
                     baseBranch,
                     onFetchError: (branch, err) => {
                         // git's error spans several lines; its stderr already reached the engine's, so keep the warning to one.
-                        const why = err.code === "ETIMEDOUT"
-                            ? `timed out at the ${SYNC_CALL_TIMEOUT_MS / 1000} s bound`
-                            : err.message.split("\n").map((l) => l.trim()).filter(Boolean).join("; ");
-                        (ctx?.lease?.warn ?? console.warn)(`[collision-check] fetch of origin/${branch} in ${worktreePath} failed (${why}); scanned the locally known origin/${branch}, which may be stale`);
+                        (ctx?.lease?.warn ?? console.warn)(`[collision-check] fetch of origin/${branch} in ${worktreePath} failed (${describeBoundedFailure(err, SYNC_CALL_TIMEOUT_MS)}); scanned the locally known origin/${branch}, which may be stale`);
                     },
                     onPeerError: (slug, err) => {
-                        console.warn(`[collision-check] skipping peer ${slug}: ${err.message}`);
+                        (ctx?.lease?.warn ?? console.warn)(`[collision-check] skipping peer ${slug}: ${describeBoundedFailure(err, SYNC_CALL_TIMEOUT_MS)}`);
                     },
                 });
                 const result = detectCollisions(collisionInput);

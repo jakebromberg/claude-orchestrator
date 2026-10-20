@@ -12,7 +12,7 @@ import { createCapacityGovernor, type CapacityTransition } from "./capacity-gove
 import { jsonlSink } from "./lease-events.js";
 import type { CapacityGovernor } from "./capacity-governor.js";
 import { MAX_STEP } from "./headroom.js";
-import { MAX_PR_CANDIDATES_VERIFIED, SYNC_CALL_TIMEOUT_MS } from "./sync-budget.js";
+import { MAX_PR_CANDIDATES_VERIFIED, SYNC_CALL_TIMEOUT_MS, isTimeoutError } from "./sync-budget.js";
 import type { HeadroomReading } from "./headroom-sampler.js";
 import { acquireSessionLease, type LeaseHandle, type LeaseOptions } from "./lease.js";
 import { refusalStopReason, throttledProgress } from "./lease-messages.js";
@@ -48,12 +48,6 @@ const DEFAULT_ALLOWED_TOOLS = [
 /** The stall timeout a registry record carries: the largest effective one, or 0 (no silence check) when any issue disables stall detection, since 0 means "never stalled", not "the shortest timeout". */
 function registryStallTimeout(timeouts: number[]): number {
   return timeouts.includes(0) ? 0 : Math.max(0, ...timeouts);
-}
-
-/** True for an `execSync` failure caused by its `timeout` option (ETIMEDOUT, or the kill signal it sends). */
-function isTimeoutError(error: unknown): boolean {
-  const e = error as { code?: unknown; signal?: unknown } | null;
-  return e?.code === "ETIMEDOUT" || e?.signal === "SIGTERM";
 }
 
 /** What a session holds while its `claude` process runs: a machine-wide slot, or nothing when the engine has no lease. */

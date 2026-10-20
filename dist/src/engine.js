@@ -11,7 +11,7 @@ import { shellQuote } from "./shell-quote.js";
 import { createCapacityGovernor } from "./capacity-governor.js";
 import { jsonlSink } from "./lease-events.js";
 import { MAX_STEP } from "./headroom.js";
-import { MAX_PR_CANDIDATES_VERIFIED, SYNC_CALL_TIMEOUT_MS } from "./sync-budget.js";
+import { MAX_PR_CANDIDATES_VERIFIED, SYNC_CALL_TIMEOUT_MS, isTimeoutError } from "./sync-budget.js";
 import { acquireSessionLease } from "./lease.js";
 import { refusalStopReason, throttledProgress } from "./lease-messages.js";
 import { stopAtCritical } from "./memory-pressure.js";
@@ -26,11 +26,6 @@ const DEFAULT_ALLOWED_TOOLS = [
 /** The stall timeout a registry record carries: the largest effective one, or 0 (no silence check) when any issue disables stall detection, since 0 means "never stalled", not "the shortest timeout". */
 function registryStallTimeout(timeouts) {
     return timeouts.includes(0) ? 0 : Math.max(0, ...timeouts);
-}
-/** True for an `execSync` failure caused by its `timeout` option (ETIMEDOUT, or the kill signal it sends). */
-function isTimeoutError(error) {
-    const e = error;
-    return e?.code === "ETIMEDOUT" || e?.signal === "SIGTERM";
 }
 const UNLEASED = { release() { } };
 /**

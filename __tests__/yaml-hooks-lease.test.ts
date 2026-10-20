@@ -278,6 +278,17 @@ describe("leased postSessionCheck", () => {
         expect(result).toMatchObject({ passed: false, stopped: "memory-critical" });
       });
 
+      it("warns a multi-line peer error as one line through the lease's warn", async () => {
+        const runGitCommand = vi.fn((f: string, args: string[]) => {
+          if (args.includes("/tmp/worktrees/bar")) throw new Error("Command failed: git\n  fatal: not a git repository\n");
+          return collidingGit(false)(f, args);
+        });
+        const hooks = deriveHooks(yaml(), { runCommand: vi.fn(async () => ""), runGitCommand, existsSync: () => true });
+        await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions(), runningSessions: () => 0 });
+
+        expect(lease.warnings).toContain("[collision-check] skipping peer bar: Command failed: git; fatal: not a git repository");
+      });
+
       it("makes a collision an ordinary failed check, not a stopped one", async () => {
         level = "critical";
         const hooks = deriveHooks(yaml(), { runCommand: vi.fn(), runGitCommand: collidingGit(true), existsSync: () => true });
