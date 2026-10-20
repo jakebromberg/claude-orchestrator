@@ -57,8 +57,8 @@ export interface LeaseCliDeps {
   leaseOptions(): LeaseOptions;
   acquire: typeof acquireLease;
   leaseStatus(opts: LeaseOptions): LeaseStatus;
-  /** The memory the lease does not own, given the live session holders' pids and the heavy holders' child pids; absent or `undefined`, `status` omits it. */
-  unowned?(opts: LeaseOptions, sessionPids: number[], heavyChildPids: number[]): UnownedMemory | undefined;
+  /** The memory the lease does not own, given the live session holders' pids and the heavy holders' owned roots (child pid, or a hook holder's session pid); absent or `undefined`, `status` omits it. */
+  unowned?(opts: LeaseOptions, sessionPids: number[], leasedRoots: number[]): UnownedMemory | undefined;
   /** PIDs of this process's ancestors, nearest first; `[]` when they cannot be read. */
   ancestors(): number[];
   spawn(file: string, args: string[], opts: { env: NodeJS.ProcessEnv; detached?: boolean }): LeaseChild;
@@ -147,7 +147,7 @@ export function runStatus(d: LeaseCliDeps): number {
   const opts = optionsOrReport(d);
   if (!opts) return EX_CONFIG;
   const { level, capacity, live, weights, sessions } = d.leaseStatus(opts);
-  const unowned = d.unowned?.(opts, (sessions?.live ?? []).map((h) => h.pid), live.flatMap((h) => h.childPid ?? []));
+  const unowned = d.unowned?.(opts, (sessions?.live ?? []).map((h) => h.pid), live.flatMap((h) => h.childPid ?? (h.expiresAt !== undefined ? h.pid : [])));
   const holders = live.map((h) => ({ pid: h.pid, command: h.command, ageSec: h.ageSec, ...(h.override && { override: true }) }));
   d.out(`${JSON.stringify({ level, capacity, live: holders, ...(weights && { weights }), ...(unowned && { unowned }) }, null, 2)}\n`);
   return 0;
@@ -310,7 +310,7 @@ export function cliLeaseDeps(err: (line: string) => void, base: { env?: NodeJS.P
     leaseOptions: () => defaultLeaseOptions(env, { warn: err, level }),
     acquire: acquireLease,
     leaseStatus,
-    unowned: (opts, sessionPids, heavyChildPids) => sampleUnowned({ dir: opts.dir, now: opts.now }, sessionPids, heavyChildPids),
+    unowned: (opts, sessionPids, leasedRoots) => sampleUnowned({ dir: opts.dir, now: opts.now }, sessionPids, leasedRoots),
     ancestors: () => psAncestors(process.ppid, ANCESTOR_DEPTH),
     governor: { every: (fn, ms) => { const t = setInterval(fn, ms); t.unref(); return () => clearInterval(t); }, processCommand: (pgid) => psField(pgid, "command") },
     spawn: (file, fileArgs, opts) => spawn(file, fileArgs, { stdio: "inherit", env: opts.env, detached: opts.detached }),

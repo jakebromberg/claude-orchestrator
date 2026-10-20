@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { execFileSync } from "node:child_process";
 /** Runs `ps` and returns trimmed stdout; throws on failure. Bounded (2 s unless `timeoutMs`) and stderr is discarded, so a hung `ps` cannot stall a caller and nothing writes past a `warn` seam. */
 export function ps(args, { timeoutMs = 2_000 } = {}) {
@@ -70,6 +71,8 @@ export function parsePsTable(text) {
         return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), uid: Number(m[4]), stat: m[5], elapsedMs: parseElapsed(m[6]), command: m[7] }] : [];
     });
 }
+/** A command whose first word's basename is `claude`, the one rule of what a Claude process is (the watchdog and the unowned-memory report). */
+export const isClaudeCommand = (command) => basename(command.trim().split(/\s+/)[0]) === "claude";
 /** `pid` and its parents through `rows`, nearest first, without pid 1. `complete` is false when a link is missing from the scan or the chain is not finished within `max` rows (a loop), so a caller that guards on the chain can fail closed. */
 export function ancestry(rows, pid, max) {
     const byPid = new Map(rows.map((r) => [r.pid, r]));
