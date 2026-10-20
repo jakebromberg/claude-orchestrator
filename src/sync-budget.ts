@@ -1,5 +1,4 @@
 import { HEARTBEAT_MS, HEARTBEAT_STALE_MS } from "./lease.js";
-import { PS_TIMEOUT_MS } from "./ps.js";
 
 /**
  * The longest the engine may block its event loop in one synchronous stretch. A session holder is reaped
@@ -29,11 +28,8 @@ export const GIT_TIMEOUT_MS = 12_000;
  */
 export const WEIGHT_GIT_TIMEOUT_MS = 2_000;
 
-/**
- * Bound on `LeaseOptions.processCommand` (the default is a `ps` call): `attempt()` continues at most one dead owner's group,
- * so an acquire, which the engine's post-check makes on its event loop, blocks for one lookup at most.
- */
-export const PROCESS_COMMAND_TIMEOUT_MS = PS_TIMEOUT_MS;
+/** Bound on the default `LeaseOptions.processCommand`, defined beside its one reader in `lease.ts` (which this module imports from). */
+export { PROCESS_COMMAND_TIMEOUT_MS } from "./lease.js";
 
 /**
  * How many scraped PR URLs to put to `gh pr view` before giving up. Verification is a blocking network call per

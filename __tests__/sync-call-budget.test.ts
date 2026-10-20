@@ -1,9 +1,11 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gatherCollisionInputs } from "../src/collision-check.js";
+import { defaultLeaseOptions } from "../src/lease.js";
 import { weightForCommands, type GitLookup } from "../src/lease-weights.js";
+import { psField } from "../src/ps.js";
 import {
   BLOCKING_BUDGET_MS,
   GIT_TIMEOUT_MS,
@@ -12,6 +14,12 @@ import {
   SYNC_CALL_TIMEOUT_MS,
   WEIGHT_GIT_TIMEOUT_MS,
 } from "../src/sync-budget.js";
+
+// `psField` is spied on, still calling the real one, so the default `processCommand`'s bound can be read from its call.
+vi.mock("../src/ps.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/ps.js")>();
+  return { ...real, psField: vi.fn(real.psField) };
+});
 
 // A session holder is reaped 90 s after its last 30 s beat, and a blocking stretch can begin right after a beat.
 describe("synchronous call budgets", () => {
@@ -44,6 +52,16 @@ describe("synchronous call budgets", () => {
     { name: "the dead-owner check's one leader lookup", stretch: PROCESS_COMMAND_TIMEOUT_MS },
   ])("keeps $name within the heartbeat window", ({ stretch }) => {
     expect(stretch).toBeLessThanOrEqual(BLOCKING_BUDGET_MS);
+  });
+
+  it("bounds the default processCommand's ps call by PROCESS_COMMAND_TIMEOUT_MS", () => {
+    const dir = mkdtempSync(join(tmpdir(), "budget-ps-"));
+    try {
+      defaultLeaseOptions({ CO_LEASE_DIR: dir }, { warn: () => {} }).processCommand!(process.pid);
+      expect(psField).toHaveBeenCalledWith(process.pid, "command", { timeoutMs: PROCESS_COMMAND_TIMEOUT_MS });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("makes at most two git calls for the weight lookup, whatever the number of commands", () => {

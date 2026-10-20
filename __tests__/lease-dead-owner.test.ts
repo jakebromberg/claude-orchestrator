@@ -61,11 +61,11 @@ describe("continuing a dead owner's suspended group", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("continues the group after the mutex when its leader still runs the recorded command: SIGCONT, mark cleared, record removed, one resume event", () => {
+  it("continues the group after the mutex when its leader still runs the recorded command: mark cleared under the mutex, then SIGCONT, record removed, one resume event", () => {
     plant("dead", 7001);
     kill.mockImplementation(() => {
       expect(existsSync(join(dir, ".mutex"))).toBe(false);
-      expect(holderRec("dead").suspended).toBe(true);
+      expect(holderRec("dead").suspended).toBeUndefined();
       expect(readSuspensions(dir)).toHaveLength(1);
       return true;
     });
@@ -96,7 +96,6 @@ describe("continuing a dead owner's suspended group", () => {
 
   it.each<[string, () => void, { leader?: string | null | false }]>([
     ["a leader whose command changed", () => { commands[7001] = "vim notes"; }, {}],
-    ["a leader that cannot be read", () => { commands[7001] = new Error("ps: exit 1"); }, {}],
     ["a null leader in the record", () => {}, { leader: null }],
     ["no record", () => {}, { leader: false }],
   ])("sends no SIGCONT for %s, keeps the record and does not look again", (_n, arrange, plantOpts) => {
@@ -111,6 +110,35 @@ describe("continuing a dead owner's suspended group", () => {
     asked.length = 0;
     acquire();
     expect(asked).toEqual([]);
+  });
+
+  it("keeps the mark and the record when the leader cannot be read, so the next acquire looks again", () => {
+    plant("dead", 7001);
+    commands[7001] = new Error("ps: timed out");
+    acquire();
+    expect(sigconts()).toEqual([]);
+    expect(readSuspensions(dir)).toHaveLength(1);
+    expect(holderRec("dead").suspended).toBe(true);
+    handle?.release();
+    commands[7001] = "sleep 100";
+    acquire();
+    expect(asked).toEqual([7001, 7001]);
+    expect(sigconts()).toEqual([-7001]);
+  });
+
+  it("claims the orphan under the mutex: an acquire made during the leader lookup does not pick it again", () => {
+    plant("dead", 7001);
+    let nested: LeaseHandle | null = null;
+    commands = new Proxy({} as Record<number, string>, {
+      get: () => {
+        if (!nested) nested = tryAcquireLease(opts(), { command: "npm run lint", cwd: "/w" });
+        return "sleep 100";
+      },
+    });
+    acquire();
+    nested!.release();
+    expect(asked).toEqual([7001]);
+    expect(sigconts()).toEqual([-7001]);
   });
 
   it("never touches an owner's record or signals for it", () => {
