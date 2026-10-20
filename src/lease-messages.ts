@@ -14,10 +14,10 @@ export const WAIT_LOG_INTERVAL_MS = 60_000;
 
 /**
  * A wait's `onWait` that calls `write` on the first poll and then at most once per {@link WAIT_LOG_INTERVAL_MS} of
- * `waitedMs`. A throwing `write` is swallowed, so a progress line never changes what the wait does.
+ * `waitedMs`; with `skipFirst` the first line waits for the first interval instead (the CLI's rule). A throwing `write` is swallowed, so a progress line never changes what the wait does.
  */
-export function throttledProgress<S extends { waitedMs: number }>(write: (s: S) => void): (s: S) => void {
-  let last: number | undefined;
+export function throttledProgress<S extends { waitedMs: number }>(write: (s: S) => void, { skipFirst = false } = {}): (s: S) => void {
+  let last: number | undefined = skipFirst ? 0 : undefined;
   return (s) => {
     if (last !== undefined && s.waitedMs - last < WAIT_LOG_INTERVAL_MS) return;
     last = s.waitedMs;
