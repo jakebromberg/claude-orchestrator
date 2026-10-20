@@ -1,3 +1,4 @@
+import { type FreeBudget } from "./headroom.js";
 import { type HeadroomSampler } from "./headroom-sampler.js";
 import { ensureOwnSubdir, isOwnDir } from "./lease-dir.js";
 import { type MemorySignals, type PressureLevel, type PressurePolicy, type PressureSampler } from "./memory-pressure.js";
@@ -140,6 +141,8 @@ export interface HolderInfo extends HolderRecord {
 export interface Weights {
     used: number;
     budget: number;
+    /** The free-memory inputs of `budget` (`FreeBudget`), present only when a free reading was used. */
+    free?: FreeBudget;
 }
 export interface LeaseStatus {
     level: PressureLevel;

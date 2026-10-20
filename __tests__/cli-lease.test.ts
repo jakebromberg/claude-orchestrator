@@ -677,6 +677,22 @@ describe("runLeased", () => {
       expect(JSON.parse(out.join(""))).not.toHaveProperty("weights");
     });
 
+    it("adds the unowned-memory breakdown, built from the live session holders' pids, and leaves it out when it is unavailable", () => {
+      const unowned = { simulators: 5, claude: 3, others: [] };
+      const seen: number[][] = [];
+      const status = (u: typeof unowned | undefined) =>
+        deps({
+          leaseStatus: () => ({ level: "normal", capacity: 3, step: 3, signals: null, live: [holder()], sessions: { capacity: 6, live: [holder({ pid: 77 })] } }),
+          unowned: (_opts: LeaseOptions, pids: number[]) => (seen.push(pids), u),
+        });
+      expect(runStatus(status(unowned))).toBe(0);
+      expect(JSON.parse(out.join(""))).toMatchObject({ unowned });
+      expect(seen).toEqual([[77]]);
+      out.length = 0;
+      expect(runStatus(status(undefined))).toBe(0);
+      expect(JSON.parse(out.join(""))).not.toHaveProperty("unowned");
+    });
+
     it("creates nothing on disk", () => {
       const tmp = mkdtempSync(join(tmpdir(), "cli-lease-status-"));
       const dir = join(tmp, "lease");

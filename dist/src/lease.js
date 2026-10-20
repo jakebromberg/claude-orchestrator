@@ -432,7 +432,7 @@ function borrowedHandle(id, level, capacity, live) {
  * the unmatched `usable / ceiling`), else every weight is 1 and the budget is the capacity, which is the count rule. With a free reading too,
  * the budget is free memory less the reserve plus the weight of the `live` holders older than `RAMP_MS` (younger ones have not grown into their
  * memory, so they are charged in full); without one it is the step's share of `usable`. `report` is the used/budget pair for the given
- * holders, or `undefined` in count mode.
+ * holders (with the `FreeBudget` inputs when asked, which `status` does), or `undefined` in count mode.
  */
 function weigh(opts, cls, { step, capacity = 0, signals }, live) {
     const memsize = positive(signals?.memsizeBytes);
@@ -442,8 +442,9 @@ function weigh(opts, cls, { step, capacity = 0, signals }, live) {
     const free = signals ? freeBytes(signals) : undefined;
     const nowMs = (opts.now ?? Date.now)();
     const settled = () => free === undefined || usable === undefined ? undefined : { freeBytes: free, reserve: memsize - usable, settled: live.filter((h) => nowMs - h.startedAt >= RAMP_MS).reduce((sum, h) => sum + of(h), 0) };
-    const budget = usable === undefined ? capacity : cls.budget(step, usable, settled());
-    const report = (holders) => (usable === undefined ? undefined : { used: holders.reduce((sum, x) => sum + of(x), 0), budget });
+    const free_ = settled();
+    const budget = usable === undefined ? capacity : cls.budget(step, usable, free_);
+    const report = (holders, withFree = false) => usable === undefined ? undefined : { used: holders.reduce((sum, x) => sum + of(x), 0), budget, ...(withFree && free_ && { free: free_ }) };
     return { usable, budget, of, report };
 }
 /**
@@ -614,7 +615,7 @@ function liveOf(opts, cls) {
 const statusOf = (opts, cls, snap) => {
     const { level, capacity, step, signals } = snap;
     const live = liveOf(opts, cls);
-    const weights = weigh(opts, cls, snap, live).report(live);
+    const weights = weigh(opts, cls, snap, live).report(live, true);
     return { level, capacity, step, signals, live, ...(weights && { weights }) };
 };
 /**
