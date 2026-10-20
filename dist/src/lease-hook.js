@@ -69,6 +69,8 @@ const CLI = /cli-lease\.js|claude-orchestrator-lease|cli-heavy-queue\.js|claude-
  * `run` follows. Not heavy only while the file at the heavy-queue path is the front-end shim.
  */
 const HEAVY_QUEUE_RUN = commandWord(["heavy-queue run"], "^(?:\\S*/)?");
+/** The front end's `--shell` option and the quote that opens its argument. */
+const SHELL_ARG = /\s--shell\s+(['"])/;
 const shimMarker = "cli-heavy-queue.js";
 const defaultHeavyQueuePath = () => path.join(homedir(), ".local/share/heavy-queue/heavy-queue");
 /** Whether the file at `file` is the sh shim for `cli-heavy-queue.js`; a missing or non-regular file is not. */
@@ -93,9 +95,7 @@ const WRAPPERS = new Map([["time", /^$/], ["env", /^-[uC]$/], ["nice", /^-n$/], 
  * Whether a token holds an odd number of `"` or `'`. An English contraction's apostrophe (`Let's`, `don't`, `we're`) is not a
  * quote, but any other letter-quote-letter is, so a single-quoted value glued to a letter (`'a;b'c`) still counts.
  */
-const oddQuote = (token) => quoteCounts(token).some((n) => n % 2 === 1);
-/** The number of `"` and of `'` in `text`, an English contraction's apostrophe not counted. */
-const quoteCounts = (text) => [text.split('"').length - 1, text.replace(/[A-Za-z]'(?:[stdm]|re|ve|ll)(?![A-Za-z])/gi, "").split("'").length - 1];
+const oddQuote = (token) => token.split('"').length % 2 === 0 || token.replace(/[A-Za-z]'(?:[stdm]|re|ve|ll)(?![A-Za-z])/gi, "").split("'").length % 2 === 0;
 const isRegex = (source) => {
     try {
         new RegExp(source);
@@ -107,33 +107,38 @@ const isRegex = (source) => {
 };
 /**
  * Whether `command` is heavy: it does not mention this CLI (`cli-lease.js`, `claude-orchestrator-lease` or the
- * heavy-queue front end's names), nor `heavy-queue run` while `heavyQueueShim()` says the shim is installed, and a
- * segment of its raw split matches a default or `extraPatterns` pattern. Extras that are not valid regexes are
- * ignored; every pattern is anchored at the command word and followed by an end boundary (not `\w`, `.`, `/` or `-`).
+ * heavy-queue front end's names), and a segment of its raw split matches a default or `extraPatterns` pattern. Extras that
+ * are not valid regexes are ignored; every pattern is anchored at the command word and followed by an end boundary (not
+ * `\w`, `.`, `/` or `-`). While `heavyQueueShim()` says the shim is installed, a segment whose command word is
+ * `heavy-queue run` is exempt, and so is its quoted `--shell` argument up to the matching quote, across separators other
+ * than a newline or a backtick; it never exempts a sibling segment, and an argument whose closing quote is not found before
+ * one of those or the end makes the command heavy.
  */
 export function isHeavyCommand(command, extraPatterns = [], heavyQueueShim = () => false) {
     if (CLI.test(command))
         return false;
-    const parts = command.replace(/\\\n/g, " ").split(SEPARATOR);
-    if (runsHeavyQueue(parts) && heavyQueueShim())
-        return false;
     const patterns = [...DEFAULT_PATTERNS.map(([, p]) => p), ...extraPatterns.filter(isRegex)];
     const heavy = new RegExp(`(?:${patterns.map((p) => `(?:${p})`).join("|")})(?![\\w./-])`, "y");
-    return parts.some((segment, i) => i % 2 === 0 && isHeavySegment(segment, heavy, parts[i - 1]));
-}
-/**
- * Whether a segment of the raw split runs `heavy-queue run` as its command word, after its leading words, outside quotes:
- * the text before that segment holds an even number of `"` and of `'`. A quoted mention (`git commit -m "heavy-queue run"`)
- * is not one; a quoted path (`"/x/heavy-queue" run`) is, since it is the command word itself.
- */
-function runsHeavyQueue(parts) {
-    let open = [0, 0];
-    return parts.some((part, i) => {
-        const runs = i % 2 === 0 && open.every((n) => n % 2 === 0) && part.includes("heavy-queue") && HEAVY_QUEUE_RUN.test(commandText(part) ?? "");
-        const [double, single] = quoteCounts(part);
-        open = [open[0] + double, open[1] + single];
-        return runs;
-    });
+    const parts = command.replace(/\\\n/g, " ").split(SEPARATOR);
+    let shim;
+    for (let i = 0; i < parts.length; i += 2) {
+        const segment = parts[i];
+        if (segment.includes("heavy-queue") && HEAVY_QUEUE_RUN.test(commandText(segment) ?? "") && (shim ??= heavyQueueShim())) {
+            const arg = SHELL_ARG.exec(segment);
+            // The quote that opens the argument closes in this segment or in a later one on the same line (separators hold no
+            // quote); not crossing a newline or a backtick keeps a mention in a heredoc or a substitution from hiding a sibling.
+            if (arg && !segment.includes(arg[1], arg.index + arg[0].length)) {
+                do
+                    i += 2;
+                while (i < parts.length && !/[\n`]/.test(parts[i - 1]) && !parts[i].includes(arg[1]));
+                if (i >= parts.length || /[\n`]/.test(parts[i - 1]))
+                    return true;
+            }
+        }
+        else if (isHeavySegment(segment, heavy, parts[i - 1]))
+            return true;
+    }
+    return false;
 }
 /**
  * Strips the segment's leading words one whitespace token at a time, then tests the command word and the rest. A

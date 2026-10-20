@@ -17,9 +17,12 @@
 import { type LeaseOptions } from "./lease.js";
 /**
  * Whether `command` is heavy: it does not mention this CLI (`cli-lease.js`, `claude-orchestrator-lease` or the
- * heavy-queue front end's names), nor `heavy-queue run` while `heavyQueueShim()` says the shim is installed, and a
- * segment of its raw split matches a default or `extraPatterns` pattern. Extras that are not valid regexes are
- * ignored; every pattern is anchored at the command word and followed by an end boundary (not `\w`, `.`, `/` or `-`).
+ * heavy-queue front end's names), and a segment of its raw split matches a default or `extraPatterns` pattern. Extras that
+ * are not valid regexes are ignored; every pattern is anchored at the command word and followed by an end boundary (not
+ * `\w`, `.`, `/` or `-`). While `heavyQueueShim()` says the shim is installed, a segment whose command word is
+ * `heavy-queue run` is exempt, and so is its quoted `--shell` argument up to the matching quote, across separators other
+ * than a newline or a backtick; it never exempts a sibling segment, and an argument whose closing quote is not found before
+ * one of those or the end makes the command heavy.
  */
 export declare function isHeavyCommand(command: string, extraPatterns?: readonly string[], heavyQueueShim?: () => boolean): boolean;
 /**
