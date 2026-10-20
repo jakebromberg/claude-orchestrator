@@ -3,6 +3,7 @@
  * the lease directory goes through it. No load-time side effects.
  */
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { join } from "node:path";
 import { isPid } from "./ps.js";
 import { writeFileAtomic } from "./atomic-write.js";
@@ -37,9 +38,10 @@ export function writeLeaseRecord(dir, name, text, opts) {
     writeFileAtomic(join(dir, name), text, opts);
     return true;
 }
+const REFUSED_ERRNOS = new Set([osConstants.errno.ELOOP, osConstants.errno.ENXIO, osConstants.errno.EOPNOTSUPP]);
 /**
  * Opens `path` with `flags` plus `O_NOFOLLOW | O_NONBLOCK` (a planted symlink is not followed and a planted FIFO is not
- * waited on) and returns the descriptor and its stats only for a regular file this user owns; a symlink or any other kind
+ * waited on; a UNIX socket cannot be opened and is refused too) and returns the descriptor and its stats only for a regular file this user owns; a symlink or any other kind
  * of entry reads as `undefined` (a descriptor it opened is closed). Any other failed open throws. The one open rule of
  * every lease-directory read and append; the caller closes the descriptor.
  */
@@ -49,9 +51,12 @@ export function openOwnFile(path, flags, mode) {
         fd = openSync(path, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK, mode);
     }
     catch (err) {
-        // O_NOFOLLOW on a symlink: ELOOP (macOS, Linux), EMLINK (FreeBSD).
-        const code = err.code;
-        if (code === "ELOOP" || code === "EMLINK")
+        // O_NOFOLLOW on a symlink: ELOOP (macOS, Linux), EMLINK (FreeBSD). Opening a UNIX socket: ENXIO (Linux), EOPNOTSUPP
+        // (macOS, which Node may report as "Unknown system error -102", so the errno number is matched too).
+        const { code, errno } = err;
+        if (code === "ELOOP" || code === "EMLINK" || code === "ENXIO" || code === "EOPNOTSUPP")
+            return undefined;
+        if (errno !== undefined && REFUSED_ERRNOS.has(Math.abs(errno)))
             return undefined;
         throw err;
     }

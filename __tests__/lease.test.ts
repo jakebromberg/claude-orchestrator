@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -397,6 +398,23 @@ describe("lease", () => {
       check();
       expect(readFileSync(target, "utf8")).toBe(body);
       expect(events.filter((e) => e.type === "reap")).toEqual([]);
+    });
+
+    it.each(["holders/4242-ffff.json", "sessions/4242-ffff.json"])("skips a UNIX socket at %s, so an acquire is still leased and nothing is reaped", async (entry) => {
+      alive.add(4242);
+      tryAcquireLease(opts(), meta)!.release();
+      mkdirSync(join(dir, "sessions"), { recursive: true, mode: 0o700 });
+      const server = createServer();
+      await new Promise<void>((resolve) => server.listen(join(dir, entry), resolve));
+      try {
+        expect(leaseStatus(opts()).live).toEqual([]);
+        expect(leaseStatus(opts()).sessions?.live).toEqual([]);
+        expect(tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta)?.leased).toBe(true);
+        expect(existsSync(join(dir, entry))).toBe(true);
+        expect(events.filter((e) => e.type === "reap")).toEqual([]);
+      } finally {
+        await new Promise((resolve) => server.close(resolve));
+      }
     });
 
     it("does not reap from leaseStatus", () => {
