@@ -1,10 +1,10 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runLeased, type LeaseCliDeps } from "../src/cli-lease.js";
-import { acquireLease, SUSPEND_MIN_RUN_MS, suspendNewest, tryAcquireLease, type LeaseHandle, type LeaseOptions } from "../src/lease.js";
+import { acquireLease, acquireSessionLease, SUSPEND_MIN_RUN_MS, suspendNewest, tryAcquireLease, type LeaseHandle, type LeaseOptions } from "../src/lease.js";
 import { readSuspensions, writeSuspension, type SuspensionRecord } from "../src/suspensions.js";
 import { scriptedHeadroomSampler } from "../src/testing.js";
 import { failFsCall, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
@@ -143,6 +143,20 @@ describe("suspending the newest suspendable holder", () => {
     expect(stop).not.toHaveBeenCalled();
   });
 
+  it("sends SIGSTOP only after the mutex is released", () => {
+    stop.mockImplementation(() => (expect(existsSync(join(dir, ".mutex"))).toBe(false), true));
+    expect(tick("c")).toBe(true);
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it("never selects a session holder, even a newer one", async () => {
+    const session = (await acquireSessionLease(opts(), { command: "claude", cwd: "/w" })) as LeaseHandle;
+    advance(SUSPEND_MIN_RUN_MS + SECOND);
+    plantCpu(0.97);
+    expect(tick("c")).toBe(true);
+    session.release();
+  });
+
   describe("a record the lease did not write", () => {
     it("is left alone: no SIGSTOP, no holder mark, record kept", () => {
       writeSuspension(dir, owner("c"));
@@ -180,13 +194,10 @@ describe("suspending the newest suspendable holder", () => {
     it.each<[string, () => boolean]>([
       ["reports the group gone", () => false],
       ["throws", () => { throw Object.assign(new Error("kill EPERM"), { code: "EPERM" }); }],
-    ])("a SIGSTOP that %s takes the record and mark back", (_n, fails) => {
+    ])("a SIGSTOP that %s takes the record and mark back, and a throw reaches the caller", (n, fails) => {
       stop.mockImplementation(fails);
-      try {
-        tick("c");
-      } catch {
-        // The throw is the point of one row.
-      }
+      if (n === "throws") expect(() => tick("c")).toThrow(/EPERM/);
+      else expect(tick("c")).toBe(false);
       expect(state()).toEqual({ record: false, mark: false });
     });
 
@@ -295,13 +306,102 @@ describe("runLeased governor tick", () => {
     first.release();
   });
 
-  it("reports a failed leader lookup, retries on the next tick and keeps running", async () => {
-    const done = runLeased(args, deps({ governor: { every: (fn) => (tickFns.push(fn), () => {}), processCommand: () => { throw new Error("ps failed"); } } }));
-    await vi.waitFor(() => expect(tickFns).toHaveLength(1));
+  /** A second, older suspendable holder, so the run's own holder is the newest of two and not the oldest. */
+  const olderHolder = (): LeaseHandle => {
+    const h = tryAcquireLease(lease.opts({ policy: WIDE, cpuTimes: () => TICKS, headroom: scriptedHeadroomSampler({ level: "normal", step: 4, signals: { level: "normal", freePct: 60 } }) }), { command: "job a", cwd: "/w", suspendable: true })!;
+    lease.clock.ms += SECOND;
+    return h;
+  };
+  const overloadAfterMinRun = (): void => {
     lease.clock.ms += SUSPEND_MIN_RUN_MS + SECOND;
+    writeFileSync(join(dir, "cpu.json"), JSON.stringify({ at: lease.clock.ms, ticks: TICKS, busy: 0.99 }));
+  };
+  const sigstops = (): unknown[] => kill.mock.calls.filter((c) => c[1] === "SIGSTOP");
+  /** Starts a run as the newer of two suspendable holders, overloads the machine past the 20 s minimum and returns the run and the older holder. */
+  const startNewest = async (over: Partial<LeaseCliDeps> = {}): Promise<{ done: Promise<number>; first: LeaseHandle }> => {
+    const first = olderHolder();
+    const done = runLeased(args, deps(over));
+    await vi.waitFor(() => expect(tickFns).toHaveLength(1));
+    overloadAfterMinRun();
+    return { done, first };
+  };
+
+  it("reports a failed leader lookup, retries on the next tick and keeps running", async () => {
+    let lookups = 0;
+    const processCommand = (): string => {
+      if (lookups++ === 0) throw new Error("ps failed");
+      return "sleep 100";
+    };
+    const { done, first } = await startNewest({ governor: { every: (fn) => (tickFns.push(fn), () => {}), processCommand } });
     expect(() => tickFns[0]!()).not.toThrow();
     expect(errs.at(-1)).toMatch(/suspend check failed: ps failed/);
+    expect(sigstops()).toEqual([]);
+    tickFns[0]!();
+    expect(sigstops()).toEqual([[-4321, "SIGSTOP"]]);
     child.emit("close", 0, null);
     await done;
+    first.release();
+  });
+
+  it("reports a SIGSTOP that throws EPERM and leaves no record", async () => {
+    kill.mockImplementation((_pid: number, sig: string) => {
+      if (sig === "SIGSTOP") throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+    });
+    const { done, first } = await startNewest();
+    tickFns[0]!();
+    expect(errs.at(-1)).toMatch(/suspend check failed: kill EPERM/);
+    expect(readSuspensions(dir)).toEqual([]);
+    child.emit("close", 0, null);
+    await done;
+    first.release();
+  });
+
+  it.each(["SIGINT", "SIGTERM"] as const)("never suspends once %s has been forwarded, and clears its timer", async (sig) => {
+    const signals = Object.assign(new EventEmitter(), { pid: 999, kill });
+    const { done, first } = await startNewest({ signals });
+    signals.emit(sig);
+    tickFns[0]!();
+    expect(sigstops()).toEqual([]);
+    expect(readSuspensions(dir)).toEqual([]);
+    expect(cancelled).toBe(1);
+    child.emit("close", null, sig);
+    await done;
+    first.release();
+  });
+
+  it("prints a paused-on-purpose line when it suspends its group", async () => {
+    const { done, first } = await startNewest();
+    tickFns[0]!();
+    expect(errs.at(-1)).toMatch(/paused on purpose \(SIGSTOP\).*do not kill or re-run it/);
+    child.emit("close", 0, null);
+    await done;
+    first.release();
+  });
+
+  it("leaves a record someone else wrote in place of the lease's when the run finishes", async () => {
+    const { done, first } = await startNewest();
+    tickFns[0]!();
+    // The owner resumes the group (removing the lease's record) and suspends it again with a record of their own.
+    rmSync(join(dir, "suspensions", "4321.json"));
+    writeSuspension(dir, { pgid: 4321, by: "jake", reason: "mine", at: "2026-10-19T12:00:00.000Z", remindAt: "2026-10-19T14:00:00.000Z", leader: "sleep 100" });
+    child.emit("close", 0, null);
+    expect(await done).toBe(0);
+    expect(readSuspensions(dir)).toMatchObject([{ pgid: 4321, by: "jake" }]);
+    first.release();
+  });
+
+  it("still releases its holder and resolves when removing its record fails", async () => {
+    const { done, first } = await startNewest();
+    tickFns[0]!();
+    const restore = failFsCall("rmSync", (p) => p.includes("suspensions"), "EACCES");
+    try {
+      child.emit("close", 0, null);
+      expect(await done).toBe(0);
+    } finally {
+      restore();
+    }
+    expect(errs.at(-1)).toMatch(/could not remove the suspension record/);
+    expect(readdirSync(join(dir, "holders")).filter((f) => f.endsWith(".json"))).toEqual([`${first.id}.json`]);
+    first.release();
   });
 });

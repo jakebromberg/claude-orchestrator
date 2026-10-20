@@ -14,7 +14,7 @@ import { weightFor } from "./lease-weights.js";
 import { acquireLease, defaultLeaseOptions, leaseStatus, SUSPEND_MIN_RUN_MS, suspendNewest, type LeaseOptions, type LeaseStatus } from "./lease.js";
 import { formatAdmitted, formatRefusal, refusalExitCode, seconds } from "./lease-messages.js";
 import { psAncestors, psField, signalGroup } from "./ps.js";
-import { removeSuspension } from "./suspensions.js";
+import { readSuspensions, removeSuspension } from "./suspensions.js";
 
 const DEFAULT_MAX_WAIT_SEC = 100;
 const ANCESTOR_DEPTH = 32;
@@ -272,18 +272,26 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
       let leader: string | undefined;
       let suspended = false;
       const unGovern = d.governor.every(() => {
-        if (settled || now() - startedAt < SUSPEND_MIN_RUN_MS) return;
+        // A forwarded signal means the command is stopping: a SIGSTOP now would hold its cleanup until the grace SIGKILL.
+        if (settled || signalled !== undefined) return unGovern();
+        if (now() - startedAt < SUSPEND_MIN_RUN_MS) return;
         try {
           leader ??= d.governor!.processCommand(pgid);
-          suspended = suspendNewest(opts, got, pgid, leader, (g) => signalGroup(g, "SIGSTOP", d.signals.kill)) || suspended;
+          if (!suspendNewest(opts, got, pgid, leader, (g) => signalGroup(g, "SIGSTOP", d.signals.kill))) return;
+          suspended = true;
+          d.err("lease: paused on purpose (SIGSTOP) while the machine is overloaded; do not kill or re-run it");
         } catch (e) {
           d.err(`lease: suspend check failed: ${(e as Error).message}`);
         }
       }, GOVERN_MS);
-      // A group that was suspended and is now going away takes its record with it; the holder file, and with it the mark, goes with the release.
+      // A group that was suspended and is now going away takes the lease's record with it, never one another writer put there since; the holder file, and with it the mark, goes with the release.
       stopGoverning = () => {
         unGovern();
-        if (suspended) removeSuspension(opts.dir, pgid);
+        try {
+          if (suspended && readSuspensions(opts.dir).some((r) => r.pgid === pgid && r.by === "lease")) removeSuspension(opts.dir, pgid);
+        } catch (e) {
+          d.err(`lease: could not remove the suspension record for group ${pgid}: ${(e as Error).message}`);
+        }
       };
     }
   });
