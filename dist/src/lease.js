@@ -391,7 +391,8 @@ export function resumeOldest(opts, handle, pgid, cont) {
         const busy = cpuBusy(opts, (opts.now ?? Date.now)());
         const { live } = scanHolders(opts, HEAVY);
         // A suspended holder whose front end cannot tick does not hold the line: one whose front end is gone is `attempt()`'s to continue, and one that has stopped beating (a stopped shell) stays stopped, as its owner left it.
-        const [oldest] = live.filter((h) => h.suspended && !h.silent && (opts.isAlive ?? pidAlive)(h.pid)).sort(byAge);
+        // The caller's own holder can tick by definition, whatever its last beat says.
+        const [oldest] = live.filter((h) => h.suspended && (h.id === handle.id || (!h.silent && (opts.isAlive ?? pidAlive)(h.pid)))).sort(byAge);
         if (oldest?.id === handle.id && busy !== null && busy < RESUME_CPU_BUSY) {
             const running = live.filter((h) => !h.suspended);
             // Weighed over the holders summed below only: another suspended holder's weight would otherwise be added back to the free budget without being charged against it.
@@ -443,8 +444,10 @@ const claimHolds = (h, nowMs) => h.claimedAt !== undefined && h.claimedAt <= now
  */
 function releaseClaim(opts, holder) {
     const lock = tryLockOnce(join(opts.dir, ".mutex"), { staleAfterMs: MUTEX_STALE_MS, now: opts.now });
-    if (!lock)
+    if (!lock) {
+        warn(opts, `lease: could not clear the claim on group ${holder.pgid}: the lease mutex is busy; the claim expires in ${DEAD_OWNER_CLAIM_MS / 1000} s`);
         return false;
+    }
     try {
         editHolder(opts, holder.id, (rec) => {
             delete rec.suspended;
@@ -466,7 +469,7 @@ function releaseClaim(opts, holder) {
  * signalled only when the record's `leader` is the command `processCommand` now reads for the group; then the mark and the claim are cleared under
  * the mutex (`releaseClaim`) and the record is removed. A null leader, a missing or an owner's record, or a changed command means no signal: the
  * mark and the claim are cleared and the record stays for the watchdog. A lookup that throws means nothing more is done: the claim expires and a
- * later acquire tries again; at most one lookup runs per `attempt()`. When the clear fails the record is kept too, so the retake signals again. Never throws.
+ * later acquire tries again, and so does a `SIGCONT` that throws; at most one lookup runs per `attempt()`. When the clear fails the record is kept too, so the retake signals again. Never throws.
  */
 function continueDeadOwner(opts, holder) {
     const pgid = holder.pgid;
@@ -480,15 +483,15 @@ function continueDeadOwner(opts, holder) {
         warn(opts, `lease: could not read the leader of group ${pgid}: ${describeBoundedFailure(err, PROCESS_COMMAND_TIMEOUT_MS)}`);
         return;
     }
-    let continued = false;
-    if (current !== undefined && current === leader) {
+    const continued = current !== undefined && current === leader;
+    if (continued) {
         try {
             if (signalGroup(pgid, "SIGCONT"))
                 emit(opts, HEAVY, { type: "resume", id: holder.id, pgid, reason: "dead-owner" });
-            continued = true;
         }
         catch (err) {
             warn(opts, `lease: could not continue group ${pgid}: ${err.message}`);
+            return;
         }
     }
     if (!releaseClaim(opts, holder) || !continued)

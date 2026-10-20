@@ -151,6 +151,16 @@ describe("resuming the oldest suspended holder", () => {
     expect(holderRec("a").suspended).toBeUndefined();
   });
 
+  it("counts its own holder as able to tick even when its last beat is stale: a front end that ticks resumes its own group", () => {
+    lease.alive.add(4343);
+    const file = join(dir, "holders", `${handles.a!.id}.json`);
+    writeFileSync(file, JSON.stringify({ ...holderRec("a"), childPid: 4343 }));
+    const stale = (lease.clock.ms - 100 * SECOND) / 1000;
+    utimesSync(file, stale, stale);
+    expect(tick("a")).toBe("resumed");
+    expect(cont).toHaveBeenCalledExactlyOnceWith(pgid.a);
+  });
+
   it("does nothing while the mutex is busy", () => {
     const mutex = join(dir, ".mutex");
     writeFileSync(mutex, "");
