@@ -97,7 +97,13 @@ describe("claude-orchestrator-lease (integration)", () => {
   it("reports holders from status without creating the lease directory", async () => {
     const r = await runCli(["status"], isolatedLeaseEnv(leaseDir));
     expect(r.code).toBe(0);
-    expect(JSON.parse(r.stdout)).toEqual({ level: expect.any(String), capacity: 1, live: [], ...(JSON.parse(r.stdout).weights && { weights: expect.any(Object) }) });
+    const status = JSON.parse(r.stdout);
+    // `unowned` comes from the real `ps`, so its numbers vary by machine; pin only its shape.
+    const { unowned, ...rest } = status;
+    expect(rest).toEqual({ level: expect.any(String), capacity: 1, live: [], ...(status.weights && { weights: expect.any(Object) }) });
+    if (unowned !== undefined) {
+      expect(unowned).toEqual({ simulators: expect.any(Number), claude: expect.any(Number), others: expect.any(Array) });
+    }
     expect(fs.existsSync(leaseDir)).toBe(false);
   });
 
