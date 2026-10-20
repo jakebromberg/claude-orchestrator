@@ -98,6 +98,9 @@ const NOT_HEAVY = [
   "claude-orchestrator-lease --label 'a; b' -- npm test ; make",
   "cat <<'EOF' | gh pr comment 141 --body-file -\nIt's done\nEOF\nclaude-orchestrator-lease --shell 'npm ci && npm test'",
   "echo $'it\\'s'; claude-orchestrator-lease --label 'lint & test' --shell 'npm ci && npm test'",
+  // The heavy-queue front end's names join the CLI rule unconditionally.
+  `node ${CLI.replace("cli-lease.js", "cli-heavy-queue.js")} run --label x --shell 'npm ci && npm test'`,
+  "claude-orchestrator-heavy-queue run --label x --shell 'npm ci && npm test'",
   // A command that only mentions the CLI runs unleased: the accepted trade for a rule that cannot deadlock.
   `npm ci && node ${CLI} --shell 'npm test'`,
   `cat ${CLI}; npm test`,
@@ -201,6 +204,60 @@ describe("isHeavyCommand", () => {
     expect(isHeavyCommand("FOO=1 ./bazel build x", ["bazel (?:build|test)"])).toBe(true);
     expect(isHeavyCommand("npm test", ["("])).toBe(true);
     expect(isHeavyCommand("ls", ["("])).toBe(false);
+  });
+});
+
+describe("heavy-queue run", () => {
+  const multi = "heavy-queue run --label x --shell 'npm run lint && npm test'";
+  const single = "heavy-queue run --label x --shell 'npm test'";
+  const log = "cat ~/.local/share/heavy-queue/queue.log; npm test";
+  const shimmed = (yes: boolean) => () => yes;
+
+  it.each<[string, string, boolean, boolean]>([
+    ["a separator inside --shell, Python script installed", multi, false, true],
+    ["a separator inside --shell, shim installed", multi, true, false],
+    ["the full path, shim installed", `~/.local/share/heavy-queue/heavy-queue run --label x -- npm ci && npm test`, true, false],
+    ["the full path, Python script installed", `~/.local/share/heavy-queue/heavy-queue run --label x -- npm ci && npm test`, false, true],
+    ["a single command, Python script installed", single, false, false],
+    ["a single command, shim installed", single, true, false],
+    ["reading the queue log before a heavy command, shim installed", log, true, true],
+    ["reading the queue log before a heavy command, Python script installed", log, false, true],
+  ])("%s", (_name, command, shim, expected) => {
+    expect(isHeavyCommand(command, [], shimmed(shim))).toBe(expected);
+  });
+
+  it("reads the path only for a command that names heavy-queue run", () => {
+    const probe = vi.fn(() => true);
+    isHeavyCommand("npm test", [], probe);
+    isHeavyCommand("cat heavy-queue; npm test", [], probe);
+    expect(probe).not.toHaveBeenCalled();
+    isHeavyCommand(multi, [], probe);
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  describe("shim detection through isHeavyHookCall", () => {
+    let dir: string;
+    let queue: string;
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), "lease-hook-hq-"));
+      queue = join(dir, "heavy-queue");
+    });
+    afterEach(() => rmSync(dir, { recursive: true, force: true }));
+    const stdin = JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: multi } });
+    const on = { CO_LEASE_HOOK: "on" };
+
+    it.each<[string, string | undefined, boolean]>([
+      ["the Python script", "#!/usr/bin/python3 -I\nprint('heavy-queue')\n", true],
+      ["the sh shim", "#!/bin/sh\nexec node /repo/dist/src/cli-heavy-queue.js \"$@\"\n", false],
+      ["no file", undefined, true],
+    ])("with %s at the path", (_name, text, expected) => {
+      if (text !== undefined) writeFileSync(queue, text);
+      expect(isHeavyHookCall(stdin, on, queue)).toBe(expected);
+    });
+
+    it("treats an unreadable path (a directory) as no shim", () => {
+      expect(isHeavyHookCall(stdin, on, dir)).toBe(true);
+    });
   });
 });
 

@@ -16,22 +16,25 @@
  */
 import { type LeaseOptions } from "./lease.js";
 /**
- * Whether `command` is heavy: it does not mention this CLI (`cli-lease.js` or `claude-orchestrator-lease`), and a
+ * Whether `command` is heavy: it does not mention this CLI (`cli-lease.js`, `claude-orchestrator-lease` or the
+ * heavy-queue front end's names), nor `heavy-queue run` while `heavyQueueShim()` says the shim is installed, and a
  * segment of its raw split matches a default or `extraPatterns` pattern. Extras that are not valid regexes are
  * ignored; every pattern is anchored at the command word and followed by an end boundary (not `\w`, `.`, `/` or `-`).
  */
-export declare function isHeavyCommand(command: string, extraPatterns?: readonly string[]): boolean;
+export declare function isHeavyCommand(command: string, extraPatterns?: readonly string[], heavyQueueShim?: () => boolean): boolean;
 /**
  * Whether a hook's stdin is a heavy `PreToolUse` `Bash` call with the gate (`CO_LEASE_HOOK=on`) open.
  * Reads only `hook_event_name`, `tool_name` and `tool_input.command`; malformed input is not heavy and never throws.
  */
-export declare function isHeavyHookCall(stdin: string, env: NodeJS.ProcessEnv): boolean;
+export declare function isHeavyHookCall(stdin: string, env: NodeJS.ProcessEnv, heavyQueuePath?: string): boolean;
 export interface HookIo {
     env: NodeJS.ProcessEnv;
     readStdin(): Promise<string>;
     out(text: string): void;
     /** Test seam: merged over the options built from `env` (the clock, sleeper, liveness probe, sampler and `onEvent`). */
     lease?: Partial<LeaseOptions>;
+    /** Test seam: where heavy-queue lives (default `~/.local/share/heavy-queue/heavy-queue`). */
+    heavyQueuePath?: string;
 }
 /** The `hook` subcommand's arguments after `hook`. Always returns 0: hook mode never fails a call. */
 export declare function runHook(args: string[], io: HookIo): Promise<number>;

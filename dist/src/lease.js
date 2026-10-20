@@ -191,7 +191,7 @@ function parseTicket(text) {
  * `eligible` while its mtime is within 15 s of the clock; a stale one (its waiter was stopped) is passed over, not reaped,
  * and keeps its `seq` for when the waiter resumes. An entry that is not a regular file this user owns is skipped, as in `scanHolders`.
  */
-function scanTickets(opts, cls) {
+function scanTickets(opts, cls, reap = true) {
     const { isAlive = pidAlive, now = Date.now } = opts;
     const dir = join(opts.dir, cls.waiting);
     const nowMs = now();
@@ -201,8 +201,10 @@ function scanTickets(opts, cls) {
         if (entry === undefined)
             continue;
         const t = parseTicket(entry.text);
-        if (!t || !isAlive(t.pid))
-            rmSync(join(dir, name), { force: true });
+        if (!t || !isAlive(t.pid)) {
+            if (reap)
+                rmSync(join(dir, name), { force: true });
+        }
         else
             found.push({ ...t, eligible: isWithinWindow(entry.mtimeMs, nowMs, TICKET_FRESH_MS) });
     }
@@ -764,6 +766,16 @@ function liveOf(opts, cls) {
         return [];
     }
 }
+/** The heavy class's eligible tickets in `seq` order, read without the mutex and without removing any (status deletes nothing); an I/O error reads as none. */
+function waitingOf(opts) {
+    try {
+        const waiting = scanTickets(opts, HEAVY, false).filter((t) => t.eligible).sort((a, b) => a.seq - b.seq).map(({ seq, label, gated, ready }) => ({ seq, label, gated, ...(ready !== undefined && { ready }) }));
+        return waiting.length > 0 ? { waiting } : {};
+    }
+    catch {
+        return {};
+    }
+}
 const statusOf = (opts, cls, snap) => {
     const { level, capacity, step, signals } = snap;
     const live = liveOf(opts, cls);
@@ -872,7 +884,7 @@ export function releaseHolder(opts, id) {
 /** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. */
 export function leaseStatus(opts) {
     const snap = snapshot(opts, HEAVY);
-    return { ...statusOf(opts, HEAVY, snap), sessions: { capacity: SESSIONS.capacity(snap.step, SESSIONS.ceiling(opts)), live: liveOf(opts, SESSIONS) } };
+    return { ...statusOf(opts, HEAVY, snap), ...waitingOf(opts), sessions: { capacity: SESSIONS.capacity(snap.step, SESSIONS.ceiling(opts)), live: liveOf(opts, SESSIONS) } };
 }
 /**
  * Production wiring: the real lease directory, the engine's own sampler and policy, and the `events.jsonl` sink. Creates nothing on disk.

@@ -14,6 +14,7 @@
  * its command word (quotes and path removed) and the rest match an anchored pattern. With the default patterns,
  * everything is linear. It is not a shell parser: no expansion, aliases or functions.
  */
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readRegularFile } from "./lease-dir.js";
@@ -61,7 +62,20 @@ const DEFAULT_PATTERNS = [
     // Pre-push hooks. The option-value alternatives start with different characters, so a failed match cannot backtrack exponentially.
     ["git.*push", "git(?: -[Cc] (?:'[^']*'|\"[^\"]*\"|[^\\s'\"](?:[^\\s'\"]|'[^']*'|\"[^\"]*\")*))* push"],
 ];
-const CLI = /cli-lease\.js|claude-orchestrator-lease/;
+const CLI = /cli-lease\.js|claude-orchestrator-lease|cli-heavy-queue\.js|claude-orchestrator-heavy-queue/;
+/** Text that names heavy-queue's `run`; not heavy only while the file at the heavy-queue path is the front-end shim. */
+const HEAVY_QUEUE_RUN = /(?:^|[\s/])heavy-queue\s+run(?:\s|$)/;
+const shimMarker = "cli-heavy-queue.js";
+const defaultHeavyQueuePath = () => path.join(homedir(), ".local/share/heavy-queue/heavy-queue");
+/** Whether the file at `file` is the sh shim for `cli-heavy-queue.js`; a missing or non-regular file is not. */
+function isHeavyQueueShim(file) {
+    try {
+        return readRegularFile(file).includes(shimMarker);
+    }
+    catch {
+        return false;
+    }
+}
 /**
  * Every separator, captured so each segment knows the one before it; `&&` and `||` leave an empty segment between,
  * and the `&` of a redirect (`2>&1`) only adds a light one.
@@ -86,12 +100,13 @@ const isRegex = (source) => {
     }
 };
 /**
- * Whether `command` is heavy: it does not mention this CLI (`cli-lease.js` or `claude-orchestrator-lease`), and a
+ * Whether `command` is heavy: it does not mention this CLI (`cli-lease.js`, `claude-orchestrator-lease` or the
+ * heavy-queue front end's names), nor `heavy-queue run` while `heavyQueueShim()` says the shim is installed, and a
  * segment of its raw split matches a default or `extraPatterns` pattern. Extras that are not valid regexes are
  * ignored; every pattern is anchored at the command word and followed by an end boundary (not `\w`, `.`, `/` or `-`).
  */
-export function isHeavyCommand(command, extraPatterns = []) {
-    if (CLI.test(command))
+export function isHeavyCommand(command, extraPatterns = [], heavyQueueShim = () => false) {
+    if (CLI.test(command) || (HEAVY_QUEUE_RUN.test(command) && heavyQueueShim()))
         return false;
     const patterns = [...DEFAULT_PATTERNS.map(([, p]) => p), ...extraPatterns.filter(isRegex)];
     const heavy = new RegExp(`(?:${patterns.map((p) => `(?:${p})`).join("|")})(?![\\w./-])`, "y");
@@ -192,19 +207,19 @@ function extraPatterns(env) {
  * Whether a hook's stdin is a heavy `PreToolUse` `Bash` call with the gate (`CO_LEASE_HOOK=on`) open.
  * Reads only `hook_event_name`, `tool_name` and `tool_input.command`; malformed input is not heavy and never throws.
  */
-export function isHeavyHookCall(stdin, env) {
+export function isHeavyHookCall(stdin, env, heavyQueuePath = defaultHeavyQueuePath()) {
     if (env.CO_LEASE_HOOK !== "on")
         return false;
     try {
-        return isHeavyInput(JSON.parse(stdin), env);
+        return isHeavyInput(JSON.parse(stdin), env, heavyQueuePath);
     }
     catch {
         return false;
     }
 }
-const isHeavyInput = (input, env) => {
+const isHeavyInput = (input, env, heavyQueuePath) => {
     const command = input.tool_input?.command;
-    return input.hook_event_name === "PreToolUse" && input.tool_name === "Bash" && typeof command === "string" && isHeavyCommand(command, extraPatterns(env));
+    return input.hook_event_name === "PreToolUse" && input.tool_name === "Bash" && typeof command === "string" && isHeavyCommand(command, extraPatterns(env), () => isHeavyQueueShim(heavyQueuePath));
 };
 const WAIT_MS = 450_000;
 const GRACE_MS = 60_000;
@@ -240,7 +255,7 @@ async function handleEvent(stdin, io) {
         releaseHolder(opts, id);
         return;
     }
-    if (!isHeavyInput(input, env))
+    if (!isHeavyInput(input, env, io.heavyQueuePath ?? defaultHeavyQueuePath()))
         return;
     const sessionPid = Number(env.CO_LEASE_SESSION_PID);
     if (!isPid(sessionPid))

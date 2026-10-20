@@ -15,6 +15,7 @@
  * everything is linear. It is not a shell parser: no expansion, aliases or functions.
  */
 
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readRegularFile } from "./lease-dir.js";
@@ -66,7 +67,20 @@ const DEFAULT_PATTERNS: readonly (readonly [word: string, pattern: string])[] = 
   ["git.*push", "git(?: -[Cc] (?:'[^']*'|\"[^\"]*\"|[^\\s'\"](?:[^\\s'\"]|'[^']*'|\"[^\"]*\")*))* push"],
 ];
 
-const CLI = /cli-lease\.js|claude-orchestrator-lease/;
+const CLI = /cli-lease\.js|claude-orchestrator-lease|cli-heavy-queue\.js|claude-orchestrator-heavy-queue/;
+/** Text that names heavy-queue's `run`; not heavy only while the file at the heavy-queue path is the front-end shim. */
+const HEAVY_QUEUE_RUN = /(?:^|[\s/])heavy-queue\s+run(?:\s|$)/;
+const shimMarker = "cli-heavy-queue.js";
+const defaultHeavyQueuePath = (): string => path.join(homedir(), ".local/share/heavy-queue/heavy-queue");
+
+/** Whether the file at `file` is the sh shim for `cli-heavy-queue.js`; a missing or non-regular file is not. */
+function isHeavyQueueShim(file: string): boolean {
+  try {
+    return readRegularFile(file).includes(shimMarker);
+  } catch {
+    return false;
+  }
+}
 /**
  * Every separator, captured so each segment knows the one before it; `&&` and `||` leave an empty segment between,
  * and the `&` of a redirect (`2>&1`) only adds a light one.
@@ -93,12 +107,13 @@ const isRegex = (source: string): boolean => {
 };
 
 /**
- * Whether `command` is heavy: it does not mention this CLI (`cli-lease.js` or `claude-orchestrator-lease`), and a
+ * Whether `command` is heavy: it does not mention this CLI (`cli-lease.js`, `claude-orchestrator-lease` or the
+ * heavy-queue front end's names), nor `heavy-queue run` while `heavyQueueShim()` says the shim is installed, and a
  * segment of its raw split matches a default or `extraPatterns` pattern. Extras that are not valid regexes are
  * ignored; every pattern is anchored at the command word and followed by an end boundary (not `\w`, `.`, `/` or `-`).
  */
-export function isHeavyCommand(command: string, extraPatterns: readonly string[] = []): boolean {
-  if (CLI.test(command)) return false;
+export function isHeavyCommand(command: string, extraPatterns: readonly string[] = [], heavyQueueShim: () => boolean = () => false): boolean {
+  if (CLI.test(command) || (HEAVY_QUEUE_RUN.test(command) && heavyQueueShim())) return false;
   const patterns = [...DEFAULT_PATTERNS.map(([, p]) => p), ...extraPatterns.filter(isRegex)];
   const heavy = new RegExp(`(?:${patterns.map((p) => `(?:${p})`).join("|")})(?![\\w./-])`, "y");
   const parts = command.replace(/\\\n/g, " ").split(SEPARATOR);
@@ -191,18 +206,18 @@ function extraPatterns(env: NodeJS.ProcessEnv): string[] {
  * Whether a hook's stdin is a heavy `PreToolUse` `Bash` call with the gate (`CO_LEASE_HOOK=on`) open.
  * Reads only `hook_event_name`, `tool_name` and `tool_input.command`; malformed input is not heavy and never throws.
  */
-export function isHeavyHookCall(stdin: string, env: NodeJS.ProcessEnv): boolean {
+export function isHeavyHookCall(stdin: string, env: NodeJS.ProcessEnv, heavyQueuePath: string = defaultHeavyQueuePath()): boolean {
   if (env.CO_LEASE_HOOK !== "on") return false;
   try {
-    return isHeavyInput(JSON.parse(stdin) as HookInput, env);
+    return isHeavyInput(JSON.parse(stdin) as HookInput, env, heavyQueuePath);
   } catch {
     return false;
   }
 }
 
-const isHeavyInput = (input: HookInput, env: NodeJS.ProcessEnv): boolean => {
+const isHeavyInput = (input: HookInput, env: NodeJS.ProcessEnv, heavyQueuePath: string): boolean => {
   const command = input.tool_input?.command;
-  return input.hook_event_name === "PreToolUse" && input.tool_name === "Bash" && typeof command === "string" && isHeavyCommand(command, extraPatterns(env));
+  return input.hook_event_name === "PreToolUse" && input.tool_name === "Bash" && typeof command === "string" && isHeavyCommand(command, extraPatterns(env), () => isHeavyQueueShim(heavyQueuePath));
 };
 
 export interface HookIo {
@@ -211,6 +226,8 @@ export interface HookIo {
   out(text: string): void;
   /** Test seam: merged over the options built from `env` (the clock, sleeper, liveness probe, sampler and `onEvent`). */
   lease?: Partial<LeaseOptions>;
+  /** Test seam: where heavy-queue lives (default `~/.local/share/heavy-queue/heavy-queue`). */
+  heavyQueuePath?: string;
 }
 
 const WAIT_MS = 450_000;
@@ -256,7 +273,7 @@ async function handleEvent(stdin: string, io: HookIo): Promise<void> {
     releaseHolder(opts, id);
     return;
   }
-  if (!isHeavyInput(input, env)) return;
+  if (!isHeavyInput(input, env, io.heavyQueuePath ?? defaultHeavyQueuePath())) return;
   const sessionPid = Number(env.CO_LEASE_SESSION_PID);
   if (!isPid(sessionPid)) return;
   // A hook with no session PID or no usable options stays inert, background calls included. A lease directory that

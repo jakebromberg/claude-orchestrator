@@ -175,6 +175,13 @@ export interface LeaseStatus {
         capacity: number;
         live: HolderInfo[];
     };
+    /** Set by `leaseStatus` only, and only while a heavy ticket waits: the eligible tickets in `seq` order. `ready` is absent on a ticket from a build that predates it. */
+    waiting?: {
+        seq: number;
+        label: string;
+        gated: boolean;
+        ready?: boolean;
+    }[];
 }
 /**
  * A holder stays live only while this process's event loop runs its 30 s heartbeat, or while a child PID recorded
