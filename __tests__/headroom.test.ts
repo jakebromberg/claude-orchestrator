@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { DEFAULT_STEP_TABLE, headroomCapacity, headroomStep, heavyBudget, type HeadroomState, type StepTable } from "../src/headroom.js";
+import { DEFAULT_STEP_TABLE, headroomCapacity, headroomStep, heavyBudget, RAMP_MS, type HeadroomState, type StepTable } from "../src/headroom.js";
 import type { MemorySignals, PressureLevel } from "../src/memory-pressure.js";
 import * as barrel from "../src/index.js";
 
@@ -86,8 +86,8 @@ describe("headroomStep under the default table", () => {
     expect(headroomStep({ level, freePct }, { step: 4, risingSince: null }, NOW, DEFAULT_STEP_TABLE).step).toBe(step);
   });
 
-  it("holds a rise for 60 s", () => {
-    expect(DEFAULT_STEP_TABLE.riseHoldMs).toBe(60_000);
+  it("holds a rise for the ramp window", () => {
+    expect(DEFAULT_STEP_TABLE.riseHoldMs).toBe(RAMP_MS);
     expect(headroomStep({ level: "normal", freePct: 90 }, { step: 0, risingSince: null }, NOW, DEFAULT_STEP_TABLE).step).toBe(0);
   });
 });
@@ -121,12 +121,13 @@ describe("replay of the 2026-10-14 recording", () => {
     });
   });
 
-  it("rises one step per 60 s after the episode, not at once", () => {
+  it("rises one step per ramp window after the episode, not at once", () => {
     const steps = replay(Q1);
     const back = rows.findIndex((r, i) => i > 0 && r.level === "normal" && rows[i - 1]!.level === "warning");
     expect(steps[back - 1]).toBe(2);
     expect(steps[back]).toBe(2);
-    expect(steps.at(-1)).toBe(4);
+    // The recording ends 377 s after the return to normal: one ramp window, so step 2 has risen once.
+    expect(steps.at(-1)).toBe(3);
     expect(steps.slice(back).every((s, i, all) => i === 0 || (s - all[i - 1]! >= 0 && s - all[i - 1]! <= 1))).toBe(true);
   });
 });

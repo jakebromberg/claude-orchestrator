@@ -51,15 +51,19 @@ describe("defaultLeaseOptions sampler wiring", () => {
     expect(typeof o.level.overridden).toBe("function");
   });
 
-  it("hands the sampler one scan of the live heavy holders under this lease directory: their count, and used and budget at the step (nothing without the machine's memory)", () => {
+  it("hands the sampler one scan of the live heavy holders under this lease directory: their count, and used and budget (free memory less the reserve, the step's share without a free reading, nothing without the machine's memory)", () => {
     const o = defaultLeaseOptions({ CO_LEASE_DIR: dir });
     const heavy = built.deps.at(-1)!.heavy!;
     const gib = 2 ** 30;
     const signals: MemorySignals = { level: "normal", freePct: 50, memsizeBytes: 16 * gib };
-    expect(heavy(3, signals)).toEqual({ live: 0, weights: { used: 0, budget: 9 * gib } });
+    const noFree: MemorySignals = { level: "normal", memsizeBytes: 16 * gib };
+    expect(heavy(3, signals)).toEqual({ live: 0, weights: { used: 0, budget: 4 * gib } });
+    expect(heavy(3, noFree)).toEqual({ live: 0, weights: { used: 0, budget: 9 * gib } });
     const handle = tryAcquireLease({ ...o, level: scriptedPressureSampler("normal"), headroom: undefined }, { command: "npm test", cwd: "/w", weight: 2 * gib });
     try {
-      expect(heavy(3, signals)).toEqual({ live: 1, weights: { used: 2 * gib, budget: 9 * gib } });
+      // The holder is younger than the ramp window, so the budget does not add its weight back.
+      expect(heavy(3, signals)).toEqual({ live: 1, weights: { used: 2 * gib, budget: 4 * gib } });
+      expect(heavy(3, noFree)).toEqual({ live: 1, weights: { used: 2 * gib, budget: 9 * gib } });
       expect(heavy(3, { level: "normal", freePct: 50 })).toEqual({ live: 1, weights: undefined });
     } finally {
       if (handle && "release" in handle) handle.release();

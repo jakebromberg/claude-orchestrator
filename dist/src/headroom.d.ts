@@ -22,12 +22,27 @@ export interface HeadroomState {
     step: number;
     risingSince: number | null;
 }
-/** The owner's Q1 table: `normal` 4, `warning` 3 at 40% free or more, 2 at 30 to 39%, 1 under 30%, `critical` 0, and a rise of one step per 60 s. */
+/**
+ * How long a heavy holder takes to grow into the memory it will use. Until a holder is this old, admission charges its full weight and
+ * the free reading is not trusted to include it. Chosen from `pressure.jsonl` on 2026-10-19: after four holders were admitted at once,
+ * free memory kept falling for 70 s to 4.5 min (43% to 31% free at 17:01 to 17:05 PT).
+ */
+export declare const RAMP_MS = 300000;
+/** The owner's Q1 table: `normal` 4, `warning` 3 at 40% free or more, 2 at 30 to 39%, 1 under 30%, `critical` 0, and a rise of one step per ramp window (a rise must not outrun holders that have not grown yet; the session row shares it). */
 export declare const DEFAULT_STEP_TABLE: StepTable;
 /** Heavy-command slots at `step`: step 4 gets the whole `ceiling`, a lower step at most that many, step 0 none. */
 export declare function headroomCapacity(step: number, ceiling: number): number;
-/** The bytes of `usable` memory the heavy class may hold at `step`: `step / 4` of it, none at step 0. */
-export declare function heavyBudget(step: number, usable: number): number;
+/** What the free-memory budget reads: bytes free now, the reserve, and the weight of the holders old enough that the free reading already includes them. */
+export interface FreeBudget {
+    freeBytes: number;
+    reserve: number;
+    settled: number;
+}
+/**
+ * The bytes the heavy class may hold at `step`. With a free reading: free memory less the reserve, plus the weight of the settled holders
+ * (their use is already out of the free bytes), at most `usable` and none at step 0. Without one: `step / 4` of `usable`, none at step 0.
+ */
+export declare function heavyBudget(step: number, usable: number, free?: FreeBudget): number;
 /** Implementer-session slots at `step`: step 4 gets the whole `ceiling`, steps 3, 2 and 1 get 4, 2 and 1 (each capped by it), step 0 none. */
 export declare function sessionHeadroomCapacity(step: number, ceiling: number): number;
 /**

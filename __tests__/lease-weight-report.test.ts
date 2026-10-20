@@ -10,10 +10,10 @@ import { scriptedHeadroomSampler } from "../src/testing.js";
 import { scriptedLease, type ScriptedLease } from "./helpers/lease.js";
 
 const GB = 2 ** 30;
-const reading = (step: number, memsizeBytes?: number): HeadroomReading => ({
+const reading = (step: number, memsizeBytes?: number, freePct?: number): HeadroomReading => ({
   level: "normal",
   step,
-  signals: { level: "normal", freePct: 50, ...(memsizeBytes !== undefined && { memsizeBytes }) },
+  signals: { level: "normal", ...(freePct !== undefined && { freePct }), ...(memsizeBytes !== undefined && { memsizeBytes }) },
 });
 
 describe("weights in the lease's reports", () => {
@@ -61,6 +61,8 @@ describe("weights in the lease's reports", () => {
 /**
  * The 2026-10-18 window: two pre-push runs, an xcodebuild and an unmatched command ask while the step climbs 1 to 4. Each request's weight
  * comes from `resolveWeight` over a rule table with an injected `GitLookup`, and Σ admitted weight must stay within the step's budget unless one holder runs alone.
+ * With `outsideGB` set, that much memory is already used outside the lease and the reading carries the free memory (every holder is young, so none has grown yet):
+ * the budget is free memory less the reserve whatever the step.
  */
 describe("replay of the 2026-10-18 window", () => {
   const rules: WeightRule[] = [
@@ -77,22 +79,28 @@ describe("replay of the 2026-10-18 window", () => {
   // [machine GB, live holders after each step 1..4, oversize-alone admissions over the climb]. 16 GB leaves 12 GB usable: one pre-push runs
   // alone from step 1 and nothing else fits. 24 GB (18 usable) admits a pre-push alone at step 1 and the 4.5 GB unmatched command at step 4.
   // 64 GB (48 usable) fits every request within budget, 12 + 12 + 8 + 12 = 44 GB, one more each step.
-  it.each([
+  // 24 GB with 8 GB used outside the lease (the 2026-10-18 case): free memory less the 6 GB reserve is 10 GB at every step, so one pre-push runs alone and
+  // nothing else fits, where the step rule admitted a second command at step 4. 64 GB with 8 GB outside has a 40 GB budget: the first three requests fit at
+  // step 1 and the 12 GB unmatched command would make 44 GB, so it never does.
+  it.each<[gb: number, liveByStep: number[], oversizeAdmissions: number, outsideGB?: number]>([
     [16, [1, 1, 1, 1], 1],
     [24, [1, 1, 1, 2], 1],
     [64, [1, 2, 3, 4], 0],
-  ])("keeps the admitted weight within the budget on a %i GB machine", (gb, liveByStep, oversizeAdmissions) => {
+    [24, [1, 1, 1, 1], 1, 8],
+    [64, [3, 3, 3, 3], 0, 8],
+  ])("keeps the admitted weight within the budget on a %i GB machine", (gb, liveByStep, oversizeAdmissions, outsideGB) => {
     const usable = gb * GB * 0.75;
+    const freePct = outsideGB === undefined ? undefined : ((gb - outsideGB) / gb) * 100;
     let step = 1;
-    const lease = scriptedLease(join(tmp, `lease-${gb}`), { policy: { heavyCeiling: 4, heavyWarning: 1 }, alive: [process.pid] });
-    const o = lease.opts({ headroom: scriptedHeadroomSampler(() => reading(step, gb * GB)) });
+    const lease = scriptedLease(join(tmp, `lease-${gb}-${outsideGB ?? 0}`), { policy: { heavyCeiling: 4, heavyWarning: 1 }, alive: [process.pid] });
+    const o = lease.opts({ headroom: scriptedHeadroomSampler(() => reading(step, gb * GB, freePct)) });
     const pending = requests.map((command) => ({ command, weight: resolveWeight(command, "/w/backend", rules, git) }));
     const admittedWeights: number[] = [];
     const liveSeen: number[] = [];
     let oversize = 0;
 
     for (step = 1; step <= 4; step++) {
-      const budget = (usable * step) / 4;
+      const budget = freePct === undefined ? (usable * step) / 4 : Math.min(usable, (gb - (outsideGB ?? 0)) * GB - gb * GB * 0.25);
       for (const request of [...pending]) {
         const { command, weight } = request;
         if (tryAcquireLease(o, { command, cwd: "/w/backend", ...(weight !== undefined && { weight }) })) {
@@ -105,7 +113,10 @@ describe("replay of the 2026-10-18 window", () => {
       liveSeen.push(admittedWeights.length);
       expect(admittedWeights.length, `step ${step} admits a non-empty set`).toBeGreaterThan(0);
       expect(leaseStatus(o).live).toHaveLength(admittedWeights.length);
-      expect(leaseStatus(o).weights).toEqual({ used: total, budget });
+      const report = leaseStatus(o).weights!;
+      expect(report.used).toBe(total);
+      // The reading carries whole free bytes, so a free percentage that does not divide the machine evenly moves the budget by a byte.
+      expect(Math.abs(report.budget - budget)).toBeLessThanOrEqual(1);
       expect(total <= budget * (1 + 1e-12) || admittedWeights.length === 1, `step ${step}: ${total / GB} GB of ${budget / GB} GB`).toBe(true);
     }
     expect(oversize, "oversize-alone admissions over the climb").toBeLessThanOrEqual(1);

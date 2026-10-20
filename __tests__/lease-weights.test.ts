@@ -15,7 +15,7 @@ const meta: HolderMeta = { command: "npm test", cwd: "/work" };
 const reading = (step: number, memsizeBytes: number | null = MEMSIZE, level: HeadroomReading["level"] = step === 0 ? "critical" : "normal"): HeadroomReading => ({
   level,
   step,
-  signals: { level, freePct: 50, ...(memsizeBytes !== null && { memsizeBytes }) },
+  signals: { level, ...(memsizeBytes !== null && { memsizeBytes }) },
 });
 
 describe("heavy admission by summed memory weight", () => {
