@@ -397,6 +397,19 @@ describe("engine session slots", () => {
       expect(e.live()).toBe(0);
     });
 
+    it("releases the retry's session slot when the 0-byte retry's setup throws before the spawn", async () => {
+      const e = engine(1, { logSize: 0 });
+      e.deps.truncateFile = () => {
+        throw new Error("truncate failed");
+      };
+      const wave = e.orchestrator.runWave(1);
+      await until(() => e.runner.exits.size === 1, "the first spawn");
+      e.runner.exits.get(1000)!.resolve(1);
+      await expect(wave).rejects.toThrow("truncate failed");
+      expect(e.runner.exits.size).toBe(1);
+      expect(e.live()).toBe(0);
+    });
+
     it("releases the session slot when the launch throws before the spawn", async () => {
       const e = engine(1);
       e.deps.metadataStore.update = (_ref, fields) => {
