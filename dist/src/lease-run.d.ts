@@ -23,6 +23,8 @@ export interface RunArgs {
     /** Marks the holder as one the front end may suspend, unless `noSuspend` or `HEAVY_QUEUE_NO_SUSPEND=1` in `deps.env`. */
     suspendable?: boolean;
     noSuspend?: boolean;
+    /** Waits for a slot with no cap, ignoring `maxWaitSec` and `CO_LEASE_MAX_WAIT` (heavy-queue's wait); no CLI flag sets it. */
+    uncapped?: boolean;
 }
 export type LeaseArgs = RunArgs | {
     kind: "status";

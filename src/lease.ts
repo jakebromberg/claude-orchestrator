@@ -214,6 +214,8 @@ export interface LeaseStatus {
   weights?: Weights;
   /** Set by `leaseStatus` only: the session class's capacity at the same reading, and its live holders. */
   sessions?: { capacity: number; live: HolderInfo[] };
+  /** Set by `leaseStatus` only, and only while a heavy ticket waits: the eligible tickets in `seq` order. `ready` is absent on a ticket from a build that predates it. */
+  waiting?: { seq: number; label: string; gated: boolean; ready?: boolean }[];
 }
 
 /**
@@ -411,7 +413,7 @@ function parseTicket(text: string): Ticket | null {
  * `eligible` while its mtime is within 15 s of the clock; a stale one (its waiter was stopped) is passed over, not reaped,
  * and keeps its `seq` for when the waiter resumes. An entry that is not a regular file this user owns is skipped, as in `scanHolders`.
  */
-function scanTickets(opts: LeaseOptions, cls: LeaseClass): (Ticket & { eligible: boolean })[] {
+function scanTickets(opts: LeaseOptions, cls: LeaseClass, reap = true): (Ticket & { eligible: boolean })[] {
   const { isAlive = pidAlive, now = Date.now } = opts;
   const dir = join(opts.dir, cls.waiting);
   const nowMs = now();
@@ -420,8 +422,9 @@ function scanTickets(opts: LeaseOptions, cls: LeaseClass): (Ticket & { eligible:
     const entry = unlessGone(() => readOwnFile(join(dir, name)));
     if (entry === undefined) continue;
     const t = parseTicket(entry.text);
-    if (!t || !isAlive(t.pid)) rmSync(join(dir, name), { force: true });
-    else found.push({ ...t, eligible: isWithinWindow(entry.mtimeMs, nowMs, TICKET_FRESH_MS) });
+    if (!t || !isAlive(t.pid)) {
+      if (reap) rmSync(join(dir, name), { force: true });
+    } else found.push({ ...t, eligible: isWithinWindow(entry.mtimeMs, nowMs, TICKET_FRESH_MS) });
   }
   return found;
 }
@@ -945,6 +948,16 @@ function liveOf(opts: LeaseOptions, cls: LeaseClass): HolderInfo[] {
   }
 }
 
+/** The heavy class's eligible tickets in `seq` order, read without the mutex and without removing any (status deletes nothing); an I/O error reads as none. */
+function waitingOf(opts: LeaseOptions): Pick<LeaseStatus, "waiting"> {
+  try {
+    const waiting = scanTickets(opts, HEAVY, false).filter((t) => t.eligible).sort((a, b) => a.seq - b.seq).map(({ seq, label, gated, ready }) => ({ seq, label, gated, ...(ready !== undefined && { ready }) }));
+    return waiting.length > 0 ? { waiting } : {};
+  } catch {
+    return {};
+  }
+}
+
 const statusOf = (opts: LeaseOptions, cls: LeaseClass, snap: Snapshot): LeaseStatus => {
   const { level, capacity, step, signals } = snap;
   const live = liveOf(opts, cls);
@@ -1054,7 +1067,7 @@ export function releaseHolder(opts: LeaseOptions, id: string): boolean {
 /** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. */
 export function leaseStatus(opts: LeaseOptions): LeaseStatus {
   const snap = snapshot(opts, HEAVY);
-  return { ...statusOf(opts, HEAVY, snap), sessions: { capacity: SESSIONS.capacity(snap.step, SESSIONS.ceiling(opts)), live: liveOf(opts, SESSIONS) } };
+  return { ...statusOf(opts, HEAVY, snap), ...waitingOf(opts), sessions: { capacity: SESSIONS.capacity(snap.step, SESSIONS.ceiling(opts)), live: liveOf(opts, SESSIONS) } };
 }
 
 /**

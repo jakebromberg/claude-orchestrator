@@ -101,10 +101,10 @@ export function runStatus(d) {
     const opts = optionsOrReport(d);
     if (!opts)
         return EX_CONFIG;
-    const { level, capacity, live, weights, sessions } = d.leaseStatus(opts);
+    const { level, capacity, live, weights, sessions, waiting } = d.leaseStatus(opts);
     const unowned = d.unowned?.(opts, (sessions?.live ?? []).map((h) => h.pid), live.flatMap((h) => h.childPid ?? (h.expiresAt !== undefined ? h.pid : [])));
-    const holders = live.map((h) => ({ pid: h.pid, command: h.command, ageSec: h.ageSec, ...(h.override && { override: true }) }));
-    d.out(`${JSON.stringify({ level, capacity, live: holders, ...(weights && { weights }), ...(unowned && { unowned }) }, null, 2)}\n`);
+    const holders = live.map((h) => ({ pid: h.pid, command: h.command, ageSec: h.ageSec, ...(h.override && { override: true }), ...(h.suspended && { suspended: true }) }));
+    d.out(`${JSON.stringify({ level, capacity, live: holders, ...(waiting?.length && { waiting }), ...(weights && { weights }), ...(unowned && { unowned }) }, null, 2)}\n`);
     return 0;
 }
 /** Waits for a slot, runs the command with it held, and returns the exit code to pass through. */
@@ -112,17 +112,19 @@ export async function runLeased(args, d) {
     const opts = optionsOrReport(d);
     if (!opts)
         return EX_CONFIG;
-    const envWait = d.env.CO_LEASE_MAX_WAIT || undefined;
+    const envWait = args.uncapped ? undefined : d.env.CO_LEASE_MAX_WAIT || undefined;
     const fromEnv = parseSeconds(envWait);
     if (envWait !== undefined && fromEnv === undefined && args.maxWaitSec === undefined) {
         d.err(`lease: ignoring invalid CO_LEASE_MAX_WAIT=${JSON.stringify(envWait)}; using ${DEFAULT_MAX_WAIT_SEC}s`);
     }
-    const maxWaitMs = (args.maxWaitSec ?? fromEnv ?? DEFAULT_MAX_WAIT_SEC) * 1000;
+    const maxWaitMs = args.uncapped ? undefined : (args.maxWaitSec ?? fromEnv ?? DEFAULT_MAX_WAIT_SEC) * 1000;
     const [cmd, cmdArgs] = args.shell !== undefined ? ["/bin/sh", ["-c", args.shell]] : [args.argv[0], args.argv.slice(1)];
     const [file, fileArgs] = args.background ? [TASKPOLICY, ["-b", cmd, ...cmdArgs]] : [cmd, cmdArgs];
     const ownHolder = args.gated || args.background || args.suspendable;
     const command = args.shell ?? args.argv.join(" ");
-    const suspendable = args.suspendable && !args.noSuspend && d.env.HEAVY_QUEUE_NO_SUSPEND !== "1" && !NEVER_SUSPEND.test(command);
+    // Only a holder that governs itself is ranked as a suspension candidate: a background group and a governor.
+    const governor = args.suspendable && args.background ? d.governor : undefined;
+    const suspendable = governor !== undefined && !args.noSuspend && d.env.HEAVY_QUEUE_NO_SUSPEND !== "1" && !NEVER_SUSPEND.test(command);
     // A background child leads its own group (pid = pgid), so a signal goes to the group, continued first in case it is stopped.
     const signalChild = (sig) => {
         if (!args.background || child.pid === undefined)
@@ -165,7 +167,7 @@ export async function runLeased(args, d) {
     // A hook slot the session already holds is borrowed through `inheritedHolderId`, never waited for a second time.
     const hookSlot = opts.inheritedHolderId || ownHolder ? undefined : ancestorHookSlot(opts, d);
     const weight = weightFor(command, d.cwd, d.env, d.err);
-    const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command, label: args.label, cwd: d.cwd, gated: args.gated, suspendable, ...(weight !== undefined && { weight }) }, {
+    const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command, label: args.label, cwd: d.cwd, gated: args.gated, suspendable: suspendable || undefined, ...(weight !== undefined && { weight }) }, {
         maxWaitMs,
         onWait: throttledProgress((s) => d.err(`lease: waiting ${seconds(s.waitedMs)}s for a slot (pressure=${s.level}, ${s.live.length}/${s.capacity} live)`), { skipFirst: true }),
     });
@@ -224,14 +226,14 @@ export async function runLeased(args, d) {
             finish(1);
             return;
         }
-        if (suspendable && args.background && d.governor) {
+        if (suspendable && governor) {
             // The group is the child's own (pid = pgid). The leader's command (`LeaseOptions.processCommand`) is read once, outside the lease's mutex, after the 20 s a holder must run before it can be suspended.
             const pgid = child.pid;
             const now = opts.now ?? Date.now;
             const startedAt = now();
             let leader;
             let suspended = false;
-            const unGovern = d.governor.every(() => {
+            const unGovern = governor.every(() => {
                 // A forwarded signal means the command is stopping: a SIGSTOP now would hold its cleanup until the grace SIGKILL.
                 if (settled || signalled !== undefined)
                     return unGovern();

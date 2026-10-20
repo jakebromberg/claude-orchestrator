@@ -536,11 +536,33 @@ describe("runLeased", () => {
     const meta = () => acquired[0]!.meta as Record<string, unknown>;
     const killed = () => signals.kill.mock.calls.map((c) => c.join(":"));
 
+    // A suspendable holder must be able to suspend itself, so it needs a background group and a governor.
+    const governed = { governor: { every: () => () => {} } };
+
     it("marks the ticket gated and the holder suspendable", async () => {
-      const done = run({ gated: true, suspendable: true });
+      const done = run({ gated: true, suspendable: true, background: true }, governed);
       await finishWith(0);
       await done;
       expect(meta()).toMatchObject({ gated: true, suspendable: true });
+    });
+
+    it.each<[string, Partial<RunArgs>, Partial<LeaseCliDeps>]>([
+      ["no governor", { background: true }, {}],
+      ["no background group", {}, governed],
+    ])("leaves suspendable off with %s", async (_n, args, over) => {
+      const done = run({ suspendable: true, ...args }, over);
+      await finishWith(0);
+      await done;
+      expect(meta()).not.toHaveProperty("suspendable", true);
+    });
+
+    it("waits with no cap and ignores CO_LEASE_MAX_WAIT when uncapped", async () => {
+      env = { CO_LEASE_MAX_WAIT: "soon" };
+      const done = run({ uncapped: true, maxWaitSec: 5 });
+      await finishWith(0);
+      await done;
+      expect(acquired[0]!.wait.maxWaitMs).toBeUndefined();
+      expect(err.filter((l) => l.includes("CO_LEASE_MAX_WAIT"))).toEqual([]);
     });
 
     it.each<[string, Partial<RunArgs>, NodeJS.ProcessEnv]>([
@@ -550,7 +572,7 @@ describe("runLeased", () => {
       const saved = process.env.HEAVY_QUEUE_NO_SUSPEND;
       process.env.HEAVY_QUEUE_NO_SUSPEND = extra.HEAVY_QUEUE_NO_SUSPEND === "1" ? "" : "1";
       try {
-        const done = run({ suspendable: true, ...args }, { env: { ...env, ...extra } });
+        const done = run({ suspendable: true, background: true, ...args }, { env: { ...env, ...extra }, ...governed });
         await finishWith(0);
         await done;
         expect(meta().suspendable).toBeFalsy();
@@ -567,14 +589,14 @@ describe("runLeased", () => {
       ["podman run", { argv: ["/usr/local/bin/podman", "run", "x"] }],
       ["ssh host make", { shell: "cd x && ssh host make" }],
     ])("is not suspendable for the never-suspend command %s", async (_n, args) => {
-      const done = run({ suspendable: true, argv: undefined, ...args });
+      const done = run({ suspendable: true, background: true, argv: undefined, ...args }, governed);
       await finishWith(0);
       await done;
       expect(meta().suspendable).toBeFalsy();
     });
 
     it("keeps a command that only contains a never-suspend word in another word suspendable", async () => {
-      const done = run({ suspendable: true, argv: ["npm", "run", "sshd-check"] });
+      const done = run({ suspendable: true, background: true, argv: ["npm", "run", "sshd-check"] }, governed);
       await finishWith(0);
       await done;
       expect(meta().suspendable).toBe(true);
@@ -665,6 +687,20 @@ describe("runLeased", () => {
           { pid: 12, command: "tsc", ageSec: 3, override: true },
         ],
       });
+    });
+
+    it("marks a suspended holder and prints the waiting tickets in seq order, and leaves both out otherwise", () => {
+      const waiting = [{ seq: 3, label: "a", gated: true, ready: true }, { seq: 7, label: "b", gated: true, ready: false }];
+      const status = (extra: object, live: HolderInfo[]) => deps({ leaseStatus: () => ({ level: "normal", capacity: 3, step: 3, signals: null, live, ...extra }) });
+      expect(runStatus(status({ waiting }, [holder(), holder({ pid: 12, suspended: true })]))).toBe(0);
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        live: [{ pid: 11 }, { pid: 12, suspended: true }],
+        waiting,
+      });
+      expect(JSON.parse(out.join("")).live[0]).not.toHaveProperty("suspended");
+      out.length = 0;
+      expect(runStatus(status({ waiting: [] }, [holder()]))).toBe(0);
+      expect(JSON.parse(out.join(""))).not.toHaveProperty("waiting");
     });
 
     it("adds weights beside live and capacity in weight mode, and leaves them out in count mode", () => {
