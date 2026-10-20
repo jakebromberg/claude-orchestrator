@@ -200,11 +200,11 @@ describe("continuing a dead owner's suspended group", () => {
     expect(holderRec("dead").suspended).toBe(true);
   });
 
-  it.each<[string, () => () => void, RegExp | undefined]>([
+  it.each<[string, () => () => void, RegExp]>([
     ["the mutex is busy", () => {
       writeFileSync(join(dir, ".mutex"), "someone else");
       return () => rmSync(join(dir, ".mutex"));
-    }, undefined],
+    }, /could not clear the claim on group 7001: the lease mutex is busy/],
     ["the write fails", () => failFsCall("renameSync", (p) => p.includes(join("holders", "dead.json.")), "EIO"), /could not clear the claim on group 7001: EIO/],
   ])("leaves the claim to expire when clearing it fails because %s, writes no holder file without the mutex, and continues the group later", (_n, fail, warning) => {
     plant("dead", 7001);
@@ -221,7 +221,7 @@ describe("continuing a dead owner's suspended group", () => {
     expect(sigconts()).toEqual([-7001]);
     expect(holderRec("dead")).toMatchObject({ suspended: true, claimedAt: lease.clock.ms });
     expect(readSuspensions(dir)).toHaveLength(1);
-    if (warning) expect(lease.warnings.at(-1)).toMatch(warning);
+    expect(lease.warnings.at(-1)).toMatch(warning);
     reacquire(DEAD_OWNER_CLAIM_MS - 1);
     expect(asked).toEqual([7001]);
     reacquire(1);
@@ -265,7 +265,7 @@ describe("continuing a dead owner's suspended group", () => {
     expect(sigconts()).toEqual([]);
   });
 
-  it("does not let a failing SIGCONT change the acquire", () => {
+  it("does not let a failing SIGCONT change the acquire, and leaves the claim to expire so a later acquire tries again", () => {
     plant("dead", 7001);
     kill.mockImplementation((pid) => {
       if (pid < 0) throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
@@ -273,7 +273,12 @@ describe("continuing a dead owner's suspended group", () => {
     });
     expect(acquire()).not.toBeNull();
     expect(readSuspensions(dir)).toHaveLength(1);
-    expect(holderRec("dead").suspended).toBeUndefined();
+    expect(holderRec("dead")).toMatchObject({ suspended: true, claimedAt: lease.clock.ms });
     expect(lease.warnings.at(-1)).toMatch(/could not continue group 7001: kill EPERM/);
+    kill.mockImplementation(() => true);
+    reacquire(DEAD_OWNER_CLAIM_MS);
+    expect(sigconts()).toEqual([-7001, -7001]);
+    expect(holderRec("dead").suspended).toBeUndefined();
+    expect(readSuspensions(dir)).toEqual([]);
   });
 });
