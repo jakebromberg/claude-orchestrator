@@ -144,6 +144,8 @@ interface HolderRecord {
     override?: true;
     /** Set while the holder's group is stopped; a gated ticket is not admitted while any live holder has it. */
     suspended?: true;
+    /** Epoch ms the governor last resumed this holder; its run time for `suspendNewest` counts from the later of this and `startedAt`. */
+    resumedAt?: number;
     /** Bytes; absent means the unmatched weight. */
     weight?: number;
 }
@@ -202,8 +204,8 @@ export interface LeaseHandle {
      * not a positive integer, and once the holder has been reaped: a reaped holder's file is not recreated.
      */
     setChildPid(pid: number, pgid?: number): void;
-    /** Sets or clears the holder's `suspended` mark; throws when the mark cannot be written or the holder is gone. Present on a holder this process owns. */
-    setSuspended?(on: boolean): void;
+    /** Sets or clears the holder's `suspended` mark, and records `resumedAt` when given (a resume); throws when the mark cannot be written or the holder is gone. Present on a holder this process owns. */
+    setSuspended?(on: boolean, resumedAt?: number): void;
     release(outcome?: {
         exitCode?: number;
     }): void;
