@@ -511,7 +511,7 @@ function recordSuspension(dir: string, record: SuspensionRecord): boolean {
  */
 export function suspendNewest(opts: LeaseOptions, handle: LeaseHandle, pgid: number, leader: string | null, stop: (pgid: number) => boolean): boolean {
   if (!handle.setSuspended) return false;
-  // The owner's record is the only thing read before the mutex: it settles the tick, and the lease never writes over it.
+  // The owner's record is read before the mutex, beside the step snapshot: it settles the tick, and the lease never writes over it.
   const held = suspensionOf(opts.dir, pgid);
   if (held && !isLeaseRecord(held)) return false;
   const { step, signals } = snapshot(opts, HEAVY);
