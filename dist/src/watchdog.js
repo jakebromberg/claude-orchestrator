@@ -5,12 +5,11 @@
  * engine's liveness is whether its pid has a row in the scan for a process that started no later than the record.
  */
 import { lstatSync, readdirSync, statfsSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
-import { describeBoundedFailure } from "./bounded-failure.js";
+import { join } from "node:path";
 import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
 import { appendOwnLine, isOwnDir, readLeaseRecord, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
-import { ancestry, isClaudeCommand, isPid, isSimulatorCommand, parsePsTable, ps, PS_TABLE_ARGS, simulatorUdid } from "./ps.js";
+import { ancestry, isClaudeCommand, isPid, isSimulatorCommand, parsePsTable, ps, PS_TABLE_ARGS, runsTool, simulatorUdid, XCODE_TOOLS } from "./ps.js";
 import { isLeaseRecord, readSuspensions } from "./suspensions.js";
 const EX_USAGE = 64;
 const USAGE = "usage: claude-orchestrator-watchdog check | brief | print-plist | print-status-line";
@@ -71,10 +70,8 @@ const idleSimulator = (c) => [...c.idleSimulators]
 }));
 /** The rules, in report order. A rule reads the context and returns findings; the reporters never change. */
 export const RULES = [unrecordedStoppedGroup, dueReminder, oldLeaseSuspension, stalledEngine, silentEngine, deadEngine, idleSimulator];
-/** The scan's bound, 60 s because `ps` can be slow at background priority. */
-export const SCAN_TIMEOUT_MS = 60_000;
-/** The default scan: one bounded `ps`. A throw skips the cycle. */
-export const scanProcessTable = () => ps(PS_TABLE_ARGS, { timeoutMs: SCAN_TIMEOUT_MS });
+/** The default scan: one bounded `ps`, 60 s because it can be slow at background priority. A throw skips the cycle. */
+export const scanProcessTable = () => ps(PS_TABLE_ARGS, { timeoutMs: 60_000 });
 /** Whether `row` can be the process that wrote a record started at `startedAt`: one that started later holds a reused pid. An unreadable time on either side keeps the row. */
 function isSameProcess(row, startedAt, now) {
     const started = typeof startedAt === "string" ? Date.parse(startedAt) : NaN;
@@ -123,7 +120,7 @@ function stoppedGroups(procs, engines) {
 }
 /** Booted simulators by UDID (the `launchd_sim` row naming `Devices/<udid>/`) with the readable rss of every simulator process under it, one pid map for the scan. Idle ones only: none when an `xcodebuild` or `simctl` is running. */
 function idleSimulatorRss(procs) {
-    const toolRunning = procs.some((p) => p.command.trim().split(/\s+/).slice(0, 2).some((w) => ["xcodebuild", "simctl"].includes(basename(w))));
+    const toolRunning = procs.some((p) => runsTool(p.command, XCODE_TOOLS));
     const byPid = new Map(procs.map((p) => [p.pid, p]));
     const roots = new Map(procs.flatMap((p) => (p.command.includes("launchd_sim") && simulatorUdid(p.command) ? [[p.pid, simulatorUdid(p.command)]] : [])));
     const totals = new Map();
@@ -176,7 +173,7 @@ export function check(d) {
             throw new Error("empty process table");
     }
     catch (err) {
-        appendLog(d.dir, now, `scan skipped: ${describeBoundedFailure(err, SCAN_TIMEOUT_MS)}`);
+        appendLog(d.dir, now, `scan skipped: ${err.message}`);
         return;
     }
     const engines = readEngines(d.dir, now, procs);

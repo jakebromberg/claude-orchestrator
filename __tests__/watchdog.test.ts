@@ -83,6 +83,7 @@ describe("watchdog", () => {
       ["idle under 5 minutes", booted(U1, 200), 4, []],
       ["a live xcodebuild", [...booted(U1, 200), ...tool("xcodebuild test -scheme X")], 6, []],
       ["a live xcrun simctl", [...booted(U1, 200), ...tool("/usr/bin/xcrun simctl list")], 6, []],
+      ["a live xcodebuild under a spaced Xcode path", [...booted(U1, 200), ...tool("/Applications/Xcode Beta 2.app/Contents/Developer/usr/bin/xcodebuild test")], 6, []],
       ["no simulators", SESSION, 6, []],
     ] as [string, Row[], number, string[]][])("%s", (_name, scan, at, udids) => {
       rows = scan;

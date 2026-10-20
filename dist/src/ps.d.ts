@@ -42,6 +42,10 @@ export declare function parsePsTable(text: string): ProcRow[];
 export declare const isClaudeCommand: (command: string) => boolean;
 /** A command under CoreSimulator: a device's own files (`Devices/<udid>/...`) or a runtime's processes (`Volumes/...` or any `.simruntime/` root); the one rule of what a simulator process is (the unowned-memory report). */
 export declare const isSimulatorCommand: (command: string) => boolean;
+/** The Xcode tools whose running marks a simulator as in use and a command as unsuspendable. */
+export declare const XCODE_TOOLS: string[];
+/** True when `command` runs one of `names`: the name preceded by the start, whitespace, `/` or a shell separator and followed by whitespace or the end, so a tool path with spaces still counts and `mysimctl` does not. */
+export declare const runsTool: (command: string, names: string[]) => boolean;
 /** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */
 export declare const simulatorUdid: (command: string) => string | undefined;
 /** `pid` and its parents through `rows`, nearest first, without pid 1. `complete` is false when a link is missing from the scan or the chain is not finished within `max` rows (a loop), so a caller that guards on the chain can fail closed. */
