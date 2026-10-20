@@ -111,7 +111,7 @@ export function runPrint(argv, d) {
         d.err(`watchdog: ${d.checkout} is a git worktree, and its dist is removed at cleanup; run ${cmd} from the primary checkout`);
         return 1;
     }
-    d.out(cmd === "print-plist" ? plistText({ node: d.node, checkout: d.checkout, dir: d.dir }) : claudeMdLine(d.checkout));
+    d.out(cmd === "print-plist" ? plistText({ node: d.node(), checkout: d.checkout, dir: d.dir }) : claudeMdLine(d.checkout));
     return 0;
 }
 //# sourceMappingURL=watchdog-install.js.map

@@ -1,7 +1,8 @@
-/** What `print-plist` and `print-status-line` need; nothing here installs anything. */
+/** What `print-plist`, `print-status-line` and `print-claude-md-line` need; nothing here installs anything. */
 export interface PrintDeps {
     dir: string;
-    node: string;
+    /** The plist's `node` path, looked up only by `print-plist`, so `check` never walks `PATH`. */
+    node(): string;
     /** The checkout holding `dist/`, two levels above the running bin. */
     checkout: string;
     isWorktree(checkout: string): boolean;
