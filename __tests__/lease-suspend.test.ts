@@ -456,10 +456,11 @@ describe("runLeased governor tick", () => {
   it("does not try to remove a record on exit after it resumed", async () => {
     const { done, first } = await suspendThenRecover();
     tickFns[0]!();
-    writeSuspension(dir, { pgid: 4321, by: "jake", reason: "mine", at: "2026-10-19T12:00:00.000Z", remindAt: "2026-10-19T14:00:00.000Z", leader: "sleep 100" });
+    // A lease record planted after the resume survives exit only when the resume cleared the run's own suspended flag.
+    writeSuspension(dir, { pgid: 4321, by: "lease", reason: "planted", at: "2026-10-19T12:00:00.000Z", remindAt: "2026-10-19T14:00:00.000Z", leader: "sleep 100" });
     child.emit("close", 0, null);
     await done;
-    expect(readSuspensions(dir)).toMatchObject([{ pgid: 4321, by: "jake" }]);
+    expect(readSuspensions(dir)).toMatchObject([{ pgid: 4321, by: "lease" }]);
     first.release();
   });
 
