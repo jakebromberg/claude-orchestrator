@@ -126,7 +126,7 @@ export async function runLeased(args, d) {
                 signalGroup(child.pid, s, d.signals.kill);
             }
             catch {
-                // The group is gone.
+                // signalGroup returns false for a vanished group; this catches any other error (such as EPERM), which is ignored.
             }
         }
     };

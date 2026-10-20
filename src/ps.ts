@@ -36,7 +36,7 @@ export function groupAlive(pgid: number, kill: (pid: number, signal: 0) => unkno
 }
 
 /** Sends `signal` to process group `pgid`; false when the group is gone (`ESRCH`) or `pgid` is not a pid (nothing is sent), any other error propagates. */
-export function signalGroup(pgid: number, signal: NodeJS.Signals, kill: (pid: number, signal: NodeJS.Signals) => unknown = process.kill): boolean {
+export function signalGroup<S extends NodeJS.Signals>(pgid: number, signal: S, kill: (pid: number, signal: S) => unknown = process.kill): boolean {
   if (!isPid(pgid)) return false;
   try {
     kill(-pgid, signal);

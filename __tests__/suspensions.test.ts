@@ -211,6 +211,15 @@ describe("suspend and resume", () => {
       expect(records()).toEqual([]);
     });
 
+    it("exits 1 with the kill ESRCH message and removes the record when the group vanishes before SIGSTOP", () => {
+      const gone = () => {
+        throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
+      };
+      expect(run(suspend(900), { kill: gone })).toBe(1);
+      expect(err.join("\n")).toContain("kill ESRCH");
+      expect(records()).toEqual([]);
+    });
+
     it("resume sends SIGCONT before removing the record", () => {
       run(suspend(900, "--record-only"));
       let existedAtSignal = false;

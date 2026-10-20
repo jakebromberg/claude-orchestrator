@@ -99,7 +99,7 @@ export function runShellAsync(
       try {
         signalGroup(child.pid, signal);
       } catch {
-        // ESRCH: every member has already exited.
+        // signalGroup returns false for a vanished group; this catches any other error (such as EPERM), which is ignored.
       }
     };
     if (bounded && child.pid !== undefined) {
