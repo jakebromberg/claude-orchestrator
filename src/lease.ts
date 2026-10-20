@@ -35,6 +35,7 @@ import {
   type PressureSampler,
 } from "./memory-pressure.js";
 import { isPid, pidAlive } from "./ps.js";
+import { readSuspensions, removeSuspension, writeSuspension, type SuspensionRecord } from "./suspensions.js";
 
 export { ensureOwnSubdir, isOwnDir, isPid, pidAlive };
 
@@ -53,6 +54,14 @@ export const DETACHED_TTL_MAX_MS = 660_000;
 /** A gated ticket is admitted only while CPU busy is under this, nothing is suspended and the last gated start was this long ago (heavy-queue's gates). */
 const GATE_CPU_BUSY = 0.75;
 const GATE_SPACING_MS = 20_000;
+/** A suspendable holder's front end suspends it only while CPU busy is at or above this or the free memory percentage is at or under the second (heavy-queue's thresholds), or at step 0. */
+const SUSPEND_CPU_BUSY = 0.95;
+const SUSPEND_FREE_PCT = 12;
+/** A holder is suspended only after running this long, and at most one is suspended per `SUSPEND_SPACING_MS`, machine-wide. */
+export const SUSPEND_MIN_RUN_MS = 20_000;
+const SUSPEND_SPACING_MS = 15_000;
+/** The `remindAt` of a record the lease writes; the watchdog reports a lease suspension this old. */
+const SUSPEND_REMIND_MS = 30 * 60_000;
 /** A stored CPU reading younger than this is gated on as it is; one up to `CPU_DELTA_MAX_MS` old is the base of a new delta; an older one is replaced and fails the poll. */
 const CPU_REUSE_MS = 2_000;
 const CPU_DELTA_MAX_MS = 10_000;
@@ -208,6 +217,8 @@ export interface LeaseHandle {
    * not a positive integer, and once the holder has been reaped: a reaped holder's file is not recreated.
    */
   setChildPid(pid: number, pgid?: number): void;
+  /** Sets or clears the holder's `suspended` mark; throws when the mark cannot be written or the holder is gone. Present on a holder this process owns. */
+  setSuspended?(on: boolean): void;
   release(outcome?: { exitCode?: number }): void;
 }
 
@@ -460,6 +471,80 @@ function gatesPass(opts: LeaseOptions, live: HolderInfo[], nowMs: number): boole
   return busy !== null && busy < GATE_CPU_BUSY && spaced && !live.some((h) => h.suspended);
 }
 
+/** Writes the lease's record for `pgid`; false when the owner's record is there. A leftover with `by: "lease"` on a group that is running is replaced (the record is written before the signal, so a front end that died between the two leaves one). */
+function recordSuspension(dir: string, record: SuspensionRecord): boolean {
+  try {
+    writeSuspension(dir, record);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    if (!readSuspensions(dir).some((r) => r.pgid === record.pgid && r.by === "lease")) return false;
+    removeSuspension(dir, record.pgid);
+    writeSuspension(dir, record);
+  }
+  return true;
+}
+
+/**
+ * One tick of a suspendable holder's front end: suspends `handle`'s own group, `pgid`, when `handle` is the newest suspendable running holder
+ * and the machine is overloaded; true when `stop` ran and sent the signal. The signals are sampled before the mutex; under it the CPU
+ * busy share (`cpuBusy`, null never triggers), the 15 s `lastSuspend` mark and the ranking are read, and the record (`by: "lease"`, written through
+ * `suspensions.ts`), the holder mark and the mark are written in that order; `stop` (SIGSTOP of `pgid`) runs after the mutex is released.
+ * A running group therefore always has a record and a mark by the time it stops. An owner's record on the group means no mark and no signal.
+ * A failed write or a `stop` that returns false or throws takes the record and the mark back. Never the oldest running holder, never one
+ * under 20 s old, and more holders than the step allows is not a trigger. `leader` is the group leader's command, for the record.
+ */
+export function suspendNewest(opts: LeaseOptions, handle: LeaseHandle, pgid: number, leader: string | null, stop: (pgid: number) => boolean): boolean {
+  if (!handle.setSuspended) return false;
+  const { step, signals } = snapshot(opts, HEAVY);
+  const lock = tryLockOnce(join(opts.dir, ".mutex"), { staleAfterMs: MUTEX_STALE_MS, now: opts.now });
+  if (!lock) return false;
+  const undo = (): void => {
+    try {
+      handle.setSuspended!(false);
+    } finally {
+      removeSuspension(opts.dir, pgid);
+    }
+  };
+  let go = false;
+  try {
+    const nowMs = (opts.now ?? Date.now)();
+    const busy = cpuBusy(opts, nowMs);
+    const free = signals?.freePct;
+    const why = [
+      step === 0 && "step 0",
+      busy !== null && busy >= SUSPEND_CPU_BUSY && `CPU ${Math.round(busy * 100)}% busy`,
+      free !== undefined && free <= SUSPEND_FREE_PCT && `${free}% memory free`,
+    ].filter(Boolean).join(", ");
+    if (why && markElapsed(opts.dir, "lastSuspend", nowMs, SUSPEND_SPACING_MS)) {
+      const running = scanHolders(opts, HEAVY).live.filter((h) => !h.suspended).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
+      const newest = running.slice(1).filter((h) => h.suspendable).at(-1);
+      if (newest?.id === handle.id && nowMs - newest.startedAt >= SUSPEND_MIN_RUN_MS) {
+        const at = new Date(nowMs).toISOString();
+        go = recordSuspension(opts.dir, { pgid, by: "lease", reason: why, at, remindAt: new Date(nowMs + SUSPEND_REMIND_MS).toISOString(), leader });
+        if (go) {
+          try {
+            handle.setSuspended(true);
+            writeMark(opts.dir, "lastSuspend", nowMs);
+          } catch (err) {
+            undo();
+            throw err;
+          }
+        }
+      }
+    }
+  } finally {
+    lock.release();
+  }
+  if (!go) return false;
+  let stopped = false;
+  try {
+    stopped = stop(pgid);
+  } finally {
+    if (!stopped) undo();
+  }
+  return stopped;
+}
+
 const removeTicket = (opts: LeaseOptions, cls: LeaseClass, id: string): void => rmSync(join(opts.dir, cls.waiting, `${id}.json`), { force: true });
 
 // Paste-safety for `status` output and the event log, not a security boundary: the lease does no shell parsing. Nothing
@@ -515,6 +600,12 @@ function createHolder(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, com
       } catch {
         // The previous record still names this holder.
       }
+    },
+    setSuspended(on) {
+      if (released || !unlessGone(() => statSync(file))) throw new Error(`holder ${id} is gone`);
+      if (on) rec.suspended = true;
+      else delete rec.suspended;
+      write();
     },
     release(outcome) {
       if (released) return;

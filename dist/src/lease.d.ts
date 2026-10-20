@@ -8,6 +8,8 @@ export declare const HEARTBEAT_MS = 30000;
 export declare const HEARTBEAT_STALE_MS = 90000;
 /** The longest a detached holder may be set to live: the largest Bash call timeout (10 min) plus hook mode's 60 s grace. */
 export declare const DETACHED_TTL_MAX_MS = 660000;
+/** A holder is suspended only after running this long, and at most one is suspended per `SUSPEND_SPACING_MS`, machine-wide. */
+export declare const SUSPEND_MIN_RUN_MS = 20000;
 type ReapReason = "stale-heartbeat" | "orphan-bound" | "corrupt" | "dead-session" | "expired";
 export type LeaseEvent = ({
     type: "acquire";
@@ -183,6 +185,8 @@ export interface LeaseHandle {
      * not a positive integer, and once the holder has been reaped: a reaped holder's file is not recreated.
      */
     setChildPid(pid: number, pgid?: number): void;
+    /** Sets or clears the holder's `suspended` mark; throws when the mark cannot be written or the holder is gone. Present on a holder this process owns. */
+    setSuspended?(on: boolean): void;
     release(outcome?: {
         exitCode?: number;
     }): void;
@@ -205,6 +209,16 @@ export declare function cpuBusy(opts: LeaseOptions, nowMs: number): number | nul
 export declare function markElapsed(dir: string, name: string, nowMs: number, ms: number): boolean;
 /** Stamps the mark `name` in the lease directory with `nowMs`. */
 export declare function writeMark(dir: string, name: string, nowMs: number): void;
+/**
+ * One tick of a suspendable holder's front end: suspends `handle`'s own group, `pgid`, when `handle` is the newest suspendable running holder
+ * and the machine is overloaded; true when `stop` ran and sent the signal. The signals are sampled before the mutex; under it the CPU
+ * busy share (`cpuBusy`, null never triggers), the 15 s `lastSuspend` mark and the ranking are read, and the record (`by: "lease"`, written through
+ * `suspensions.ts`), the holder mark and the mark are written in that order; `stop` (SIGSTOP of `pgid`) runs after the mutex is released.
+ * A running group therefore always has a record and a mark by the time it stops. An owner's record on the group means no mark and no signal.
+ * A failed write or a `stop` that returns false or throws takes the record and the mark back. Never the oldest running holder, never one
+ * under 20 s old, and more holders than the step allows is not a trigger. `leader` is the group leader's command, for the record.
+ */
+export declare function suspendNewest(opts: LeaseOptions, handle: LeaseHandle, pgid: number, leader: string | null, stop: (pgid: number) => boolean): boolean;
 /** The one default diagnostics writer, shared with the event sink. Messages carry their own `lease:` prefix. */
 export declare function defaultWarn(msg: string): void;
 /** A single non-blocking attempt: a handle, or `null` when not admitted this poll (a full disk included: it is never failed open, and emits a `timeout` event with `refused: "disk-full"`). Throws a `TypeError` on an invalid detached id, session PID or `expiresAt`. */

@@ -55,6 +55,13 @@ export interface LeaseCliDeps {
         kill(pid: number, sig: NodeJS.Signals): unknown;
         pid: number;
     };
+    /** What a suspendable, background run needs to suspend itself; absent, it never does. */
+    governor?: {
+        /** Calls `fn` every `ms` until the returned function is called. */
+        every(fn: () => void, ms: number): () => void;
+        /** The command line of the process group's leader; throws when it cannot be read. */
+        processCommand(pgid: number): string;
+    };
 }
 export declare function parseLeaseArgs(argv: string[]): LeaseArgs;
 export declare function runStatus(d: LeaseCliDeps): number;

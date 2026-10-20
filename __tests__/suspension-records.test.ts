@@ -46,9 +46,17 @@ describe("suspension records", () => {
     writeSuspension(dir, REC);
     expect(readSuspensions(dir)).toEqual([REC]);
     expect(() => writeSuspension(dir, REC)).toThrow(/already has a suspension record/);
+    expect(() => writeSuspension(dir, REC)).toThrow(expect.objectContaining({ code: "EEXIST" }));
     expect(removeSuspension(dir, REC.pgid)).toBe(true);
     expect(removeSuspension(dir, REC.pgid)).toBe(false);
     expect(readSuspensions(dir)).toEqual([]);
     expect(suspensionFile(dir, 7)).toBe(join(dir, "suspensions", "7.json"));
+  });
+
+  it("removes the temp files of dead writers from suspensions/ before it writes, and keeps a live writer's", () => {
+    put("4242.json.2147483000.ab12cd34.tmp", "{");
+    put(`4242.json.${process.pid}.ab12cd34.tmp`, "{");
+    writeSuspension(dir, REC);
+    expect(readdirSync(join(dir, "suspensions")).sort()).toEqual(["4242.json", `4242.json.${process.pid}.ab12cd34.tmp`]);
   });
 });

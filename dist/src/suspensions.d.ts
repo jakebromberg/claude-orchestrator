@@ -39,7 +39,7 @@ export interface SuspensionRecord {
 }
 /** The record file of a process group: the one place that names the `suspensions/` path. */
 export declare function suspensionFile(dir: string, pgid: number): string;
-/** Writes `record` through the lease's directory rule; throws when the group already has one. The complete temp file is hard-linked to the final name, so the refusal is atomic (`EEXIST`) and a reader never sees a partial record. */
+/** Writes `record` through the lease's directory rule; throws, with `code` `EEXIST`, when the group already has one. The complete temp file is hard-linked to the final name, so the refusal is atomic and a reader never sees a partial record. Temp files of dead writers (a writer killed mid-write) are removed first. */
 export declare function writeSuspension(dir: string, record: SuspensionRecord): void;
 /** Removes the record of `pgid`; returns whether one existed. */
 export declare function removeSuspension(dir: string, pgid: number): boolean;
