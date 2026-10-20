@@ -4,11 +4,11 @@
  * stopped tree cannot silence it. It sends no signal: its dependencies are `ps`, the clock and the file system, and an
  * engine's liveness is whether its pid has a row in the scan for a process that started no later than the record.
  */
-import { appendFileSync, closeSync, constants, lstatSync, readdirSync, statfsSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, statfsSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
-import { isOwnDir, openOwnFile, readLeaseRecord, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
+import { appendOwnLine, isOwnDir, readLeaseRecord, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
 import { ancestry, isPid, parsePsTable, ps, PS_TABLE_ARGS, type ProcRow } from "./ps.js";
 import { readSuspensions, type SuspensionRecord } from "./suspensions.js";
 
@@ -22,7 +22,6 @@ export const ENGINE_FRESH_MS = 3 * REFRESH_MS;
 export const STALLED_MARGIN_MS = 10 * 60_000;
 /** A lease suspension (`by: "lease"`) older than this is reported. */
 export const LEASE_SUSPENSION_MAX_MS = 30 * 60_000;
-const LOG_FLAGS = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT;
 
 /** An `engines/<pid>.json` record (see `engine-registry.ts`) with the verdicts the rules need. */
 export interface Engine {
@@ -195,16 +194,10 @@ function readState(dir: string): State {
   }
 }
 
-/** Appends one line to `watchdog.log` through `openOwnFile`: only a regular file this user owns is appended to (a symlink is not followed, a FIFO not waited on), and a new one has mode 0600. A failure is swallowed: the log is a diagnostic. */
+/** Appends one line to `watchdog.log` through `appendOwnLine`: only a regular file this user owns is appended to (a symlink is not followed, a FIFO not waited on), and a new one has mode 0600. A failure is swallowed: the log is a diagnostic. */
 function appendLog(dir: string, now: number, text: string): void {
   try {
-    const fd = openOwnFile(join(dir, "watchdog.log"), LOG_FLAGS, 0o600)?.fd;
-    if (fd === undefined) return;
-    try {
-      appendFileSync(fd, `${new Date(now).toISOString()} ${text}\n`);
-    } finally {
-      closeSync(fd);
-    }
+    appendOwnLine(join(dir, "watchdog.log"), `${new Date(now).toISOString()} ${text}`);
   } catch {}
 }
 

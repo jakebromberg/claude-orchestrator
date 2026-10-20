@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, s
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readLeaseRecord, readOwnFile, readRecordDir, readRegularFile, writeLeaseRecord } from "../src/lease-dir.js";
+import { appendOwnLine, readLeaseRecord, readOwnFile, readRecordDir, readRegularFile, writeLeaseRecord } from "../src/lease-dir.js";
 
 describe("writeLeaseRecord", () => {
   let tmp: string;
@@ -178,5 +178,50 @@ describe("a UNIX socket entry", () => {
 
   it("readLeaseRecord reads it as undefined", () => {
     expect(readLeaseRecord(tmp, "rec.json")).toBeUndefined();
+  });
+});
+
+describe("appendOwnLine", () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "lease-dir-append-"));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("creates a new file at mode 0600 and appends to an existing one", () => {
+    const file = join(tmp, "log");
+    expect(appendOwnLine(file, "one")).toBe(true);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(appendOwnLine(file, "two")).toBe(true);
+    expect(readFileSync(file, "utf-8")).toBe("one\ntwo\n");
+  });
+
+  it.each<[string, () => void]>([
+    ["a symlink", () => {
+      writeFileSync(join(tmp, "elsewhere"), "");
+      symlinkSync(join(tmp, "elsewhere"), join(tmp, "log"));
+    }],
+    ["a FIFO", () => execFileSync("mkfifo", [join(tmp, "log")])],
+    ["a foreign-owned file", () => {
+      writeFileSync(join(tmp, "log"), "");
+      vi.spyOn(process as Required<NodeJS.Process>, "getuid").mockReturnValue(statSync(tmp).uid + 1);
+    }],
+  ])("refuses %s and writes nothing", (_n, plant) => {
+    plant();
+    expect(appendOwnLine(join(tmp, "log"), "x")).toBe(false);
+    if (_n === "a symlink") expect(readFileSync(join(tmp, "elsewhere"), "utf-8")).toBe("");
+  });
+
+  it("refuses a UNIX socket", async () => {
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(join(tmp, "log"), resolve));
+    try {
+      expect(appendOwnLine(join(tmp, "log"), "x")).toBe(false);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 });
