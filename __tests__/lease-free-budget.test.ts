@@ -6,7 +6,7 @@ import { acquireSessionLease, leaseStatus, tryAcquireLease, type HolderMeta, typ
 import { DEFAULT_STEP_TABLE, headroomStep, heavyBudget, RAMP_MS, sessionHeadroomCapacity, type HeadroomState } from "../src/headroom.js";
 import type { HeadroomReading } from "../src/headroom-sampler.js";
 import { scriptedHeadroomSampler } from "../src/testing.js";
-import { scriptedLease, type ScriptedLease } from "./helpers/lease.js";
+import { plantHolder, plantTicket, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
 
 const GB = 2 ** 30;
 /** 16 GB with the default 25% reserve: 12 GB usable, a 4 GB reserve, 3 GB for an unmatched command. */
@@ -48,13 +48,6 @@ describe("heavy admission against free memory", () => {
     while (take(o, weight)) n++;
     return n;
   };
-  const plant = (id: string, startedAt: number, weight: number): void => {
-    mkdirSync(join(dir, "holders"), { recursive: true, mode: 0o700 });
-    const file = join(dir, "holders", `4242-${id}.json`);
-    writeFileSync(file, JSON.stringify({ id: `4242-${id}`, pid: 4242, command: "x", cwd: "/", startedAt, level: "normal", weight }));
-    utimesSync(file, (lease.clock.ms + 0.5) / 1000, (lease.clock.ms + 0.5) / 1000);
-  };
-
   /** Refreshes every holder's heartbeat at the fake clock, as a live holder's own timer would. */
   const beat = (): void => readdirSync(join(dir, "holders")).forEach((f) => utimesSync(join(dir, "holders", f), lease.clock.ms / 1000, lease.clock.ms / 1000));
 
@@ -110,20 +103,20 @@ describe("heavy admission against free memory", () => {
 
   it("adds back only the older holder's weight when one is older and one younger", () => {
     const o = at(reading(4, 62.5));
-    plant("old", lease.clock.ms - RAMP_MS - 1, 2 * GB);
-    plant("young", lease.clock.ms - 1000, 3 * GB);
+    plantHolder(lease, "4242-old", { startedAt: lease.clock.ms - RAMP_MS - 1, weight: 2 * GB });
+    plantHolder(lease, "4242-young", { startedAt: lease.clock.ms - 1000, weight: 3 * GB });
     expect(leaseStatus(o).weights).toEqual({ used: 5 * GB, budget: 8 * GB });
   });
 
   it("charges a holder dated in the future as young", () => {
     const o = at(reading(4, 62.5));
-    plant("future", lease.clock.ms + 10 * RAMP_MS, 3 * GB);
+    plantHolder(lease, "4242-future", { startedAt: lease.clock.ms + 10 * RAMP_MS, weight: 3 * GB });
     expect(leaseStatus(o).weights).toEqual({ used: 3 * GB, budget: 6 * GB });
   });
 
   it("reports one budget in status, the admission and the acquire event", () => {
     const o = at(reading(4, 62.5));
-    plant("old", lease.clock.ms - RAMP_MS - 1, 2 * GB);
+    plantHolder(lease, "4242-old", { startedAt: lease.clock.ms - RAMP_MS - 1, weight: 2 * GB });
     const h = take(o, GB)!;
     expect(leaseStatus(o).weights).toEqual({ used: 3 * GB, budget: 8 * GB });
     expect(h.admission.weights).toEqual({ used: 3 * GB, budget: 8 * GB, weight: GB });
@@ -132,10 +125,7 @@ describe("heavy admission against free memory", () => {
 
   it("keeps an older waiting ticket ahead of a younger request when free memory inside the reserve leaves a budget of 0 above step 0", () => {
     const o = at(reading(4, 20));
-    mkdirSync(join(dir, "waiting"), { recursive: true, mode: 0o700 });
-    const ticket = join(dir, "waiting", "older.json");
-    writeFileSync(ticket, JSON.stringify({ seq: 1, id: "older", pid: 4242, label: "other", gated: false, capacity: 4, ceiling: 4, ready: true }));
-    utimesSync(ticket, (lease.clock.ms + 0.5) / 1000, (lease.clock.ms + 0.5) / 1000);
+    plantTicket(lease, "older", 1, { capacity: 4, ceiling: 4, ready: true });
     expect(leaseStatus(o).weights?.budget).toBe(0);
     expect(take(o)).toBeNull();
   });

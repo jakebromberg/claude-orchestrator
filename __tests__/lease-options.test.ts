@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { plantHolder, scriptedLease } from "./helpers/lease.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MemorySignals } from "../src/memory-pressure.js";
@@ -77,8 +78,8 @@ describe("defaultLeaseOptions sampler wiring", () => {
     const heavy = built.deps.at(-1)!.heavy!;
     const gib = 2 ** 30;
     const signals: MemorySignals = { level: "normal", freePct: 50, memsizeBytes: 16 * gib };
-    mkdirSync(join(dir, "holders"), { recursive: true, mode: 0o700 });
-    writeFileSync(join(dir, "holders", `${process.pid}-old.json`), JSON.stringify({ id: `${process.pid}-old`, pid: process.pid, command: "x", cwd: "/", startedAt: Date.now() - RAMP_MS - 1000, level: "normal", weight: 2 * gib }));
+    const planted = scriptedLease(dir);
+    plantHolder(planted, `${process.pid}-old`, { pid: process.pid, startedAt: planted.clock.ms - RAMP_MS - 1000, weight: 2 * gib });
     const status = leaseStatus({ ...o, headroom: scriptedHeadroomSampler({ level: "normal", step: 3, signals }) });
     // 8 GB free less the 4 GB reserve is 4 GB, plus the settled holder's 2 GB.
     expect(status.weights).toEqual({ used: 2 * gib, budget: 6 * gib });

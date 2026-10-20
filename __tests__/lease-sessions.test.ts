@@ -17,7 +17,7 @@ import {
 import * as barrel from "../src/index.js";
 import type { HeadroomReading } from "../src/headroom-sampler.js";
 import { scriptedHeadroomSampler, scriptedPressureSampler } from "../src/testing.js";
-import { failFsCall, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
+import { failFsCall, plantHolder, plantTicket, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
 
 const meta: HolderMeta = { command: "claude -p", cwd: "/work" };
 const HEARTBEAT_STALE_MS = 90_000;
@@ -38,20 +38,11 @@ describe("session holder class", () => {
     return isHandle(r) ? r : undefined;
   };
   const names = (sub: string): string[] => (existsSync(join(dir, sub)) ? readdirSync(join(dir, sub)).sort() : []);
-  const plant = (sub: string, id: string, body: Record<string, unknown>, mtimeMs: number): void => {
-    mkdirSync(join(dir, sub), { recursive: true, mode: 0o700 });
-    writeFileSync(join(dir, sub, `${id}.json`), JSON.stringify(body));
-    utimesSync(join(dir, sub, `${id}.json`), mtimeMs / 1000, mtimeMs / 1000);
-  };
   /** A session holder written by another process, its heartbeat `beatAgoMs` before the injected clock. */
-  const plantHolder = (id: string, extra: Record<string, unknown> = {}, beatAgoMs = 0): void =>
-    plant("sessions", id, { id, pid: 4242, command: "x", cwd: "/", startedAt: lease.clock.ms, level: "normal", ...extra }, lease.clock.ms - beatAgoMs + 0.5);
+  const sessionHolder = (id: string, extra: Record<string, unknown> = {}, beatAgoMs = 0): void => plantHolder(lease, id, extra, { sub: "sessions", beatAgoMs });
   /** A ticket for a waiter in another process, alive unless `dead`. */
-  const plantTicket = (sub: string, id: string, seq: number, { ageMs = 0, dead = false, ...extra }: Record<string, unknown> = {}): void => {
-    const pid = 5000 + seq;
-    plant(sub, id, { seq, id, pid, label: "other", gated: false, ...extra }, lease.clock.ms - (ageMs as number));
-    if (!dead) lease.alive.add(pid);
-  };
+  const sessionTicket = (sub: string, id: string, seq: number, { ageMs, dead, ...extra }: Record<string, unknown> = {}): void =>
+    plantTicket(lease, id, seq, extra, { sub, ageMs: ageMs as number | undefined, dead: dead as boolean | undefined });
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "lease-sessions-"));
@@ -184,7 +175,7 @@ describe("session holder class", () => {
   describe("liveness", () => {
     it("frees a slot once the heartbeat lapses, even while a recorded child PID is alive", async () => {
       lease.alive.add(7777);
-      plantHolder("4242-stale", { childPid: 7777 }, HEARTBEAT_STALE_MS + 1_000);
+      sessionHolder("4242-stale", { childPid: 7777 }, HEARTBEAT_STALE_MS + 1_000);
       const h = await take(at(1));
       expect(h).toBeDefined();
       expect(lease.events).toContainEqual({ type: "reap", id: "4242-stale", reason: "stale-heartbeat", class: "sessions" });
@@ -193,17 +184,18 @@ describe("session holder class", () => {
     });
 
     it("ignores expiresAt: a live session PID with a lapsed heartbeat is reaped, a fresh heartbeat past expiresAt is live", async () => {
-      plantHolder("4242-lapsed", { expiresAt: lease.clock.ms + 60_000 }, HEARTBEAT_STALE_MS + 1_000);
+      sessionHolder("4242-lapsed", { expiresAt: lease.clock.ms + 60_000 }, HEARTBEAT_STALE_MS + 1_000);
       const h = await take(at(1));
       expect(h).toBeDefined();
       h!.release();
-      plantHolder("4242-expired", { expiresAt: lease.clock.ms - 1_000 }, 1_000);
+      sessionHolder("4242-expired", { expiresAt: lease.clock.ms - 1_000 }, 1_000);
       expect(await take(at(1))).toBeUndefined();
       expect(leaseStatus(at(1)).sessions!.live.map((x) => x.id)).toEqual(["4242-expired"]);
     });
 
     it("reaps a file that is not a holder record", async () => {
-      plant("sessions", "junk", { nonsense: true }, lease.clock.ms);
+      mkdirSync(join(dir, "sessions"), { recursive: true, mode: 0o700 });
+      writeFileSync(join(dir, "sessions", "junk.json"), JSON.stringify({ nonsense: true }));
       const h = await take(at(1));
       expect(h).toBeDefined();
       expect(lease.events).toContainEqual({ type: "reap", id: "junk", reason: "corrupt", class: "sessions" });
@@ -244,7 +236,7 @@ describe("session holder class", () => {
         const o = opts({ headroom: scriptedHeadroomSampler(modes[row.mode]), policy: { heavyCeiling: 1, heavyWarning: 1 }, sessionSlots: 1 });
         const weighted = row.mode === "weight";
         // The ticket is written only by a waiter, so a holder fills the one slot for that row; in weight mode the holder and the request are 8 GiB each, which the 12 GiB budget refuses by weight.
-        if (row.write === "ticket") plant(row.sub, "4242-live", { id: "4242-live", pid: 4242, command: "x", cwd: "/", startedAt: lease.clock.ms, level: "normal", ...(weighted && { weight: 8 * GIB }) }, lease.clock.ms + 0.5);
+        if (row.write === "ticket") plantHolder(lease, "4242-live", weighted ? { weight: 8 * GIB } : {}, { sub: row.sub });
         const attempted: unknown[] = [];
         restore = failFsCall(
           row.write === "mutex" ? "openSync" : "writeFileSync",
@@ -282,8 +274,8 @@ describe("session holder class", () => {
       ["a stale ticket (its waiter stopped), passed over and kept", 0, [{ id: "a", seq: 1, ageMs: TICKET_FRESH_MS + 1_000 }], true, ["a.json"]],
       ["a dead waiter's ticket, reaped", 0, [{ id: "a", seq: 1, dead: true }], true, []],
     ])("with %s", async (_name, holders, planted, admitted, left) => {
-      for (let i = 0; i < holders; i++) plantHolder(`4242-live${i}`);
-      for (const t of planted) plantTicket("sessions-waiting", t.id, t.seq, t);
+      for (let i = 0; i < holders; i++) sessionHolder(`4242-live${i}`);
+      for (const t of planted) sessionTicket("sessions-waiting", t.id, t.seq, t);
       const h = await take(at(1));
       expect(h !== undefined).toBe(admitted);
       h?.release();
@@ -311,7 +303,7 @@ describe("session holder class", () => {
     });
 
     it("records the inputs of its capacity on the ticket, beside the result", async () => {
-      plantHolder("4242-live");
+      sessionHolder("4242-live");
       const o = opts({ headroom: scriptedHeadroomSampler(reading(1, "warning"), { overridden: true }), sessionSlots: 5 });
       const seen: unknown[] = [];
       await acquireSessionLease(o, meta, {
@@ -336,7 +328,7 @@ describe("session holder class", () => {
     });
 
     it("leaves no ticket behind after a stop", async () => {
-      plantHolder("4242-live");
+      sessionHolder("4242-live");
       const r = await acquireSessionLease(opts({ headroom: scriptedHeadroomSampler(reading(0, "critical")) }), meta, { stopWhen: () => true });
       expect(r).toMatchObject({ refused: "stopped", level: "critical" });
       expect(names("sessions-waiting")).toEqual([]);
@@ -347,7 +339,7 @@ describe("session holder class", () => {
     const heavy = { acquire: acquireLease, waiting: "waiting", holders: "holders", ceiling: 4 };
     const sessions = { acquire: acquireSessionLease, waiting: "sessions-waiting", holders: "sessions", ceiling: 6 };
     const plantLive = (cls: typeof heavy, n: number): void => {
-      for (let i = 0; i < n; i++) plant(cls.holders, `4242-live${i}`, { id: `4242-live${i}`, pid: 4242, command: "x", cwd: "/", startedAt: lease.clock.ms, level: "normal" }, lease.clock.ms + 0.5);
+      for (let i = 0; i < n; i++) plantHolder(lease, `4242-live${i}`, {}, { sub: cls.holders });
     };
     const waiter = async (cls: typeof heavy, o: LeaseOptions): Promise<boolean> => isHandle(await cls.acquire(o, meta, { maxWaitMs: 0 }));
 
@@ -357,42 +349,42 @@ describe("session holder class", () => {
       ["session, a rise from step 1 to 2", sessions, 1, 1, 2],
     ])("keeps an older waiter ahead of a younger one through %s", async (_name, cls, live, recorded, step) => {
       plantLive(cls, live);
-      plantTicket(cls.waiting, "older", 1, { capacity: recorded, ceiling: cls.ceiling });
+      sessionTicket(cls.waiting, "older", 1, { capacity: recorded, ceiling: cls.ceiling });
       expect(await waiter(cls, at(step))).toBe(false);
     });
 
     it.each([heavy, sessions])("keeps today's rule for a ticket that records no ceiling (%#)", async (cls) => {
       plantLive(cls, 1);
-      plantTicket(cls.waiting, "older", 1, { capacity: 1 });
+      sessionTicket(cls.waiting, "older", 1, { capacity: 1 });
       expect(await waiter(cls, at(2))).toBe(true);
     });
 
     it.each([heavy, sessions])("does not hold up a waiter for an owner with a lower ceiling (%#)", async (cls) => {
       plantLive(cls, 1);
-      plantTicket(cls.waiting, "older", 1, { capacity: 1, ceiling: 1 });
+      sessionTicket(cls.waiting, "older", 1, { capacity: 1, ceiling: 1 });
       expect(await waiter(cls, at(4))).toBe(true);
     });
 
     it.each([heavy, sessions])("admits an overridden waiter at step 0 past a capacity-0 ticket (%#)", async (cls) => {
-      plantTicket(cls.waiting, "older", 1, { capacity: 0, ceiling: cls.ceiling });
+      sessionTicket(cls.waiting, "older", 1, { capacity: 0, ceiling: cls.ceiling });
       expect(await waiter(cls, opts({ headroom: scriptedHeadroomSampler(reading(1, "warning"), { overridden: true }) }))).toBe(true);
     });
 
     it.each([heavy, sessions])("keeps an older overridden waiter ahead of a younger one at step 0 (%#)", async (cls) => {
-      plantTicket(cls.waiting, "older", 1, { capacity: 1, ceiling: cls.ceiling, override: true });
+      sessionTicket(cls.waiting, "older", 1, { capacity: 1, ceiling: cls.ceiling, override: true });
       expect(await waiter(cls, opts({ headroom: scriptedHeadroomSampler(reading(1, "warning"), { overridden: true }) }))).toBe(false);
     });
 
     it("reads a capacity that is not a number as absent, so the ticket counts", async () => {
       plantLive(heavy, 1);
-      plantTicket(heavy.waiting, "older", 1, { capacity: "0" });
+      sessionTicket(heavy.waiting, "older", 1, { capacity: "0" });
       expect(await waiter(heavy, at(4, { policy: { heavyCeiling: 2, heavyWarning: 1 } }))).toBe(false);
     });
   });
 
   describe("stopWhen", () => {
     it("passes the session holders and capacity, and confirms a stop through fresh()", async () => {
-      plantHolder("4242-live");
+      sessionHolder("4242-live");
       const seen: unknown[] = [];
       const o = opts({ headroom: scriptedHeadroomSampler(reading(0, "critical")) });
       const r = await acquireSessionLease(o, meta, { stopWhen: (s) => (seen.push({ capacity: s.capacity, live: s.live.map((h) => h.id) }), s.level === "critical") });
@@ -440,7 +432,7 @@ describe("session holder class", () => {
     });
 
     it("tags a session reap", async () => {
-      plantHolder("4242-old", {}, HEARTBEAT_STALE_MS + 1_000);
+      sessionHolder("4242-old", {}, HEARTBEAT_STALE_MS + 1_000);
       await take(at(4));
       expect(lease.events).toContainEqual({ type: "reap", id: "4242-old", reason: "stale-heartbeat", class: "sessions" });
     });
