@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { ancestry, groupAlive, signalGroup, isPid, pidAlive, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, type ProcRow } from "../src/ps.js";
+import { ancestry, groupAlive, signalGroup, isPid, pidAlive, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, isSimulatorCommand, type ProcRow } from "../src/ps.js";
 import { psText } from "./helpers/ps-text.js";
 
 vi.mock("node:child_process", async (orig) => ({ ...(await orig<typeof import("node:child_process")>()), execFileSync: vi.fn() }));
@@ -57,11 +57,11 @@ describe("ps", () => {
 });
 
 const MIN = 60_000;
-const row = (pid: number, ppid: number, over: Partial<ProcRow> = {}): ProcRow => ({ pid, ppid, pgid: pid, uid: 501, stat: "S", elapsedMs: 120 * MIN, command: `cmd${pid}`, ...over });
+const row = (pid: number, ppid: number, over: Partial<ProcRow> = {}): ProcRow => ({ pid, ppid, pgid: pid, uid: 501, stat: "S", elapsedMs: 120 * MIN, rssBytes: 4096 * 1024, command: `cmd${pid}`, ...over });
 
 describe("PS_TABLE_ARGS", () => {
-  it("asks for the seven columns parsePsTable reads, with no header", () => {
-    expect(PS_TABLE_ARGS).toEqual(["-axo", "pid=,ppid=,pgid=,uid=,stat=,etime=,command="]);
+  it("asks for the eight columns parsePsTable reads, with no header", () => {
+    expect(PS_TABLE_ARGS).toEqual(["-axo", "pid=,ppid=,pgid=,uid=,stat=,etime=,rss=,command="]);
   });
 });
 
@@ -70,10 +70,12 @@ describe("parsePsTable", () => {
     ["a full row", psText([{ pid: 12, ppid: 3, pgid: 9, uid: 0, stat: "Ss", etime: "05:00", command: "node run.js" }]), [row(12, 3, { pgid: 9, uid: 0, stat: "Ss", elapsedMs: 5 * MIN, command: "node run.js" })]],
     ["a command with spaces", psText([{ pid: 5, ppid: 1, pgid: 5, command: "node  a.js --flag  'x y'" }]), [row(5, 1, { command: "node  a.js --flag  'x y'" })]],
     ["a stat with flags", psText([{ pid: 5, ppid: 1, pgid: 5, stat: "T+N<s", command: "vim" }]), [row(5, 1, { stat: "T+N<s", command: "vim" })]],
-    ["padded columns", "  7   1   7 501 S 02:00:00 sleep 9", [row(7, 1, { command: "sleep 9" })]],
+    ["padded columns", "  7   1   7 501 S 02:00:00 4096 sleep 9", [row(7, 1, { command: "sleep 9" })]],
     ["a malformed line between good ones", `${psText([{ pid: 5, ppid: 1, pgid: 5, command: "a" }])}\nnot a row\n${psText([{ pid: 6, ppid: 1, pgid: 6, command: "b" }])}`, [row(5, 1, { command: "a" }), row(6, 1, { command: "b" })]],
-    ["a row missing the command", "5 1 5 501 S 02:00:00", []],
+    ["a row missing the command", "5 1 5 501 S 02:00:00 4096", []],
     ["an empty table", "", []],
+    ["an rss value", psText([{ pid: 5, ppid: 1, pgid: 5, rss: 2048, command: "a" }]), [row(5, 1, { rssBytes: 2048 * 1024, command: "a" })]],
+    ["an unreadable rss", psText([{ pid: 5, ppid: 1, pgid: 5, rss: "abc", command: "a" }]), [row(5, 1, { rssBytes: NaN, command: "a" })]],
     ["an unreadable etime", psText([{ pid: 5, ppid: 1, pgid: 5, etime: "abc", command: "a" }]), [row(5, 1, { elapsedMs: NaN, command: "a" })]],
   ])("parses %s", (_name, text, rows) => {
     expect(parsePsTable(text)).toEqual(rows);
@@ -178,5 +180,16 @@ describe("groupAlive and signalGroup", () => {
     expect(groupAlive(pgid, kill)).toBe(false);
     expect(signalGroup(pgid, "SIGKILL", kill)).toBe(false);
     expect(kill).not.toHaveBeenCalled();
+  });
+});
+
+describe("isSimulatorCommand", () => {
+  it.each([
+    ["a device data path", "/Users/u/Library/Developer/CoreSimulator/Devices/ABC/data/Containers/Bundle/App", true],
+    ["a runtime process under Volumes/.../RuntimeRoot", "/Library/Developer/CoreSimulator/Volumes/iOS_27A/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 27.simruntime/Contents/Resources/RuntimeRoot/System/Library/CoreServices/SpringBoard.app/SpringBoard", true],
+    ["a runtime process under another .simruntime root", "/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS 26.simruntime/Contents/Resources/RuntimeRoot/usr/libexec/backboardd", true],
+    ["a process outside CoreSimulator", "/usr/libexec/backboardd", false],
+  ])("classifies %s", (_name, command, expected) => {
+    expect(isSimulatorCommand(command)).toBe(expected);
   });
 });

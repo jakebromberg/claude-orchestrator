@@ -65,7 +65,7 @@ export function parseElapsed(etime: string): number {
 }
 
 /** The one process-table scan: `ps` arguments whose output `parsePsTable` reads. Callers keep their own `ps` (and timeout), so injected dependencies stay text-in. */
-export const PS_TABLE_ARGS = ["-axo", "pid=,ppid=,pgid=,uid=,stat=,etime=,command="];
+export const PS_TABLE_ARGS = ["-axo", "pid=,ppid=,pgid=,uid=,stat=,etime=,rss=,command="];
 
 /** One row of the process table. */
 export interface ProcRow {
@@ -77,19 +77,24 @@ export interface ProcRow {
   stat: string;
   /** Time since the process started (`etime`), or NaN when the column cannot be read. */
   elapsedMs: number;
+  /** Resident memory (`rss`, KiB on the wire) in bytes, or NaN when the column cannot be read. */
+  rssBytes: number;
   command: string;
 }
 
 /** The rows of `PS_TABLE_ARGS` output; a line that is not a row is skipped. */
 export function parsePsTable(text: string): ProcRow[] {
   return text.split("\n").flatMap((line) => {
-    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.*)$/.exec(line);
-    return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), uid: Number(m[4]), stat: m[5], elapsedMs: parseElapsed(m[6]), command: m[7] }] : [];
+    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.*)$/.exec(line);
+    return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), uid: Number(m[4]), stat: m[5], elapsedMs: parseElapsed(m[6]), rssBytes: /^\d+$/.test(m[7]) ? Number(m[7]) * 1024 : NaN, command: m[8] }] : [];
   });
 }
 
 /** A command whose first word's basename is `claude`, the one rule of what a Claude process is (the watchdog and the unowned-memory report). */
 export const isClaudeCommand = (command: string): boolean => basename(command.trim().split(/\s+/)[0]!) === "claude";
+
+/** A command under CoreSimulator: a device's own files (`Devices/<udid>/...`) or a runtime's processes (`Volumes/...` or any `.simruntime/` root); the one rule of what a simulator process is (the unowned-memory report). */
+export const isSimulatorCommand = (command: string): boolean => /\/CoreSimulator\/(Devices|Volumes)\/|\.simruntime\//.test(command);
 
 /** `pid` and its parents through `rows`, nearest first, without pid 1. `complete` is false when a link is missing from the scan or the chain is not finished within `max` rows (a loop), so a caller that guards on the chain can fail closed. */
 export function ancestry<R extends Pick<ProcRow, "pid" | "ppid">>(rows: R[], pid: number, max: number): { chain: R[]; complete: boolean } {
