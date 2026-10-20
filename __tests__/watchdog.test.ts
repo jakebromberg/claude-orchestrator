@@ -64,6 +64,65 @@ describe("watchdog", () => {
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
+  describe("idle booted simulators", () => {
+    const U1 = "0A1B2C3D-1111-4222-8333-444455556666";
+    const U2 = "9F8E7D6C-1111-4222-8333-444455556666";
+    const DEV = "/Users/x/Library/Developer/CoreSimulator/Devices";
+    const RT = "/Library/Developer/CoreSimulator/Volumes/iOS_23A/Library/Developer/CoreSimulator/Runtimes/iOS 26.0.simruntime/Contents/Resources/RuntimeRoot";
+    // A booted device: launchd_sim names its own Devices/<udid>/ bootstrap, its runtime processes sit below it.
+    const booted = (udid: string, base: number): Row[] => [
+      [base, 1, base, "S", `${RT}/sbin/launchd_sim ${DEV}/${udid}/data/var/run/launchd_bootstrap.plist`],
+      [base + 1, base, base, "S", `${RT}/usr/libexec/backboardd`],
+    ];
+    const tool = (command: string): Row[] => [[900, 50, 900, "S", command]];
+    const message = () => JSON.parse(readFileSync(join(dir, "watchdog.json"), "utf-8")).findings.map((f: { message: string }) => f.message).filter((m: string) => m.startsWith("simulator "));
+
+    it.each([
+      ["one idle device", booted(U1, 200), 6, [U1]],
+      ["two idle devices", [...booted(U1, 200), ...booted(U2, 300)], 6, [U1, U2]],
+      ["idle under 5 minutes", booted(U1, 200), 4, []],
+      ["a live xcodebuild", [...booted(U1, 200), ...tool("xcodebuild test -scheme X")], 6, []],
+      ["a live xcrun simctl", [...booted(U1, 200), ...tool("/usr/bin/xcrun simctl list")], 6, []],
+      ["no simulators", SESSION, 6, []],
+    ] as [string, Row[], number, string[]][])("%s", (_name, scan, at, udids) => {
+      rows = scan;
+      checkAt(0);
+      checkAt(at);
+      expect(message().map((m: string) => m.split(" ")[1])).toEqual(udids);
+    });
+
+    it("totals the device's runtime rows, skips an unreadable rss, and suggests the shutdown", () => {
+      const scan = () => psText([{ pid: 200, ppid: 1, pgid: 200, rss: 1048576, command: `${RT}/sbin/launchd_sim ${DEV}/${U1}/data/x` }, { pid: 201, ppid: 200, pgid: 200, rss: 1048576, command: `${RT}/usr/libexec/backboardd` }, { pid: 202, ppid: 201, pgid: 200, rss: "-", command: `${RT}/bin/x` }]);
+      checkAt(0, { scan });
+      checkAt(6, { scan });
+      expect(message()[0]).toContain("holding 2.0 GB");
+      expect(message()[0]).toContain(`xcrun simctl shutdown ${U1}`);
+    });
+
+    it("omits the total when no rss is readable, and reports once", () => {
+      const scan = () => psText([{ pid: 200, ppid: 1, pgid: 200, rss: "-", command: `${RT}/sbin/launchd_sim ${DEV}/${U1}/data/x` }]);
+      checkAt(0, { scan });
+      checkAt(6, { scan });
+      expect(message()[0]).not.toContain("NaN");
+      expect(message()[0]).not.toContain("GB");
+      checkAt(8, { scan });
+      expect(message()).toEqual([]);
+    });
+
+    it("starts the clock again after a tool runs", () => {
+      rows = booted(U1, 200);
+      checkAt(0);
+      rows = [...booted(U1, 200), ...tool("xcodebuild test")];
+      checkAt(3);
+      rows = booted(U1, 200);
+      checkAt(4);
+      checkAt(8);
+      expect(message()).toEqual([]);
+      checkAt(10);
+      expect(message()).toHaveLength(1);
+    });
+  });
+
   describe("unrecorded stopped groups", () => {
     it("is quiet at 4 minutes after first seen and reports at 6", () => {
       expect(checkAt(0)).toBe(0);

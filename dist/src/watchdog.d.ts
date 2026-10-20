@@ -8,6 +8,8 @@ export declare const ENGINE_FRESH_MS: number;
 export declare const STALLED_MARGIN_MS: number;
 /** A lease suspension (`by: "lease"`) older than this is reported. */
 export declare const LEASE_SUSPENSION_MAX_MS: number;
+/** A booted simulator with no `xcodebuild` or `simctl` running is reported this long after it was first seen idle. */
+export declare const SIMULATOR_IDLE_AFTER_MS: number;
 /** An `engines/<pid>.json` record (see `engine-registry.ts`) with the verdicts the rules need. */
 export interface Engine {
     pid: number;
@@ -44,6 +46,11 @@ export interface Context {
     records: SuspensionRecord[];
     /** In-scope stopped groups, with the time each was first seen stopped. */
     stoppedSince: Map<number, number>;
+    /** Booted simulators with no `xcodebuild` or `simctl` anywhere in the scan, by UDID: when each was first seen idle and its readable rss total (`undefined` when no row's rss is readable). */
+    idleSimulators: Map<string, {
+        since: number;
+        rssBytes: number | undefined;
+    }>;
 }
 export type Rule = (c: Context) => Finding[];
 /** The rules, in report order. A rule reads the context and returns findings; the reporters never change. */
