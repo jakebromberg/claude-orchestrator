@@ -23,7 +23,7 @@ export interface SuspensionDeps {
   dir: string;
   ps: (args: string[]) => string;
   /** Signals a process group (a negative pid). */
-  kill: (pid: number, signal: NodeJS.Signals) => void;
+  kill: (pid: number, signal: "SIGSTOP" | "SIGCONT") => void;
   now: () => number;
   /** This process; it and every ancestor up to pid 1 must appear in the `ps` scan, or the command refuses. */
   pid: number;

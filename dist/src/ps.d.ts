@@ -13,7 +13,7 @@ export declare const isPid: (n: unknown) => boolean;
 /** Whether any member of process group `pgid` is alive: `kill(-pgid, 0)` finds one, or `EPERM` says one is owned by another user. A non-pid is never alive, so `-0` and negatives cannot address every process. */
 export declare function groupAlive(pgid: number, kill?: (pid: number, signal: 0) => unknown): boolean;
 /** Sends `signal` to process group `pgid`; false when the group is gone (`ESRCH`) or `pgid` is not a pid (nothing is sent), any other error propagates. */
-export declare function signalGroup(pgid: number, signal: NodeJS.Signals, kill?: (pid: number, signal: NodeJS.Signals) => unknown): boolean;
+export declare function signalGroup<S extends NodeJS.Signals>(pgid: number, signal: S, kill?: (pid: number, signal: S) => unknown): boolean;
 /** Whether `kill(pid, 0)` finds the process: it exists, or exists under another user (`EPERM`). */
 export declare function pidAlive(pid: number): boolean;
 /** `ps` `etime`, `[[dd-]hh:]mm:ss`, in milliseconds; NaN for any other shape. */
