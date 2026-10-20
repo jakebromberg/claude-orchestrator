@@ -225,6 +225,8 @@ describe("heavy-queue run", () => {
     ["after || ", `false || heavy-queue run ${shellArg}`],
     ["after leading words", `FOO=1 nohup heavy-queue run ${shellArg}`],
     ["inside bash -c", `bash -c 'heavy-queue run ${shellArg}'`],
+    ["a single-quoted --shell with a separator inside", `heavy-queue run --shell 'a && npm test'`],
+    ["a --shell argument followed by a light sibling", `heavy-queue run --shell 'a; npm test' && echo done`],
   ])("%s: exempt with the shim, heavy without", (_name, command) => {
     expect(isHeavyCommand(command, [], shimmed(true))).toBe(false);
     expect(isHeavyCommand(command, [], shimmed(false))).toBe(true);
@@ -240,14 +242,30 @@ describe("heavy-queue run", () => {
     ["a variable, not expanded", `$HQ run --shell "a && npm test"`],
     ["a longer command word", `heavy-queue-runner run && npm test`],
     ["a longer subcommand", `heavy-queue runner && npm test`],
-  ])("%s: heavy with the shim, since heavy-queue run is not the command word", (_name, command) => {
+    ["a piped grep", `cat README.md | grep 'heavy-queue run'; npm test`],
+    ["a heredoc mention after a backtick", "git commit -F - <<'EOF'\nExempt `heavy-queue run` after a separator\nEOF\ngit push"],
+    ["a heredoc mention after (", `cat > notes.md <<'EOF'\nRun tests with (heavy-queue run --shell "npm test").\nEOF\nnpm test`],
+    ["a comment mention", "npm test # see (heavy-queue run)"],
+    ["a comment line before a heavy one", "# see (heavy-queue run)\nnpm test"],
+    ["an escaped single quote", `git commit -m 'it'\\''s (heavy-queue run)' && npm test`],
+    ["an escaped double quote", `git commit -m "Escape \\"(heavy-queue run)\\" in the hook" && git push`],
+    ["a heavy sibling after an unquoted --shell", `heavy-queue run --shell true; npm test`],
+    ["a heavy sibling before heavy-queue run", `npm test; heavy-queue run --shell 'npm run lint'`],
+    ["a heavy sibling after a --shell argument", `heavy-queue run --shell 'a; b' && npm test`],
+    ["a heavy sibling inside bash -c", `bash -c 'heavy-queue run x'; npm test`],
+    ["an unterminated --shell argument", `heavy-queue run --shell 'npm test`],
+    ["an unterminated --shell argument with a separator", `heavy-queue run --shell "a && b`],
+    ["a heredoc mention whose --shell quote closes after the body", "cat <<'EOF'\n(heavy-queue run --shell 'it\nEOF\nnpm test && git commit -m 'msg'"],
+    ["a backtick mention whose --shell quote closes after a sibling", "echo `heavy-queue run --shell 'a`; npm test; echo b'"],
+  ])("%s: heavy with the shim, since a non-exempt segment is heavy", (_name, command) => {
     expect(isHeavyCommand(command, [], shimmed(true))).toBe(true);
   });
 
   it.each<[string, string, boolean, boolean]>([
     ["a separator inside --shell, Python script installed", multi, false, true],
     ["a separator inside --shell, shim installed", multi, true, false],
-    ["the full path, shim installed", `~/.local/share/heavy-queue/heavy-queue run --label x -- npm ci && npm test`, true, false],
+    ["the full path, a heavy sibling after the argv form, shim installed", `~/.local/share/heavy-queue/heavy-queue run --label x -- npm ci && npm test`, true, true],
+    ["the full path, argv form alone, shim installed", `~/.local/share/heavy-queue/heavy-queue run --label x -- npm ci`, true, false],
     ["the full path, Python script installed", `~/.local/share/heavy-queue/heavy-queue run --label x -- npm ci && npm test`, false, true],
     ["a single command, Python script installed", single, false, false],
     ["a single command, shim installed", single, true, false],
