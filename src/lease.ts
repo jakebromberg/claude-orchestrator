@@ -34,6 +34,7 @@ import {
   type PressurePolicy,
   type PressureSampler,
 } from "./memory-pressure.js";
+import { describeBoundedFailure } from "./bounded-failure.js";
 import { isPid, pidAlive, PS_TIMEOUT_MS, psField, signalGroup } from "./ps.js";
 import { isLeaseRecord, leaseSuspension, readSuspensions, removeLeaseSuspension, removeSuspension, suspensionOf, writeSuspension, type SuspensionRecord } from "./suspensions.js";
 
@@ -651,7 +652,7 @@ function continueDeadOwner(opts: LeaseOptions, holder: HolderInfo): void {
     leader = leaseSuspension(opts.dir, pgid)?.leader;
     current = typeof leader === "string" ? opts.processCommand?.(pgid) : undefined;
   } catch (err) {
-    warn(opts, `lease: could not read the leader of group ${pgid}: ${(err as Error).message}`);
+    warn(opts, `lease: could not read the leader of group ${pgid}: ${describeBoundedFailure(err, PROCESS_COMMAND_TIMEOUT_MS)}`);
     const lock = tryLockOnce(join(opts.dir, ".mutex"), { staleAfterMs: MUTEX_STALE_MS, now: opts.now });
     try {
       if (!lock) throw new Error("the lease mutex is busy");

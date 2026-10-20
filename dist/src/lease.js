@@ -21,6 +21,7 @@ import { defaultHeadroomSampler, levelView } from "./headroom-sampler.js";
 import { ensureOwnSubdir, isOwnDir, readLeaseRecord, readOwnFile } from "./lease-dir.js";
 import { leaseEventSink } from "./lease-events.js";
 import { DEFAULT_RESERVE_PCT, DEFAULT_SESSION_SLOTS, freeBytes, leaseDirectory, pressurePolicyFromEnv, reservePctFromEnv, sessionSlotsFromEnv, usableBytes, } from "./memory-pressure.js";
+import { describeBoundedFailure } from "./bounded-failure.js";
 import { isPid, pidAlive, PS_TIMEOUT_MS, psField, signalGroup } from "./ps.js";
 import { isLeaseRecord, leaseSuspension, readSuspensions, removeLeaseSuspension, removeSuspension, suspensionOf, writeSuspension } from "./suspensions.js";
 export { ensureOwnSubdir, isOwnDir, isPid, pidAlive };
@@ -446,7 +447,7 @@ function continueDeadOwner(opts, holder) {
         current = typeof leader === "string" ? opts.processCommand?.(pgid) : undefined;
     }
     catch (err) {
-        warn(opts, `lease: could not read the leader of group ${pgid}: ${err.message}`);
+        warn(opts, `lease: could not read the leader of group ${pgid}: ${describeBoundedFailure(err, PROCESS_COMMAND_TIMEOUT_MS)}`);
         const lock = tryLockOnce(join(opts.dir, ".mutex"), { staleAfterMs: MUTEX_STALE_MS, now: opts.now });
         try {
             if (!lock)

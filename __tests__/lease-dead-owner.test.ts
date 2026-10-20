@@ -126,6 +126,14 @@ describe("continuing a dead owner's suspended group", () => {
     expect(sigconts()).toEqual([-7001]);
   });
 
+  it("names the 2 s bound when the leader lookup times out", () => {
+    plant("dead", 7001);
+    commands[7001] = Object.assign(new Error("spawnSync ps ETIMEDOUT"), { code: "ETIMEDOUT" });
+    acquire();
+    expect(sigconts()).toEqual([]);
+    expect(lease.warnings.at(-1)).toMatch(/could not read the leader of group 7001: timed out at the 2 s bound/);
+  });
+
   it("sends no signal when the record cannot be read, and the orphan stays selectable by a later acquire", () => {
     plant("dead", 7001);
     const restore = failFsCall("openSync", (p) => p.includes("suspensions"), "EIO");

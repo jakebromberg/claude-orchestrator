@@ -28,6 +28,9 @@ export const GIT_TIMEOUT_MS = 12_000;
  */
 export const WEIGHT_GIT_TIMEOUT_MS = 2_000;
 
+/** The one timeout test and one-line failure text for bounded synchronous calls, defined in a leaf module so `lease.ts` can use them too. */
+export { isTimeoutError, describeBoundedFailure } from "./bounded-failure.js";
+
 /** Bound on the default `LeaseOptions.processCommand`, defined beside its one reader in `lease.ts` (which this module imports from). */
 export { PROCESS_COMMAND_TIMEOUT_MS } from "./lease.js";
 
