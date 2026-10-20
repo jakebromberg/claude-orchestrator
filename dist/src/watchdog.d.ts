@@ -55,7 +55,9 @@ export interface Context {
 export type Rule = (c: Context) => Finding[];
 /** The rules, in report order. A rule reads the context and returns findings; the reporters never change. */
 export declare const RULES: Rule[];
-/** The default scan: one bounded `ps`, 60 s because it can be slow at background priority. A throw skips the cycle. */
+/** The scan's bound, 60 s because `ps` can be slow at background priority. */
+export declare const SCAN_TIMEOUT_MS = 60000;
+/** The default scan: one bounded `ps`. A throw skips the cycle. */
 export declare const scanProcessTable: () => string;
 export interface WatchdogDeps {
     /** The lease directory. */

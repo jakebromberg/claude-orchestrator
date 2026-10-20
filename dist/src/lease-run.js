@@ -8,8 +8,9 @@
  */
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
+import { describeBoundedFailure } from "./bounded-failure.js";
 import { weightFor } from "./lease-weights.js";
-import { acquireLease, defaultLeaseOptions, leaseStatus, resumeOldest, SUSPEND_MIN_RUN_MS, suspendNewest } from "./lease.js";
+import { acquireLease, defaultLeaseOptions, leaseStatus, PROCESS_COMMAND_TIMEOUT_MS, resumeOldest, SUSPEND_MIN_RUN_MS, suspendNewest } from "./lease.js";
 import { formatAdmitted, formatRefusal, refusalExitCode, seconds, throttledProgress } from "./lease-messages.js";
 import { psAncestors, signalGroup } from "./ps.js";
 import { sampleUnowned } from "./unowned-memory.js";
@@ -257,7 +258,7 @@ export async function runLeased(args, d) {
                     d.err("lease: paused on purpose (SIGSTOP) while the machine is overloaded; do not kill or re-run it");
                 }
                 catch (e) {
-                    d.err(`lease: ${suspended ? "resume" : "suspend"} check failed: ${e.message}`);
+                    d.err(`lease: ${suspended ? "resume" : "suspend"} check failed: ${describeBoundedFailure(e, PROCESS_COMMAND_TIMEOUT_MS)}`);
                 }
             }, GOVERN_MS);
             // A group that was suspended and is now going away takes the lease's record with it, never one another writer put there since; the holder file, and with it the mark, goes with the release.

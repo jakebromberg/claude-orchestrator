@@ -417,6 +417,18 @@ describe("runLeased governor tick", () => {
     first.release();
   });
 
+  it("names the bound when the leader lookup times out", async () => {
+    const processCommand = (): string => {
+      throw Object.assign(new Error("spawnSync ps ETIMEDOUT"), { code: "ETIMEDOUT" });
+    };
+    const { done, first } = await startNewest({ leaseOptions: () => leaseOpts({ processCommand }) });
+    tickFns[0]!();
+    expect(errs.at(-1)).toMatch(/suspend check failed: timed out at the 2 s bound$/);
+    child.emit("close", 0, null);
+    await done;
+    first.release();
+  });
+
   it("reports a SIGSTOP that throws EPERM and leaves no record", async () => {
     kill.mockImplementation((_pid: number, sig: string) => {
       if (sig === "SIGSTOP") throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });

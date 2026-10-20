@@ -359,13 +359,19 @@ describe("watchdog", () => {
     it("keeps the previous state and logs the skip when the scan throws", () => {
       checkAt(0);
       const before = readFileSync(join(dir, "watchdog.json"), "utf-8");
-      scanError = new Error("spawnSync ps ETIMEDOUT");
+      scanError = new Error("spawnSync ps failed");
       expect(checkAt(10)).toBe(0);
       expect(readFileSync(join(dir, "watchdog.json"), "utf-8")).toBe(before);
-      expect(log()).toContain("scan skipped: spawnSync ps ETIMEDOUT");
+      expect(log()).toContain("scan skipped: spawnSync ps failed");
       scanError = undefined;
       checkAt(11);
       expect(brief()).toContain("process group 100");
+    });
+
+    it("names the scan's bound when it times out", () => {
+      scanError = Object.assign(new Error("spawnSync ps ETIMEDOUT"), { code: "ETIMEDOUT" });
+      checkAt(10);
+      expect(log()).toContain("scan skipped: timed out at the 60 s bound");
     });
 
     it("skips an empty scan", () => {
