@@ -13,13 +13,13 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { YamlConfigSchema } from "./yaml-schema.js";
 import { FileCounterStore } from "./counter-store.js";
 import { seedFromGit } from "./seed-from-git.js";
 import { resolveRepoSettings } from "./repo-settings.js";
 import { resolveYamlPaths } from "./yaml-loader.js";
+import { isEntryPoint } from "./entry-point.js";
 function takeValue(argv, i, flag) {
     const v = argv[i + 1];
     if (v === undefined || v.startsWith("--")) {
@@ -130,9 +130,7 @@ function main() {
     });
     process.stdout.write(claim.formatted + "\n");
 }
-const entryPath = process.argv[1] ? path.resolve(process.argv[1]) : "";
-const thisFile = fileURLToPath(import.meta.url);
-if (entryPath === thisFile) {
+if (isEntryPoint(import.meta.url)) {
     try {
         main();
     }

@@ -51,12 +51,12 @@
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { YamlConfigSchema } from "./yaml-schema.js";
 import { resolveYamlPaths } from "./yaml-loader.js";
 import { allAppendableFiles } from "./repo-settings.js";
 import { mergeJsonDocuments, resolveConflict } from "./merge-appendable.js";
+import { isEntryPoint } from "./entry-point.js";
 // ---------------------------------------------------------------------------
 // Argument parsing
 // ---------------------------------------------------------------------------
@@ -242,9 +242,7 @@ function main() {
         });
     }
 }
-const entryPath = process.argv[1] ? path.resolve(process.argv[1]) : "";
-const thisFile = fileURLToPath(import.meta.url);
-if (entryPath === thisFile) {
+if (isEntryPoint(import.meta.url)) {
     try {
         main();
     }

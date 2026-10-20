@@ -17,12 +17,11 @@
  * The run function and its deps live in `lease-run.ts` (no load-time work) and are
  * re-exported here; the file's bottom wires the entry point.
  */
-import { realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { formatAdmitted, formatNoSlot } from "./lease-messages.js";
 import { runHook } from "./lease-hook.js";
 import { runSuspensionCli } from "./suspensions.js";
 import { cliLeaseDeps, parseLeaseArgs, runLeased, runStatus } from "./lease-run.js";
+import { isEntryPoint } from "./entry-point.js";
 export { formatAdmitted, formatNoSlot };
 export { cliLeaseDeps, parseLeaseArgs, runLeased, runStatus };
 const EX_USAGE = 64;
@@ -54,9 +53,7 @@ async function main(argv) {
     });
     return args.kind === "status" ? runStatus(deps) : runLeased(args, deps);
 }
-// A bin is run through a symlink (`node_modules/.bin/...`), so compare real paths.
-const entryPath = process.argv[1] ? realpathSync(process.argv[1]) : "";
-if (entryPath === realpathSync(fileURLToPath(import.meta.url))) {
+if (isEntryPoint(import.meta.url)) {
     main(process.argv.slice(2)).then((code) => {
         process.exitCode = code;
     }, (err) => {
