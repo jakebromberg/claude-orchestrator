@@ -99,6 +99,12 @@ export const isClaudeCommand = (command: string): boolean => basename(command.tr
 /** A command under CoreSimulator: a device's own files (`Devices/<udid>/...`) or a runtime's processes (`Volumes/...` or any `.simruntime/` root); the one rule of what a simulator process is (the unowned-memory report). */
 export const isSimulatorCommand = (command: string): boolean => /\/CoreSimulator\/(Devices|Volumes)\/|\.simruntime\//.test(command);
 
+/** The Xcode tools whose running marks a simulator as in use and a command as unsuspendable. */
+export const XCODE_TOOLS = ["xcodebuild", "simctl"];
+
+/** True when `command` runs one of `names`: the name preceded by the start, whitespace, `/` or a shell separator and followed by whitespace or the end, so a tool path with spaces still counts and `mysimctl` does not. */
+export const runsTool = (command: string, names: string[]): boolean => new RegExp(`(^|[\\s/;&|(])(${names.join("|")})(\\s|$)`).test(command);
+
 /** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */
 export const simulatorUdid = (command: string): string | undefined => /\/CoreSimulator\/Devices\/([0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12})\//i.exec(command)?.[1]?.toUpperCase();
 

@@ -14,7 +14,7 @@ import { describeBoundedFailure } from "./bounded-failure.js";
 import { weightFor } from "./lease-weights.js";
 import { acquireLease, defaultLeaseOptions, leaseStatus, PROCESS_COMMAND_TIMEOUT_MS, resumeOldest, SUSPEND_MIN_RUN_MS, suspendNewest, type LeaseOptions, type LeaseStatus } from "./lease.js";
 import { formatAdmitted, formatRefusal, refusalExitCode, seconds, throttledProgress } from "./lease-messages.js";
-import { psAncestors, signalGroup } from "./ps.js";
+import { psAncestors, runsTool, signalGroup, XCODE_TOOLS } from "./ps.js";
 import { sampleUnowned, type UnownedMemory } from "./unowned-memory.js";
 import { removeLeaseSuspension } from "./suspensions.js";
 
@@ -26,7 +26,7 @@ const TASKPOLICY = "/usr/sbin/taskpolicy";
 const EX_CONFIG = 78;
 const GOVERN_MS = 2_000;
 /** Commands whose work runs outside their own process group, so SIGSTOP would pause only the client (heavy-queue's `UNSUSPENDABLE`). */
-const NEVER_SUSPEND = /(^|[\s/;&|(])(xcodebuild|simctl|docker|podman|ssh)(\s|$)/;
+const NEVER_SUSPEND = [...XCODE_TOOLS, "docker", "podman", "ssh"];
 
 /** Exactly one of `argv` (spawned directly) and `shell` (run under `/bin/sh -c`) is set. */
 export interface RunArgs {
@@ -170,7 +170,7 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
   const command = args.shell ?? args.argv!.join(" ");
   // Only a holder that governs itself is ranked as a suspension candidate: a background group and a governor.
   const governor = args.suspendable && args.background ? d.governor : undefined;
-  const suspendable = governor !== undefined && !args.noSuspend && d.env.HEAVY_QUEUE_NO_SUSPEND !== "1" && !NEVER_SUSPEND.test(command);
+  const suspendable = governor !== undefined && !args.noSuspend && d.env.HEAVY_QUEUE_NO_SUSPEND !== "1" && !runsTool(command, NEVER_SUSPEND);
   // A background child leads its own group (pid = pgid), so a signal goes to the group, continued first in case it is stopped.
   const signalChild = (sig: NodeJS.Signals): void => {
     if (!args.background || child!.pid === undefined) return void child!.kill(sig);

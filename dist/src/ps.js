@@ -77,6 +77,10 @@ export function parsePsTable(text) {
 export const isClaudeCommand = (command) => basename(command.trim().split(/\s+/)[0]) === "claude";
 /** A command under CoreSimulator: a device's own files (`Devices/<udid>/...`) or a runtime's processes (`Volumes/...` or any `.simruntime/` root); the one rule of what a simulator process is (the unowned-memory report). */
 export const isSimulatorCommand = (command) => /\/CoreSimulator\/(Devices|Volumes)\/|\.simruntime\//.test(command);
+/** The Xcode tools whose running marks a simulator as in use and a command as unsuspendable. */
+export const XCODE_TOOLS = ["xcodebuild", "simctl"];
+/** True when `command` runs one of `names`: the name preceded by the start, whitespace, `/` or a shell separator and followed by whitespace or the end, so a tool path with spaces still counts and `mysimctl` does not. */
+export const runsTool = (command, names) => new RegExp(`(^|[\\s/;&|(])(${names.join("|")})(\\s|$)`).test(command);
 /** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */
 export const simulatorUdid = (command) => /\/CoreSimulator\/Devices\/([0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12})\//i.exec(command)?.[1]?.toUpperCase();
 /** `pid` and its parents through `rows`, nearest first, without pid 1. `complete` is false when a link is missing from the scan or the chain is not finished within `max` rows (a loop), so a caller that guards on the chain can fail closed. */

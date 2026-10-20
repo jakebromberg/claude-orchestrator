@@ -5,12 +5,12 @@
  * engine's liveness is whether its pid has a row in the scan for a process that started no later than the record.
  */
 import { lstatSync, readdirSync, statfsSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { describeBoundedFailure } from "./bounded-failure.js";
 import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
 import { appendOwnLine, isOwnDir, readLeaseRecord, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
-import { ancestry, isClaudeCommand, isPid, isSimulatorCommand, parsePsTable, ps, PS_TABLE_ARGS, simulatorUdid, type ProcRow } from "./ps.js";
+import { ancestry, isClaudeCommand, isPid, isSimulatorCommand, parsePsTable, ps, PS_TABLE_ARGS, runsTool, simulatorUdid, XCODE_TOOLS, type ProcRow } from "./ps.js";
 import { isLeaseRecord, readSuspensions, type SuspensionRecord } from "./suspensions.js";
 
 const EX_USAGE = 64;
@@ -207,7 +207,7 @@ function stoppedGroups(procs: ProcRow[], engines: Engine[]): number[] {
 
 /** Booted simulators by UDID (the `launchd_sim` row naming `Devices/<udid>/`) with the readable rss of every simulator process under it, one pid map for the scan. Idle ones only: none when an `xcodebuild` or `simctl` is running. */
 function idleSimulatorRss(procs: ProcRow[]): Map<string, number | undefined> {
-  const toolRunning = procs.some((p) => p.command.trim().split(/\s+/).slice(0, 2).some((w) => ["xcodebuild", "simctl"].includes(basename(w))));
+  const toolRunning = procs.some((p) => runsTool(p.command, XCODE_TOOLS));
   const byPid = new Map(procs.map((p) => [p.pid, p]));
   const roots = new Map(procs.flatMap((p) => (p.command.includes("launchd_sim") && simulatorUdid(p.command) ? [[p.pid, simulatorUdid(p.command)!] as const] : [])));
   const totals = new Map<string, number | undefined>();

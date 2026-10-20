@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { ancestry, groupAlive, signalGroup, isPid, pidAlive, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, isSimulatorCommand, type ProcRow } from "../src/ps.js";
+import { ancestry, groupAlive, signalGroup, isPid, pidAlive, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, isSimulatorCommand, runsTool, XCODE_TOOLS, type ProcRow } from "../src/ps.js";
 import { psText } from "./helpers/ps-text.js";
 
 vi.mock("node:child_process", async (orig) => ({ ...(await orig<typeof import("node:child_process")>()), execFileSync: vi.fn() }));
@@ -191,5 +191,20 @@ describe("isSimulatorCommand", () => {
     ["a process outside CoreSimulator", "/usr/libexec/backboardd", false],
   ])("classifies %s", (_name, command, expected) => {
     expect(isSimulatorCommand(command)).toBe(expected);
+  });
+});
+
+describe("runsTool", () => {
+  it.each([
+    ["a bare name", "xcodebuild test", true],
+    ["an absolute path", "/usr/bin/xcodebuild test", true],
+    ["xcrun simctl", "/usr/bin/xcrun simctl list", true],
+    ["a path with two spaces", "/Applications/Xcode Beta 2.app/Contents/Developer/usr/bin/xcodebuild test", true],
+    ["after &&", "cd x && xcodebuild test", true],
+    ["a name that only ends in the word", "mysimctl list", false],
+    ["a name that only starts with the word", "xcodebuild-helper run", false],
+    ["no match", "npm test", false],
+  ])("classifies %s", (_name, command, expected) => {
+    expect(runsTool(command, XCODE_TOOLS)).toBe(expected);
   });
 });
