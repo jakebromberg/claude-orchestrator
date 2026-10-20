@@ -227,7 +227,7 @@ describe("session holder class", () => {
     // `count` reads no memory signals; `weight` reads 16 GiB of memory, so the heavy budget at step 4 is 12 GiB (a ceiling of 1 and the default 25 % reserve).
     const modes = {
       count: reading(4),
-      weight: { level: "normal", step: 4, signals: { level: "normal", freePct: 50, memsizeBytes: 16 * GIB } } satisfies HeadroomReading,
+      weight: { level: "normal", step: 4, signals: { level: "normal", memsizeBytes: 16 * GIB } } satisfies HeadroomReading,
     } as const;
     const classes = [
       { cls: "heavy", sub: "holders", waiting: "waiting", acquire: acquireLease, modes: ["count", "weight"] },

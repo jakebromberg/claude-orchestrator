@@ -27,14 +27,21 @@ export interface HeadroomState {
   risingSince: number | null;
 }
 
-/** The owner's Q1 table: `normal` 4, `warning` 3 at 40% free or more, 2 at 30 to 39%, 1 under 30%, `critical` 0, and a rise of one step per 60 s. */
+/**
+ * How long a heavy holder takes to grow into the memory it will use. Until a holder is this old, admission charges its full weight and
+ * the free reading is not trusted to include it. Chosen from `pressure.jsonl` on 2026-10-19: after four holders were admitted at once,
+ * free memory kept falling for 70 s to 4.5 min (43% to 31% free at 17:01 to 17:05 PT).
+ */
+export const RAMP_MS = 300_000;
+
+/** The owner's Q1 table: `normal` 4, `warning` 3 at 40% free or more, 2 at 30 to 39%, 1 under 30%, `critical` 0, and a rise of one step per ramp window (a rise must not outrun holders that have not grown yet; the session row shares it). */
 export const DEFAULT_STEP_TABLE: StepTable = {
   warning: [
     { minFreePct: 40, step: 3 },
     { minFreePct: 30, step: 2 },
     { minFreePct: 0, step: 1 },
   ],
-  riseHoldMs: 60_000,
+  riseHoldMs: RAMP_MS,
 };
 
 /** Heavy-command slots at `step`: step 4 gets the whole `ceiling`, a lower step at most that many, step 0 none. */
@@ -42,9 +49,20 @@ export function headroomCapacity(step: number, ceiling: number): number {
   return step >= MAX_STEP ? ceiling : Math.min(ceiling, step);
 }
 
-/** The bytes of `usable` memory the heavy class may hold at `step`: `step / 4` of it, none at step 0. */
-export function heavyBudget(step: number, usable: number): number {
-  return (usable * Math.min(MAX_STEP, Math.max(0, step))) / MAX_STEP;
+/** What the free-memory budget reads: bytes free now, the reserve, and the weight of the holders old enough that the free reading already includes them. */
+export interface FreeBudget {
+  freeBytes: number;
+  reserve: number;
+  settled: number;
+}
+
+/**
+ * The bytes the heavy class may hold at `step`. With a free reading: free memory less the reserve, plus the weight of the settled holders
+ * (their use is already out of the free bytes), at most `usable` and none at step 0. Without one: `step / 4` of `usable`, none at step 0.
+ */
+export function heavyBudget(step: number, usable: number, free?: FreeBudget): number {
+  if (!free) return (usable * Math.min(MAX_STEP, Math.max(0, step))) / MAX_STEP;
+  return step > 0 ? Math.min(usable, Math.max(0, free.freeBytes - free.reserve + free.settled)) : 0;
 }
 
 /** The session row below step 4, by step. */

@@ -3,7 +3,7 @@
  * Holders are files in `<dir>/holders/`; a request is admitted while the live
  * holder count is under the heavy capacity of the headroom step (`headroomCapacity(step, ceiling)`;
  * the step derived from the level when only a `level` sampler is given), or, when the machine's memory is known, while the
- * summed memory weights of the live holders and the request fit the step's byte budget (`heavyBudget`). Liveness is a live
+ * summed memory weights of the live holders and the request fit the byte budget (`heavyBudget`: free memory less the reserve, plus the weight of holders past the ramp window; the step's share of the usable bytes without a free reading). Liveness is a live
  * heartbeat (the holder file's mtime, refreshed every 30 s) or a live child PID,
  * so a crashed or killed holder cannot leak a slot. A detached holder (hook mode) is live while its session PID is
  * alive and its `expiresAt` has not passed. The lease fails open on I/O errors and a long-busy mutex,
@@ -16,11 +16,11 @@ import { cpus } from "node:os";
 import { join } from "node:path";
 import { sweepDeadTemps, writeFileAtomic } from "./atomic-write.js";
 import { isWithinWindow, tryLockOnce } from "./file-lock.js";
-import { headroomCapacity, heavyBudget, MAX_STEP, sessionHeadroomCapacity } from "./headroom.js";
+import { headroomCapacity, heavyBudget, MAX_STEP, RAMP_MS, sessionHeadroomCapacity } from "./headroom.js";
 import { defaultHeadroomSampler, levelView } from "./headroom-sampler.js";
 import { ensureOwnSubdir, isOwnDir, readLeaseRecord, readOwnFile } from "./lease-dir.js";
 import { leaseEventSink } from "./lease-events.js";
-import { DEFAULT_RESERVE_PCT, DEFAULT_SESSION_SLOTS, leaseDirectory, pressurePolicyFromEnv, reservePctFromEnv, sessionSlotsFromEnv, usableBytes, } from "./memory-pressure.js";
+import { DEFAULT_RESERVE_PCT, DEFAULT_SESSION_SLOTS, freeBytes, leaseDirectory, pressurePolicyFromEnv, reservePctFromEnv, sessionSlotsFromEnv, usableBytes, } from "./memory-pressure.js";
 import { isPid, pidAlive } from "./ps.js";
 export { ensureOwnSubdir, isOwnDir, isPid, pidAlive };
 const MUTEX_STALE_MS = 10_000;
@@ -328,15 +328,20 @@ function borrowedHandle(id, level, capacity, live) {
 }
 /**
  * The one weight rule: bytes when the class has a `budget` and the reading carries the machine's memory (a holder without a weight takes
- * the unmatched `usable / ceiling`), else every weight is 1 and the budget is the capacity, which is the count rule. `report` is the
- * used/budget pair for the given holders, or `undefined` in count mode.
+ * the unmatched `usable / ceiling`), else every weight is 1 and the budget is the capacity, which is the count rule. With a free reading too,
+ * the budget is free memory less the reserve plus the weight of the `live` holders older than `RAMP_MS` (younger ones have not grown into their
+ * memory, so they are charged in full); without one it is the step's share of `usable`. `report` is the used/budget pair for the given
+ * holders, or `undefined` in count mode.
  */
-function weigh(opts, cls, { step, capacity = 0, signals }) {
+function weigh(opts, cls, { step, capacity = 0, signals }, live) {
     const memsize = positive(signals?.memsizeBytes);
     const usable = cls.budget && memsize !== undefined ? usableBytes(memsize, opts.reservePct ?? DEFAULT_RESERVE_PCT) : undefined;
     const unmatched = usable === undefined ? 1 : usable / cls.ceiling(opts);
     const of = (x) => (usable === undefined ? 1 : (x.weight ?? unmatched));
-    const budget = usable === undefined ? capacity : cls.budget(step, usable);
+    const free = signals ? freeBytes(signals) : undefined;
+    const nowMs = (opts.now ?? Date.now)();
+    const settled = () => free === undefined || usable === undefined ? undefined : { freeBytes: free, reserve: memsize - usable, settled: live.filter((h) => nowMs - h.startedAt >= RAMP_MS).reduce((sum, h) => sum + of(h), 0) };
+    const budget = usable === undefined ? capacity : cls.budget(step, usable, settled());
     const report = (holders) => (usable === undefined ? undefined : { used: holders.reduce((sum, x) => sum + of(x), 0), budget });
     return { usable, budget, of, report };
 }
@@ -376,7 +381,7 @@ function attempt(opts, cls, meta, waitedMs, ticketId) {
             // A writer killed between its write and rename leaves a uniquely named temp file: remove those of dead writers in this class's directories and the root. Only here, under the mutex; the scanners and `leaseStatus` never delete.
             for (const d of [cls.holders, cls.waiting, ""])
                 sweepDeadTemps(join(opts.dir, d), opts.isAlive ?? pidAlive);
-            const { usable, budget, of: weightOf, report } = weigh(opts, cls, snap);
+            const { usable, budget, of: weightOf, report } = weigh(opts, cls, snap, live);
             const myWeight = weightOf({ weight: positive(meta.weight) });
             const weights = report([...live, { weight: myWeight }]);
             const admission = { waitedMs, level, live: live.length + 1, capacity, ...(overridden && { override: true }), ...(weights && { weights: { ...weights, weight: myWeight } }) };
@@ -395,7 +400,7 @@ function attempt(opts, cls, meta, waitedMs, ticketId) {
                 const machineStep = overridden ? 0 : snap.step;
                 const ticketStep = (t) => (t.override && machineStep === 0 ? 1 : machineStep);
                 const ticketCapacity = (t) => (t.ceiling === undefined ? (t.capacity ?? Infinity) : cls.capacity(ticketStep(t), t.ceiling));
-                const counts = (t) => (usable === undefined ? ticketCapacity(t) > live.length : cls.budget(ticketStep(t), usable) > 0);
+                const counts = (t) => (usable === undefined ? ticketCapacity(t) > live.length : ticketStep(t) > 0);
                 const others = line.filter((t) => t.eligible && t.id !== ticketId && (ticketId === undefined || t.seq < seq) && counts(t));
                 const ahead = others.filter((t) => t.ready !== false);
                 const taken = [...live, ...ahead].reduce((sum, x) => sum + weightOf(x), 0);
@@ -508,7 +513,7 @@ function liveOf(opts, cls) {
 const statusOf = (opts, cls, snap) => {
     const { level, capacity, step, signals } = snap;
     const live = liveOf(opts, cls);
-    const weights = weigh(opts, cls, snap).report(live);
+    const weights = weigh(opts, cls, snap, live).report(live);
     return { level, capacity, step, signals, live, ...(weights && { weights }) };
 };
 /**
@@ -642,7 +647,7 @@ export function defaultLeaseOptions(env = process.env, overrides = {}) {
         log: tagged,
         heavy: (step, signals) => {
             const { live } = scanHolders(opts, HEAVY);
-            return { live: live.length, weights: weigh(opts, HEAVY, { step, signals }).report(live) };
+            return { live: live.length, weights: weigh(opts, HEAVY, { step, signals }, live).report(live) };
         },
     });
     const level = overrides.level ?? levelView(headroom);
