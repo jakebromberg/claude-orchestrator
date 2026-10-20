@@ -845,9 +845,15 @@ export class Orchestrator {
                         const retrySlot = await this.acquireSessionSlot(issue, worktreePath);
                         if (typeof retrySlot === "string")
                             return this.stopRetry(issue, retrySlot);
-                        this.deps.logger.warn(`Issue #${issue.number} produced 0-byte log (exit ${exitCode}), retrying once...`);
-                        this.deps.truncateFile(logFile);
-                        this.deps.truncateFile(stderrFile);
+                        try {
+                            this.deps.logger.warn(`Issue #${issue.number} produced 0-byte log (exit ${exitCode}), retrying once...`);
+                            this.deps.truncateFile(logFile);
+                            this.deps.truncateFile(stderrFile);
+                        }
+                        catch (err) {
+                            retrySlot.release();
+                            throw err;
+                        }
                         const retryHandle = this.spawnSession(issue, args, worktreePath, logFile, stderrFile, { retry: true, slot: retrySlot });
                         const retryExitCode = await retryHandle.exitCode;
                         this.deps.metadataStore.update(issue.ref, {
