@@ -9,6 +9,11 @@ export { ensureOwnSubdir, isOwnDir, isPid, pidAlive };
  * so an acquire, which the engine's post-check makes on its event loop, blocks for one lookup at most. Re-exported by `sync-budget.ts`.
  */
 export declare const PROCESS_COMMAND_TIMEOUT_MS = 2000;
+/**
+ * How long `attempt()`'s claim on a dead owner's group (`HolderRecord.claimedAt`) excludes other acquires, well above `PROCESS_COMMAND_TIMEOUT_MS`:
+ * a claim that is not cleared (a lookup that threw, a busy mutex or a failed write) expires after this, and a later acquire takes the group again.
+ */
+export declare const DEAD_OWNER_CLAIM_MS = 30000;
 /** A holder's mtime heartbeat period, and how old a beat may be before the holder is reaped; a blocking stretch in an engine that holds a session slot must fit in the difference (`__tests__/sync-call-budget.test.ts`). */
 export declare const HEARTBEAT_MS = 30000;
 export declare const HEARTBEAT_STALE_MS = 90000;
@@ -146,6 +151,8 @@ interface HolderRecord {
     suspended?: true;
     /** Epoch ms the governor last resumed this holder; its run time for `suspendNewest` counts from the later of this and `startedAt`. */
     resumedAt?: number;
+    /** Epoch ms an acquire claimed this suspended holder's group to continue it, its front end being dead; others skip it for `DEAD_OWNER_CLAIM_MS`. */
+    claimedAt?: number;
     /** Bytes; absent means the unmatched weight. */
     weight?: number;
 }
@@ -249,7 +256,7 @@ export declare function writeMark(dir: string, name: string, nowMs: number): voi
 export declare function suspendNewest(opts: LeaseOptions, handle: LeaseHandle, pgid: number, leader: string | null, stop: (pgid: number) => boolean): boolean;
 /**
  * One tick of a suspended holder's front end: continues `handle`'s own group, `pgid`, when `handle` is the oldest suspended holder whose front end
- * is alive (a dead owner's group is `attempt()`'s to continue) and the machine
+ * can tick (alive and not `silent`; a dead owner's group is `attempt()`'s to continue, and a stopped front end's group stays stopped) and the machine
  * has recovered, and returns `"resumed"`. The signals are sampled before the mutex; under it the decision is made and `cont` (SIGCONT of `pgid`) runs
  * after it is released, then the holder's mark is cleared, then the record is removed, so a crash leaves a mark or a record on a running group and never
  * a stopped group without either. Recovered is CPU busy under 0.85 (`cpuBusy`; null means not yet), in count mode a free percentage above 20 (none
