@@ -169,7 +169,7 @@ export interface HolderInfo extends HolderRecord {
   ageSec: number;
 }
 
-/** Bytes the live holders weigh and the bytes the step's budget allows; reported only while holders are weighed. */
+/** Bytes the live holders weigh and the bytes the budget allows (free memory less the reserve plus the settled holders' weight with a free reading, the step's share of the usable bytes without one); reported only while holders are weighed. */
 export interface Weights {
   used: number;
   budget: number;
