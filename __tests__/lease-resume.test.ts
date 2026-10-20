@@ -6,7 +6,7 @@ import { resumeOldest, tryAcquireLease, type LeaseHandle, type LeaseOptions } fr
 import { RAMP_MS } from "../src/headroom.js";
 import { readSuspensions, writeSuspension } from "../src/suspensions.js";
 import { scriptedHeadroomSampler } from "../src/testing.js";
-import { failFsCall, plantCpu, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
+import { failFsCall, plantCpu, plantHolder, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
 
 const WIDE = { heavyCeiling: 4, heavyWarning: 4 };
 const TICKS = { idle: 1, total: 10 };
@@ -129,6 +129,11 @@ describe("resuming the oldest suspended holder", () => {
     plantCpu(lease, 0.1, TICKS);
     expect(tick("b")).toBe("resumed");
     expect(cont.mock.calls).toEqual([[pgid.a], [pgid.b]]);
+  });
+
+  it("is not held back by an older suspended holder whose front end is gone, which only an acquire continues", () => {
+    plantHolder(lease, "orphan", { pid: 4242, pgid: 9100, childPid: 9100, suspended: true, startedAt: lease.clock.ms - 3600 * SECOND });
+    expect(tick("a")).toBe("resumed");
   });
 
   it("does nothing while the mutex is busy", () => {

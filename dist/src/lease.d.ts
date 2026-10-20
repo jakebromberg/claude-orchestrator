@@ -237,7 +237,8 @@ export declare function writeMark(dir: string, name: string, nowMs: number): voi
  */
 export declare function suspendNewest(opts: LeaseOptions, handle: LeaseHandle, pgid: number, leader: string | null, stop: (pgid: number) => boolean): boolean;
 /**
- * One tick of a suspended holder's front end: continues `handle`'s own group, `pgid`, when `handle` is the oldest suspended holder and the machine
+ * One tick of a suspended holder's front end: continues `handle`'s own group, `pgid`, when `handle` is the oldest suspended holder whose front end
+ * is alive (a dead owner's group is `attempt()`'s to continue) and the machine
  * has recovered, and returns `"resumed"`. The signals are sampled before the mutex; under it the decision is made and `cont` (SIGCONT of `pgid`) runs
  * after it is released, then the holder's mark is cleared, then the record is removed, so a crash leaves a mark or a record on a running group and never
  * a stopped group without either. Recovered is CPU busy under 0.85 (`cpuBusy`; null means not yet), in count mode a free percentage above 20 (none
