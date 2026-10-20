@@ -6,7 +6,7 @@ import { acquireLease, acquireSessionLease, defaultLeaseOptions, leaseStatus, tr
 import { headroomCapacity, sessionHeadroomCapacity } from "../src/headroom.js";
 import type { HeadroomReading } from "../src/headroom-sampler.js";
 import { scriptedHeadroomSampler } from "../src/testing.js";
-import { scriptedLease, type ScriptedLease } from "./helpers/lease.js";
+import { plantHolder, plantTicket, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
 
 const GB = 2 ** 30;
 /** 16 GB of memory with the default 25% reserve leaves 12 GB usable; at a ceiling of 4 an unmatched command weighs 3 GB. */
@@ -26,18 +26,10 @@ describe("heavy admission by summed memory weight", () => {
   const at = (step: number, over: Partial<LeaseOptions> = {}, memsize: number | null = MEMSIZE): LeaseOptions =>
     lease.opts({ headroom: scriptedHeadroomSampler(reading(step, memsize)), ...over });
   const names = (sub: string): string[] => (existsSync(join(dir, sub)) ? readdirSync(join(dir, sub)).sort() : []);
-  const plant = (sub: string, id: string, body: Record<string, unknown>): void => {
-    mkdirSync(join(dir, sub), { recursive: true, mode: 0o700 });
-    writeFileSync(join(dir, sub, `${id}.json`), JSON.stringify(body));
-    utimesSync(join(dir, sub, `${id}.json`), (lease.clock.ms + 0.5) / 1000, (lease.clock.ms + 0.5) / 1000);
-  };
   /** Live heavy holders written by another process; `undefined` is a holder with no weight, and anything else is recorded as given. */
-  const plantHolders = (...weights: unknown[]): void =>
-    weights.forEach((weight, i) => plant("holders", `4242-live${i}`, { id: `4242-live${i}`, pid: 4242, command: "x", cwd: "/", startedAt: lease.clock.ms, level: "normal", ...(weight !== undefined && { weight }) }));
-  const plantTicket = (id: string, seq: number, extra: Record<string, unknown> = {}): void => {
-    lease.alive.add(5000 + seq);
-    plant("waiting", id, { seq, id, pid: 5000 + seq, label: "other", gated: false, capacity: 4, ceiling: 4, ...extra });
-  };
+  const liveHolders = (...weights: unknown[]): void =>
+    weights.forEach((weight, i) => plantHolder(lease, `4242-live${i}`, weight !== undefined ? { weight } : {}));
+  const ticketAhead = (id: string, seq: number, extra: Record<string, unknown> = {}): void => plantTicket(lease, id, seq, { capacity: 4, ceiling: 4, ...extra });
   const take = (o: LeaseOptions, weight?: number): LeaseHandle | null => tryAcquireLease(o, { ...meta, weight });
   const admitted = (o: LeaseOptions, weight?: number): boolean => {
     const h = take(o, weight);
@@ -134,7 +126,7 @@ describe("heavy admission by summed memory weight", () => {
       ["is refused past the lower step's budget", 2, [3 * GB], 3 * GB + 2, false],
       ["is refused at step 0 however light", 0, [], 1, false],
     ])("a command that %s", (_name, step, live, weight, expected) => {
-      plantHolders(...live);
+      liveHolders(...live);
       expect(admitted(at(step), weight)).toBe(expected);
     });
 
@@ -144,7 +136,7 @@ describe("heavy admission by summed memory weight", () => {
       ["behind one light holder", 4, [GB], 20 * GB, false],
       ["alone at step 0", 0, [], 20 * GB, false],
     ])("an oversize command %s is admitted: %s", (_name, step, live, weight, expected) => {
-      plantHolders(...live);
+      liveHolders(...live);
       expect(admitted(at(step), weight)).toBe(expected);
     });
 
@@ -166,9 +158,9 @@ describe("heavy admission by summed memory weight", () => {
     });
 
     it("falls back to the count rule when the machine's memory is unknown, ignoring weights", () => {
-      plantHolders(11 * GB);
+      liveHolders(11 * GB);
       expect(admitted(at(4, {}, null), 20 * GB)).toBe(true);
-      plantHolders(11 * GB, 11 * GB, 11 * GB, 11 * GB);
+      liveHolders(11 * GB, 11 * GB, 11 * GB, 11 * GB);
       expect(admitted(at(4, {}, null), GB)).toBe(false);
     });
   });
@@ -187,26 +179,26 @@ describe("heavy admission by summed memory weight", () => {
       ["a waiter ahead with an invalid weight counts as 3 GB", [{ weight: "big" }], 3 * GB + 2, false],
       ["a waiter whose gates have not passed does not count", [{ weight: 8 * GB, ready: false }], 6 * GB, true],
     ])("with %s", async (_name, ahead, weight, expected) => {
-      plantHolders(6 * GB);
-      ahead.forEach((t, i) => plantTicket(`ahead${i}`, i + 1, t));
+      liveHolders(6 * GB);
+      ahead.forEach((t, i) => ticketAhead(`ahead${i}`, i + 1, t));
       const r = await acquireLease(at(4), { ...meta, weight }, { maxWaitMs: 0 });
       expect("leased" in r).toBe(expected);
       (r as LeaseHandle).release?.();
     });
 
     it("lets a non-waiting acquire in only when no ticket counts as ahead", () => {
-      plantTicket("ahead", 1, { weight: GB });
+      ticketAhead("ahead", 1, { weight: GB });
       expect(admitted(at(4), GB)).toBe(false);
     });
 
     it("keeps an oversize waiter waiting while anything is live, and leaves no ticket behind", async () => {
-      plantHolders(GB);
+      liveHolders(GB);
       expect(await acquireLease(at(4), { ...meta, weight: 20 * GB }, { maxWaitMs: 0 })).toMatchObject({ refused: "max-wait" });
       expect(names("waiting")).toEqual([]);
     });
 
     it("records its weight on its ticket: the one it passed, else the unmatched weight", async () => {
-      plantHolders(11 * GB);
+      liveHolders(11 * GB);
       const seen: Record<string, unknown>[] = [];
       for (const weight of [5 * GB, undefined]) {
         await acquireLease(at(4), { ...meta, weight }, {
@@ -219,7 +211,7 @@ describe("heavy admission by summed memory weight", () => {
     });
 
     it("writes no weight on its ticket when the machine's memory is unknown", async () => {
-      plantHolders(undefined, undefined, undefined, undefined);
+      liveHolders(undefined, undefined, undefined, undefined);
       let ticket: Record<string, unknown> | undefined;
       await acquireLease(at(4, {}, null), { ...meta, weight: GB }, {
         maxWaitMs: 1,
@@ -236,14 +228,14 @@ describe("heavy admission by summed memory weight", () => {
       ["an older ticket counts at the machine's step 0 only with the override", { weight: 8 * GB, override: true }, false],
       ["an older ticket without the override is not ahead when the machine is at step 0", { weight: 8 * GB }, true],
     ])("with %s", (_name, ticket, expected) => {
-      plantTicket("older", 1, ticket);
+      ticketAhead("older", 1, ticket);
       expect(admitted(overridden(), GB)).toBe(expected);
     });
 
     // Three live holders exceed the ticket's count capacity at step 2 (2), so only the weight rule counts it as ahead; the count rule would let every light newcomer pass it.
     it("counts a ticket heavier than the current budget as ahead, so lighter newcomers do not starve it", () => {
-      plantHolders(GB, GB, GB);
-      plantTicket("older", 1, { weight: 20 * GB });
+      liveHolders(GB, GB, GB);
+      ticketAhead("older", 1, { weight: 20 * GB });
       expect(admitted(at(2), GB)).toBe(false);
     });
 

@@ -7,7 +7,7 @@ import { runLeased, type LeaseCliDeps } from "../src/cli-lease.js";
 import { acquireLease, acquireSessionLease, SUSPEND_MIN_RUN_MS, suspendNewest, tryAcquireLease, type LeaseHandle, type LeaseOptions } from "../src/lease.js";
 import { readSuspensions, writeSuspension, type SuspensionRecord } from "../src/suspensions.js";
 import { scriptedHeadroomSampler } from "../src/testing.js";
-import { failFsCall, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
+import { failFsCall, plantCpu, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
 
 const WIDE = { heavyCeiling: 4, heavyWarning: 4 };
 const TICKS = { idle: 1, total: 10 };
@@ -30,8 +30,6 @@ describe("suspending the newest suspendable holder", () => {
       ...over,
     });
   const advance = (ms: number): void => void (lease.clock.ms += ms);
-  /** A cpu.json reading dated now, so `cpuBusy` returns `busy` as stored. */
-  const plantCpu = (busy: number | null): void => writeFileSync(join(dir, "cpu.json"), JSON.stringify({ at: lease.clock.ms, ticks: TICKS, busy }));
   const holderRec = (name: string) => JSON.parse(readFileSync(join(dir, "holders", `${handles[name]!.id}.json`), "utf8"));
   const recordOf = (name: keyof typeof pgid) => readSuspensions(dir).find((r) => r.pgid === pgid[name]);
   const tick = (name: keyof typeof pgid, over: Partial<LeaseOptions> = {}): boolean => suspendNewest(opts(over), handles[name]!, pgid[name], "sleep 100", stop);
@@ -50,7 +48,7 @@ describe("suspending the newest suspendable holder", () => {
       advance(5 * SECOND);
     }
     advance(30 * SECOND);
-    plantCpu(0.97);
+    plantCpu(lease, 0.97, TICKS);
   });
   afterEach(() => {
     for (const h of Object.values(handles)) h.release();
@@ -70,13 +68,13 @@ describe("suspending the newest suspendable holder", () => {
   });
 
   it.each<[string, () => void, boolean]>([
-    ["CPU 0.95", () => plantCpu(0.95), true],
-    ["CPU 0.94", () => plantCpu(0.94), false],
-    ["a null CPU reading", () => plantCpu(null), false],
-    ["free memory 12%", () => { plantCpu(0.1); freePct = 12; }, true],
-    ["free memory 13%", () => { plantCpu(0.1); freePct = 13; }, false],
-    ["step 0", () => { plantCpu(0.1); step = 0; }, true],
-    ["step 1 with 3 live, more holders than the step allows, which stops admissions and never suspends", () => { plantCpu(0.1); step = 1; }, false],
+    ["CPU 0.95", () => plantCpu(lease, 0.95, TICKS), true],
+    ["CPU 0.94", () => plantCpu(lease, 0.94, TICKS), false],
+    ["a null CPU reading", () => plantCpu(lease, null, TICKS), false],
+    ["free memory 12%", () => { plantCpu(lease, 0.1, TICKS); freePct = 12; }, true],
+    ["free memory 13%", () => { plantCpu(lease, 0.1, TICKS); freePct = 13; }, false],
+    ["step 0", () => { plantCpu(lease, 0.1, TICKS); step = 0; }, true],
+    ["step 1 with 3 live, more holders than the step allows, which stops admissions and never suspends", () => { plantCpu(lease, 0.1, TICKS); step = 1; }, false],
   ])("trigger: %s -> suspends %s", (_n, arrange, suspends) => {
     arrange();
     expect(tick("c")).toBe(suspends);
@@ -102,26 +100,26 @@ describe("suspending the newest suspendable holder", () => {
   it("skips a newest holder that is not suspendable and suspends the newest one that is", () => {
     handles.d = tryAcquireLease(opts(), { command: "xcodebuild test", cwd: "/w" })!;
     advance(SUSPEND_MIN_RUN_MS + SECOND);
-    plantCpu(0.97);
+    plantCpu(lease, 0.97, TICKS);
     expect(tick("c")).toBe(true);
   });
 
   it("never suspends a holder younger than 20 s", () => {
     advance(-20 * SECOND); // c is now 15 s old
-    plantCpu(0.97);
+    plantCpu(lease, 0.97, TICKS);
     expect(tick("c")).toBe(false);
     advance(5 * SECOND);
-    plantCpu(0.97);
+    plantCpu(lease, 0.97, TICKS);
     expect(tick("c")).toBe(true);
   });
 
   it("suspends at most once per 15 s machine-wide, then the next newest running holder", () => {
     expect(tick("c")).toBe(true);
     advance(10 * SECOND);
-    plantCpu(0.97);
+    plantCpu(lease, 0.97, TICKS);
     expect(tick("b")).toBe(false);
     advance(5 * SECOND);
-    plantCpu(0.97);
+    plantCpu(lease, 0.97, TICKS);
     // c is suspended, so b is now the newest running holder, and not the oldest.
     expect(tick("b")).toBe(true);
     expect(stop.mock.calls).toEqual([[pgid.c], [pgid.b]]);
@@ -152,7 +150,7 @@ describe("suspending the newest suspendable holder", () => {
   it("never selects a session holder, even a newer one", async () => {
     const session = (await acquireSessionLease(opts(), { command: "claude", cwd: "/w" })) as LeaseHandle;
     advance(SUSPEND_MIN_RUN_MS + SECOND);
-    plantCpu(0.97);
+    plantCpu(lease, 0.97, TICKS);
     expect(tick("c")).toBe(true);
     session.release();
   });
@@ -282,7 +280,7 @@ describe("runLeased governor tick", () => {
     const done = runLeased(args, deps());
     await vi.waitFor(() => expect(tickFns).toHaveLength(1));
     lease.clock.ms += SUSPEND_MIN_RUN_MS + SECOND;
-    writeFileSync(join(dir, "cpu.json"), JSON.stringify({ at: lease.clock.ms, ticks: TICKS, busy: 0.99 }));
+    plantCpu(lease, 0.99, TICKS);
     tickFns[0]!();
     expect(kill).not.toHaveBeenCalled();
     child.emit("close", 0, null);
@@ -296,7 +294,7 @@ describe("runLeased governor tick", () => {
     const done = runLeased(args, deps());
     await vi.waitFor(() => expect(tickFns).toHaveLength(1));
     lease.clock.ms += SUSPEND_MIN_RUN_MS + SECOND;
-    writeFileSync(join(dir, "cpu.json"), JSON.stringify({ at: lease.clock.ms, ticks: TICKS, busy: 0.99 }));
+    plantCpu(lease, 0.99, TICKS);
     tickFns[0]!();
     expect(kill.mock.calls).toEqual([[-4321, "SIGSTOP"]]);
     expect(readSuspensions(dir)).toMatchObject([{ pgid: 4321, by: "lease", leader: "sleep 100" }]);
@@ -314,7 +312,7 @@ describe("runLeased governor tick", () => {
   };
   const overloadAfterMinRun = (): void => {
     lease.clock.ms += SUSPEND_MIN_RUN_MS + SECOND;
-    writeFileSync(join(dir, "cpu.json"), JSON.stringify({ at: lease.clock.ms, ticks: TICKS, busy: 0.99 }));
+    plantCpu(lease, 0.99, TICKS);
   };
   const sigstops = (): unknown[] => kill.mock.calls.filter((c) => c[1] === "SIGSTOP");
   /** Starts a run as the newer of two suspendable holders, overloads the machine past the 20 s minimum and returns the run and the older holder. */

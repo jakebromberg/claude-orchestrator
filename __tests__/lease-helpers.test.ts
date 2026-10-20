@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { plantCpu, scriptedLease } from "./helpers/lease.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cpuBusy, markElapsed, writeMark } from "../src/lease.js";
@@ -13,7 +14,11 @@ describe("lease gate helpers", () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   const cpu = (cpuTimes?: () => CpuTicks): LeaseOptions => ({ dir, cpuTimes }) as LeaseOptions;
-  const reading = (at: number, busy: number | null) => writeFileSync(join(dir, "cpu.json"), JSON.stringify({ at, ticks: { idle: 100, total: 200 }, busy }));
+  const reading = (at: number, busy: number | null) => {
+    const planted = scriptedLease(dir);
+    planted.clock.ms = 10_000;
+    plantCpu(planted, busy, undefined, { ageMs: 10_000 - at });
+  };
 
   it.each([
     ["no tick reader", () => cpu(), 0],

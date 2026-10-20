@@ -1,4 +1,4 @@
-import fs, { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import fs, { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os, { tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
@@ -64,6 +64,8 @@ export function fakeLeaseClock(): FakeLeaseClock {
 export interface ScriptedLease {
   /** A fresh `LeaseOptions` on the scripted pieces below; `over` wins, and an explicit `undefined` drops a field (for the real default). */
   opts(over?: Partial<LeaseOptions>): LeaseOptions;
+  /** The lease directory the fixtures below write into. */
+  dir: string;
   clock: FakeLeaseClock;
   /** PIDs `isAlive` reports live; read on every call, so adding or deleting takes effect at once. */
   alive: Set<number>;
@@ -88,6 +90,7 @@ export function scriptedLease(
   const events: LeaseEvent[] = [];
   const warnings: string[] = [];
   return {
+    dir,
     clock,
     alive,
     events,
@@ -110,6 +113,49 @@ export function scriptedLease(
       return opts;
     },
   };
+}
+
+/**
+ * Writes `<sub>/<id>.json` under the lease directory (created at 0700) with `mtimeMs` as its heartbeat. The one writer
+ * under the fixtures below; a row whose point is a malformed or hostile file writes it explicitly instead.
+ */
+function plantRecord(lease: ScriptedLease, sub: string, id: string, body: Record<string, unknown>, mtimeMs: number): void {
+  mkdirSync(join(lease.dir, sub), { recursive: true, mode: 0o700 });
+  const file = join(lease.dir, sub, `${id}.json`);
+  writeFileSync(file, JSON.stringify(body));
+  utimesSync(file, mtimeMs / 1000, mtimeMs / 1000);
+}
+
+/**
+ * A holder written by another process: PID 4242 (alive only if the test adds it to `lease.alive`), `startedAt` at the
+ * scripted clock and `rec` over the defaults. Its heartbeat is `beatAgoMs` (default 0) before the clock, half a
+ * millisecond into its millisecond as real writes are, so boundary rows pin the floor and not utimes' rounding.
+ * `sub` picks the directory (`holders`, or `sessions` for the session class).
+ */
+export function plantHolder(lease: ScriptedLease, id: string, rec: Record<string, unknown> = {}, { beatAgoMs = 0, sub = "holders" }: { beatAgoMs?: number; sub?: string } = {}): void {
+  plantRecord(lease, sub, id, { id, pid: 4242, command: "x", cwd: "/", startedAt: lease.clock.ms, level: "normal", ...rec }, lease.clock.ms - beatAgoMs + 0.5);
+}
+
+/**
+ * A ticket for a waiter in another process: PID `5000 + seq`, alive unless `dead`, last refreshed `ageMs` (default 0)
+ * before the clock. `extra` goes over the defaults; `sub` is `waiting` or `sessions-waiting`.
+ */
+export function plantTicket(
+  lease: ScriptedLease,
+  id: string,
+  seq: number,
+  extra: Record<string, unknown> = {},
+  { ageMs = 0, dead = false, sub = "waiting" }: { ageMs?: number; dead?: boolean; sub?: string } = {},
+): void {
+  const pid = 5000 + seq;
+  plantRecord(lease, sub, id, { seq, id, pid, label: "other", gated: false, ...extra }, lease.clock.ms - ageMs);
+  if (!dead) lease.alive.add(pid);
+}
+
+/** A `cpu.json` reading dated `ageMs` (default 0) before the clock, so `cpuBusy` returns `busy` as stored; `ticks` are its counters. */
+export function plantCpu(lease: ScriptedLease, busy: number | null, ticks: { idle: number; total: number } = { idle: 100, total: 200 }, { ageMs = 0 }: { ageMs?: number } = {}): void {
+  mkdirSync(lease.dir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(lease.dir, "cpu.json"), JSON.stringify({ at: lease.clock.ms - ageMs, ticks, busy }));
 }
 
 export interface IsolatedHome {

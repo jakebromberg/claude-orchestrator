@@ -19,7 +19,7 @@ import * as barrel from "../src/index.js";
 import type { PressureLevel } from "../src/memory-pressure.js";
 import { scriptedHeadroomSampler, scriptedPressureSampler } from "../src/testing.js";
 import type { HeadroomReading } from "../src/headroom-sampler.js";
-import { scriptedLease, failFsCall, unwritableLeaseDir, type FakeLeaseClock, type ScriptedLease } from "./helpers/lease.js";
+import { scriptedLease, failFsCall, plantCpu, plantHolder, plantTicket, unwritableLeaseDir, type FakeLeaseClock, type ScriptedLease } from "./helpers/lease.js";
 
 const meta: HolderMeta = { command: "npm test", cwd: "/work" };
 const HEARTBEAT_STALE_MS = 90_000;
@@ -41,20 +41,15 @@ describe("lease", () => {
   const holderFile = (id: string): string => join(dir, "holders", `${id}.json`);
   const readHolder = (h: LeaseHandle) => JSON.parse(readFileSync(holderFile(h.id!), "utf8"));
   /**
-   * Writes a holder file for wrapper PID 4242 (alive only if the test adds it to `alive`), its heartbeat `beatAgoMs` before
-   * the injected clock (stale by default). The mtime sits half a millisecond into its millisecond, as real writes do, so the
-   * boundary rows pin the floor and not utimes' rounding (Node 20 and 22 truncate to whole microseconds).
+   * Plants a holder for wrapper PID 4242 (alive only if the test adds it to `alive`), its heartbeat `beatAgoMs` before the
+   * injected clock (stale by default), after an acquire has created the lease directory (and reaped what it found).
    */
-  const writeHolder = (id: string, rec: Record<string, unknown>, beatAgoMs = 2 * HEARTBEAT_STALE_MS): void => {
-    writeFileSync(holderFile(id), JSON.stringify({ id, pid: 4242, command: "x", cwd: "/", startedAt: fake.ms, level: "normal", ...rec }));
-    const beatAt = (fake.ms - beatAgoMs + 0.5) / 1000;
-    utimesSync(holderFile(id), beatAt, beatAt);
-  };
-  /** Creates the lease directory through an acquire (which reaps what it finds), then writes the holder. */
-  const plantHolder = (id: string, rec: Record<string, unknown>, beatAgoMs?: number): void => {
+  const leasedHolder = (id: string, rec: Record<string, unknown>, beatAgoMs: number = 2 * HEARTBEAT_STALE_MS): void => {
     tryAcquireLease(opts({ policy: { heavyCeiling: 99, heavyWarning: 99 } }), meta)!.release();
-    writeHolder(id, rec, beatAgoMs);
+    plantHolder(lease, id, rec, { beatAgoMs });
   };
+  /** The same holder without the acquire first, so the directory is whatever the test left. */
+  const leasedHolderNoAcquire = (id: string, rec: Record<string, unknown>, beatAgoMs: number = 2 * HEARTBEAT_STALE_MS): void => plantHolder(lease, id, rec, { beatAgoMs });
   const busyMutex = (): void => {
     tryAcquireLease(opts(), meta)!.release();
     writeFileSync(join(dir, ".mutex"), "");
@@ -172,8 +167,8 @@ describe("lease", () => {
       ["warn", { warn: () => { throw new Error("stderr closed"); } }],
     ] as const)("keeps its behaviour when %s throws", (name, callbacks) => {
       alive.add(900);
-      plantHolder("4242-ab01", { childPid: 900, startedAt: fake.ms - 3 * 3_600_000 }); // orphan-bound: warns
-      writeHolder("4242-ab02", {}); // stale-heartbeat
+      leasedHolder("4242-ab01", { childPid: 900, startedAt: fake.ms - 3 * 3_600_000 }); // orphan-bound: warns
+      leasedHolderNoAcquire("4242-ab02", {}); // stale-heartbeat
       const o = opts({ policy: { heavyCeiling: 1, heavyWarning: 1 }, ...callbacks });
       const h = tryAcquireLease(o, meta)!;
       expect(h.leased).toBe(true);
@@ -186,7 +181,7 @@ describe("lease", () => {
 
     it("calls back only after releasing the mutex, so a slow callback cannot let a second acquirer in", () => {
       alive.add(900);
-      plantHolder("4242-ab03", { childPid: 900, startedAt: fake.ms - 3 * 3_600_000 }); // orphan-bound: warns and reaps
+      leasedHolder("4242-ab03", { childPid: 900, startedAt: fake.ms - 3 * 3_600_000 }); // orphan-bound: warns and reaps
       const one = opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } });
       const mutexHeld: boolean[] = [];
       let second: LeaseHandle | null | undefined;
@@ -238,7 +233,7 @@ describe("lease", () => {
       ["a far-future heartbeat with a live child", -3_600_000, true, 60_000, true],
     ])("%s", (_name, beatAgo, childAlive, startedAgo, stillLive) => {
       if (childAlive) alive.add(900);
-      plantHolder("4242-aaaa", { childPid: childAlive === undefined ? undefined : 900, startedAt: fake.ms - startedAgo }, beatAgo);
+      leasedHolder("4242-aaaa", { childPid: childAlive === undefined ? undefined : 900, startedAt: fake.ms - startedAgo }, beatAgo);
       const h = tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta);
       expect(h === null).toBe(stillLive);
       expect(existsSync(holderFile("4242-aaaa"))).toBe(stillLive);
@@ -250,12 +245,12 @@ describe("lease", () => {
       ["a fresh heartbeat", 10_000, true],
     ])("keeps a reused wrapper PID only while the heartbeat is fresh (%s)", (_name, beatAgo, stillLive) => {
       alive.add(4242); // the OS gave the dead wrapper's PID to an unrelated process
-      plantHolder("4242-aaab", {}, beatAgo);
+      leasedHolder("4242-aaab", {}, beatAgo);
       expect(leaseStatus(opts()).live.some((x) => x.id === "4242-aaab")).toBe(stillLive);
     });
 
     it("reports a stale heartbeat with no live child as a stale-heartbeat reap", () => {
-      plantHolder("4242-aaac", {});
+      leasedHolder("4242-aaac", {});
       tryAcquireLease(opts(), meta)!.release();
       expect(events).toContainEqual({ type: "reap", id: "4242-aaac", reason: "stale-heartbeat", class: "heavy" });
     });
@@ -297,7 +292,7 @@ describe("lease", () => {
         expect(vi.getTimerCount()).toBe(1);
         h.release();
         expect(vi.getTimerCount()).toBe(0);
-        writeHolder(h.id!, {}, 120_000); // a file at the old path must stay as it was
+        leasedHolderNoAcquire(h.id!, {}, 120_000); // a file at the old path must stay as it was
         const before = mtimeOf(h);
         tick(60_000);
         expect(mtimeOf(h)).toBe(before);
@@ -329,7 +324,7 @@ describe("lease", () => {
 
     it("reaps an orphan past the bound with a warning and an event", () => {
       alive.add(900);
-      plantHolder("4242-bbbb", { childPid: 900, startedAt: fake.ms - 3 * 3_600_000 });
+      leasedHolder("4242-bbbb", { childPid: 900, startedAt: fake.ms - 3 * 3_600_000 });
       tryAcquireLease(opts(), meta)!.release();
       expect(warnings.join("\n")).toMatch(/4242-bbbb.*2 h orphan bound/);
       expect(events).toContainEqual({ type: "reap", id: "4242-bbbb", reason: "orphan-bound", class: "heavy" });
@@ -347,7 +342,7 @@ describe("lease", () => {
       ["childPid -1", JSON.stringify({ id: "4242-cccc", pid: 4242, childPid: -1, startedAt: 1 })],
     ])("reaps a holder file holding %s as corrupt", (_name, text) => {
       alive.add(0).add(-1); // as the real kill(pid, 0) sees them: the process group, and every process
-      plantHolder("4242-cccc", {});
+      leasedHolder("4242-cccc", {});
       writeFileSync(holderFile("4242-cccc"), text);
       tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta)!;
       expect(events).toContainEqual({ type: "reap", id: "4242-cccc", reason: "corrupt", class: "heavy" });
@@ -355,7 +350,7 @@ describe("lease", () => {
     });
 
     it("skips a holder file that is gone by the time it is read, without reporting a reap", () => {
-      plantHolder("4242-cccd", {});
+      leasedHolder("4242-cccd", {});
       rmSync(holderFile("4242-cccd"));
       symlinkSync(join(tmp, "missing"), holderFile("4242-cccd")); // listed by readdir, ENOENT on read
       expect(tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), meta)?.leased).toBe(true);
@@ -363,7 +358,7 @@ describe("lease", () => {
     });
 
     it.skipIf(process.getuid?.() === 0)("keeps a holder file it cannot read, failing open instead of reaping it", () => {
-      plantHolder("4242-ccce", {});
+      leasedHolder("4242-ccce", {});
       chmodSync(holderFile("4242-ccce"), 0o000);
       expect(tryAcquireLease(opts(), meta)).toMatchObject({ leased: false, id: null });
       expect(existsSync(holderFile("4242-ccce"))).toBe(true);
@@ -418,7 +413,7 @@ describe("lease", () => {
     });
 
     it("does not reap from leaseStatus", () => {
-      plantHolder("4242-dddd", {});
+      leasedHolder("4242-dddd", {});
       expect(leaseStatus(opts()).live).toEqual([]);
       expect(existsSync(holderFile("4242-dddd"))).toBe(true);
     });
@@ -454,7 +449,7 @@ describe("lease", () => {
       ["a live session with expiresAt 1 ms past the 750 s bound", true, 750_001, "expired", 0],
     ])("%s", (_name, sessionAlive, expiresIn, expected, beatAgo) => {
       if (sessionAlive) alive.add(SESSION);
-      plantHolder("hook-x", { pid: SESSION, expiresAt: fake.ms + expiresIn }, beatAgo);
+      leasedHolder("hook-x", { pid: SESSION, expiresAt: fake.ms + expiresIn }, beatAgo);
       expect(leaseStatus(opts()).live.some((x) => x.id === "hook-x")).toBe(expected === "live");
       tryAcquireLease(opts(), meta)!.release();
       expect(events.filter((e) => e.type === "reap")).toEqual(expected === "live" ? [] : [{ type: "reap", id: "hook-x", reason: expected, class: "heavy" }]);
@@ -462,7 +457,7 @@ describe("lease", () => {
     });
 
     it.each([["a string", "soon"], ["NaN", null], ["a boolean", true]])("reaps a holder whose expiresAt is %s as corrupt", (_n, expiresAt) => {
-      plantHolder("hook-y", { pid: SESSION, expiresAt });
+      leasedHolder("hook-y", { pid: SESSION, expiresAt });
       alive.add(SESSION);
       tryAcquireLease(opts(), meta)!.release();
       expect(events).toContainEqual({ type: "reap", id: "hook-y", reason: "corrupt", class: "heavy" });
@@ -491,7 +486,7 @@ describe("lease", () => {
     });
 
     it("does not treat a dead detached holder with the requested id as admitted", () => {
-      plantHolder("hook-toolu_1", { pid: SESSION, expiresAt: fake.ms + 60_000 });
+      leasedHolder("hook-toolu_1", { pid: SESSION, expiresAt: fake.ms + 60_000 });
       const h = tryAcquireLease(opts(one), detached())!;
       expect(readHolder(h)).toMatchObject({ id: "hook-toolu_1", startedAt: fake.ms });
       expect(events).toContainEqual({ type: "reap", id: "hook-toolu_1", reason: "dead-session", class: "heavy" });
@@ -720,7 +715,7 @@ describe("lease", () => {
       // An orphan-bound reap, then an I/O fail-open.
       const o = { ...defaultLeaseOptions({ CO_LEASE_DIR: dir }, { level: sampler, warn: w }), now: fake.now, isAlive: opts().isAlive };
       alive.add(900);
-      plantHolder("4242-ab01", { childPid: 900, startedAt: fake.ms - 3 * 3_600_000 });
+      leasedHolder("4242-ab01", { childPid: 900, startedAt: fake.ms - 3 * 3_600_000 });
       tryAcquireLease(o, meta)!.release();
       expect(w).toHaveBeenCalledWith(expect.stringMatching(/^lease: reaping holder 4242-ab01/));
       ((await acquireLease({ ...o, dir: unwritableLeaseDir(tmp) }, meta)) as LeaseHandle).release();
@@ -853,7 +848,7 @@ describe("lease", () => {
     });
 
     it("does not honour the id of a holder that has been reaped", () => {
-      plantHolder("4242-eeee", {});
+      leasedHolder("4242-eeee", {});
       expect(tryAcquireLease(opts({ inheritedHolderId: "4242-eeee", policy: { heavyCeiling: 0, heavyWarning: 0 } }), meta)).toBeNull();
     });
   });
@@ -907,14 +902,8 @@ describe("lease", () => {
     const ticketFile = (id: string): string => join(dir, "waiting", `${id}.json`);
     const tickets = (): string[] => (existsSync(join(dir, "waiting")) ? readdirSync(join(dir, "waiting")).sort() : []);
     /** A ticket for a waiter in another process: `pid` is alive unless `dead`, and its last refresh was `ageMs` before the injected clock. */
-    const plantTicket = (id: string, seq: number, { ageMs = 0, dead = false, ...extra }: { ageMs?: number; dead?: boolean; gated?: boolean; capacity?: number; ready?: boolean } = {}): void => {
-      const pid = 5000 + seq;
-      mkdirSync(join(dir, "waiting"), { recursive: true, mode: 0o700 });
-      writeFileSync(ticketFile(id), JSON.stringify({ seq, id, pid, label: "other", gated: false, ...extra }));
-      const at = (fake.ms - ageMs) / 1000;
-      utimesSync(ticketFile(id), at, at);
-      if (!dead) alive.add(pid);
-    };
+    const queued = (id: string, seq: number, { ageMs, dead, ...extra }: { ageMs?: number; dead?: boolean; gated?: boolean; capacity?: number; ready?: boolean } = {}): void =>
+      plantTicket(lease, id, seq, extra, { ageMs, dead });
     /** Sleeps `yields` macrotasks before the fake sleep, so a waiter that started earlier polls later. Keep it small: the shared clock moves 3 s per sleep, and a waiter idle for 15 s of it goes stale. */
     const slowSleep = (yields: number): LeaseOptions["sleep"] => async (ms) => {
       for (let i = 0; i < yields; i++) await new Promise((r) => setImmediate(r));
@@ -932,9 +921,9 @@ describe("lease", () => {
       ["a ticket just inside the window", 1, [{ id: "a", seq: 1, ageMs: TICKET_FRESH_MS - 1_000 }], false, ["a.json"]],
       ["a dead waiter's ticket, reaped", 1, [{ id: "a", seq: 1, dead: true }], true, []],
     ])("with %s", async (_name, holders, planted, admitted, left) => {
-      for (let i = 0; i < holders; i++) plantHolder(`4242-live${i}`, {}, 0);
+      for (let i = 0; i < holders; i++) leasedHolder(`4242-live${i}`, {}, 0);
       alive.add(4242);
-      for (const t of planted) plantTicket(t.id, t.seq, t);
+      for (const t of planted) queued(t.id, t.seq, t);
       const r = await acquireLease(opts(), meta, { maxWaitMs: 0 });
       expect(isHandle(r)).toBe(admitted);
       if (isHandle(r)) r.release();
@@ -942,9 +931,9 @@ describe("lease", () => {
     });
 
     it("assigns one more than the highest existing seq, stale or not, and refreshes the ticket on every poll", async () => {
-      plantHolder("4242-live", {}, 0);
+      leasedHolder("4242-live", {}, 0);
       alive.add(4242);
-      plantTicket("a", 7, { ageMs: TICKET_FRESH_MS + 1_000 });
+      queued("a", 7, { ageMs: TICKET_FRESH_MS + 1_000 });
       const seen: { ticket: unknown; mtimeMs: number }[] = [];
       const one = opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } });
       await acquireLease(one, meta, {
@@ -1001,9 +990,9 @@ describe("lease", () => {
       ["a gated owner whose gates failed at its last poll", 1, { capacity: 2, ready: false }, 2, true],
       ["a gated owner whose gates passed at its last poll", 1, { capacity: 2, ready: true }, 2, false],
     ])("with a ticket ahead of %s", async (_name, holders, ticket, ceiling, admitted) => {
-      for (let i = 0; i < holders; i++) plantHolder(`4242-live${i}`, {}, 0);
+      for (let i = 0; i < holders; i++) leasedHolder(`4242-live${i}`, {}, 0);
       alive.add(4242);
-      plantTicket("a", 1, { gated: ticket.ready !== undefined, ...ticket });
+      queued("a", 1, { gated: ticket.ready !== undefined, ...ticket });
       const r = await acquireLease(opts({ policy: { heavyCeiling: ceiling, heavyWarning: ceiling } }), meta, { maxWaitMs: 0 });
       expect(isHandle(r)).toBe(admitted);
     });
@@ -1050,14 +1039,14 @@ describe("lease", () => {
 
     it("refuses tryAcquireLease while an eligible ticket waits, and writes no ticket", () => {
       tryAcquireLease(opts(), meta)!.release();
-      plantTicket("a", 1);
+      queued("a", 1);
       expect(tryAcquireLease(opts(), meta)).toBeNull();
       expect(tickets()).toEqual(["a.json"]);
     });
 
     it("admits tryAcquireLease past a stale ticket", () => {
       tryAcquireLease(opts(), meta)!.release();
-      plantTicket("a", 1, { ageMs: TICKET_FRESH_MS + 1_000 });
+      queued("a", 1, { ageMs: TICKET_FRESH_MS + 1_000 });
       expect(tryAcquireLease(opts(), meta)?.leased).toBe(true);
       expect(tickets()).toEqual(["a.json"]);
     });
@@ -1065,7 +1054,7 @@ describe("lease", () => {
     it("admits a nested acquire naming a live holder past waiting tickets, without queueing", async () => {
       const full = { policy: { heavyCeiling: 1, heavyWarning: 1 } };
       const a = tryAcquireLease(opts(full), meta)!;
-      plantTicket("a", 1);
+      queued("a", 1);
       const nested = await acquireLease(opts({ ...full, inheritedHolderId: a.id! }), meta, { maxWaitMs: 0 });
       expect(nested).toMatchObject({ leased: true, id: a.id });
       expect(tickets()).toEqual(["a.json"]);
@@ -1075,7 +1064,7 @@ describe("lease", () => {
       const full = { policy: { heavyCeiling: 1, heavyWarning: 1 } };
       const detached = { command: "npm test", cwd: "/work", detached: { id: "hook-1", sessionPid: process.pid, expiresAt: fake.ms + 60_000 } };
       tryAcquireLease(opts(full), detached)!;
-      plantTicket("a", 1);
+      queued("a", 1);
       const again = await acquireLease(opts(full), detached, { maxWaitMs: 0 });
       expect(again).toMatchObject({ leased: true, id: "hook-1" });
       expect(tickets()).toEqual(["a.json"]);
@@ -1095,10 +1084,9 @@ describe("lease", () => {
         return isHandle(r);
       };
       /** A reading `ageMs` old whose tick counters make the machine `busy` busy since then; `stored` is the busy it records. */
-      const plantCpu = (ageMs: number, busy: number, stored: number | null = busy): void => {
-        mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const cpuReading = (ageMs: number, busy: number, stored: number | null = busy): void => {
         const total = 1_000;
-        writeFileSync(cpuFile(), JSON.stringify({ at: fake.ms - ageMs, ticks: { idle: ticks.idle - Math.round((1 - busy) * total), total: ticks.total - total }, busy: stored }));
+        plantCpu(lease, stored, { idle: ticks.idle - Math.round((1 - busy) * total), total: ticks.total - total }, { ageMs });
       };
       const plantMark = (agoMs: number): void => {
         mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -1106,64 +1094,64 @@ describe("lease", () => {
         utimesSync(markFile(), (fake.ms - agoMs) / 1000, (fake.ms - agoMs) / 1000);
       };
       const suspendedHolder = (): void => {
-        plantHolder("4242-live", { suspended: true }, 0);
+        leasedHolder("4242-live", { suspended: true }, 0);
         alive.add(4242);
       };
 
       beforeEach(() => {
         ticks = { idle: 10_000, total: 20_000 };
         cpuTimes = () => ticks;
-        plantCpu(5_000, 0.1);
+        cpuReading(5_000, 0.1);
       });
 
       it.each<[string, () => void, boolean]>([
-        ["CPU busy just under 0.75", () => plantCpu(5_000, 0.74), true],
-        ["CPU busy at 0.75", () => plantCpu(5_000, 0.75), false],
-        ["CPU busy at 0.95", () => plantCpu(5_000, 0.95), false],
-        ["a reading 2 s old, which gets a delta, not its stored busy", () => plantCpu(2_000, 0.5, 0.9), true],
-        ["a reading under 2 s old, gated on its stored busy (low)", () => plantCpu(1_999, 0.99, 0.1), true],
-        ["a reading under 2 s old, gated on its stored busy (high)", () => plantCpu(1_999, 0.1, 0.9), false],
-        ["a reading 10 s old, which still gets a delta", () => plantCpu(10_000, 0.5), true],
-        ["a reading over 10 s old, which fails this poll", () => plantCpu(10_001, 0.1), false],
-        ["a reading from the future, which fails this poll", () => plantCpu(-1_000, 0.1), false],
+        ["CPU busy just under 0.75", () => cpuReading(5_000, 0.74), true],
+        ["CPU busy at 0.75", () => cpuReading(5_000, 0.75), false],
+        ["CPU busy at 0.95", () => cpuReading(5_000, 0.95), false],
+        ["a reading 2 s old, which gets a delta, not its stored busy", () => cpuReading(2_000, 0.5, 0.9), true],
+        ["a reading under 2 s old, gated on its stored busy (low)", () => cpuReading(1_999, 0.99, 0.1), true],
+        ["a reading under 2 s old, gated on its stored busy (high)", () => cpuReading(1_999, 0.1, 0.9), false],
+        ["a reading 10 s old, which still gets a delta", () => cpuReading(10_000, 0.5), true],
+        ["a reading over 10 s old, which fails this poll", () => cpuReading(10_001, 0.1), false],
+        ["a reading from the future, which fails this poll", () => cpuReading(-1_000, 0.1), false],
         ["no reading, which fails this poll", () => rmSync(cpuFile()), false],
         ["an unreadable reading, which fails this poll", () => writeFileSync(cpuFile(), "{"), false],
         ["a tick read that throws, which passes", () => (cpuTimes = () => { throw new Error("no cpus"); }), true],
         ["no tick reader, which passes", () => (cpuTimes = undefined), true],
-        ["a live holder that is not suspended", () => (plantHolder("4242-live", {}, 0), alive.add(4242)), true],
+        ["a live holder that is not suspended", () => (leasedHolder("4242-live", {}, 0), alive.add(4242)), true],
         ["a live holder that is suspended", suspendedHolder, false],
         ["no earlier gated admission", () => rmSync(markFile(), { force: true }), true],
         ["a gated admission 19.999 s ago", () => plantMark(19_999), false],
         ["a gated admission 20 s ago", () => plantMark(20_000), true],
         ["a gated admission dated in the future", () => plantMark(-60_000), true],
       ])("with %s", async (_name, setUp, admitted) => {
-        plantHolder("4242-live", {}, 0); // something runs, so the no-wedge rule stays out of it
+        leasedHolder("4242-live", {}, 0); // something runs, so the no-wedge rule stays out of it
         alive.add(4242);
         setUp();
         expect(await attemptGated()).toBe(admitted);
       });
 
       it.each<[string, () => void, boolean]>([
-        ["a busy CPU and nothing live", () => plantCpu(5_000, 0.95), true],
+        ["a busy CPU and nothing live", () => cpuReading(5_000, 0.95), true],
         ["no CPU reading and nothing live", () => rmSync(cpuFile()), true],
         ["a recent gated admission and nothing live", () => plantMark(1_000), true],
-        ["a busy CPU with a holder live", () => (plantCpu(5_000, 0.95), plantHolder("4242-live", {}, 0), alive.add(4242)), false],
+        ["a busy CPU with a holder live", () => (cpuReading(5_000, 0.95), leasedHolder("4242-live", {}, 0), alive.add(4242)), false],
         ["a recent admission with a suspended holder live", () => (plantMark(1_000), suspendedHolder()), false],
-        ["an older gated ticket waiting, though nothing is live", () => (plantCpu(5_000, 0.95), plantTicket("old", 1, { gated: true, capacity: 2 })), false],
-        ["an older ungated ticket waiting, though nothing is live", () => (plantCpu(5_000, 0.95), plantTicket("old", 1)), true],
+        ["an older gated ticket waiting, though nothing is live", () => (cpuReading(5_000, 0.95), queued("old", 1, { gated: true, capacity: 2 })), false],
+        ["an older ungated ticket waiting, though nothing is live", () => (cpuReading(5_000, 0.95), queued("old", 1)), true],
       ])("applies the no-wedge rule with %s", async (_name, setUp, admitted) => {
         setUp();
         expect(await attemptGated()).toBe(admitted);
       });
 
       it("never applies the no-wedge rule at step 0", async () => {
-        plantCpu(5_000, 0.95);
+        cpuReading(5_000, 0.95);
         const step0 = scriptedHeadroomSampler({ level: "critical", step: 0, signals: null });
         expect(await attemptGated(gated, { headroom: step0, policy: { heavyCeiling: 2, heavyWarning: 1 } })).toBe(false);
       });
 
       it("computes busy from the delta and rewrites cpu.json on the lease clock", async () => {
-        plantCpu(5_000, 0.5);
+        cpuReading(5_000, 0.5);
         expect(await attemptGated()).toBe(true);
         expect(JSON.parse(readFileSync(cpuFile(), "utf8"))).toEqual({ at: fake.ms, ticks, busy: 0.5 });
       });
@@ -1171,7 +1159,7 @@ describe("lease", () => {
       it("stores its ticks and fails a cold poll, then admits the next on a real delta", async () => {
         rmSync(cpuFile());
         plantMark(60_000);
-        plantHolder("4242-live", {}, 0);
+        leasedHolder("4242-live", {}, 0);
         alive.add(4242);
         expect(await attemptGated()).toBe(false);
         expect(JSON.parse(readFileSync(cpuFile(), "utf8"))).toMatchObject({ at: fake.ms, ticks, busy: null });
@@ -1184,10 +1172,10 @@ describe("lease", () => {
         const first = (await acquireLease(gatedOpts(), gated, { maxWaitMs: 0 })) as LeaseHandle;
         expect(first.leased).toBe(true);
         expect(Math.abs(statSync(markFile()).mtimeMs - fake.ms)).toBeLessThan(2);
-        plantCpu(5_000, 0.1);
+        cpuReading(5_000, 0.1);
         expect(await attemptGated()).toBe(false);
         fake.ms += 20_000;
-        plantCpu(5_000, 0.1);
+        cpuReading(5_000, 0.1);
         expect(await attemptGated()).toBe(true);
         first.release();
       });
@@ -1206,9 +1194,9 @@ describe("lease", () => {
         ["a gated ticket ahead that failed its gates", { ready: false }, true],
         ["a gated ticket ahead that passed its gates", { ready: true }, false],
       ])("admits an ungated waiter past %s only when it does not block", async (_name, ticket, admitted) => {
-        plantHolder("4242-live", {}, 0);
+        leasedHolder("4242-live", {}, 0);
         alive.add(4242);
-        plantTicket("g", 1, { gated: true, capacity: 2, ...ticket });
+        queued("g", 1, { gated: true, capacity: 2, ...ticket });
         expect(await attemptGated(meta)).toBe(admitted);
       });
 
@@ -1216,9 +1204,9 @@ describe("lease", () => {
         ["that failed its gates at its last poll", { ready: false }],
         ["that passed its gates at its last poll", { ready: true }],
       ])("keeps a gated waiter behind an older gated ticket %s, since the gates are machine-wide", async (_name, ticket) => {
-        plantHolder("4242-live", {}, 0);
+        leasedHolder("4242-live", {}, 0);
         alive.add(4242);
-        plantTicket("g", 1, { gated: true, capacity: 2, ...ticket });
+        queued("g", 1, { gated: true, capacity: 2, ...ticket });
         expect(await attemptGated()).toBe(false);
       });
 
@@ -1231,17 +1219,17 @@ describe("lease", () => {
         ["an older gated ticket and nothing live", { capacity: 4, ready: true, nothingLive: true }, false],
       ])("with %s, a gated waiter is admitted only past tickets that cannot be", async (_name, { nothingLive, ...ticket }, admitted) => {
         if (!nothingLive) {
-          plantHolder("4242-live", {}, 0);
+          leasedHolder("4242-live", {}, 0);
           alive.add(4242);
         }
-        plantTicket("g", 1, { gated: true, ...ticket });
+        queued("g", 1, { gated: true, ...ticket });
         expect(await attemptGated(gated, wide)).toBe(admitted);
       });
 
       it("records a gated waiter held behind an older gated ticket as not ready, so ungated waiters pass it", async () => {
-        plantHolder("4242-live", {}, 0);
+        leasedHolder("4242-live", {}, 0);
         alive.add(4242);
-        plantTicket("g", 1, { gated: true, capacity: 4, ready: true });
+        queued("g", 1, { gated: true, capacity: 4, ready: true });
         let seen: unknown;
         await acquireLease(gatedOpts(wide), gated, {
           maxWaitMs: 1,
@@ -1251,8 +1239,8 @@ describe("lease", () => {
       });
 
       it("records the owner's capacity, gate state and gated flag on its ticket", async () => {
-        plantCpu(5_000, 0.95);
-        plantHolder("4242-live", {}, 0);
+        cpuReading(5_000, 0.95);
+        leasedHolder("4242-live", {}, 0);
         alive.add(4242);
         let seen: unknown;
         await acquireLease(gatedOpts(), gated, {
@@ -1263,9 +1251,9 @@ describe("lease", () => {
       });
 
       it("reads the CPU on every poll, so a gated waiter that capacity holds back keeps a valid delta", async () => {
-        plantHolder("4242-live", {}, 0);
+        leasedHolder("4242-live", {}, 0);
         alive.add(4242);
-        plantHolder("4242-live2", {}, 0);
+        leasedHolder("4242-live2", {}, 0);
         expect(await attemptGated()).toBe(false);
         expect(JSON.parse(readFileSync(cpuFile(), "utf8")).at).toBe(fake.ms);
       });
