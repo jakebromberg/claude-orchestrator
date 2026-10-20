@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resumeOldest, tryAcquireLease, type LeaseHandle, type LeaseOptions } from "../src/lease.js";
+import { acquireLease, resumeOldest, tryAcquireLease, type LeaseHandle, type LeaseOptions } from "../src/lease.js";
 import { RAMP_MS } from "../src/headroom.js";
 import { readSuspensions, writeSuspension } from "../src/suspensions.js";
 import { scriptedHeadroomSampler } from "../src/testing.js";
@@ -210,13 +210,19 @@ describe("resuming the oldest suspended holder", () => {
     });
 
     // Admission counts a suspended holder's weight among the live ones, so a ticket was never admitted into its room: a suspended holder goes before waiters.
-    it("a ready ticket ahead whose weight fills the budget does not keep a suspended holder stopped, and the ticket waits behind it", () => {
+    it("a ready ticket ahead whose weight fills the budget does not keep a suspended holder stopped, and the ticket waits behind it", async () => {
       setUp({ a: 4 * GIB, b: 4 * GIB, c: 4 * GIB });
       plantTicket(lease, "t", 1, { weight: 4 * GIB, ready: true, ceiling: 4 });
-      expect(tryAcquireLease(opts(), { command: "d", cwd: "/w", weight: 4 * GIB })).toBeNull();
+      // The ticket's owner polls under its own ticket id, as hook mode does with the call's id.
+      const owner = () => acquireLease(opts(), { command: "t", cwd: "/w", weight: 4 * GIB, detached: { id: "t", sessionPid: process.pid, expiresAt: lease.clock.ms + 60 * SECOND } }, { maxWaitMs: 0 });
       expect(tick("a")).toBe("resumed");
       expect(cont).toHaveBeenCalledExactlyOnceWith(pgid.a);
-      expect(tryAcquireLease(opts(), { command: "d", cwd: "/w", weight: 4 * GIB })).toBeNull();
+      expect(await owner()).toMatchObject({ refused: "max-wait" });
+      handles.a!.release();
+      delete handles.a;
+      const admitted = await owner();
+      expect(admitted).toHaveProperty("release");
+      (admitted as LeaseHandle).release();
     });
 
     it("a holder heavier than the budget resumes alone, and not beside a running one", () => {

@@ -31,6 +31,11 @@ const MUTEX_STALE_MS = 10_000;
  * so an acquire, which the engine's post-check makes on its event loop, blocks for one lookup at most. Re-exported by `sync-budget.ts`.
  */
 export const PROCESS_COMMAND_TIMEOUT_MS = PS_TIMEOUT_MS;
+/**
+ * How long `attempt()`'s claim on a dead owner's group (`HolderRecord.claimedAt`) excludes other acquires, well above `PROCESS_COMMAND_TIMEOUT_MS`:
+ * a claim that is not cleared (a lookup that threw, a busy mutex or a failed write) expires after this, and a later acquire takes the group again.
+ */
+export const DEAD_OWNER_CLAIM_MS = 30_000;
 const ORPHAN_MAX_MS = 2 * 60 * 60_000;
 /** A holder's mtime heartbeat period, and how old a beat may be before the holder is reaped; a blocking stretch in an engine that holds a session slot must fit in the difference (`__tests__/sync-call-budget.test.ts`). */
 export const HEARTBEAT_MS = 30_000;
@@ -143,7 +148,7 @@ const positive = (v) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? 
 function parseHolder(text) {
     try {
         const rec = JSON.parse(text);
-        return isPid(rec?.pid) && (rec.childPid === undefined || isPid(rec.childPid)) && typeof rec.startedAt === "number" && (rec.expiresAt === undefined || Number.isFinite(rec.expiresAt)) ? { ...rec, weight: positive(rec.weight), resumedAt: positive(rec.resumedAt) } : null;
+        return isPid(rec?.pid) && (rec.childPid === undefined || isPid(rec.childPid)) && typeof rec.startedAt === "number" && (rec.expiresAt === undefined || Number.isFinite(rec.expiresAt)) ? { ...rec, weight: positive(rec.weight), resumedAt: positive(rec.resumedAt), claimedAt: positive(rec.claimedAt) } : null;
     }
     catch {
         return null;
@@ -359,7 +364,7 @@ export function suspendNewest(opts, handle, pgid, leader, stop) {
 }
 /**
  * One tick of a suspended holder's front end: continues `handle`'s own group, `pgid`, when `handle` is the oldest suspended holder whose front end
- * is alive (a dead owner's group is `attempt()`'s to continue) and the machine
+ * can tick (alive and not `silent`; a dead owner's group is `attempt()`'s to continue, and a stopped front end's group stays stopped) and the machine
  * has recovered, and returns `"resumed"`. The signals are sampled before the mutex; under it the decision is made and `cont` (SIGCONT of `pgid`) runs
  * after it is released, then the holder's mark is cleared, then the record is removed, so a crash leaves a mark or a record on a running group and never
  * a stopped group without either. Recovered is CPU busy under 0.85 (`cpuBusy`; null means not yet), in count mode a free percentage above 20 (none
@@ -420,27 +425,48 @@ export function resumeOldest(opts, handle, pgid, cont) {
     }
     return "resumed";
 }
-/** Under the mutex, or by the claimant of a holder whose mark it cleared (`continueDeadOwner`): sets or clears the `suspended` mark in the holder file of `id`, keeping its heartbeat mtime; a holder that is gone, or already so, is left alone. */
-function markHolder(opts, id, on) {
+/** Under the mutex only: rewrites the holder file of `id` with `edit` applied, keeping its heartbeat mtime; a holder that is gone is left alone. */
+function editHolder(opts, id, edit) {
     const file = join(opts.dir, HEAVY.holders, `${id}.json`);
     const entry = unlessGone(() => readOwnFile(file));
     const rec = entry && parseHolder(entry.text);
-    if (!entry || !rec || (rec.suspended === true) === on)
+    if (!entry || !rec)
         return;
-    if (on)
-        rec.suspended = true;
-    else
-        delete rec.suspended;
+    edit(rec);
     writeFileAtomic(file, JSON.stringify(rec), { mtimeMs: entry.mtimeMs });
 }
+/** A claim younger than `DEAD_OWNER_CLAIM_MS` holds; a future-dated one has expired. */
+const claimHolds = (h, nowMs) => h.claimedAt !== undefined && h.claimedAt <= nowMs && nowMs - h.claimedAt < DEAD_OWNER_CLAIM_MS;
 /**
- * After the mutex: continues the group of a suspended holder whose front end is gone. `attempt()` chose it and cleared its mark under the
- * mutex, so no other acquire picks it too. No resume gate applies, since only the owner's own tick could pass one. The group is signalled only
- * when the record's `leader` is the command `processCommand` now reads for the group: a null leader, a missing or an owner's record, or a
- * changed command means no signal, and the record stays for the watchdog. A lookup that throws also means no signal, and the mark is put back
- * so a later acquire tries again; at most one lookup runs per `attempt()`. The put-back takes no mutex: waiters poll it in a loop, so it is busy most
- * often exactly when the lookup times out under load, and the claim already excludes every other writer (the mark is clear, so no scan picks the holder,
- * and its front end is dead). Never throws.
+ * Takes the mutex once and clears the `suspended` mark and the claim of a dead owner's holder under it. False when the mutex is busy or the write
+ * fails: no holder file is written without the mutex, so the claim is left to expire and a later acquire takes the group again.
+ */
+function releaseClaim(opts, holder) {
+    const lock = tryLockOnce(join(opts.dir, ".mutex"), { staleAfterMs: MUTEX_STALE_MS, now: opts.now });
+    if (!lock)
+        return false;
+    try {
+        editHolder(opts, holder.id, (rec) => {
+            delete rec.suspended;
+            delete rec.claimedAt;
+        });
+        return true;
+    }
+    catch (err) {
+        warn(opts, `lease: could not clear the claim on group ${holder.pgid}: ${err.message}`);
+        return false;
+    }
+    finally {
+        lock.release();
+    }
+}
+/**
+ * After the mutex: continues the group of a suspended holder whose front end is gone. `attempt()` chose it and claimed it (`claimedAt`) under the
+ * mutex, so no other acquire picks it while the claim holds. No resume gate applies, since only the owner's own tick could pass one. The group is
+ * signalled only when the record's `leader` is the command `processCommand` now reads for the group; then the mark and the claim are cleared under
+ * the mutex (`releaseClaim`) and the record is removed. A null leader, a missing or an owner's record, or a changed command means no signal: the
+ * mark and the claim are cleared and the record stays for the watchdog. A lookup that throws means nothing more is done: the claim expires and a
+ * later acquire tries again; at most one lookup runs per `attempt()`. When the clear fails the record is kept too, so the retake signals again. Never throws.
  */
 function continueDeadOwner(opts, holder) {
     const pgid = holder.pgid;
@@ -452,19 +478,22 @@ function continueDeadOwner(opts, holder) {
     }
     catch (err) {
         warn(opts, `lease: could not read the leader of group ${pgid}: ${describeBoundedFailure(err, PROCESS_COMMAND_TIMEOUT_MS)}`);
-        try {
-            markHolder(opts, holder.id, true);
-        }
-        catch (e) {
-            warn(opts, `lease: could not mark group ${pgid} for another try: ${e.message}`);
-        }
         return;
     }
-    if (current === undefined || current !== leader)
+    let continued = false;
+    if (current !== undefined && current === leader) {
+        try {
+            if (signalGroup(pgid, "SIGCONT"))
+                emit(opts, HEAVY, { type: "resume", id: holder.id, pgid, reason: "dead-owner" });
+            continued = true;
+        }
+        catch (err) {
+            warn(opts, `lease: could not continue group ${pgid}: ${err.message}`);
+        }
+    }
+    if (!releaseClaim(opts, holder) || !continued)
         return;
     try {
-        if (signalGroup(pgid, "SIGCONT"))
-            emit(opts, HEAVY, { type: "resume", id: holder.id, pgid, reason: "dead-owner" });
         removeLeaseSuspension(opts.dir, pgid);
     }
     catch (err) {
@@ -619,13 +648,16 @@ function attempt(opts, cls, meta, waitedMs, ticketId) {
             // A writer killed between its write and rename leaves a uniquely named temp file: remove those of dead writers in this class's directories and the root. Only here, under the mutex; the scanners and `leaseStatus` never delete.
             for (const d of [cls.holders, cls.waiting, ""])
                 sweepDeadTemps(join(opts.dir, d), opts.isAlive ?? pidAlive);
-            // The oldest suspended holder whose front end is gone (ESRCH; a stopped one is alive and is left alone); its group is continued after the mutex.
+            // The oldest suspended holder whose front end is gone (ESRCH; a stopped one is alive and is left alone) and that no other acquire holds a claim on; its group is continued after the mutex.
+            const claimMs = (opts.now ?? Date.now)();
             if (cls === HEAVY)
-                orphan = live.filter((h) => h.suspended && h.pgid !== undefined && !(opts.isAlive ?? pidAlive)(h.pid)).sort(byAge)[0];
-            // Claimed under the mutex, so a concurrent acquire does not pick the same group.
+                orphan = live.filter((h) => h.suspended && h.pgid !== undefined && !claimHolds(h, claimMs) && !(opts.isAlive ?? pidAlive)(h.pid)).sort(byAge)[0];
+            // Claimed under the mutex, so a concurrent acquire does not pick the same group while the claim holds; the mark stays until the group is continued.
             if (orphan) {
                 try {
-                    markHolder(opts, orphan.id, false);
+                    editHolder(opts, orphan.id, (rec) => {
+                        rec.claimedAt = claimMs;
+                    });
                 }
                 catch {
                     orphan = undefined; // Unclaimed: left for a later acquire, and the admission is unchanged.

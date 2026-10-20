@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { acquireSessionLease, tryAcquireLease, type LeaseHandle, type LeaseOptions } from "../src/lease.js";
+import { acquireSessionLease, DEAD_OWNER_CLAIM_MS, tryAcquireLease, type LeaseHandle, type LeaseOptions } from "../src/lease.js";
 import { readSuspensions, writeSuspension } from "../src/suspensions.js";
 import { scriptedHeadroomSampler } from "../src/testing.js";
 import { failFsCall, plantCpu, plantHolder, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
@@ -36,12 +36,18 @@ describe("continuing a dead owner's suspended group", () => {
     });
   const holderRec = (id: string) => JSON.parse(readFileSync(join(dir, "holders", `${id}.json`), "utf8"));
   /** A suspended holder whose front end `pid` is `DEAD` unless said otherwise, `ageSec` older than the clock. */
-  const plant = (id: string, pgid: number, { pid = DEAD, ageSec = 100, leader = "sleep 100" as string | null | false }: { pid?: number; ageSec?: number; leader?: string | null | false } = {}): void => {
-    plantHolder(lease, id, { pid, pgid, childPid: pgid, suspended: true, startedAt: lease.clock.ms - ageSec * SECOND });
+  const plant = (id: string, pgid: number, { pid = DEAD, ageSec = 100, leader = "sleep 100" as string | null | false, extra = {} }: { pid?: number; ageSec?: number; leader?: string | null | false; extra?: Record<string, unknown> } = {}): void => {
+    plantHolder(lease, id, { pid, pgid, childPid: pgid, suspended: true, startedAt: lease.clock.ms - ageSec * SECOND, ...extra });
     if (leader !== false) writeSuspension(dir, { pgid, by: "lease", reason: "CPU 97% busy", at: "2026-10-19T12:00:00.000Z", remindAt: "2026-10-19T14:00:00.000Z", leader });
   };
   const acquire = (): LeaseHandle | null => (handle = tryAcquireLease(opts(), { command: "npm test", cwd: "/w" }));
   const sigconts = (): unknown[] => kill.mock.calls.filter((c) => c[1] === "SIGCONT").map((c) => c[0]);
+  /** Releases the last handle and acquires again `afterMs` later. */
+  const reacquire = (afterMs = 0): LeaseHandle | null => {
+    handle?.release();
+    lease.clock.ms += afterMs;
+    return acquire();
+  };
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "lease-dead-owner-"));
@@ -61,11 +67,11 @@ describe("continuing a dead owner's suspended group", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("continues the group after the mutex when its leader still runs the recorded command: mark cleared under the mutex, then SIGCONT, record removed, one resume event", () => {
+  it("continues the group after the mutex when its leader still runs the recorded command: claimed under the mutex, then SIGCONT, then mark and claim cleared, record removed, one resume event", () => {
     plant("dead", 7001);
     kill.mockImplementation(() => {
       expect(existsSync(join(dir, ".mutex"))).toBe(false);
-      expect(holderRec("dead").suspended).toBeUndefined();
+      expect(holderRec("dead")).toMatchObject({ suspended: true, claimedAt: lease.clock.ms });
       expect(readSuspensions(dir)).toHaveLength(1);
       return true;
     });
@@ -73,6 +79,7 @@ describe("continuing a dead owner's suspended group", () => {
     expect(kill.mock.calls.filter((c) => c[1] === "SIGCONT")).toEqual([[-7001, "SIGCONT"]]);
     expect(asked).toEqual([7001]);
     expect(holderRec("dead").suspended).toBeUndefined();
+    expect(holderRec("dead").claimedAt).toBeUndefined();
     expect(readSuspensions(dir)).toEqual([]);
     expect(lease.events.filter((e) => e.type === "resume")).toEqual([{ type: "resume", id: "dead", pgid: 7001, reason: "dead-owner", class: "heavy" }]);
   });
@@ -105,25 +112,40 @@ describe("continuing a dead owner's suspended group", () => {
     expect(sigconts()).toEqual([]);
     expect(readSuspensions(dir).length).toBe(plantOpts.leader === false ? 0 : 1);
     expect(holderRec("dead").suspended).toBeUndefined();
+    expect(holderRec("dead").claimedAt).toBeUndefined();
     expect(lease.events.filter((e) => e.type === "resume")).toEqual([]);
-    handle?.release();
     asked.length = 0;
-    acquire();
+    reacquire(DEAD_OWNER_CLAIM_MS);
     expect(asked).toEqual([]);
   });
 
-  it("keeps the mark and the record when the leader cannot be read, so the next acquire looks again", () => {
+  it("leaves the group claimed when the leader cannot be read: an acquire inside the bound skips it, one after the bound continues it", () => {
     plant("dead", 7001);
     commands[7001] = new Error("ps: timed out");
     acquire();
     expect(sigconts()).toEqual([]);
     expect(readSuspensions(dir)).toHaveLength(1);
-    expect(holderRec("dead").suspended).toBe(true);
-    handle?.release();
+    expect(holderRec("dead")).toMatchObject({ suspended: true, claimedAt: lease.clock.ms });
     commands[7001] = "sleep 100";
-    acquire();
+    reacquire(DEAD_OWNER_CLAIM_MS - 1);
+    expect(asked).toEqual([7001]);
+    expect(sigconts()).toEqual([]);
+    reacquire(1);
     expect(asked).toEqual([7001, 7001]);
     expect(sigconts()).toEqual([-7001]);
+    expect(holderRec("dead").suspended).toBeUndefined();
+  });
+
+  it.each<[string, boolean, unknown]>([
+    ["a claim younger than the bound", false, -10 * SECOND],
+    ["a claim as old as the bound", true, -DEAD_OWNER_CLAIM_MS],
+    ["a future-dated claim", true, 60 * SECOND],
+    ["a wrongly typed claim", true, "soon"],
+  ])("%s -> retaken at once: %s", (_n, retaken, claimedAt) => {
+    plant("dead", 7001, { extra: { claimedAt: typeof claimedAt === "number" ? lease.clock.ms + claimedAt : claimedAt } });
+    acquire();
+    expect(asked).toEqual(retaken ? [7001] : []);
+    expect(sigconts()).toEqual(retaken ? [-7001] : []);
   });
 
   it("names the 2 s bound when the leader lookup times out", () => {
@@ -147,8 +169,7 @@ describe("continuing a dead owner's suspended group", () => {
     expect(readSuspensions(dir)).toHaveLength(1);
     expect(holderRec("dead").suspended).toBe(true);
     expect(lease.warnings.at(-1)).toMatch(/could not read the leader of group 7001: EIO/);
-    handle?.release();
-    acquire();
+    reacquire(DEAD_OWNER_CLAIM_MS);
     expect(sigconts()).toEqual([-7001]);
   });
 
@@ -179,38 +200,35 @@ describe("continuing a dead owner's suspended group", () => {
     expect(holderRec("dead").suspended).toBe(true);
   });
 
-  it("puts the mark back even while another process holds the mutex, so a later acquire continues the group", () => {
+  it.each<[string, () => () => void, RegExp | undefined]>([
+    ["the mutex is busy", () => {
+      writeFileSync(join(dir, ".mutex"), "someone else");
+      return () => rmSync(join(dir, ".mutex"));
+    }, undefined],
+    ["the write fails", () => failFsCall("renameSync", (p) => p.includes(join("holders", "dead.json.")), "EIO"), /could not clear the claim on group 7001: EIO/],
+  ])("leaves the claim to expire when clearing it fails because %s, writes no holder file without the mutex, and continues the group later", (_n, fail, warning) => {
     plant("dead", 7001);
-    let failing = true;
-    commands = new Proxy({} as Record<number, string | Error>, {
-      get: () => {
-        if (!failing) return "sleep 100";
-        writeFileSync(join(dir, ".mutex"), "someone else");
-        return new Error("ps: timed out");
-      },
+    let restore: (() => void) | undefined;
+    kill.mockImplementation((pid) => {
+      if (pid < 0 && !restore) restore = fail();
+      return true;
     });
-    acquire();
-    expect(holderRec("dead").suspended).toBe(true);
-    expect(sigconts()).toEqual([]);
-    failing = false;
-    rmSync(join(dir, ".mutex"));
-    handle?.release();
-    acquire();
-    expect(sigconts()).toEqual([-7001]);
-  });
-
-  it("says so when the mark cannot be put back", () => {
-    plant("dead", 7001);
-    commands[7001] = new Error("ps: timed out");
-    // The claim writes before the lookup asks; only the put-back after it fails.
-    const restore = failFsCall("renameSync", (p) => p.includes(join("holders", "dead.json.")) && asked.length > 0, "EIO");
     try {
       acquire();
     } finally {
-      restore();
+      restore?.();
     }
+    expect(sigconts()).toEqual([-7001]);
+    expect(holderRec("dead")).toMatchObject({ suspended: true, claimedAt: lease.clock.ms });
+    expect(readSuspensions(dir)).toHaveLength(1);
+    if (warning) expect(lease.warnings.at(-1)).toMatch(warning);
+    reacquire(DEAD_OWNER_CLAIM_MS - 1);
+    expect(asked).toEqual([7001]);
+    reacquire(1);
+    expect(asked).toEqual([7001, 7001]);
+    expect(sigconts()).toEqual([-7001, -7001]);
     expect(holderRec("dead").suspended).toBeUndefined();
-    expect(lease.warnings.at(-1)).toMatch(/could not mark group 7001 for another try: EIO/);
+    expect(readSuspensions(dir)).toEqual([]);
   });
 
   it("never touches an owner's record or signals for it", () => {

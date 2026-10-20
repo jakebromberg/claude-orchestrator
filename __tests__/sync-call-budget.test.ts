@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gatherCollisionInputs } from "../src/collision-check.js";
-import { defaultLeaseOptions } from "../src/lease.js";
+import { DEAD_OWNER_CLAIM_MS, defaultLeaseOptions } from "../src/lease.js";
 import { weightForCommands, type GitLookup } from "../src/lease-weights.js";
 import { psField } from "../src/ps.js";
 import {
@@ -52,6 +52,10 @@ describe("synchronous call budgets", () => {
     { name: "the dead-owner check's one leader lookup", stretch: PROCESS_COMMAND_TIMEOUT_MS },
   ])("keeps $name within the heartbeat window", ({ stretch }) => {
     expect(stretch).toBeLessThanOrEqual(BLOCKING_BUDGET_MS);
+  });
+
+  it("lets a dead owner's claim outlast its leader lookup many times over, so a claim expires only after its claimant is done", () => {
+    expect(DEAD_OWNER_CLAIM_MS).toBeGreaterThanOrEqual(10 * PROCESS_COMMAND_TIMEOUT_MS);
   });
 
   it("bounds the default processCommand's ps call by PROCESS_COMMAND_TIMEOUT_MS", () => {
