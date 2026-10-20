@@ -206,6 +206,7 @@ describe("continuing a dead owner's suspended group", () => {
       return () => rmSync(join(dir, ".mutex"));
     }, /could not clear the claim on group 7001: the lease mutex is busy/],
     ["the write fails", () => failFsCall("renameSync", (p) => p.includes(join("holders", "dead.json.")), "EIO"), /could not clear the claim on group 7001: EIO/],
+    ["the mutex cannot be created", () => failFsCall("openSync", (p) => p.endsWith(".mutex"), "ENOSPC"), /could not clear the claim on group 7001: .*ENOSPC/],
   ])("leaves the claim to expire when clearing it fails because %s, writes no holder file without the mutex, and continues the group later", (_n, fail, warning) => {
     plant("dead", 7001);
     let restore: (() => void) | undefined;
