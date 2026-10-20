@@ -436,8 +436,9 @@ function continueDeadOwner(opts, holder) {
         warn(opts, `lease: could not read the leader of group ${pgid}: ${err.message}`);
         const lock = tryLockOnce(join(opts.dir, ".mutex"), { staleAfterMs: MUTEX_STALE_MS, now: opts.now });
         try {
-            if (lock)
-                markHolder(opts, holder.id, true);
+            if (!lock)
+                throw new Error("the lease mutex is busy");
+            markHolder(opts, holder.id, true);
         }
         catch (e) {
             warn(opts, `lease: could not mark group ${pgid} for another try: ${e.message}`);
