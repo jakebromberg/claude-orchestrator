@@ -12,7 +12,7 @@ import { shellQuote } from "./shell-quote.js";
 import { claudeExecOptions } from "./claude-env.js";
 import { acquireLease, defaultWarn } from "./lease.js";
 import { formatPostCheckStop, refusalStopReason } from "./lease-messages.js";
-import { weightFor } from "./lease-weights.js";
+import { loadWeightTable, realGit, resolveWeight } from "./lease-weights.js";
 import { stopAtCritical } from "./memory-pressure.js";
 import { groupAlive, signalGroup } from "./ps.js";
 const OUTPUT_TAIL_BYTES = 64 * 1024;
@@ -173,7 +173,22 @@ const WAIT_LOG_INTERVAL_MS = 60_000;
 function acquireCheckLease(lease, issue, cwd, commands, runningSessions = () => 0) {
     let lastLogged;
     const warn = lease.warn ?? defaultWarn;
-    const weight = Math.max(0, ...commands.map((c) => weightFor(c, cwd, process.env, warn) ?? 0));
+    // One table read and at most one git call per fact for the whole check, not per command: the engine's event loop waits on each.
+    const table = loadWeightTable(process.env, warn);
+    const facts = new Map();
+    const once = (key, get) => {
+        if (!facts.has(key)) {
+            try {
+                facts.set(key, get());
+            }
+            catch {
+                facts.set(key, "");
+            }
+        }
+        return facts.get(key);
+    };
+    const git = { toplevel: (d) => once("toplevel", () => realGit.toplevel(d)), origin: (d) => once("origin", () => realGit.origin(d)) };
+    const weight = Math.max(0, ...commands.map((c) => resolveWeight(c, cwd, table, git) ?? 0));
     return acquireLease({ ...lease, inheritedHolderId: undefined }, { command: commands[0] ?? "", label: `post-check ${issue.ref}`, cwd, ...(weight > 0 && { weight }) }, {
         onWait: (s) => {
             if (lastLogged !== undefined && s.waitedMs - lastLogged < WAIT_LOG_INTERVAL_MS)

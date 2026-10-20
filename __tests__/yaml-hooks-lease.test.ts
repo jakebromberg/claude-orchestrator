@@ -84,6 +84,15 @@ describe("leased postSessionCheck", () => {
     expect(warnings).toEqual([]);
   });
 
+  it("reads the weights file once per check, so a malformed one warns once however many commands run", async () => {
+    writeFileSync(join(tmp, "w.json"), "{not json");
+    vi.stubEnv("CO_LEASE_WEIGHTS_FILE", join(tmp, "w.json"));
+    const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands: ["npm test", "npx tsc", "npm run lint"] } }), { runCommand: vi.fn(async () => "") });
+    await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions() });
+
+    expect(warnings.filter((w) => w.includes("ignoring weights file"))).toHaveLength(1);
+  });
+
   it("reports each child's PID to the holder, so it stays live past a stalled heartbeat", async () => {
     let childPid: number | undefined;
     const runCommand = vi.fn(async (_c: string, _d: string, _e?: Record<string, string>, onSpawn?: (pid: number) => void) => {
