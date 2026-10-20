@@ -1,11 +1,11 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { acquireSessionLease, tryAcquireLease, type LeaseHandle, type LeaseOptions } from "../src/lease.js";
 import { readSuspensions, writeSuspension } from "../src/suspensions.js";
 import { scriptedHeadroomSampler } from "../src/testing.js";
-import { plantCpu, plantHolder, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
+import { failFsCall, plantCpu, plantHolder, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
 
 const TICKS = { idle: 1, total: 10 };
 const SECOND = 1000;
@@ -139,6 +139,31 @@ describe("continuing a dead owner's suspended group", () => {
     nested!.release();
     expect(asked).toEqual([7001]);
     expect(sigconts()).toEqual([-7001]);
+  });
+
+  it("leaves an orphan it cannot claim for a later acquire, and admits as usual", () => {
+    plant("dead", 7001);
+    const restore = failFsCall("renameSync", (p) => p.includes(join("holders", "dead.json.")), "EIO");
+    try {
+      expect(acquire()).not.toBeNull();
+    } finally {
+      restore();
+    }
+    expect(asked).toEqual([]);
+    expect(holderRec("dead").suspended).toBe(true);
+  });
+
+  it("says so when the mark cannot be put back because the mutex is busy", () => {
+    plant("dead", 7001);
+    commands = new Proxy({} as Record<number, string | Error>, {
+      get: () => {
+        writeFileSync(join(dir, ".mutex"), "someone else");
+        return new Error("ps: timed out");
+      },
+    });
+    acquire();
+    expect(holderRec("dead").suspended).toBeUndefined();
+    expect(lease.warnings.at(-1)).toMatch(/could not mark group 7001 for another try: the lease mutex is busy/);
   });
 
   it("never touches an owner's record or signals for it", () => {
