@@ -6,8 +6,10 @@ export interface PsTextRow {
   uid?: number;
   stat?: string;
   etime?: string;
+  /** Resident memory in KiB, as `ps` prints it. */
+  rss?: number | string;
   command: string;
 }
 
-/** The text `ps -axo pid=,ppid=,pgid=,uid=,stat=,etime=,command=` prints for `rows`: the one fixture the parser, `suspensions` and `watchdog` suites share, so no test calls the real `ps`. */
-export const psText = (rows: PsTextRow[]): string => rows.map(({ pid, ppid, pgid, uid = 501, stat = "S", etime = "02:00:00", command }) => `${pid} ${ppid} ${pgid} ${uid} ${stat} ${etime} ${command}`).join("\n");
+/** The text `ps -axo pid=,ppid=,pgid=,uid=,stat=,etime=,rss=,command=` prints for `rows`: the one fixture the parser, `suspensions` and `watchdog` suites share, so no test calls the real `ps`. */
+export const psText = (rows: PsTextRow[]): string => rows.map(({ pid, ppid, pgid, uid = 501, stat = "S", etime = "02:00:00", rss = 4096, command }) => `${pid} ${ppid} ${pgid} ${uid} ${stat} ${etime} ${rss} ${command}`).join("\n");
