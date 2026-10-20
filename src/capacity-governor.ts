@@ -24,10 +24,14 @@ export interface CapacityGovernor {
 }
 
 /**
- * Turns pressure readings into a launch capacity. With `adaptive`, capacity
- * stays at the lower value after `warning` or `critical` until `normal` has
- * held for 60 s (a debounce, not a prediction). Without it, `warning` is
- * ignored and there is no hysteresis, but `critical` still closes capacity.
+ * Turns pressure readings into a launch capacity: K (`maxParallel`) at every
+ * level but `critical`, where it is 0. With `adaptive`, the shown level stays
+ * at `warning` or `critical` until `normal` has held for 60 s (a debounce, not
+ * a prediction), but `warning` no longer lowers capacity, so a `critical`
+ * followed by a `warning` reading reopens capacity to K on that first reading;
+ * only `critical` followed straight by `normal` waits out the 60 s. Without
+ * `adaptive`, `warning` is ignored and there is no hysteresis, but `critical`
+ * still closes capacity.
  * The first reading is taken at creation; each transition is logged once and passed to `onTransition`
  * (a callback that throws is ignored), tagged with `runId` when given.
  */
