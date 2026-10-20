@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { deriveHooks } from "../src/yaml-hooks.js";
+import { realGit } from "../src/lease-weights.js";
 import * as leaseModule from "../src/lease.js";
 import { leaseStatus, tryAcquireLease, type LeaseEvent, type LeaseOptions } from "../src/lease.js";
 import type { PressureLevel } from "../src/memory-pressure.js";
@@ -91,6 +92,36 @@ describe("leased postSessionCheck", () => {
     await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions() });
 
     expect(warnings.filter((w) => w.includes("ignoring weights file"))).toHaveLength(1);
+  });
+
+  it("reads the weights file from the lease options' directory, not the process environment's", async () => {
+    writeFileSync(join(tmp, "weights.json"), JSON.stringify([{ pattern: "^npm test", gb: 3 }]));
+    const elsewhere = mkdtempSync(join(tmpdir(), "other-lease-"));
+    writeFileSync(join(elsewhere, "weights.json"), JSON.stringify([{ pattern: "^npm test", gb: 9 }]));
+    vi.stubEnv("CO_LEASE_DIR", elsewhere);
+    let weight: unknown;
+    try {
+      const runCommand = vi.fn(async () => {
+        weight = leaseStatus(leaseOptions()).live[0]?.weight;
+        return "";
+      });
+      await deriveHooks(makeYaml(), { runCommand }).postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions() });
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+    expect(weight).toBe(3 * 2 ** 30);
+  });
+
+  it("asks git for each fact at most once per check, however many commands match repo-scoped rules", async () => {
+    writeFileSync(join(tmp, "w.json"), JSON.stringify([{ pattern: "^npm", repo: "o/other", gb: 1 }, { pattern: "^np", repo: "o/r", gb: 2 }]));
+    vi.stubEnv("CO_LEASE_WEIGHTS_FILE", join(tmp, "w.json"));
+    const toplevel = vi.spyOn(realGit, "toplevel").mockReturnValue("/tmp/worktrees/foo");
+    const origin = vi.spyOn(realGit, "origin").mockReturnValue("git@github.com:o/r.git");
+    const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands: ["npm test", "npx tsc", "npm run lint", "npm run build"] } }), { runCommand: vi.fn(async () => "") });
+    await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions() });
+
+    expect(origin).toHaveBeenCalledTimes(1);
+    expect(toplevel.mock.calls.length).toBeLessThanOrEqual(1);
   });
 
   it("reports each child's PID to the holder, so it stays live past a stalled heartbeat", async () => {
