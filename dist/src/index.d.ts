@@ -1,4 +1,4 @@
-export type { Status, IssueSpec, Issue, RawOrchestratorConfig, OrchestratorConfig, MergePolicy, RunOptions, PostCheckResult, OrchestratorHooks, PostSessionCheckContext, ParsedMode, ParsedArgs, StatusStore, ProcessHandle, ProcessRunner, Logger, IssueMetadata, FailureReason, StopStage, MetadataStore, Deps, EngineInfo, EngineRegistry, RunRecord, IssueCommentsConfig, LabelSyncConfig, RetryOnCheckFailureConfig, } from "./types.js";
+export type { Status, IssueSpec, Issue, RawOrchestratorConfig, OrchestratorConfig, MergePolicy, RunOptions, PostCheckResult, OrchestratorHooks, PostSessionCheckContext, ParsedMode, ParsedArgs, StatusStore, ProcessHandle, ProcessRunner, Logger, IssueMetadata, FailureReason, StopStage, MetadataStore, DeathMarker, DeathStore, Deps, EngineInfo, EngineRegistry, RunRecord, IssueCommentsConfig, LabelSyncConfig, RetryOnCheckFailureConfig, } from "./types.js";
 export { Orchestrator, cleanUpMergedIssues } from "./engine.js";
 export { validateConfig } from "./schema.js";
 export type { ValidateConfigOptions } from "./schema.js";
@@ -9,7 +9,7 @@ export { readySet, layeredTopoSort } from "./topo.js";
 export type { TopoNode, ReadySet, BlockedNode, LayeredPartition } from "./topo.js";
 export { refOf, normalizeDep, repoOfRef, compareRef, compareRefString, encodeRefForFilename, decodeRefFromFilename, } from "./ref.js";
 export type { RefLike } from "./ref.js";
-export { FileStatusStore, FileMetadataStore, InMemoryStatusStore, InMemoryMetadataStore } from "./status.js";
+export { FileStatusStore, FileMetadataStore, InMemoryStatusStore, InMemoryMetadataStore, FileDeathStore, InMemoryDeathStore } from "./status.js";
 export { consoleLogger, createSilentLogger, colors } from "./log.js";
 export { createPrintSummary } from "./summary.js";
 export type { SummaryColumn, SummaryOptions } from "./summary.js";

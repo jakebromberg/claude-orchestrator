@@ -1,6 +1,6 @@
 import type { HeadroomReading, HeadroomSampler } from "./headroom-sampler.js";
 import type { PressureLevel, PressureSampler } from "./memory-pressure.js";
-export { InMemoryStatusStore, InMemoryMetadataStore } from "./status.js";
+export { InMemoryStatusStore, InMemoryMetadataStore, InMemoryDeathStore } from "./status.js";
 export { createSilentLogger } from "./log.js";
 /**
  * A scripted `PressureSampler` for tests. `levels` is one level, a list (one level per reading, then the last one

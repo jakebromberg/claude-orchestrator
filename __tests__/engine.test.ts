@@ -893,6 +893,19 @@ describe("Orchestrator", () => {
       expect(deaths[0].at <= deaths[1].at).toBe(true);
     });
 
+    it("still resets the row and warns when the death store cannot write", async () => {
+      const issue = makeIssue({ number: 1 });
+      const deathStore = { append: () => { throw new Error("ENOSPC"); }, list: () => [] };
+      const { orchestrator, deps } = makeOrchestrator([issue], undefined, { deathStore });
+      const warn = vi.spyOn(deps.logger, "warn");
+      deps.statusStore.set("1", "running");
+
+      await orchestrator.resetStaleStatuses();
+
+      expect(deps.statusStore.get("1")).toBe("pending");
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("ENOSPC"));
+    });
+
     it.each(["succeeded", "failed", "pending"] as const)("records nothing for a %s row", async (status) => {
       const issue = makeIssue({ number: 1 });
       const { orchestrator, config, deps } = makeOrchestrator([issue], undefined, { deathStore: new InMemoryDeathStore() });

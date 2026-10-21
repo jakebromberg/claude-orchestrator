@@ -1,4 +1,4 @@
-import type { Status, StatusStore, IssueMetadata, MetadataStore } from "./types.js";
+import type { Status, StatusStore, IssueMetadata, MetadataStore, DeathMarker, DeathStore } from "./types.js";
 export declare class InMemoryStatusStore implements StatusStore {
     private statuses;
     get(ref: string): Status;
@@ -28,4 +28,17 @@ export declare class FileMetadataStore implements MetadataStore {
     update(ref: string, partial: Partial<IssueMetadata>): void;
     remove(ref: string): void;
     private metadataFilePath;
+}
+export declare class InMemoryDeathStore implements DeathStore {
+    private deaths;
+    append(ref: string, marker: DeathMarker): void;
+    list(ref: string): DeathMarker[];
+}
+/** One JSONL file per ref under `<configDir>/deaths/`, only ever appended to. */
+export declare class FileDeathStore implements DeathStore {
+    private configDir;
+    constructor(configDir: string);
+    append(ref: string, marker: DeathMarker): void;
+    list(ref: string): DeathMarker[];
+    private deathFilePath;
 }

@@ -11,7 +11,7 @@ import { writeRunRecord } from "./run-history.js";
 import { createRealProcessRunner } from "./real-process-runner.js";
 import { startWatch } from "./watch.js";
 import { mergePrs } from "./merge.js";
-import { generateReport, formatReport } from "./report.js";
+import { generateReport, formatReport, type ReportData } from "./report.js";
 import { postRunSummaryComments } from "./issue-comments.js";
 import { encodeRefForFilename } from "./ref.js";
 import { renderPlanPreview } from "./plan-preview.js";
@@ -93,6 +93,26 @@ export interface MainOptions {
 
 /** Modes that launch sessions. Only these read memory pressure, so a lease-directory misconfiguration cannot break the read-only ones. */
 const DISPATCH_MODES: ReadonlySet<ParsedMode> = new Set(["run-all", "run-specific", "retry-failed"]);
+
+/** Build the post-run report from `deps`' stores, carrying each row's engine deaths when `deps.deathStore` is set. */
+export function buildRunReport(
+  config: OrchestratorConfig,
+  deps: Pick<Deps, "statusStore" | "metadataStore" | "deathStore">,
+  startedAt: Date,
+  finishedAt: Date,
+  launched: ReadonlyMap<string, readonly string[]>,
+): ReportData {
+  return generateReport(
+    config.name,
+    config.issues,
+    (n) => deps.statusStore.get(n),
+    (n) => deps.metadataStore.get(n),
+    startedAt,
+    finishedAt,
+    launched,
+    (n) => deps.deathStore?.list(n) ?? [],
+  );
+}
 
 /** Exported for testing. */
 export function createRealDeps(config: OrchestratorConfig, mode: ParsedMode): Deps {
@@ -558,16 +578,7 @@ export async function createMain(options: MainOptions): Promise<void> {
 
   // Write post-run report
   const finishedAt = new Date();
-  const report = generateReport(
-    config.name,
-    config.issues,
-    (n) => deps.statusStore.get(n),
-    (n) => deps.metadataStore.get(n),
-    startedAt,
-    finishedAt,
-    orchestrator.launchedSessions(),
-    (n) => deps.deathStore?.list(n) ?? [],
-  );
+  const report = buildRunReport(config, deps, startedAt, finishedAt, orchestrator.launchedSessions());
 
   const reportId = startedAt.toISOString().replace(/:/g, "-");
   const jsonPath = path.join(config.configDir, "reports", `${reportId}.json`);

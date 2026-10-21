@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseArgs } from "./cli.js";
 import { Orchestrator, cleanUpMergedIssues } from "./engine.js";
-import { FileStatusStore, FileMetadataStore } from "./status.js";
+import { FileStatusStore, FileMetadataStore, FileDeathStore } from "./status.js";
 import { consoleLogger } from "./log.js";
 import { randomUUID } from "node:crypto";
 import { writeRunRecord } from "./run-history.js";
@@ -72,11 +72,16 @@ export function buildDetachSpawnCommand(opts) {
 }
 /** Modes that launch sessions. Only these read memory pressure, so a lease-directory misconfiguration cannot break the read-only ones. */
 const DISPATCH_MODES = new Set(["run-all", "run-specific", "retry-failed"]);
+/** Build the post-run report from `deps`' stores, carrying each row's engine deaths when `deps.deathStore` is set. */
+export function buildRunReport(config, deps, startedAt, finishedAt, launched) {
+    return generateReport(config.name, config.issues, (n) => deps.statusStore.get(n), (n) => deps.metadataStore.get(n), startedAt, finishedAt, launched, (n) => deps.deathStore?.list(n) ?? []);
+}
 /** Exported for testing. */
 export function createRealDeps(config, mode) {
     return {
         statusStore: new FileStatusStore(config.configDir),
         metadataStore: new FileMetadataStore(config.configDir),
+        deathStore: new FileDeathStore(config.configDir),
         processRunner: createRealProcessRunner(),
         logger: consoleLogger,
         generateSessionId: () => randomUUID(),
@@ -495,7 +500,7 @@ export async function createMain(options) {
     config.hooks.printSummary(config.issues, (n) => deps.statusStore.get(n));
     // Write post-run report
     const finishedAt = new Date();
-    const report = generateReport(config.name, config.issues, (n) => deps.statusStore.get(n), (n) => deps.metadataStore.get(n), startedAt, finishedAt, orchestrator.launchedSessions());
+    const report = buildRunReport(config, deps, startedAt, finishedAt, orchestrator.launchedSessions());
     const reportId = startedAt.toISOString().replace(/:/g, "-");
     const jsonPath = path.join(config.configDir, "reports", `${reportId}.json`);
     const mdPath = path.join(config.configDir, "reports", `${reportId}.md`);
