@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { Status, StatusStore, IssueMetadata, MetadataStore } from "./types.js";
+import type { Status, StatusStore, IssueMetadata, MetadataStore, DeathMarker, DeathStore } from "./types.js";
 import { encodeRefForFilename } from "./ref.js";
 
 // Stores are keyed by issue ref ("owner/repo#N", or bare "N" when no repo is
@@ -117,5 +117,53 @@ export class FileMetadataStore implements MetadataStore {
 
   private metadataFilePath(ref: string): string {
     return path.join(this.configDir, "metadata", `issue-${encodeRefForFilename(ref)}.json`);
+  }
+}
+
+export class InMemoryDeathStore implements DeathStore {
+  private deaths = new Map<string, DeathMarker[]>();
+
+  append(ref: string, marker: DeathMarker): void {
+    this.deaths.set(ref, [...(this.deaths.get(ref) ?? []), marker]);
+  }
+
+  list(ref: string): DeathMarker[] {
+    return [...(this.deaths.get(ref) ?? [])];
+  }
+}
+
+/** One JSONL file per ref under `<configDir>/deaths/`, only ever appended to. */
+export class FileDeathStore implements DeathStore {
+  private configDir: string;
+
+  constructor(configDir: string) {
+    this.configDir = configDir;
+  }
+
+  append(ref: string, marker: DeathMarker): void {
+    fs.mkdirSync(path.join(this.configDir, "deaths"), { recursive: true });
+    fs.appendFileSync(this.deathFilePath(ref), `${JSON.stringify(marker)}\n`);
+  }
+
+  list(ref: string): DeathMarker[] {
+    let text: string;
+    try {
+      text = fs.readFileSync(this.deathFilePath(ref), "utf-8");
+    } catch {
+      return [];
+    }
+    const markers: DeathMarker[] = [];
+    for (const line of text.split("\n")) {
+      try {
+        if (line) markers.push(JSON.parse(line));
+      } catch {
+        // A torn line must not hide the deaths around it.
+      }
+    }
+    return markers;
+  }
+
+  private deathFilePath(ref: string): string {
+    return path.join(this.configDir, "deaths", `issue-${encodeRefForFilename(ref)}.jsonl`);
   }
 }

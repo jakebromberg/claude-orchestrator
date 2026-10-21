@@ -124,6 +124,7 @@ export class Orchestrator {
         this.deps.logger.warn(
           `Issue #${issue.number} has stale 'running' status, resetting to pending`,
         );
+        this.deps.deathStore?.append(issue.ref, { at: new Date().toISOString(), status: "running" });
         promises.push(this.setStatus(issue, "pending"));
       }
     }

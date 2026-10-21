@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { consoleLogger } from "../src/log.js";
+import { FileDeathStore } from "../src/status.js";
 import * as lease from "../src/lease.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -70,6 +71,11 @@ describe("createRealDeps lease wiring", () => {
     expect(deps.lease).toBeDefined();
     expect(deps.memoryPressure).toBe(deps.lease!.level);
     expect(deps.engineRegistry).toBeDefined();
+  });
+
+  it("wires a file-backed death store so restarts record their dead rows", () => {
+    vi.stubEnv("CO_LEASE_DIR", path.join(os.tmpdir(), "co-create-main-lease"));
+    expect(createRealDeps(config, "run-all").deathStore).toBeInstanceOf(FileDeathStore);
   });
 
   it.each(["status", "plan"] as const)("builds no lease options for the read-only %s mode", (mode) => {

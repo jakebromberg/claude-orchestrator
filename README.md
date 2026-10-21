@@ -522,6 +522,7 @@ The engine uses dependency injection for all external interactions:
 
 - **`StatusStore`** - Read/write issue statuses (file-backed or in-memory)
 - **`MetadataStore`** - PR URLs, exit codes, timing, files changed
+- **`DeathStore`** - Append-only record of the rows whose engine died while they were `running`
 - **`ProcessRunner`** - Spawn Claude processes
 - **`Logger`** - Console output
 - **`OrchestratorHooks`** - Project-specific behavior (worktree setup, prompts, etc.)
@@ -667,12 +668,18 @@ npx tsx orchestrate.ts myconfig --dashboard --port 8080   # custom port
 
 The dashboard shows issues grouped by wave with status badges, PR links, and expandable log tails. Updates are streamed via Server-Sent Events.
 
+### Engine death markers
+
+When an engine dies mid-wave, the rows it was running keep a stale `running` status. On the next start, `resetStaleStatuses` resets each such row to `pending` and first appends one line, `{ "at": "<ISO time>", "status": "running" }`, to `<configDir>/deaths/issue-<encodedRef>.jsonl` (the `FileDeathStore`; `InMemoryDeathStore` in tests). Deaths are detected only this way, never from wall-clock gaps or pids. A row in any other status gets no line.
+
+The file is append-only and nothing clears it: a relaunch, a retry, `NO_STOP` and a later success all leave it alone. Each report row gains `engineDeaths: [{ at }]`, the ref's deaths oldest first, and omits the field when there are none. `status`, `failureReason` and `stopStage` are unchanged, so a row can read `succeeded` with `engineDeaths` of length 1. Readers that do not know the field ignore it.
+
 ## Test Utilities
 
 Import test helpers from `claude-orchestrator/testing`:
 
 ```typescript
-import { InMemoryStatusStore, InMemoryMetadataStore, createSilentLogger, scriptedPressureSampler } from "@funlandresearch/claude-orchestrator/testing";
+import { InMemoryStatusStore, InMemoryMetadataStore, InMemoryDeathStore, createSilentLogger, scriptedPressureSampler } from "@funlandresearch/claude-orchestrator/testing";
 ```
 
 `scriptedPressureSampler(levels, options?)` builds a fake `PressureSampler`: `levels` is one level, a list (one level per reading, then the last one held), or a function read on every call. `options.fresh` makes `fresh()` disagree with the cached reading, and `options.overridden` adds `overridden()`.

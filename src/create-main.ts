@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseArgs } from "./cli.js";
 import { Orchestrator, cleanUpMergedIssues } from "./engine.js";
-import { FileStatusStore, FileMetadataStore } from "./status.js";
+import { FileStatusStore, FileMetadataStore, FileDeathStore } from "./status.js";
 import { consoleLogger } from "./log.js";
 import { randomUUID } from "node:crypto";
 import type { Deps, OrchestratorConfig, ParsedMode, Status } from "./types.js";
@@ -99,6 +99,7 @@ export function createRealDeps(config: OrchestratorConfig, mode: ParsedMode): De
   return {
     statusStore: new FileStatusStore(config.configDir),
     metadataStore: new FileMetadataStore(config.configDir),
+    deathStore: new FileDeathStore(config.configDir),
     processRunner: createRealProcessRunner(),
     logger: consoleLogger,
     generateSessionId: () => randomUUID(),
@@ -565,6 +566,7 @@ export async function createMain(options: MainOptions): Promise<void> {
     startedAt,
     finishedAt,
     orchestrator.launchedSessions(),
+    (n) => deps.deathStore?.list(n) ?? [],
   );
 
   const reportId = startedAt.toISOString().replace(/:/g, "-");

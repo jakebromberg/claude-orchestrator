@@ -3,7 +3,7 @@ export type {
   Status, IssueSpec, Issue, RawOrchestratorConfig, OrchestratorConfig,
   MergePolicy, RunOptions, PostCheckResult, OrchestratorHooks, PostSessionCheckContext,
   ParsedMode, ParsedArgs, StatusStore, ProcessHandle, ProcessRunner,
-  Logger, IssueMetadata, FailureReason, StopStage, MetadataStore, Deps, EngineInfo, EngineRegistry, RunRecord, IssueCommentsConfig, LabelSyncConfig, RetryOnCheckFailureConfig,
+  Logger, IssueMetadata, FailureReason, StopStage, MetadataStore, DeathMarker, DeathStore, Deps, EngineInfo, EngineRegistry, RunRecord, IssueCommentsConfig, LabelSyncConfig, RetryOnCheckFailureConfig,
 } from "./types.js";
 
 // Engine
@@ -26,7 +26,7 @@ export {
 export type { RefLike } from "./ref.js";
 
 // Stores
-export { FileStatusStore, FileMetadataStore, InMemoryStatusStore, InMemoryMetadataStore } from "./status.js";
+export { FileStatusStore, FileMetadataStore, InMemoryStatusStore, InMemoryMetadataStore, FileDeathStore, InMemoryDeathStore } from "./status.js";
 
 // Logging & display
 export { consoleLogger, createSilentLogger, colors } from "./log.js";
