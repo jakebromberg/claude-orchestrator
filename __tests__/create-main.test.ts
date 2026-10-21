@@ -1,12 +1,13 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { consoleLogger } from "../src/log.js";
-import { FileDeathStore } from "../src/status.js";
+import { FileDeathStore, InMemoryDeathStore, InMemoryMetadataStore, InMemoryStatusStore } from "../src/status.js";
 import * as lease from "../src/lease.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
   buildDetachSpawnCommand,
+  buildRunReport,
   createRealDeps,
   buildGhIssueCreateCommand,
   buildNotificationScript,
@@ -46,6 +47,26 @@ describe("createMain memory-pressure sampler", () => {
 
   it("fails a run on a relative CO_LEASE_DIR before dispatching anything", async () => {
     await expect(run()).rejects.toThrow("CO_LEASE_DIR must be an absolute path");
+  });
+});
+
+describe("buildRunReport", () => {
+  const config = {
+    name: "t", configDir: "/c", worktreeDir: "/w", projectRoot: "/p", stallTimeout: 0,
+    issues: [{ number: 1, ref: "1", slug: "one", dependsOn: [] }],
+  } as unknown as OrchestratorConfig;
+  const stores = () => ({ statusStore: new InMemoryStatusStore(), metadataStore: new InMemoryMetadataStore() });
+
+  it("carries the death store's markers onto the report row", () => {
+    const deathStore = new InMemoryDeathStore();
+    deathStore.append("1", { at: "2026-10-21T00:00:00.000Z", status: "running" });
+    const report = buildRunReport(config, { ...stores(), deathStore }, new Date(), new Date(), new Map());
+    expect(report.issues[0].engineDeaths).toEqual([{ at: "2026-10-21T00:00:00.000Z" }]);
+  });
+
+  it("omits engineDeaths when deps has no death store", () => {
+    const report = buildRunReport(config, stores(), new Date(), new Date(), new Map());
+    expect(report.issues[0]).not.toHaveProperty("engineDeaths");
   });
 });
 

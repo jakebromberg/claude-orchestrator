@@ -8,7 +8,7 @@ export { readySet, layeredTopoSort } from "./topo.js";
 // Composite issue identity (the ref rules both planners key on).
 export { refOf, normalizeDep, repoOfRef, compareRef, compareRefString, encodeRefForFilename, decodeRefFromFilename, } from "./ref.js";
 // Stores
-export { FileStatusStore, FileMetadataStore, InMemoryStatusStore, InMemoryMetadataStore } from "./status.js";
+export { FileStatusStore, FileMetadataStore, InMemoryStatusStore, InMemoryMetadataStore, FileDeathStore, InMemoryDeathStore } from "./status.js";
 // Logging & display
 export { consoleLogger, createSilentLogger, colors } from "./log.js";
 export { createPrintSummary } from "./summary.js";

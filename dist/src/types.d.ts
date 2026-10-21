@@ -285,6 +285,17 @@ export interface MetadataStore {
      */
     remove?(ref: string): void;
 }
+/** One death of the engine that was running a row: `status` is what the row held when its engine died. */
+export interface DeathMarker {
+    at: string;
+    status: "running";
+}
+/** Append-only record of the deaths a row suffered. Nothing clears it: a relaunch, retry or later success leaves it be. */
+export interface DeathStore {
+    append(ref: string, marker: DeathMarker): void;
+    /** The ref's deaths in the order they were appended; empty when none. */
+    list(ref: string): DeathMarker[];
+}
 /** What an engine tells its registry; the registry adds `pid`, `pgid` and `startedAt`. */
 export interface EngineInfo {
     runId: string;
@@ -300,6 +311,8 @@ export interface EngineRegistry {
 export interface Deps {
     statusStore: StatusStore;
     metadataStore: MetadataStore;
+    /** Death markers written by `resetStaleStatuses`; absent means deaths are not recorded. */
+    deathStore?: DeathStore;
     processRunner: ProcessRunner;
     logger: Logger;
     generateSessionId(): string;

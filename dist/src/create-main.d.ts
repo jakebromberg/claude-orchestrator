@@ -1,4 +1,5 @@
 import type { Deps, OrchestratorConfig, ParsedMode } from "./types.js";
+import { type ReportData } from "./report.js";
 export type ConfigFactory = ((projectRoot: string) => OrchestratorConfig) | ((projectRoot: string) => Promise<OrchestratorConfig>);
 /** Exported for testing. Builds the `gh issue create` command string with shell-safe quoting. */
 export declare function buildGhIssueCreateCommand(repo: string, title: string): string;
@@ -38,6 +39,8 @@ export interface MainOptions {
     argv?: string[];
     projectRoot?: string;
 }
+/** Build the post-run report from `deps`' stores, carrying each row's engine deaths when `deps.deathStore` is set. */
+export declare function buildRunReport(config: OrchestratorConfig, deps: Pick<Deps, "statusStore" | "metadataStore" | "deathStore">, startedAt: Date, finishedAt: Date, launched: ReadonlyMap<string, readonly string[]>): ReportData;
 /** Exported for testing. */
 export declare function createRealDeps(config: OrchestratorConfig, mode: ParsedMode): Deps;
 export declare function createMain(options: MainOptions): Promise<void>;

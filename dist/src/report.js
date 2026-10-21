@@ -9,7 +9,7 @@ import { repoOfRef } from "./ref.js";
 function refLabel(issue) {
     return repoOfRef(issue.ref) !== undefined ? issue.ref : `#${issue.number}`;
 }
-export function generateReport(configName, issues, getStatus, getMetadata, startedAt, finishedAt, launched) {
+export function generateReport(configName, issues, getStatus, getMetadata, startedAt, finishedAt, launched, getDeaths = () => []) {
     const durationSeconds = Math.round((finishedAt.getTime() - startedAt.getTime()) / 10) / 100;
     return {
         configName,
@@ -19,6 +19,7 @@ export function generateReport(configName, issues, getStatus, getMetadata, start
         issues: issues.map((issue) => {
             const meta = getMetadata(issue.ref);
             const sessionIds = launched.get(issue.ref);
+            const deaths = getDeaths(issue.ref);
             return {
                 ref: issue.ref,
                 number: issue.number,
@@ -28,6 +29,7 @@ export function generateReport(configName, issues, getStatus, getMetadata, start
                 ...(meta.prUrl ? { prUrl: meta.prUrl, prNumber: meta.prNumber } : {}),
                 ...(meta.failureReason ? { failureReason: meta.failureReason } : {}),
                 ...(meta.stopStage ? { stopStage: meta.stopStage } : {}),
+                ...(deaths.length > 0 ? { engineDeaths: deaths.map(({ at }) => ({ at })) } : {}),
                 ran: sessionIds !== undefined,
                 ...(sessionIds ? { sessionIds: [...sessionIds] } : {}),
             };

@@ -101,4 +101,47 @@ export class FileMetadataStore {
         return path.join(this.configDir, "metadata", `issue-${encodeRefForFilename(ref)}.json`);
     }
 }
+export class InMemoryDeathStore {
+    deaths = new Map();
+    append(ref, marker) {
+        this.deaths.set(ref, [...(this.deaths.get(ref) ?? []), marker]);
+    }
+    list(ref) {
+        return [...(this.deaths.get(ref) ?? [])];
+    }
+}
+/** One JSONL file per ref under `<configDir>/deaths/`, only ever appended to. */
+export class FileDeathStore {
+    configDir;
+    constructor(configDir) {
+        this.configDir = configDir;
+    }
+    append(ref, marker) {
+        fs.mkdirSync(path.join(this.configDir, "deaths"), { recursive: true });
+        fs.appendFileSync(this.deathFilePath(ref), `${JSON.stringify(marker)}\n`);
+    }
+    list(ref) {
+        let text;
+        try {
+            text = fs.readFileSync(this.deathFilePath(ref), "utf-8");
+        }
+        catch {
+            return [];
+        }
+        const markers = [];
+        for (const line of text.split("\n")) {
+            try {
+                if (line)
+                    markers.push(JSON.parse(line));
+            }
+            catch {
+                // A torn line must not hide the deaths around it.
+            }
+        }
+        return markers;
+    }
+    deathFilePath(ref) {
+        return path.join(this.configDir, "deaths", `issue-${encodeRefForFilename(ref)}.jsonl`);
+    }
+}
 //# sourceMappingURL=status.js.map

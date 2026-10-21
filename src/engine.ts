@@ -124,7 +124,12 @@ export class Orchestrator {
         this.deps.logger.warn(
           `Issue #${issue.number} has stale 'running' status, resetting to pending`,
         );
-        this.deps.deathStore?.append(issue.ref, { at: new Date().toISOString(), status: "running" });
+        try {
+          this.deps.deathStore?.append(issue.ref, { at: new Date().toISOString(), status: "running" });
+        } catch (err) {
+          // A death-marker write failure never blocks the reset.
+          this.deps.logger.warn(`Issue #${issue.number}: could not record engine death: ${(err as Error).message}`);
+        }
         promises.push(this.setStatus(issue, "pending"));
       }
     }
