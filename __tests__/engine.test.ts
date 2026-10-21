@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { refOf, normalizeDep } from "../src/ref.js";
 import { Orchestrator, cleanUpMergedIssues } from "../src/engine.js";
-import { InMemoryStatusStore, InMemoryMetadataStore } from "../src/status.js";
+import { InMemoryStatusStore, InMemoryMetadataStore, InMemoryDeathStore } from "../src/status.js";
+import { generateReport } from "../src/report.js";
 import { deriveHooks } from "../src/yaml-hooks.js";
 import type {
   Issue,
@@ -847,6 +848,67 @@ describe("Orchestrator", () => {
       expect(deps.statusStore.get("1")).toBe("pending");
       expect(deps.statusStore.get("2")).toBe("succeeded");
       expect(deps.statusStore.get("3")).toBe("failed");
+    });
+  });
+
+  describe("engine death markers", () => {
+    const rowOf = (orchestrator: Orchestrator, config: OrchestratorConfig, deps: Deps, ref: string) =>
+      generateReport(
+        "t", config.issues, (r) => deps.statusStore.get(r), (r) => deps.metadataStore.get(r),
+        new Date(), new Date(), orchestrator.launchedSessions(), (r) => deps.deathStore!.list(r),
+      ).issues.find((i) => i.ref === ref)!;
+
+    it("records a death for a stale running row, which survives relaunch and success", async () => {
+      const issue = makeIssue({ number: 1 });
+      const { orchestrator, config, deps } = makeOrchestrator([issue], undefined, { deathStore: new InMemoryDeathStore() });
+      const runner = deps.processRunner as ReturnType<typeof makeMockRunner>;
+      deps.statusStore.set("1", "running");
+
+      await orchestrator.resetStaleStatuses();
+      expect(deps.statusStore.get("1")).toBe("pending");
+      const deaths = deps.deathStore!.list("1");
+      expect(deaths).toHaveLength(1);
+      expect(deaths[0].status).toBe("running");
+      expect(new Date(deaths[0].at).toISOString()).toBe(deaths[0].at);
+
+      const promise = orchestrator.runAllWaves();
+      await vi.waitFor(() => expect(runner.spawned.length).toBe(1));
+      runner.resolvers.get(1000)!(0);
+      await promise;
+
+      expect(rowOf(orchestrator, config, deps, "1")).toMatchObject({ status: "succeeded", engineDeaths: [{ at: deaths[0].at }] });
+    });
+
+    it("records one death per restart over the same running row, in order", async () => {
+      const issue = makeIssue({ number: 1 });
+      const { orchestrator, deps } = makeOrchestrator([issue], undefined, { deathStore: new InMemoryDeathStore() });
+
+      deps.statusStore.set("1", "running");
+      await orchestrator.resetStaleStatuses();
+      deps.statusStore.set("1", "running");
+      await orchestrator.resetStaleStatuses();
+
+      const deaths = deps.deathStore!.list("1");
+      expect(deaths).toHaveLength(2);
+      expect(deaths[0].at <= deaths[1].at).toBe(true);
+    });
+
+    it.each(["succeeded", "failed", "pending"] as const)("records nothing for a %s row", async (status) => {
+      const issue = makeIssue({ number: 1 });
+      const { orchestrator, config, deps } = makeOrchestrator([issue], undefined, { deathStore: new InMemoryDeathStore() });
+      deps.statusStore.set("1", status);
+
+      await orchestrator.resetStaleStatuses();
+
+      expect(deps.deathStore!.list("1")).toEqual([]);
+      expect(rowOf(orchestrator, config, deps, "1")).not.toHaveProperty("engineDeaths");
+    });
+
+    it("still resets a stale running row when no death store is wired", async () => {
+      const { orchestrator, deps } = makeOrchestrator([makeIssue({ number: 1 })]);
+      deps.statusStore.set("1", "running");
+      await orchestrator.resetStaleStatuses();
+      expect(deps.statusStore.get("1")).toBe("pending");
     });
   });
 

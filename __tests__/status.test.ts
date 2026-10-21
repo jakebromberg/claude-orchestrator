@@ -7,6 +7,8 @@ import {
   FileStatusStore,
   InMemoryMetadataStore,
   FileMetadataStore,
+  InMemoryDeathStore,
+  FileDeathStore,
 } from "../src/status.js";
 
 describe("InMemoryStatusStore", () => {
@@ -226,5 +228,62 @@ describe("FileMetadataStore", () => {
 
   it("remove is idempotent when the file is missing", () => {
     expect(() => store.remove("99")).not.toThrow();
+  });
+});
+
+const DEATH = { at: "2026-10-21T10:00:00.000Z", status: "running" } as const;
+
+describe("InMemoryDeathStore", () => {
+  it("lists nothing for a ref with no deaths", () => {
+    expect(new InMemoryDeathStore().list("1")).toEqual([]);
+  });
+
+  it("appends in order and keeps refs apart", () => {
+    const store = new InMemoryDeathStore();
+    const later = { ...DEATH, at: "2026-10-21T11:00:00.000Z" };
+    store.append("1", DEATH);
+    store.append("1", later);
+    store.append("2", DEATH);
+    expect(store.list("1")).toEqual([DEATH, later]);
+    expect(store.list("2")).toEqual([DEATH]);
+  });
+});
+
+describe("FileDeathStore", () => {
+  let tmpDir: string;
+  let store: FileDeathStore;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "orchestrator-test-"));
+    store = new FileDeathStore(tmpDir);
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("lists nothing when no file exists", () => {
+    expect(store.list("42")).toEqual([]);
+  });
+
+  it("appends one JSON line per death to deaths/issue-<ref>.jsonl", () => {
+    const later = { ...DEATH, at: "2026-10-21T11:00:00.000Z" };
+    store.append("5", DEATH);
+    store.append("5", later);
+    const text = fs.readFileSync(path.join(tmpDir, "deaths", "issue-5.jsonl"), "utf-8");
+    expect(text).toBe(`${JSON.stringify(DEATH)}\n${JSON.stringify(later)}\n`);
+    expect(store.list("5")).toEqual([DEATH, later]);
+  });
+
+  it("encodes a cross-repo ref in the filename and round-trips", () => {
+    store.append("WXYC/lml#924", DEATH);
+    expect(fs.existsSync(path.join(tmpDir, "deaths", "issue-WXYC%2Flml%23924.jsonl"))).toBe(true);
+    expect(store.list("WXYC/lml#924")).toEqual([DEATH]);
+  });
+
+  it("skips a line that is not valid JSON", () => {
+    store.append("5", DEATH);
+    fs.appendFileSync(path.join(tmpDir, "deaths", "issue-5.jsonl"), "{torn\n");
+    expect(store.list("5")).toEqual([DEATH]);
   });
 });

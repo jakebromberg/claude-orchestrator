@@ -45,6 +45,26 @@ describe("generateReport", () => {
     expect(report.issues[2]).toMatchObject({ failureReason: "lease-wait", stopStage: "session" });
   });
 
+  it("carries engineDeaths onto a row only when the ref has deaths", () => {
+    const issues = [makeIssue({ number: 1 }), makeIssue({ number: 2 })];
+    const deaths = new Map([["1", [{ at: "2026-10-21T10:00:00.000Z", status: "running" as const }]]]);
+
+    const report = generateReport(
+      "Test",
+      issues,
+      () => "succeeded" as Status,
+      () => ({ failureReason: "lease-wait", stopStage: "session" }),
+      new Date("2026-01-01T00:00:00Z"),
+      new Date("2026-01-01T00:01:00Z"),
+      new Map(),
+      (ref) => deaths.get(ref) ?? [],
+    );
+
+    expect(report.issues[0].engineDeaths).toEqual([{ at: "2026-10-21T10:00:00.000Z" }]);
+    expect(report.issues[0]).toMatchObject({ status: "succeeded", failureReason: "lease-wait", stopStage: "session" });
+    expect(report.issues[1]).not.toHaveProperty("engineDeaths");
+  });
+
   it("writes ran on every row and sessionIds only on launched rows", () => {
     const issues = [makeIssue({ number: 1 }), makeIssue({ number: 2 })];
 

@@ -14,7 +14,7 @@ src/
 ├── topo.ts               # Shared topological-sort core: readySet / layeredTopoSort (ship-dag's planner adopts it in C2b)
 ├── ref.ts                # Composite issue identity: refOf / normalizeDep / encode/decode / compareRef / compareRefString
 ├── cli.ts                # Argument parsing (pure function)
-├── status.ts             # Status/metadata stores (file-backed + in-memory)
+├── status.ts             # Status/metadata/death stores (file-backed + in-memory); `DeathStore` (`Deps.deathStore`, optional) is the append-only `<configDir>/deaths/issue-<encodedRef>.jsonl`, one `{at, status:"running"}` line per stale `running` row `resetStaleStatuses` resets; nothing clears it (NO_STOP, relaunch, retry, success), and `generateReport`'s optional `getDeaths` turns it into a row's `engineDeaths: [{at}]` (omitted when empty; status/failureReason/stopStage untouched)
 ├── process-pool.ts       # Parallel process management
 ├── stall-monitor.ts      # Log file growth monitor
 ├── log.ts                # Colored console logging
