@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { leaseStatus } from "../src/lease.js";
-import { plantTicket, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
+import { plantHolder, plantTicket, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
 
 describe("leaseStatus waiting", () => {
   let tmp: string;
@@ -40,6 +40,22 @@ describe("leaseStatus waiting", () => {
       { seq: 3, label: "normal-3", gated: false },
       { seq: 7, label: "wrong-type", gated: false },
     ]);
+  });
+
+  it.each<[string, unknown, boolean]>([
+    ["no priority", undefined, false],
+    ["an unknown priority string", "urgent", false],
+    ["a priority of normal", "normal", false],
+    ["a priority of the wrong type (number)", 1, false],
+    ["a priority of the wrong type (true)", true, false],
+    ["a priority of high", "high", true],
+  ])("shows a holder's priority only when it is high: a holder file with %s", (_name, priority, shown) => {
+    plantHolder(lease, "h", { pid: 4242, ...(priority !== undefined && { priority }) });
+    lease.alive.add(4242);
+    const [holder] = leaseStatus(lease.opts()).live;
+    expect(holder).toBeDefined();
+    if (shown) expect(holder).toHaveProperty("priority", "high");
+    else expect(holder).not.toHaveProperty("priority");
   });
 
   it("leaves out a stale ticket and a dead-pid one, and removes nothing", () => {
