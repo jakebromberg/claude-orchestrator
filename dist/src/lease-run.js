@@ -104,7 +104,7 @@ export function runStatus(d) {
         return EX_CONFIG;
     const { level, capacity, live, weights, sessions, waiting } = d.leaseStatus(opts);
     const unowned = d.unowned?.(opts, (sessions?.live ?? []).map((h) => h.pid), live.flatMap((h) => h.childPid ?? (h.expiresAt !== undefined ? h.pid : [])));
-    const holders = live.map((h) => ({ pid: h.pid, command: h.command, ageSec: h.ageSec, ...(h.override && { override: true }), ...(h.suspended && { suspended: true }) }));
+    const holders = live.map((h) => ({ pid: h.pid, command: h.command, ageSec: h.ageSec, ...(h.override && { override: true }), ...(h.suspended && { suspended: true }), ...(h.priority && { priority: h.priority }) }));
     d.out(`${JSON.stringify({ level, capacity, live: holders, ...(waiting?.length && { waiting }), ...(weights && { weights }), ...(unowned && { unowned }) }, null, 2)}\n`);
     return 0;
 }
@@ -120,11 +120,13 @@ export async function runLeased(args, d) {
     }
     const maxWaitMs = args.uncapped ? undefined : (args.maxWaitSec ?? fromEnv ?? DEFAULT_MAX_WAIT_SEC) * 1000;
     const [cmd, cmdArgs] = args.shell !== undefined ? ["/bin/sh", ["-c", args.shell]] : [args.argv[0], args.argv.slice(1)];
-    const [file, fileArgs] = args.background ? [TASKPOLICY, ["-b", cmd, ...cmdArgs]] : [cmd, cmdArgs];
+    const high = args.priority === "high";
+    // A high run keeps its own group (`background`) but not the low CPU priority.
+    const [file, fileArgs] = args.background && !high ? [TASKPOLICY, ["-b", cmd, ...cmdArgs]] : [cmd, cmdArgs];
     const ownHolder = args.gated || args.background || args.suspendable;
     const command = args.shell ?? args.argv.join(" ");
     // Only a holder that governs itself is ranked as a suspension candidate: a background group and a governor.
-    const governor = args.suspendable && args.background ? d.governor : undefined;
+    const governor = args.suspendable && args.background && !high ? d.governor : undefined;
     const suspendable = governor !== undefined && !args.noSuspend && d.env.HEAVY_QUEUE_NO_SUSPEND !== "1" && !runsTool(command, NEVER_SUSPEND);
     // A background child leads its own group (pid = pgid), so a signal goes to the group, continued first in case it is stopped.
     const signalChild = (sig) => {
@@ -168,7 +170,7 @@ export async function runLeased(args, d) {
     // A hook slot the session already holds is borrowed through `inheritedHolderId`, never waited for a second time.
     const hookSlot = opts.inheritedHolderId || ownHolder ? undefined : ancestorHookSlot(opts, d);
     const weight = weightFor(command, d.cwd, d.env, d.err);
-    const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command, label: args.label, cwd: d.cwd, gated: args.gated, suspendable: suspendable || undefined, ...(weight !== undefined && { weight }) }, {
+    const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command, label: args.label, cwd: d.cwd, gated: args.gated, suspendable: suspendable || undefined, ...(high && { priority: "high" }), ...(weight !== undefined && { weight }) }, {
         maxWaitMs,
         onWait: throttledProgress((s) => d.err(`lease: waiting ${seconds(s.waitedMs)}s for a slot (pressure=${s.level}, ${s.live.length}/${s.capacity} live)`), { skipFirst: true }),
     });

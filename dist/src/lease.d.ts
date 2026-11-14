@@ -116,6 +116,7 @@ export interface LeaseOptions {
  * counts from admission. Acquiring an `id` whose holder is already live admits at once without a second holder or count:
  * two hook installs handling one call share one slot, and the borrowed handle's `release` does nothing.
  */
+export type LeasePriority = "normal" | "high";
 export interface HolderMeta {
     command: string;
     label?: string;
@@ -129,6 +130,8 @@ export interface HolderMeta {
     gated?: boolean;
     /** Marks a holder whose front end owns its process group and may suspend it under overload. Set only by the heavy-queue front end. */
     suspendable?: boolean;
+    /** Heavy class only, and only a waiter (`acquireLease`): `"high"` puts the ticket ahead of every normal ticket whatever their `seq`, and tickets of one priority keep `seq` order. It changes who goes next, never how much runs at once. Set only by the heavy-queue front end; absent or `"normal"` is the first-come order. */
+    priority?: LeasePriority;
     /** Heavy class only: the bytes of memory the command is expected to use. Absent, or not a positive number, takes the unmatched weight (`usable / heavyCeiling`). Ignored while the machine's memory is unknown. */
     weight?: number;
 }
@@ -140,6 +143,8 @@ interface HolderRecord {
     pgid?: number;
     /** The front end may suspend this holder's group. */
     suspendable?: true;
+    /** Written only for a high holder; absent reads as normal. */
+    priority?: "high";
     command: string;
     cwd: string;
     startedAt: number;
@@ -184,12 +189,13 @@ export interface LeaseStatus {
         capacity: number;
         live: HolderInfo[];
     };
-    /** Set by `leaseStatus` only, and only while a heavy ticket waits: the eligible tickets in `seq` order. `ready` is absent on a ticket from a build that predates it. */
+    /** Set by `leaseStatus` only, and only while a heavy ticket waits: the eligible tickets in admission order (high priority first, then `seq`). `ready` is absent on a ticket from a build that predates it, and `priority` on a normal one. */
     waiting?: {
         seq: number;
         label: string;
         gated: boolean;
         ready?: boolean;
+        priority?: "high";
     }[];
 }
 /**
