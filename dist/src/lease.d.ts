@@ -108,6 +108,8 @@ export interface LeaseOptions {
     onEvent?(e: LeaseEvent): void;
     warn?(msg: string): void;
 }
+/** `"high"` puts a heavy-queue waiter ahead of every normal one; absent or `"normal"` is the first-come order. */
+export type LeasePriority = "normal" | "high";
 /**
  * What a holder file records about the request; `label` replaces `command` when given. `detached` records a holder
  * for a process that is not this one (hook mode): `id` is used as the holder id and must match `[A-Za-z0-9_-]{1,160}`,
@@ -116,7 +118,6 @@ export interface LeaseOptions {
  * counts from admission. Acquiring an `id` whose holder is already live admits at once without a second holder or count:
  * two hook installs handling one call share one slot, and the borrowed handle's `release` does nothing.
  */
-export type LeasePriority = "normal" | "high";
 export interface HolderMeta {
     command: string;
     label?: string;
@@ -130,7 +131,7 @@ export interface HolderMeta {
     gated?: boolean;
     /** Marks a holder whose front end owns its process group and may suspend it under overload. Set only by the heavy-queue front end. */
     suspendable?: boolean;
-    /** Heavy class only, and only a waiter (`acquireLease`): `"high"` puts the ticket ahead of every normal ticket whatever their `seq`, and tickets of one priority keep `seq` order. It changes who goes next, never how much runs at once. Set only by the heavy-queue front end; absent or `"normal"` is the first-come order. */
+    /** Heavy class only: `"high"` puts a waiter's ticket (`acquireLease`) ahead of every normal ticket whatever their `seq`, and tickets of one priority keep `seq` order. It changes who goes next, never how much runs at once. `tryAcquireLease` writes no ticket, so the field does not order it, but a holder it admits still records `priority: "high"`. Set only by the heavy-queue front end; absent or `"normal"` is the first-come order. */
     priority?: LeasePriority;
     /** Heavy class only: the bytes of memory the command is expected to use. Absent, or not a positive number, takes the unmatched weight (`usable / heavyCeiling`). Ignored while the machine's memory is unknown. */
     weight?: number;

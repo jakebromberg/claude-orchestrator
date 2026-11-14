@@ -147,8 +147,9 @@ function unlessGone(read) {
 const positive = (v) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined);
 function parseHolder(text) {
     try {
-        const rec = JSON.parse(text);
-        return isPid(rec?.pid) && (rec.childPid === undefined || isPid(rec.childPid)) && typeof rec.startedAt === "number" && (rec.expiresAt === undefined || Number.isFinite(rec.expiresAt)) ? { ...rec, weight: positive(rec.weight), resumedAt: positive(rec.resumedAt), claimedAt: positive(rec.claimedAt) } : null;
+        const { priority, ...rec } = JSON.parse(text) ?? {};
+        // A `priority` that is not the string "high" reads as absent, as on a ticket.
+        return isPid(rec?.pid) && (rec.childPid === undefined || isPid(rec.childPid)) && typeof rec.startedAt === "number" && (rec.expiresAt === undefined || Number.isFinite(rec.expiresAt)) ? { ...rec, weight: positive(rec.weight), resumedAt: positive(rec.resumedAt), claimedAt: positive(rec.claimedAt), ...(priority === "high" && { priority }) } : null;
     }
     catch {
         return null;
