@@ -178,6 +178,9 @@ function scanHolders(opts, cls) {
     }
     return found;
 }
+/** A high ticket goes ahead of every normal one; within a rank the older `seq` goes first. */
+const ticketRank = (t) => (t.priority === "high" ? 0 : 1);
+const byAdmission = (a, b) => ticketRank(a) - ticketRank(b) || a.seq - b.seq;
 function parseTicket(text) {
     try {
         const t = JSON.parse(text);
@@ -185,7 +188,7 @@ function parseTicket(text) {
             return null;
         // A field of the wrong type reads as absent, so such a ticket counts instead of comparing as a string.
         const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
-        return { ...t, capacity: num(t.capacity), ceiling: num(t.ceiling), ready: typeof t.ready === "boolean" ? t.ready : undefined, override: t.override === true, weight: positive(t.weight) };
+        return { ...t, capacity: num(t.capacity), ceiling: num(t.ceiling), ready: typeof t.ready === "boolean" ? t.ready : undefined, override: t.override === true, weight: positive(t.weight), priority: t.priority === "high" ? "high" : undefined };
     }
     catch {
         return null;
@@ -534,6 +537,8 @@ function createHolder(opts, cls, meta, command, admission) {
         rec.override = true;
     if (meta.suspendable)
         rec.suspendable = true;
+    if (meta.priority === "high")
+        rec.priority = "high";
     if (positive(meta.weight) !== undefined)
         rec.weight = meta.weight;
     const write = () => writeFileAtomic(file, JSON.stringify(rec));
@@ -693,13 +698,16 @@ function attempt(opts, cls, meta, waitedMs, ticketId) {
                 const ticketStep = (t) => (t.override && machineStep === 0 ? 1 : machineStep);
                 const ticketCapacity = (t) => (t.ceiling === undefined ? (t.capacity ?? Infinity) : cls.capacity(ticketStep(t), t.ceiling));
                 const counts = (t) => (usable === undefined ? ticketCapacity(t) > live.length : ticketStep(t) > 0);
-                const others = line.filter((t) => t.eligible && t.id !== ticketId && (ticketId === undefined || t.seq < seq) && counts(t));
+                // Ahead means earlier in admission order: a higher priority, or the same priority and an older `seq`. Without a ticket every other ticket is ahead.
+                const mineRank = ticketRank({ priority: meta.priority === "high" ? "high" : undefined });
+                const isAhead = (t) => ticketId === undefined || ticketRank(t) < mineRank || (ticketRank(t) === mineRank && t.seq < seq);
+                const others = line.filter((t) => t.eligible && t.id !== ticketId && isAhead(t) && counts(t));
                 const ahead = others.filter((t) => t.ready !== false);
                 const taken = [...live, ...ahead].reduce((sum, x) => sum + weightOf(x), 0);
                 // A relative slack of 1e-12 absorbs the rounding of `usable / ceiling` sums and is far below a byte.
                 const fits = taken + myWeight <= budget * (1 + 1e-12) || (usable !== undefined && live.length + ahead.length === 0 && snap.step > 0);
                 // The gates are machine-wide, so a gated waiter waits for every older gated ticket that could be admitted, however many slots are free:
-                // FIFO holds among gated tickets, and the next gated start's 20 s spacing goes to the oldest.
+                // FIFO holds among gated tickets, and the next gated start's 20 s spacing goes to the highest priority, then the oldest.
                 const behindGated = gated && others.some((t) => t.gated);
                 // No-wedge: with nothing live, the oldest gated ticket is admitted past its gates, except at step 0 (capacity 0 already refuses there; the clause keeps the rule true if a policy ever gives step 0 a slot).
                 const ready = !gated || gatesPass(opts, live, nowMs) || (live.length === 0 && snap.step > 0);
@@ -717,7 +725,7 @@ function attempt(opts, cls, meta, waitedMs, ticketId) {
                 }
                 else {
                     if (ticketId !== undefined)
-                        writeTicket(opts, cls, { seq, id: ticketId, pid: process.pid, label: command, gated, capacity, ceiling: cls.ceiling(opts), ready: ready && !behindGated, ...(overridden && { override: true }), ...(usable !== undefined && { weight: myWeight }) });
+                        writeTicket(opts, cls, { seq, id: ticketId, pid: process.pid, label: command, gated, capacity, ceiling: cls.ceiling(opts), ready: ready && !behindGated, ...(meta.priority === "high" && { priority: "high" }), ...(overridden && { override: true }), ...(usable !== undefined && { weight: myWeight }) });
                     r = { kind: "full", ...snap };
                 }
             }
@@ -804,10 +812,10 @@ function liveOf(opts, cls) {
         return [];
     }
 }
-/** The heavy class's eligible tickets in `seq` order, read without the mutex and without removing any (status deletes nothing); an I/O error reads as none. */
+/** The heavy class's eligible tickets in admission order (high priority first, then `seq`), read without the mutex and without removing any (status deletes nothing); an I/O error reads as none. */
 function waitingOf(opts) {
     try {
-        const waiting = scanTickets(opts, HEAVY, false).filter((t) => t.eligible).sort((a, b) => a.seq - b.seq).map(({ seq, label, gated, ready }) => ({ seq, label, gated, ...(ready !== undefined && { ready }) }));
+        const waiting = scanTickets(opts, HEAVY, false).filter((t) => t.eligible).sort(byAdmission).map(({ seq, label, gated, ready, priority }) => ({ seq, label, gated, ...(ready !== undefined && { ready }), ...(priority && { priority }) }));
         return waiting.length > 0 ? { waiting } : {};
     }
     catch {

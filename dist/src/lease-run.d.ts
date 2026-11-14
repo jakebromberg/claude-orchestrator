@@ -7,7 +7,7 @@
  * interaction through `LeaseCliDeps`; `cliLeaseDeps` wires real I/O.
  */
 import type { PressureSampler } from "./memory-pressure.js";
-import { acquireLease, type LeaseOptions, type LeaseStatus } from "./lease.js";
+import { acquireLease, type LeaseOptions, type LeasePriority, type LeaseStatus } from "./lease.js";
 import { type UnownedMemory } from "./unowned-memory.js";
 /** Exactly one of `argv` (spawned directly) and `shell` (run under `/bin/sh -c`) is set. */
 export interface RunArgs {
@@ -18,11 +18,13 @@ export interface RunArgs {
     shell?: string;
     /** Front-end options (heavy-queue); no CLI flag sets them. Any one of the three skips the ancestor hook-slot borrow. */
     gated?: boolean;
-    /** Runs the command as `taskpolicy -b` in its own process group; signals go to the group after a SIGCONT. */
+    /** Runs the command as `taskpolicy -b` (unless `priority` is high) in its own process group; signals go to the group after a SIGCONT. */
     background?: boolean;
     /** Marks the holder as one the front end may suspend, unless `noSuspend` or `HEAVY_QUEUE_NO_SUSPEND=1` in `deps.env`. */
     suspendable?: boolean;
     noSuspend?: boolean;
+    /** `"high"` (heavy-queue's `--priority high`): the ticket goes first in line, the command runs without `taskpolicy -b` (still in its own group when `background`) and the holder is never suspendable. Every capacity, weight and gate limit still applies. */
+    priority?: LeasePriority;
     /** Waits for a slot with no cap, ignoring `maxWaitSec` and `CO_LEASE_MAX_WAIT` (heavy-queue's wait); no CLI flag sets it. */
     uncapped?: boolean;
 }

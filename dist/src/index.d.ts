@@ -41,7 +41,7 @@ export { createFileEngineRegistry } from "./engine-registry.js";
 export type { FileEngineRegistryOptions } from "./engine-registry.js";
 export { jsonlSink, leaseEventSink } from "./lease-events.js";
 export { isHeavyCommand } from "./lease-hook.js";
-export type { CpuTicks, HolderInfo, HolderMeta, LeaseEvent, LeaseHandle, LeaseOptions, LeaseRefusal, LeaseStatus, SessionMeta } from "./lease.js";
+export type { CpuTicks, HolderInfo, HolderMeta, LeaseEvent, LeaseHandle, LeaseOptions, LeasePriority, LeaseRefusal, LeaseStatus, SessionMeta } from "./lease.js";
 export { createMain } from "./create-main.js";
 export type { ConfigFactory, MainOptions } from "./create-main.js";
 export { loadYamlConfig, resolveYamlPaths } from "./yaml-loader.js";
