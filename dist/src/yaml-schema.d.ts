@@ -16,9 +16,9 @@ export declare const YamlConfigSchema: z.ZodObject<{
     defaultRepo: z.ZodOptional<z.ZodString>;
     defaultModel: z.ZodOptional<z.ZodString>;
     defaultEffort: z.ZodOptional<z.ZodEnum<{
+        high: "high";
         low: "low";
         medium: "medium";
-        high: "high";
         xhigh: "xhigh";
         max: "max";
     }>>;
@@ -105,9 +105,9 @@ export declare const YamlConfigSchema: z.ZodObject<{
         command: z.ZodOptional<z.ZodString>;
         model: z.ZodOptional<z.ZodString>;
         effort: z.ZodOptional<z.ZodEnum<{
+            high: "high";
             low: "low";
             medium: "medium";
-            high: "high";
             xhigh: "xhigh";
             max: "max";
         }>>;
