@@ -16,7 +16,14 @@ describe("parseHeavyQueueArgs", () => {
     ["--label, then --shell", ["run", "--label", "s: lint", "--shell", "npm run lint && npm test"], { kind: "run", label: "s: lint", shell: "npm run lint && npm test", ...FRONT_END }],
     ["--label, then -- argv", ["run", "--label", "s: t", "--", "npm", "test"], { kind: "run", label: "s: t", argv: ["npm", "test"], ...FRONT_END }],
     ["--no-suspend after the label", ["run", "--label", "x", "--no-suspend", "--", "make"], { kind: "run", label: "x", argv: ["make"], noSuspend: true, ...FRONT_END }],
+    ["--priority high before --label", ["run", "--priority", "high", "--label", "x", "--", "make"], { kind: "run", label: "x", argv: ["make"], priority: "high", ...FRONT_END }],
+    ["--priority high after --label", ["run", "--label", "x", "--priority", "high", "--", "make"], { kind: "run", label: "x", argv: ["make"], priority: "high", ...FRONT_END }],
+    ["--priority high between --label and --no-suspend", ["run", "--label", "x", "--priority", "high", "--no-suspend", "--", "make"], { kind: "run", label: "x", argv: ["make"], priority: "high", noSuspend: true, ...FRONT_END }],
+    ["--no-suspend before --label", ["run", "--no-suspend", "--label", "x", "--", "make"], { kind: "run", label: "x", argv: ["make"], noSuspend: true, ...FRONT_END }],
+    ["--priority high alone, with --shell", ["run", "--priority", "high", "--shell", "npm test"], { kind: "run", label: "unlabelled", shell: "npm test", priority: "high", ...FRONT_END }],
+    ["--priority normal", ["run", "--priority", "normal", "--", "make"], { kind: "run", label: "unlabelled", argv: ["make"], ...FRONT_END }],
     ["no label", ["run", "--", "make"], { kind: "run", label: "unlabelled", argv: ["make"], ...FRONT_END }],
+    ["--priority after -- belongs to the command", ["run", "--", "make", "--priority", "high"], { kind: "run", label: "unlabelled", argv: ["make", "--priority", "high"], ...FRONT_END }],
     ["a second -- belongs to the command", ["run", "--", "npm", "test", "--", "--bail"], { kind: "run", label: "unlabelled", argv: ["npm", "test", "--", "--bail"], ...FRONT_END }],
   ])("parses %s", (_name, argv, expected) => {
     expect(parseHeavyQueueArgs(argv)).toEqual(expected);
@@ -30,7 +37,13 @@ describe("parseHeavyQueueArgs", () => {
     ["--shell with extra arguments", ["run", "--shell", "a", "b"]],
     ["--shell with no command", ["run", "--shell"]],
     ["--label with no value", ["run", "--label"]],
-    ["--no-suspend before --label", ["run", "--no-suspend", "--label", "x", "--", "make"]],
+    ["--priority with no value", ["run", "--priority"]],
+    ["--priority with no value before --", ["run", "--priority", "--", "make"]],
+    ["an unknown --priority value", ["run", "--priority", "urgent", "--", "make"]],
+    ["an empty --priority value", ["run", "--priority", "", "--", "make"]],
+    ["a repeated --priority", ["run", "--priority", "high", "--priority", "normal", "--", "make"]],
+    ["a repeated --label", ["run", "--label", "a", "--label", "b", "--", "make"]],
+    ["a repeated --no-suspend", ["run", "--no-suspend", "--no-suspend", "--", "make"]],
     ["an unknown flag", ["run", "--max-wait", "5", "--", "make"]],
   ])("rejects %s", (_name, argv) => {
     expect(parseHeavyQueueArgs(argv)).toBeUndefined();
@@ -136,6 +149,57 @@ describe("runHeavyQueue", () => {
       await done;
       expect(metas[0]).not.toHaveProperty("suspendable", true);
       expect(ticks).toEqual([]);
+    });
+
+    describe("--priority high", () => {
+      let spawnOpts: { detached?: boolean }[];
+      const runHigh = async (argv: string[], env: NodeJS.ProcessEnv = {}): Promise<Record<string, unknown>> => {
+        const metas: Record<string, unknown>[] = [];
+        const acquire = (async (o: LeaseOptions, m: Record<string, unknown>, w: never) => (metas.push(m), acquireLease(o, m as never, w))) as unknown as typeof acquireLease;
+        const done = runHeavyQueue(argv, deps({ acquire, spawn: (file, args, o) => (spawned.push({ file, args, env: o.env }), spawnOpts.push(o), child) }, env));
+        await finishWith(0);
+        await done;
+        return metas[0]!;
+      };
+      beforeEach(() => {
+        spawnOpts = [];
+      });
+
+      it.each<[string, string[], string, string[]]>([
+        ["--shell", ["run", "--priority", "high", "--shell", "npm test"], "/bin/sh", ["-c", "npm test"]],
+        ["-- argv", ["run", "--priority", "high", "--", "npm", "test"], "npm", ["test"]],
+      ])("spawns %s without taskpolicy -b, still in its own group", async (_n, argv, file, args) => {
+        await runHigh(argv);
+        expect(spawned[0]).toMatchObject({ file, args });
+        expect(spawnOpts[0]).toMatchObject({ detached: true });
+      });
+
+      it("still records the child's group, so signals reach it", async () => {
+        const setChildPid = vi.fn();
+        const acquire = (async (o: LeaseOptions, m: never, w: never) => {
+          const got = (await acquireLease(o, m, w)) as LeaseHandle;
+          return { ...got, setChildPid, childEnv: () => got.childEnv(), release: (x?: never) => got.release(x) };
+        }) as unknown as typeof acquireLease;
+        const done = runHeavyQueue(["run", "--priority", "high", "--", "make"], deps({ acquire }));
+        await finishWith(0);
+        await done;
+        expect(setChildPid).toHaveBeenCalledExactlyOnceWith(4321, 4321);
+      });
+
+      it("records the priority on the holder meta, gated, and is never suspendable: no governor tick", async () => {
+        const meta = await runHigh(["run", "--priority", "high", "--", "sleep", "100"]);
+        expect(meta).toMatchObject({ priority: "high", gated: true });
+        expect(meta.suspendable).toBeFalsy();
+        expect(ticks).toEqual([]);
+      });
+
+      it("leaves a normal run as it was: taskpolicy -b, suspendable and no priority in the meta", async () => {
+        const meta = await runHigh(["run", "--priority", "normal", "--", "sleep", "100"]);
+        expect(spawned[0]).toMatchObject({ file: "/usr/sbin/taskpolicy", args: ["-b", "sleep", "100"] });
+        expect(meta).not.toHaveProperty("priority");
+        expect(meta).toMatchObject({ suspendable: true });
+        expect(ticks).toHaveLength(1);
+      });
     });
 
     it("ignores CO_LEASE_MAX_WAIT, HEAVY_QUEUE_STATE and HEAVY_QUEUE_METRICS", async () => {

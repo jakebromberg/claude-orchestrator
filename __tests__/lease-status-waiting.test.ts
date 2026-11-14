@@ -27,6 +27,21 @@ describe("leaseStatus waiting", () => {
     expect(status).toMatchObject({ level: "normal", capacity: 1, step: 4, live: [] });
   });
 
+  it("lists a high ticket first whatever its seq, with its priority, and keeps seq order within a priority", () => {
+    plantTicket(lease, "n3", 3, { label: "normal-3" });
+    plantTicket(lease, "h9", 9, { label: "high-9", priority: "high", gated: true, ready: true });
+    plantTicket(lease, "n1", 1, { label: "normal-1" });
+    plantTicket(lease, "h5", 5, { label: "high-5", priority: "high" });
+    plantTicket(lease, "w7", 7, { label: "wrong-type", priority: 1 });
+    expect(leaseStatus(lease.opts()).waiting).toEqual([
+      { seq: 5, label: "high-5", gated: false, priority: "high" },
+      { seq: 9, label: "high-9", gated: true, ready: true, priority: "high" },
+      { seq: 1, label: "normal-1", gated: false },
+      { seq: 3, label: "normal-3", gated: false },
+      { seq: 7, label: "wrong-type", gated: false },
+    ]);
+  });
+
   it("leaves out a stale ticket and a dead-pid one, and removes nothing", () => {
     plantTicket(lease, "live", 1, { label: "live" });
     plantTicket(lease, "stale", 2, { label: "stale" }, { ageMs: 60_000 });

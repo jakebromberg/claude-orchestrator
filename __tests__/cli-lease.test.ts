@@ -602,6 +602,61 @@ describe("runLeased", () => {
       expect(meta().suspendable).toBe(true);
     });
 
+    describe("priority high", () => {
+      const spawnOpts: { detached?: boolean }[] = [];
+      const withSpawnOpts = { spawn: ((f: string, a: string[], o: { env: NodeJS.ProcessEnv; detached?: boolean }) => (spawned.push({ file: f, args: a, env: o.env }), spawnOpts.push(o), child)) as LeaseCliDeps["spawn"] };
+      beforeEach(() => {
+        spawnOpts.length = 0;
+      });
+
+      it("spawns the command itself, with no taskpolicy -b, in its own group, and records the group", async () => {
+        const done = run({ background: true, priority: "high", argv: ["npm", "test"] }, withSpawnOpts);
+        await finishWith(0);
+        await done;
+        expect(spawned[0]).toMatchObject({ file: "npm", args: ["test"] });
+        expect(spawnOpts[0]).toMatchObject({ detached: true });
+        expect(handle.setChildPid).toHaveBeenCalledExactlyOnceWith(4321, 4321);
+      });
+
+      it("runs a --shell command under /bin/sh -c directly", async () => {
+        const done = run({ background: true, priority: "high", argv: undefined, shell: "a && b" }, withSpawnOpts);
+        await finishWith(0);
+        await done;
+        expect(spawned[0]).toMatchObject({ file: "/bin/sh", args: ["-c", "a && b"] });
+      });
+
+      it.each(["SIGINT", "SIGTERM", "SIGHUP"] as const)("forwards %s to the group after a SIGCONT, as a background run does", async (sig) => {
+        const done = run({ background: true, priority: "high" }, withSpawnOpts);
+        await vi.waitFor(() => expect(spawned).toHaveLength(1));
+        signals.emit(sig);
+        expect(killed()).toEqual(["-4321:SIGCONT", `-4321:${sig}`]);
+        child.emit("close", null, sig);
+        await done;
+      });
+
+      it("records the priority and is not suspendable even when asked to be, so the governor never starts", async () => {
+        const ticks: unknown[] = [];
+        const done = run({ gated: true, suspendable: true, background: true, priority: "high" }, { governor: { every: (fn) => (ticks.push(fn), () => {}) } });
+        await finishWith(0);
+        await done;
+        expect(meta()).toMatchObject({ gated: true, priority: "high" });
+        expect(meta().suspendable).toBeFalsy();
+        expect(ticks).toEqual([]);
+      });
+
+      it.each<[string, Partial<RunArgs>]>([
+        ["no priority", {}],
+        ["priority normal", { priority: "normal" }],
+      ])("with %s still runs under taskpolicy -b, suspendable, with no priority in the meta", async (_n, args) => {
+        const done = run({ gated: true, suspendable: true, background: true, ...args }, governed);
+        await finishWith(0);
+        await done;
+        expect(spawned[0]).toMatchObject({ file: "/usr/sbin/taskpolicy", args: ["-b", "npm", "test"] });
+        expect(meta()).toMatchObject({ suspendable: true });
+        expect(meta()).not.toHaveProperty("priority");
+      });
+    });
+
     it("leaves a plain run ungated, unsuspendable and in the caller's group", async () => {
       const done = run();
       await finishWith(0);
@@ -687,6 +742,15 @@ describe("runLeased", () => {
           { pid: 12, command: "tsc", ageSec: 3, override: true },
         ],
       });
+    });
+
+    it("prints priority high on a high holder and on a high waiting ticket, and leaves it out of a normal holder", () => {
+      const waiting: NonNullable<LeaseStatus["waiting"]> = [{ seq: 9, label: "h", gated: true, priority: "high" }, { seq: 3, label: "n", gated: true }];
+      const status = deps({ leaseStatus: () => ({ level: "normal", capacity: 3, step: 3, signals: null, live: [holder({ priority: "high" }), holder({ pid: 12 })], waiting }) });
+      expect(runStatus(status)).toBe(0);
+      const printed = JSON.parse(out.join(""));
+      expect(printed.live).toEqual([{ pid: 11, command: "npm test", ageSec: 7, priority: "high" }, { pid: 12, command: "npm test", ageSec: 7 }]);
+      expect(printed.waiting).toEqual(waiting);
     });
 
     it("marks a suspended holder and prints the waiting tickets in seq order, and leaves both out otherwise", () => {
