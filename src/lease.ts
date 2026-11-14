@@ -158,6 +158,8 @@ export interface LeaseOptions {
  * counts from admission. Acquiring an `id` whose holder is already live admits at once without a second holder or count:
  * two hook installs handling one call share one slot, and the borrowed handle's `release` does nothing.
  */
+export type LeasePriority = "normal" | "high";
+
 export interface HolderMeta {
   command: string;
   label?: string;
@@ -167,6 +169,8 @@ export interface HolderMeta {
   gated?: boolean;
   /** Marks a holder whose front end owns its process group and may suspend it under overload. Set only by the heavy-queue front end. */
   suspendable?: boolean;
+  /** Heavy class only, and only a waiter (`acquireLease`): `"high"` puts the ticket ahead of every normal ticket whatever their `seq`, and tickets of one priority keep `seq` order. It changes who goes next, never how much runs at once. Set only by the heavy-queue front end; absent or `"normal"` is the first-come order. */
+  priority?: LeasePriority;
   /** Heavy class only: the bytes of memory the command is expected to use. Absent, or not a positive number, takes the unmatched weight (`usable / heavyCeiling`). Ignored while the machine's memory is unknown. */
   weight?: number;
 }
@@ -179,6 +183,8 @@ interface HolderRecord {
   pgid?: number;
   /** The front end may suspend this holder's group. */
   suspendable?: true;
+  /** Written only for a high holder; absent reads as normal. */
+  priority?: "high";
   command: string;
   cwd: string;
   startedAt: number;
@@ -223,8 +229,8 @@ export interface LeaseStatus {
   weights?: Weights;
   /** Set by `leaseStatus` only: the session class's capacity at the same reading, and its live holders. */
   sessions?: { capacity: number; live: HolderInfo[] };
-  /** Set by `leaseStatus` only, and only while a heavy ticket waits: the eligible tickets in `seq` order. `ready` is absent on a ticket from a build that predates it. */
-  waiting?: { seq: number; label: string; gated: boolean; ready?: boolean }[];
+  /** Set by `leaseStatus` only, and only while a heavy ticket waits: the eligible tickets in admission order (high priority first, then `seq`). `ready` is absent on a ticket from a build that predates it, and `priority` on a normal one. */
+  waiting?: { seq: number; label: string; gated: boolean; ready?: boolean; priority?: "high" }[];
 }
 
 /**
@@ -403,7 +409,13 @@ interface Ticket {
   override?: boolean;
   /** Bytes, recorded only while the machine's memory is known; absent means the unmatched weight. */
   weight?: number;
+  /** Written only by a high waiter; a ticket from a build that predates it, and one whose value is anything but `"high"`, is normal. */
+  priority?: "high";
 }
+
+/** A high ticket goes ahead of every normal one; within a rank the older `seq` goes first. */
+const ticketRank = (t: Pick<Ticket, "priority">): number => (t.priority === "high" ? 0 : 1);
+const byAdmission = (a: Ticket, b: Ticket): number => ticketRank(a) - ticketRank(b) || a.seq - b.seq;
 
 function parseTicket(text: string): Ticket | null {
   try {
@@ -411,7 +423,7 @@ function parseTicket(text: string): Ticket | null {
     if (!(Number.isFinite(t?.seq) && typeof t.id === "string" && isPid(t.pid))) return null;
     // A field of the wrong type reads as absent, so such a ticket counts instead of comparing as a string.
     const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
-    return { ...t, capacity: num(t.capacity), ceiling: num(t.ceiling), ready: typeof t.ready === "boolean" ? t.ready : undefined, override: t.override === true, weight: positive(t.weight) };
+    return { ...t, capacity: num(t.capacity), ceiling: num(t.ceiling), ready: typeof t.ready === "boolean" ? t.ready : undefined, override: t.override === true, weight: positive(t.weight), priority: t.priority === "high" ? "high" : undefined };
   } catch {
     return null;
   }
@@ -744,6 +756,7 @@ function createHolder(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, com
   if (detached) rec.expiresAt = detached.expiresAt;
   if (admission.override) rec.override = true;
   if (meta.suspendable) rec.suspendable = true;
+  if (meta.priority === "high") rec.priority = "high";
   if (positive(meta.weight) !== undefined) rec.weight = meta.weight;
   const write = (): void => writeFileAtomic(file, JSON.stringify(rec));
   write();
@@ -891,13 +904,16 @@ function attempt(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, waitedMs
         const ticketStep = (t: Ticket): number => (t.override && machineStep === 0 ? 1 : machineStep);
         const ticketCapacity = (t: Ticket): number => (t.ceiling === undefined ? (t.capacity ?? Infinity) : cls.capacity(ticketStep(t), t.ceiling));
         const counts = (t: Ticket): boolean => (usable === undefined ? ticketCapacity(t) > live.length : ticketStep(t) > 0);
-        const others = line.filter((t) => t.eligible && t.id !== ticketId && (ticketId === undefined || t.seq < seq) && counts(t));
+        // Ahead means earlier in admission order: a higher priority, or the same priority and an older `seq`. Without a ticket every other ticket is ahead.
+        const mineRank = ticketRank({ priority: meta.priority === "high" ? "high" : undefined });
+        const isAhead = (t: Ticket): boolean => ticketId === undefined || ticketRank(t) < mineRank || (ticketRank(t) === mineRank && t.seq < seq);
+        const others = line.filter((t) => t.eligible && t.id !== ticketId && isAhead(t) && counts(t));
         const ahead = others.filter((t) => t.ready !== false);
         const taken = [...live, ...ahead].reduce((sum, x) => sum + weightOf(x), 0);
         // A relative slack of 1e-12 absorbs the rounding of `usable / ceiling` sums and is far below a byte.
         const fits = taken + myWeight <= budget * (1 + 1e-12) || (usable !== undefined && live.length + ahead.length === 0 && snap.step > 0);
         // The gates are machine-wide, so a gated waiter waits for every older gated ticket that could be admitted, however many slots are free:
-        // FIFO holds among gated tickets, and the next gated start's 20 s spacing goes to the oldest.
+        // FIFO holds among gated tickets, and the next gated start's 20 s spacing goes to the highest priority, then the oldest.
         const behindGated = gated && others.some((t) => t.gated);
         // No-wedge: with nothing live, the oldest gated ticket is admitted past its gates, except at step 0 (capacity 0 already refuses there; the clause keeps the rule true if a policy ever gives step 0 a slot).
         const ready = !gated || gatesPass(opts, live, nowMs) || (live.length === 0 && snap.step > 0);
@@ -910,7 +926,7 @@ function attempt(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, waitedMs
             // The holder exists, so the admission stands; a ticket that stays is removed when the waiter returns, or reaped once it exits.
           }
         } else {
-          if (ticketId !== undefined) writeTicket(opts, cls, { seq, id: ticketId, pid: process.pid, label: command, gated, capacity, ceiling: cls.ceiling(opts), ready: ready && !behindGated, ...(overridden && { override: true }), ...(usable !== undefined && { weight: myWeight }) });
+          if (ticketId !== undefined) writeTicket(opts, cls, { seq, id: ticketId, pid: process.pid, label: command, gated, capacity, ceiling: cls.ceiling(opts), ready: ready && !behindGated, ...(meta.priority === "high" && { priority: "high" as const }), ...(overridden && { override: true }), ...(usable !== undefined && { weight: myWeight }) });
           r = { kind: "full", ...snap };
         }
       }
@@ -994,10 +1010,10 @@ function liveOf(opts: LeaseOptions, cls: LeaseClass): HolderInfo[] {
   }
 }
 
-/** The heavy class's eligible tickets in `seq` order, read without the mutex and without removing any (status deletes nothing); an I/O error reads as none. */
+/** The heavy class's eligible tickets in admission order (high priority first, then `seq`), read without the mutex and without removing any (status deletes nothing); an I/O error reads as none. */
 function waitingOf(opts: LeaseOptions): Pick<LeaseStatus, "waiting"> {
   try {
-    const waiting = scanTickets(opts, HEAVY, false).filter((t) => t.eligible).sort((a, b) => a.seq - b.seq).map(({ seq, label, gated, ready }) => ({ seq, label, gated, ...(ready !== undefined && { ready }) }));
+    const waiting = scanTickets(opts, HEAVY, false).filter((t) => t.eligible).sort(byAdmission).map(({ seq, label, gated, ready, priority }) => ({ seq, label, gated, ...(ready !== undefined && { ready }), ...(priority && { priority }) }));
     return waiting.length > 0 ? { waiting } : {};
   } catch {
     return {};

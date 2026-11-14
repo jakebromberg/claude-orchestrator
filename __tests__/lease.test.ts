@@ -902,7 +902,7 @@ describe("lease", () => {
     const ticketFile = (id: string): string => join(dir, "waiting", `${id}.json`);
     const tickets = (): string[] => (existsSync(join(dir, "waiting")) ? readdirSync(join(dir, "waiting")).sort() : []);
     /** A ticket for a waiter in another process: `pid` is alive unless `dead`, and its last refresh was `ageMs` before the injected clock. */
-    const queued = (id: string, seq: number, { ageMs, dead, ...extra }: { ageMs?: number; dead?: boolean; gated?: boolean; capacity?: number; ready?: boolean } = {}): void =>
+    const queued = (id: string, seq: number, { ageMs, dead, ...extra }: { ageMs?: number; dead?: boolean; gated?: boolean; capacity?: number; ready?: boolean; priority?: unknown } = {}): void =>
       plantTicket(lease, id, seq, extra, { ageMs, dead });
     /** Sleeps `yields` macrotasks before the fake sleep, so a waiter that started earlier polls later. Keep it small: the shared clock moves 3 s per sleep, and a waiter idle for 15 s of it goes stale. */
     const slowSleep = (yields: number): LeaseOptions["sleep"] => async (ms) => {
@@ -980,6 +980,121 @@ describe("lease", () => {
       (a as LeaseHandle).release();
       (b as LeaseHandle).release();
       expect(tickets()).toEqual([]);
+    });
+
+    describe("priority", () => {
+      const high: HolderMeta = { ...meta, priority: "high" };
+      const oneSlot = { policy: { heavyCeiling: 1, heavyWarning: 1 } };
+
+      it.each<[string, HolderMeta, Record<string, unknown>, boolean]>([
+        ["a high waiter goes past an older normal ticket", high, {}, true],
+        ["a high waiter goes past an older normal ticket that is gated and ready", high, { gated: true, ready: true, capacity: 2 }, true],
+        ["a high waiter waits behind an older high ticket", high, { priority: "high" }, false],
+        ["a normal waiter waits behind an older high ticket", meta, { priority: "high" }, false],
+        ["a normal waiter waits behind an older normal ticket", meta, {}, false],
+        ["a normal waiter named normal waits behind an older normal ticket", { ...meta, priority: "normal" }, { priority: "normal" }, false],
+      ])("with one free slot, %s", async (_name, waiter, ticket, admitted) => {
+        leasedHolder("4242-live", {}, 0);
+        alive.add(4242);
+        queued("a", 1, ticket);
+        const r = await acquireLease(opts(), waiter, { maxWaitMs: 0 });
+        expect(isHandle(r)).toBe(admitted);
+        if (isHandle(r)) r.release();
+      });
+
+      it.each<[string, unknown, boolean]>([
+        ["no priority field", undefined, true],
+        ["a priority of the wrong type (number)", 1, true],
+        ["a priority of the wrong type (true)", true, true],
+        ["an unknown priority string", "urgent", true],
+        ["a priority of normal", "normal", true],
+        ["a priority of high", "high", false],
+      ])("a high waiter facing an older ticket with %s", async (_name, priority, admitted) => {
+        leasedHolder("4242-live", {}, 0);
+        alive.add(4242);
+        queued("a", 1, priority === undefined ? {} : { priority });
+        const r = await acquireLease(opts(), high, { maxWaitMs: 0 });
+        expect(isHandle(r)).toBe(admitted);
+        if (isHandle(r)) r.release();
+      });
+
+      it.each<[string, number, PressureLevel, boolean]>([
+        ["every slot taken", 2, "normal", false],
+        ["one slot free", 1, "normal", true],
+        ["critical pressure (capacity 0)", 0, "critical", false],
+      ])("keeps the capacity limits for a high waiter: %s", async (_name, holders, pressure, admitted) => {
+        for (let i = 0; i < holders; i++) leasedHolder(`4242-live${i}`, {}, 0);
+        alive.add(4242);
+        level = pressure;
+        const r = await acquireLease(opts(), high, { maxWaitMs: 0 });
+        expect(isHandle(r)).toBe(admitted);
+        if (isHandle(r)) r.release();
+      });
+
+      it("admits the high waiters, in seq order, before an older normal waiter that polls first", async () => {
+        const holder = tryAcquireLease(opts(oneSlot), meta)!;
+        fake.onSleep = () => holder.release();
+        const order: string[] = [];
+        const waiter = (name: string, m: HolderMeta, yields: number): Promise<void> =>
+          acquireLease(opts({ ...oneSlot, sleep: slowSleep(yields) }), m).then((r) => {
+            order.push(name);
+            (r as LeaseHandle).release();
+          });
+        // The normal waiter is the oldest and polls first each round, so only the priority can put the high ones ahead.
+        await Promise.all([waiter("N", meta, 0), waiter("H1", high, 1), waiter("H2", high, 2)]);
+        expect(order).toEqual(["H1", "H2", "N"]);
+        expect(tickets()).toEqual([]);
+      });
+
+      it("refuses an older normal waiter while a younger high ticket waits, and admits it once that ticket is gone", async () => {
+        const holder = tryAcquireLease(opts(oneSlot), meta)!;
+        let polls = 0;
+        fake.onSleep = () => {
+          if (++polls === 1) {
+            holder.release();
+            queued("h", 99, { priority: "high" });
+          } else if (polls === 3) rmSync(join(dir, "waiting", "h.json"));
+          else if (polls < 3) utimesSync(join(dir, "waiting", "h.json"), fake.ms / 1000, fake.ms / 1000);
+        };
+        const r = await acquireLease(opts(oneSlot), meta, { maxWaitMs: 60_000 });
+        expect(isHandle(r)).toBe(true);
+        expect(polls).toBe(3);
+        (r as LeaseHandle).release();
+      });
+
+      it("records priority high on a high waiter's ticket and nothing on a normal one's", async () => {
+        leasedHolder("4242-live", {}, 0);
+        alive.add(4242);
+        const seen: Record<string, unknown>[] = [];
+        for (const m of [high, meta]) {
+          await acquireLease(opts(oneSlot), m, {
+            maxWaitMs: 1,
+            onWait: () => seen.push(JSON.parse(readFileSync(ticketFile(tickets()[0]!.slice(0, -".json".length)), "utf8"))),
+          });
+        }
+        expect(seen[0]).toHaveProperty("priority", "high");
+        expect(seen[1]).not.toHaveProperty("priority");
+      });
+
+      it("records priority high on a high holder and nothing on a normal one, and status reports it", () => {
+        const a = tryAcquireLease(opts(), high)!;
+        const b = tryAcquireLease(opts(), meta)!;
+        expect(readHolder(a)).toHaveProperty("priority", "high");
+        expect(readHolder(b)).not.toHaveProperty("priority");
+        const live = leaseStatus(opts()).live;
+        expect(live.find((h) => h.id === a.id)).toHaveProperty("priority", "high");
+        expect(live.find((h) => h.id === b.id)).not.toHaveProperty("priority");
+        a.release();
+        b.release();
+      });
+
+      it("leaves tryAcquireLease as it was: a ticket ahead blocks it whatever its priority", () => {
+        leasedHolder("4242-live", {}, 0);
+        alive.add(4242);
+        queued("a", 1);
+        expect(tryAcquireLease(opts(), meta)).toBeNull();
+        expect(tryAcquireLease(opts(), high)).toBeNull();
+      });
     });
 
     it.each<[string, number, { capacity?: number; ready?: boolean }, number, boolean]>([
@@ -1224,6 +1339,45 @@ describe("lease", () => {
         }
         queued("g", 1, { gated: true, ...ticket });
         expect(await attemptGated(gated, wide)).toBe(admitted);
+      });
+
+      describe("with priorities", () => {
+        const gatedHigh: HolderMeta = { ...gated, priority: "high" };
+        it.each<[string, HolderMeta, Record<string, unknown>, boolean]>([
+          ["a gated high waiter past an older gated normal ticket that failed its gates", gatedHigh, { gated: true, capacity: 4, ready: false }, true],
+          ["a gated high waiter past an older gated normal ticket that passed its gates", gatedHigh, { gated: true, capacity: 4, ready: true }, true],
+          ["a gated high waiter behind an older gated high ticket", gatedHigh, { gated: true, capacity: 4, ready: true, priority: "high" }, false],
+          ["a gated high waiter behind an older gated high ticket that failed its gates", gatedHigh, { gated: true, capacity: 4, ready: false, priority: "high" }, false],
+          ["a gated normal waiter behind an older gated high ticket", gated, { gated: true, capacity: 4, ready: true, priority: "high" }, false],
+          ["a gated normal waiter behind an older gated normal ticket", gated, { gated: true, capacity: 4, ready: true }, false],
+        ])("with %s, with 3 slots free", async (_name, waiter, ticket, admitted) => {
+          leasedHolder("4242-live", {}, 0);
+          alive.add(4242);
+          queued("g", 1, ticket);
+          expect(await attemptGated(waiter, wide)).toBe(admitted);
+        });
+
+        it("holds an older gated normal waiter behind a younger gated high ticket that appears while it waits, since the next gated start goes to the high one", async () => {
+          leasedHolder("4242-live", {}, 0);
+          alive.add(4242);
+          cpuReading(5_000, 0.95);
+          fake.onSleep = () => {
+            cpuReading(0, 0.1);
+            queued("h", 99, { gated: true, capacity: 4, ready: true, priority: "high" });
+          };
+          const r = await acquireLease(gatedOpts(wide), gated, { maxWaitMs: 5_000 });
+          expect(r).toMatchObject({ refused: "max-wait" });
+        });
+
+        it("admits that older gated normal waiter once the gates pass with no high ticket waiting (control)", async () => {
+          leasedHolder("4242-live", {}, 0);
+          alive.add(4242);
+          cpuReading(5_000, 0.95);
+          fake.onSleep = () => cpuReading(0, 0.1);
+          const r = await acquireLease(gatedOpts(wide), gated, { maxWaitMs: 5_000 });
+          expect(isHandle(r)).toBe(true);
+          if (isHandle(r)) r.release();
+        });
       });
 
       it("records a gated waiter held behind an older gated ticket as not ready, so ungated waiters pass it", async () => {
