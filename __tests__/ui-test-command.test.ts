@@ -33,6 +33,19 @@ describe("isUiTestCommand", () => {
     ["with a tab between words", `${TOOL}\ttest\t-scheme\tApp`],
     ["across a line continuation", `${TOOL} \\\n  -scheme App \\\n  test`],
     ["in an if", `if ${TOOL} test -scheme App; then echo ok; fi`],
+    ["inside a command substitution", `echo "result: $(${TOOL} test -scheme App)"`],
+    ["inside backticks", `out=\`${TOOL} test -scheme App\``],
+    ["inside an unquoted heredoc's substitution", `cat <<EOF\nlog: $(${TOOL} test -scheme App)\nEOF`],
+    ["after a heredoc ends", `cat <<'EOF' > notes.txt\n${TOOL} test is slow\nEOF\n${TOOL} test -scheme App`],
+    ["on the line after a comment", `# run the suite\n${TOOL} test -scheme App`],
+    ["in a bash -c script with a quoted separator", `bash -c 'echo "a;b"; ${TOOL} test -scheme App'`],
+    ["through env with options and assignments", `env -i PATH=/usr/bin FOO='a b' ${TOOL} test -scheme App`],
+    ["through xcrun with an sdk option", `xcrun --sdk iphonesimulator ${TOOL} test -scheme App`],
+    ["from a path with spaces in quotes", `"/Applications/Xcode Beta 2.app/Contents/Developer/usr/bin/${TOOL}" test -scheme App`],
+    ["when the tool name is quoted in pieces", `"xcode"'build' test -scheme App`],
+    ["when a quoted argument holds the words and a real action follows", `${TOOL} -destination 'platform=iOS Simulator,name=iPhone 16' -scheme "My Test App" test`],
+    ["when the text before it holds an unbalanced quote in a comment", `# it's fine\n${TOOL} test -scheme App`],
+    ["when the text cannot be tokenized and the raw rule matches", `echo 'unterminated; ${TOOL} test -scheme App`],
   ])("matches %s", (_name, command) => {
     expect(isUiTestCommand(command)).toBe(true);
   });
@@ -58,6 +71,21 @@ describe("isUiTestCommand", () => {
     ["a pipeline that greps its output", `cat build.log | grep '${TOOL} test'`],
     ["a path component", `ls /var/${TOOL}/test`],
     ["an empty command", ""],
+    ["a quoted commit message with a separator before the words", `git commit -m "fix; ${TOOL} test hung"`],
+    ["a quoted gh body with && before the words", `gh issue create --title t --body "a && ${TOOL} test -scheme App"`],
+    ["a single-quoted argument with a newline before the words", `gh issue create --body 'first line\n${TOOL} test -scheme App\nlast'`],
+    ["a quoted heredoc body line that starts with the words", `gh issue create --title t --body-file - <<'EOF'\nSteps:\n${TOOL} test -scheme App\nEOF`],
+    ["a quoted heredoc body in the commit-message form", `git commit -m "$(cat <<'EOF'\nDon't (yet) run\n${TOOL} test -scheme App\nEOF\n)"`],
+    ["an unquoted heredoc body with plain text", `cat <<EOF\n${TOOL} test -scheme App\nEOF`],
+    ["a comment line", `# ${TOOL} test -scheme App`],
+    ["a trailing comment", `ls # ${TOOL} test`],
+    ["a comment line after a command", `ls\n# ${TOOL} test -scheme App`],
+    ["an escaped separator", `echo a\\; ${TOOL} test`],
+    ["an echo of a substitution-free string after a real build", `${TOOL} build -scheme App && echo "now ${TOOL} test"`],
+    ["a single-quoted substitution", `echo '$(${TOOL} test -scheme App)'`],
+    ["a bash -c script that only echoes it", `bash -c 'echo "${TOOL} test"'`],
+    ["an argument that is the words", `printf '%s\n' ${TOOL} test`],
+    ["a here-string", `cat <<< '${TOOL} test -scheme App'`],
   ])("does not match %s", (_name, command) => {
     expect(isUiTestCommand(command)).toBe(false);
   });
