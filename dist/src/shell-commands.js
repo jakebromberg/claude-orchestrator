@@ -58,6 +58,8 @@ function parse(text, from, closer, depth, out) {
     let quoted = false;
     /** A redirect operator was read: the next word is its target, not a word of the command. */
     let pendingTarget = false;
+    /** The last token was `|`, `|&`, `&&` or `||`: a newline after it continues the statement instead of ending it. */
+    let continuation = false;
     /** Where the current statement (since the last `;`, newline or `&`) starts in `out`, and where each open `(` group did. */
     let segStart = out.length;
     const groups = [];
@@ -217,6 +219,9 @@ function parse(text, from, closer, depth, out) {
     let i = from;
     while (i < text.length) {
         const c = text[i];
+        // Whitespace, a comment and a backslash-newline keep a continuation open; any other token closes it.
+        if (c !== " " && c !== "\t" && c !== "\r" && c !== "\n" && !(c === "#" && !inWord) && !(c === "\\" && text[i + 1] === "\n"))
+            continuation = false;
         if (c === "\\") {
             if (text[i + 1] === "\n")
                 i += 2;
@@ -311,7 +316,10 @@ function parse(text, from, closer, depth, out) {
             i++;
         }
         else if (c === "\n") {
-            endStatement();
+            if (continuation)
+                endCommand();
+            else
+                endStatement();
             i++;
             if (heredocs.length > 0) {
                 const after = readHeredocs(i);
@@ -357,6 +365,7 @@ function parse(text, from, closer, depth, out) {
         }
         else if (c === "|") {
             endCommand();
+            continuation = true;
             i += text[i + 1] === "&" ? 2 : 1; // `|&` is a pipe
         }
         else if (c === "(") {
@@ -395,6 +404,7 @@ function parse(text, from, closer, depth, out) {
             }
             else if (text[i + 1] === "&") {
                 endCommand(); // `&&` continues the and-or list: no new statement
+                continuation = true;
                 i += 2;
             }
             else {
