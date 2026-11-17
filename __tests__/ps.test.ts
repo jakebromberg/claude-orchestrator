@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { ancestry, groupAlive, signalGroup, isPid, pidAlive, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, isSimulatorCommand, runsTool, simulatorUdid, xcTestDeviceUdid, XCODE_TOOLS, isTestRunnerProcess, isXcodebuildTestProcess, runningUiTestPids, XCODEBUILD_VALUED, type ProcRow } from "../src/ps.js";
+import { ancestry, groupAlive, signalGroup, isPid, pidAlive, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, isSimulatorCommand, runsTool, simulatorUdid, xcTestDeviceUdid, XCODE_TOOLS, isTestRunnerProcess, isXcodebuildTestProcess, isXctestProcess, hasXcodeAppAncestor, runningUiTestPids, XCODEBUILD_VALUED, type ProcRow } from "../src/ps.js";
 import { psText } from "./helpers/ps-text.js";
 
 vi.mock("node:child_process", async (orig) => ({ ...(await orig<typeof import("node:child_process")>()), execFileSync: vi.fn() }));
@@ -287,7 +287,8 @@ describe("runningUiTestPids", () => {
 
 
 // Issue #324 review: Xcode.app (Cmd-U) spawns no build-tool process, so a run it drives shows as its test runner: a UI-test runner app (an executable under a
-// `*-Runner.app/` bundle) or an `xctest` process.
+// `*-Runner.app/` bundle), or an `xctest` process that Xcode.app owns or that runs from a simulator platform or runtime. A bare `xctest` is not one: the
+// PhaseMatrix gate runs `xcrun xctest <bundle>.xctest` for every XCTest bundle, nearly all day.
 describe("isTestRunnerProcess", () => {
   const APP = "/Users/x/Library/Developer/CoreSimulator/Devices/5E2F590B-1111-4222-8333-444455556666/data/Containers/Bundle/Application/ABC123";
   it.each<[string, string]>([
@@ -295,9 +296,6 @@ describe("isTestRunnerProcess", () => {
     ["a runner built in DerivedData", "/Users/x/Library/Developer/Xcode/DerivedData/App-abcdef/Build/Products/Debug-iphonesimulator/AppUITests-Runner.app/AppUITests-Runner"],
     ["a runner under a path with spaces in an .app", "/Applications/My Tools.app/Contents/Build/AppUITests-Runner.app/AppUITests-Runner"],
     ["a macOS runner with arguments", "/x/Build/Products/Debug/AppUITests-Runner.app/Contents/MacOS/AppUITests-Runner -NSDocumentRevisionsDebugMode YES"],
-    ["xctest by Xcode path", "/Applications/Xcode.app/Contents/Developer/usr/bin/xctest /x/AppTests.xctest"],
-    ["xctest in a simulator runtime", "/Library/Developer/CoreSimulator/Volumes/iOS_23A/Library/Developer/CoreSimulator/Runtimes/iOS 27.2.simruntime/Contents/Resources/RuntimeRoot/Developer/Library/Xcode/Agents/xctest -XCTestBundlePath x"],
-    ["xctest by name", "xctest -XCTest All /x/AppTests.xctest"],
   ])("is true for %s", (_name, command) => {
     expect(isTestRunnerProcess(command)).toBe(true);
   });
@@ -307,19 +305,91 @@ describe("isTestRunnerProcess", () => {
     ["a name that only ends in Runner", `${APP}/GameRunner.app/GameRunner`],
     ["a path component that merely mentions it", "/usr/bin/grep -r -Runner.app/ /x"],
     ["a shell script that holds the words", "/bin/zsh -c open AppUITests-Runner.app/AppUITests-Runner"],
-    ["a tool whose name contains xctest", "/usr/bin/xctestrun-tool run"],
-    ["a similar name", "myxctest run"],
+    ["xctest, which is not a runner app", "/Applications/Xcode.app/Contents/Developer/usr/bin/xctest /x/AppTests.xctest"],
     ["an empty command", ""],
   ])("is false for %s", (_name, command) => {
     expect(isTestRunnerProcess(command)).toBe(false);
   });
 });
 
+describe("isXctestProcess", () => {
+  it.each<[string, string]>([
+    ["by Xcode path", "/Applications/Xcode.app/Contents/Developer/usr/bin/xctest /x/AppTests.xctest"],
+    ["by name", "xctest -XCTest All /x/AppTests.xctest"],
+    ["in a simulator platform", "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/Library/Xcode/Agents/xctest -XCTestBundlePath x"],
+  ])("is true for %s", (_name, command) => {
+    expect(isXctestProcess(command)).toBe(true);
+  });
+  it.each<[string, string]>([
+    ["a tool whose name contains xctest", "/usr/bin/xctestrun-tool run"],
+    ["a similar name", "myxctest run"],
+    ["a shell that holds the words", "/bin/zsh -c xcrun xctest Foo.xctest"],
+    ["an empty command", ""],
+  ])("is false for %s", (_name, command) => {
+    expect(isXctestProcess(command)).toBe(false);
+  });
+});
+
+describe("hasXcodeAppAncestor", () => {
+  const row = (pid: number, ppid: number, command: string) => ({ pid, ppid, pgid: pid, uid: 501, stat: "S", elapsedMs: 0, rssBytes: 0, command });
+  const XCODE = "/Applications/Xcode.app/Contents/MacOS/Xcode";
+  it.each<[string, string]>([
+    ["Xcode.app", XCODE],
+    ["a beta Xcode.app", "/Applications/Xcode-beta.app/Contents/MacOS/Xcode"],
+    ["Xcode.app in a path with spaces", "/Applications/Xcode Beta 2.app/Contents/MacOS/Xcode"],
+    ["Xcode.app with arguments", `${XCODE} -NSDocumentRevisionsDebugMode YES`],
+  ])("finds %s two levels up", (_name, xcode) => {
+    expect(hasXcodeAppAncestor([row(1000, 1, xcode), row(1001, 1000, "helper"), row(1002, 1001, "xctest")], 1002)).toBe(true);
+  });
+  it.each<[string, string]>([
+    ["a shell that only names it", `/bin/zsh -c open ${XCODE}`],
+    ["another app's main executable", "/Applications/Safari.app/Contents/MacOS/Safari"],
+    ["Xcode's helper, not its main executable", "/Applications/Xcode.app/Contents/SharedFrameworks/XcodeHelper"],
+    ["a name that only contains Xcode", "/Applications/NotXcode.app/Contents/MacOS/NotXcode"],
+  ])("does not find %s", (_name, command) => {
+    expect(hasXcodeAppAncestor([row(1000, 1, command), row(1002, 1000, "xctest")], 1002)).toBe(false);
+  });
+  it("looks only at ancestors, not at the process itself or at unrelated rows", () => {
+    expect(hasXcodeAppAncestor([row(1002, 1, XCODE), row(1003, 1, "xctest")], 1003)).toBe(false);
+    expect(hasXcodeAppAncestor([row(1002, 1, XCODE)], 1002)).toBe(false);
+  });
+});
+
 describe("runningUiTestPids and a test runner", () => {
   const row = (pid: number, ppid: number, command: string, uid = 501) => ({ pid, ppid, pgid: pid, uid, stat: "S", elapsedMs: 0, rssBytes: 0, command });
-  it("counts a runner or xctest process of this user as a test in progress, and not another user's, and not the asking process's ancestry", () => {
-    const rows = [row(10, 1, "/x/AppUITests-Runner.app/AppUITests-Runner"), row(11, 1, "xctest /x/T.xctest"), row(12, 1, "/x/AppUITests-Runner.app/AppUITests-Runner", 0), row(20, 1, "/x/AppUITests-Runner.app/AppUITests-Runner"), row(99, 20, "wrapper")];
-    expect(runningUiTestPids(rows, 501, 99)).toEqual([10, 11]);
+  const XCODE = "/Applications/Xcode.app/Contents/MacOS/Xcode";
+  const XCTEST = "/Applications/Xcode.app/Contents/Developer/usr/bin/xctest /x/T.xctest";
+  it("counts a runner app of this user as a test in progress, and not another user's, and not the asking process's ancestry", () => {
+    const rows = [row(10, 1, "/x/AppUITests-Runner.app/AppUITests-Runner"), row(12, 1, "/x/AppUITests-Runner.app/AppUITests-Runner", 0), row(20, 1, "/x/AppUITests-Runner.app/AppUITests-Runner"), row(99, 20, "wrapper")];
+    expect(runningUiTestPids(rows, 501, 99)).toEqual([10]);
+  });
+
+  // Issue #324 review: `xcrun xctest <bundle>` is what a Swift gate runs, so a bare xctest says nothing about a UI run.
+  it("does not count an xctest run by a shell under a heavy-queue or perl wrapper, or from a plain terminal", () => {
+    const rows = [row(10, 1, "perl /x/heavy-queue run --shell xcrun xctest Foo.xctest"), row(11, 10, "/bin/sh -c xcrun xctest Foo.xctest"), row(12, 11, XCTEST), row(13, 1, "xctest Foo.xctest"), row(14, 1, "/bin/zsh"), row(15, 14, XCTEST)];
+    expect(runningUiTestPids(rows, 501, 99)).toEqual([]);
+  });
+
+  it("counts an xctest that has Xcode.app among its ancestors", () => {
+    const rows = [row(20, 1, XCODE), row(21, 20, "/Applications/Xcode.app/Contents/Developer/usr/libexec/testmanagerd"), row(22, 21, XCTEST), row(23, 1, XCTEST)];
+    expect(runningUiTestPids(rows, 501, 99)).toEqual([22]);
+  });
+
+  it.each<[string, string]>([
+    ["an iPhone simulator platform agent", "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/Library/Xcode/Agents/xctest -XCTestBundlePath x"],
+    ["another simulator platform", "/Applications/Xcode.app/Contents/Developer/Platforms/AppleTVSimulator.platform/Developer/Library/Xcode/Agents/xctest -XCTestBundlePath x"],
+    ["a simulator runtime agent", "/Library/Developer/CoreSimulator/Volumes/iOS_23A/Library/Developer/CoreSimulator/Runtimes/iOS 27.2.simruntime/Contents/Resources/RuntimeRoot/Developer/Library/Xcode/Agents/xctest -XCTestBundlePath x"],
+  ])("counts an xctest that runs from %s, wherever its parent is", (_name, command) => {
+    expect(runningUiTestPids([row(30, 1, command)], 501, 99)).toEqual([30]);
+  });
+
+  it("does not count an xctest whose path only mentions a simulator in an argument", () => {
+    expect(runningUiTestPids([row(31, 1, "xctest /x/iPhoneSimulator.platform/T.xctest")], 501, 99)).toEqual([]);
+  });
+
+  it("leaves another user's xctest out, even under Xcode.app", () => {
+    const rows = [row(20, 1, XCODE), row(21, 20, XCTEST, 0)];
+    expect(runningUiTestPids(rows, 501, 99)).toEqual([]);
   });
 });
 
