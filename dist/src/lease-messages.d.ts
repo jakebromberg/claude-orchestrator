@@ -21,7 +21,11 @@ export declare function formatAdmitted(a: LeaseHandle["admission"]): string;
 export declare function formatNoSlot(refusal: LeaseRefusal, status: LeaseStatus): string;
 /** The disk-full line; the hook denies with it and the CLI prints it. Unlike `formatNoSlot` it says not to rerun. */
 export declare function formatDiskFull(refusal: LeaseRefusal): string;
-/** The one text of any refusal: the disk-full line for `disk-full`, the UI-test class's own line for `io-error`, `slot-lost` and `nested-ui-test`, else the no-slot line. */
+/**
+ * The one text of any refusal: the disk-full line for `disk-full`, the UI-test class's own reason for `io-error`, `slot-lost`, `nested-ui-test` and
+ * `ui-test-running`, else the no-slot line. Every one but the disk's starts with `lease: no slot after <n>s`, so the rule that stops a session after its
+ * second no-slot denial, and a give-up rule that matches the prefix, count a UI-class refusal too.
+ */
 export declare const formatRefusal: (refusal: LeaseRefusal, status: LeaseStatus) => string;
 /** The post-check's summary for a refusal. Its memory-critical stop is terminal, so unlike `formatNoSlot` it has no `lease: no slot after` prefix and does not say to rerun. */
 export declare const formatPostCheckStop: (refusal: LeaseRefusal) => string;

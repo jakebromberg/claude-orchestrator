@@ -10,7 +10,7 @@ import { describeBoundedFailure } from "./bounded-failure.js";
 import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
 import { appendOwnLine, isOwnDir, readLeaseRecord, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
-import { ancestry, isClaudeCommand, isPid, isSimulatorCommand, parsePsTable, ps, PS_TABLE_ARGS, runsTool, simulatorUdid, XCODE_TOOLS, xcTestDeviceUdid } from "./ps.js";
+import { ancestry, isClaudeCommand, isPid, isSimulatorCommand, isXcodebuildTestProcess, parsePsTable, ps, PS_TABLE_ARGS, runsTool, simulatorUdid, XCODE_TOOLS, xcTestDeviceUdid } from "./ps.js";
 import { isLeaseRecord, readSuspensions } from "./suspensions.js";
 const EX_USAGE = 64;
 const USAGE = "usage: claude-orchestrator-watchdog check | brief | print-plist | print-status-line";
@@ -69,8 +69,21 @@ const idleSimulator = (c) => [...c.idleSimulators]
     message: `simulator ${udid} booted and idle ${minutes(c.now - d.since)}m${d.rssBytes === undefined ? "" : `, holding ${(d.rssBytes / 2 ** 30).toFixed(1)} GB`}; to reclaim it run: xcrun simctl shutdown ${udid}`,
     once: true,
 }));
+/** A build tool test action with no UI-test holder behind it is reported once it has run this long. */
+export const HUNG_TEST_AFTER_MS = 30 * 60_000;
+// Report only: a test action that hangs holds the machine in fact with no holder to show for it, so UI-test runs wait behind it (the lease's process scan)
+// and simulator reaping stands down (its test-action guard). The watchdog names it and never touches it.
+const hungTestAction = (c) => c.uiHolders
+    ? []
+    : c.procs
+        .filter((p) => p.elapsedMs >= HUNG_TEST_AFTER_MS && isXcodebuildTestProcess(p.command))
+        .map((p) => ({
+        key: `hung-test:${p.pid}`,
+        message: `test action pid ${p.pid} has run ${age(p.elapsedMs)} with no UI-test lease holder (hung?): UI-test runs wait behind it and simulator reaping is paused while it runs; it is left running`,
+    }));
+const age = (ms) => (ms >= 3_600_000 ? `${Math.floor(ms / 3_600_000)}h${String(minutes(ms % 3_600_000)).padStart(2, "0")}m` : `${minutes(ms)}m`);
 /** The rules, in report order. A rule reads the context and returns findings; the reporters never change. */
-export const RULES = [unrecordedStoppedGroup, dueReminder, oldLeaseSuspension, stalledEngine, silentEngine, deadEngine, idleSimulator];
+export const RULES = [unrecordedStoppedGroup, dueReminder, oldLeaseSuspension, stalledEngine, silentEngine, deadEngine, idleSimulator, hungTestAction];
 /** The scan's bound, 60 s because `ps` can be slow at background priority. */
 export const SCAN_TIMEOUT_MS = 60_000;
 /** The default scan: one bounded `ps`. A throw skips the cycle. */
@@ -146,6 +159,17 @@ function idleSimulatorRss(procs) {
     }
     return totals;
 }
+/** Whether `ui-tests/` holds any holder file (read without reaping; a missing, symlinked or foreign directory has none). */
+function hasUiHolder(dir) {
+    try {
+        const sub = join(dir, "ui-tests");
+        const st = lstatSync(sub, { throwIfNoEntry: false });
+        return st !== undefined && isOwnDir(st) && readdirSync(sub).some((n) => n.endsWith(".json"));
+    }
+    catch {
+        return false;
+    }
+}
 function readState(dir) {
     try {
         const s = JSON.parse(readLeaseRecord(dir, "watchdog.json")?.text ?? "{}");
@@ -200,7 +224,7 @@ export function check(d) {
     }
     const records = readSuspensions(d.dir);
     const suspended = new Set(records.map((r) => r.pgid));
-    const found = RULES.flatMap((rule) => rule({ now, procs, engines, suspended, records, stoppedSince, idleSimulators }));
+    const found = RULES.flatMap((rule) => rule({ now, procs, engines, suspended, records, stoppedSince, idleSimulators, uiHolders: hasUiHolder(d.dir) }));
     const findings = found.filter((f) => !(f.once && prev.reported.includes(f.key)));
     const state = { stoppedSince: Object.fromEntries(stoppedSince), idleSimulators: Object.fromEntries([...idleSimulators].map(([udid, d]) => [udid, d.since])), simReaps, simSeen, reported: found.filter((f) => f.once).map((f) => f.key), findings };
     writeLeaseRecord(d.dir, "watchdog.json", JSON.stringify({ checkedAt: new Date(now).toISOString(), ...state }));

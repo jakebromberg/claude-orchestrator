@@ -18,6 +18,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readRegularFile } from "./lease-dir.js";
+import { XCODEBUILD_VALUED } from "./ps.js";
 import { acquireLease, defaultLeaseOptions, DETACHED_TTL_MAX_MS, isPid, leaseStatus, releaseHolder } from "./lease.js";
 import { formatAdmitted, formatRefusal } from "./lease-messages.js";
 import { weightFor } from "./lease-weights.js";
@@ -130,7 +131,6 @@ export function isUiTestCommand(command) {
     return anySegmentMatches(command, UI_TEST);
 }
 /** `xcodebuild` options that take a separate value, so a value that reads `test` (a scheme or project of that name) is not the action. */
-const XCODEBUILD_VALUED = /^-(?:scheme|project|workspace|target|configuration|destination|sdk|arch|xctestrun|testPlan|resultBundlePath|derivedDataPath|archivePath|exportPath|exportOptionsPlist|toolchain|xcconfig|jobs|testLanguage|testRegion|resultStreamPath|clonedSourcePackagesDirPath|packageCachePath|only-testing|skip-testing|only-test-configuration|skip-test-configuration|destination-timeout|test-iterations|retry-tests-on-failure|test-timeouts-enabled|default-test-execution-time-allowance|maximum-test-execution-time-allowance|parallel-testing-enabled|parallel-testing-worker-count|maximum-parallel-testing-workers|maximum-concurrent-test-device-destinations|maximum-concurrent-test-simulator-destinations|enableCodeCoverage|enableAddressSanitizer|enableThreadSanitizer|enableUndefinedBehaviorSanitizer)$/;
 const XCRUN_VALUED = /^-{1,2}(?:sdk|toolchain)$/;
 /**
  * Whether one simple command, given as its words, runs a UI-test action: past its leading words (assignments, `nohup`, `exec`, `command`,
@@ -303,7 +303,7 @@ const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 const MAX_CALL_TIMEOUT_MS = DETACHED_TTL_MAX_MS - GRACE_MS;
 /** Shorter than the lease's holder id bound (160): the `hook-` prefix keeps `hook-<id>` inside it. */
 const TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
-const DENY_BACKGROUNDED_UI = "lease: run a UI test in the foreground (no & that backgrounds it) so the lease can hold its slots for as long as it runs";
+const DENY_BACKGROUNDED_UI = "lease: no slot after 0s: run a UI test in the foreground (no & that backgrounds it) so the lease can hold its slots for as long as it runs";
 /**
  * Whether a UI-test command line may background work: an unquoted single `&` that is not part of `&&`, `>&`, `<&`, `&>` or `|&`, after quoted text and
  * backslash-escaped characters are blanked. `PostToolUse` fires when the backgrounded shell returns, so its slots would be released while the test

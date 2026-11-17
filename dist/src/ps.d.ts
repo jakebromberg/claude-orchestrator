@@ -1,6 +1,11 @@
 /** The default bound of one `ps` call. */
 export declare const PS_TIMEOUT_MS = 2000;
-/** Runs `ps` and returns trimmed stdout; throws on failure. Bounded (`PS_TIMEOUT_MS` unless `timeoutMs`) and stderr is discarded, so a hung `ps` cannot stall a caller and nothing writes past a `warn` seam. */
+/**
+ * The most stdout one `ps` call may return. Node's default is 1 MiB, which the whole table passes (`swift-frontend` rows of 13 to 69 KB among
+ * thousands): a read past the cap throws, and every reader of the table (the UI-test scan, the watchdog, the reaper) would then see nothing.
+ */
+export declare const PS_MAX_BUFFER: number;
+/** Runs `ps` and returns trimmed stdout; throws on failure. Bounded (`PS_TIMEOUT_MS` unless `timeoutMs`; `PS_MAX_BUFFER` of output) and stderr is discarded, so a hung `ps` cannot stall a caller and nothing writes past a `warn` seam. */
 export declare function ps(args: string[], { timeoutMs }?: {
     timeoutMs?: number;
 }): string;
@@ -47,12 +52,24 @@ export declare const XCODE_TOOLS: string[];
 /** True when `command` runs one of `names`: the name preceded by the start, whitespace, `/` or a shell separator and followed by whitespace or the end, so a tool path with spaces still counts and `mysimctl` does not. */
 export declare const runsTool: (command: string, names: string[]) => boolean;
 /**
+ * The build tool's options that take a value, from `man xcodebuild` (each entry is written there with an argument), so a value that reads `test` (a scheme or
+ * project of that name) is not the action. Flags (`-retry-tests-on-failure`, `-quiet`, ...) are not here. One table for the hook's classifier and the
+ * process classifier.
+ */
+export declare const XCODEBUILD_VALUED: RegExp;
+/**
  * Whether a process is itself a build tool test action: its executable is `xcodebuild` (by path, or through `xcrun`, which execs it) and a `test` or
  * `test-without-building` word follows. A shell or `grep` whose command line only contains that text is not one, so a wrapper's own command line
  * (the Bash call's shell, the lease CLI naming its argv) never counts: the build tool it spawns is the process that does.
  */
 export declare const isXcodebuildTestProcess: (command: string) => boolean;
-/** The pids of `uid`'s test actions in `rows`, leaving out `ownPid` and its ancestors (the wrapper that is asking, and the shell that holds its command line). */
+/**
+ * Whether a process is a test runner: an executable under a `*-Runner.app/` bundle (a UI-test runner, in a simulator's container or in DerivedData) or `xctest`.
+ * Xcode.app (Cmd-U) spawns no build-tool process, so a run it drives shows only as this. The match is on the executable's path, not on text anywhere
+ * in the command line.
+ */
+export declare const isTestRunnerProcess: (command: string) => boolean;
+/** The pids of `uid`'s tests in progress in `rows` (a build tool test action, or a test runner), leaving out `ownPid` and its ancestors (the wrapper that is asking, and the shell that holds its command line). */
 export declare function runningUiTestPids(rows: ProcRow[], uid: number, ownPid: number): number[];
 /** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */
 export declare const simulatorUdid: (command: string) => string | undefined;
