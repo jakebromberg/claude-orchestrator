@@ -17,6 +17,13 @@ const REAL_FORMS = [
   `bash -c '${TOOL} test -scheme A'`,
   `FOO='a b' ${TOOL} -destination 'platform=iOS Simulator,name=iPhone' test`,
   `nice -n 5 ${TOOL} test`,
+  // The wrappers the owner uses, matched by basename.
+  `taskpolicy -b ${TOOL} test -scheme A`,
+  `taskpolicy -c utility -t 2 ${TOOL} test`,
+  `caffeinate -dims -t 3600 ${TOOL} test`,
+  `arch -arm64 -e FOO=1 ${TOOL} test`,
+  `/usr/bin/time -l -o /dev/null xcrun ${TOOL} test`,
+  `${TOOL} -retry-tests-on-failure -scheme A test`,
 ];
 
 const REAL_PLACEMENTS: ((t: string) => string)[] = [
@@ -37,6 +44,28 @@ const REAL_PLACEMENTS: ((t: string) => string)[] = [
   (t) => `${t} &`,
   (t) => `set -o pipefail && ${t} | xcpretty`,
   (t) => `cat <<EOF\nlog: $(${t})\nEOF`,
+];
+
+// Real invocations the generator does not build, written by hand: forms from the review that the placements could break (a heredoc
+// needs its delimiter on a line of its own) or that the generator's own vocabulary would not reach.
+const EXTRA_REAL = [
+  `bash <<'EOF'\n${TOOL} test -scheme A\nEOF`,
+  `sh -s -- a b <<'EOF'\ncd /w\n${TOOL} test\nEOF`,
+  `zsh <<EOF\n${TOOL} test\nEOF`,
+  `env FOO=1 /bin/bash <<-'EOF'\n\t${TOOL} test\nEOF`,
+  `taskpolicy -b caffeinate -i arch -arm64 /usr/bin/time -l xcrun --sdk iphonesimulator ${TOOL} test`,
+  `${TOOL} -quiet -allowProvisioningUpdates -parallelize-tests-among-destinations -scheme A test-without-building`,
+  `bash -c -- '${TOOL} -scheme A test'`,
+  `echo start && taskpolicy -b ${TOOL} -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' test`,
+];
+
+const EXTRA_MENTION = [
+  `cat <<'EOF'\n${TOOL} test\nEOF`,
+  `bash script.sh <<'EOF'\n${TOOL} test\nEOF`,
+  `taskpolicy -b grep '${TOOL} test' f`,
+  `caffeinate -i echo ${TOOL} test`,
+  `${TOOL} -scheme test build`,
+  `bash <<'EOF'\necho '${TOOL} test'\nEOF`,
 ];
 
 const MENTIONS = [`${TOOL} test`, `${TOOL} test -scheme A`, `${TOOL} test-without-building -xctestrun x`, `run ${TOOL} test first`];
@@ -126,5 +155,19 @@ describe("isUiTestCommand against the generator (seeded)", () => {
     const fragments = (place: (x: string) => string): string[] => place("@@").split("@@");
     for (const place of REAL_PLACEMENTS) expect([...used].some((c) => fragments(place).every((frag) => c.includes(frag)))).toBe(true);
     for (const place of MENTION_PLACEMENTS) expect([...used].some((c) => fragments(place).every((frag) => c.includes(frag)))).toBe(true);
+  });
+
+  it("reads every hand-written real invocation as one, and every hand-written mention as text", () => {
+    expect(EXTRA_REAL.filter((c) => !isUiTestCommand(c))).toEqual([]);
+    expect(EXTRA_MENTION.filter((c) => isUiTestCommand(c))).toEqual([]);
+  });
+
+  it("never loses a real invocation the untokenized rule finds, over a corpus that includes forms the generator did not build", () => {
+    const corpus = [...SEEDS.map(generate).filter((g) => g.real).map((g) => g.command), ...EXTRA_REAL];
+    expect(corpus.length).toBeGreaterThan(1_000);
+    expect(corpus.filter((c) => isUiTestCommandUntokenized(c) && !isUiTestCommand(c))).toEqual([]);
+    // The corpus is not vacuous: the untokenized rule finds a share of it, and the tokenizer finds all.
+    expect(corpus.filter((c) => isUiTestCommandUntokenized(c)).length).toBeGreaterThan(500);
+    expect(corpus.filter((c) => !isUiTestCommand(c))).toEqual([]);
   });
 });

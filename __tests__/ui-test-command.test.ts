@@ -48,6 +48,29 @@ describe("isUiTestCommand", () => {
     ["with a destination that has parentheses", `${TOOL} -scheme PhaseMatrix -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' test`],
     ["with a scheme that has a semicolon", `${TOOL} -scheme "My;Scheme" test`],
     ["with a scheme named test and then the action", `${TOOL} -scheme test test`],
+    // Issue #324 review (wrappers the owner uses): matched by basename, for the UI classifier only.
+    ["under taskpolicy -b", `taskpolicy -b ${TOOL} -scheme App test`],
+    ["under taskpolicy with valued options", `taskpolicy -c utility -d throttle -t 2 -l 3 ${TOOL} test`],
+    ["under taskpolicy by path and xcrun", `/usr/sbin/taskpolicy -b xcrun ${TOOL} test`],
+    ["under caffeinate with flags", `caffeinate -i ${TOOL} test`],
+    ["under caffeinate with -t and -w values", `caffeinate -dims -t 3600 -w 123 ${TOOL} test`],
+    ["under arch -arm64", `arch -arm64 ${TOOL} test`],
+    ["under arch with -e and -arch", `arch -x86_64 -e FOO=1 -d BAR -arch arm64 ${TOOL} test`],
+    ["under /usr/bin/time -l", `/usr/bin/time -l ${TOOL} test`],
+    ["under time -p", `time -p ${TOOL} test`],
+    ["under /usr/bin/time -o file", `/usr/bin/time -al -o out.txt ${TOOL} test`],
+    ["under a chain of wrappers", `taskpolicy -b caffeinate -i arch -arm64 /usr/bin/time -l xcrun ${TOOL} test`],
+    ["after an option that is a flag, not a valued one", `${TOOL} -retry-tests-on-failure test`],
+    ["after -run-tests-until-failure", `${TOOL} -run-tests-until-failure -scheme App test`],
+    ["after -quiet and -allowProvisioningUpdates", `${TOOL} -quiet -allowProvisioningUpdates -scheme App test`],
+    ["after -parallelize-tests-among-destinations", `${TOOL} -parallelize-tests-among-destinations test`],
+    ["after -disable-concurrent-destination-testing", `${TOOL} -disable-concurrent-destination-testing test`],
+    // A shell that reads its script from a heredoc runs the body.
+    ["a quoted heredoc fed to bash", `bash <<'EOF'\n${TOOL} test -scheme App\nEOF`],
+    ["a heredoc fed to sh -s", `sh -s -- arg <<'EOF'\ncd /w\n${TOOL} test\nEOF`],
+    ["an unquoted heredoc fed to zsh", `zsh <<EOF\n${TOOL} test -scheme App\nEOF`],
+    ["a heredoc fed to /bin/bash behind env", `env FOO=1 /bin/bash <<'EOF'\n${TOOL} test\nEOF`],
+    ["a heredoc fed to bash -e", `bash -e <<-'EOF'\n\t${TOOL} test\nEOF`],
     ["when the text cannot be tokenized and the raw rule sees xcrun --sdk", `echo 'unterminated; xcrun --sdk iphonesimulator ${TOOL} test -scheme App`],
     ["when the text cannot be tokenized and the raw rule sees xcrun -sdk", `echo 'unterminated; xcrun -sdk iphonesimulator ${TOOL} test -scheme App`],
     ["when the text cannot be tokenized and the raw rule sees bash -c --", `echo 'unterminated; bash -c -- "${TOOL} test -scheme App"`],
@@ -94,6 +117,16 @@ describe("isUiTestCommand", () => {
     ["a scheme named test and a build action", `${TOOL} -scheme test build`],
     ["a project named test and a build action", `${TOOL} -project test -scheme App build`],
     ["a scheme named test inside a bash -c script", `bash -c '${TOOL} -scheme test build'`],
+    ["taskpolicy with no program to run", `taskpolicy -p 123`],
+    ["taskpolicy around another tool that is given the words", `taskpolicy -b grep -rn '${TOOL} test' docs`],
+    ["caffeinate around an echo", `caffeinate -i echo ${TOOL} test`],
+    ["arch around a grep", `arch -arm64 grep '${TOOL} test' notes.md`],
+    ["time around a different tool", `/usr/bin/time -l ls ${TOOL} test`],
+    ["a wrapper around a scheme named test and a build action", `taskpolicy -b ${TOOL} -scheme test build`],
+    ["a heredoc fed to cat", `cat <<'EOF'\n${TOOL} test -scheme App\nEOF`],
+    ["a heredoc fed to a script file", `bash run.sh <<'EOF'\n${TOOL} test\nEOF`],
+    ["a heredoc fed to bash -c, whose stdin the script ignores", `bash -c 'echo hi' <<'EOF'\n${TOOL} test\nEOF`],
+    ["a heredoc to a shell whose body only mentions it", `bash <<'EOF'\necho "${TOOL} test"\nEOF`],
     ["a here-string", `cat <<< '${TOOL} test -scheme App'`],
   ])("does not match %s", (_name, command) => {
     expect(isUiTestCommand(command)).toBe(false);
@@ -149,5 +182,35 @@ describe("isUiTestArgv", () => {
     ["no words", [], false],
   ])("%s", (_name, argv, expected) => {
     expect(isUiTestArgv(argv)).toBe(expected);
+  });
+});
+
+// Issue #324 review: `XCODEBUILD_VALUED` is the option list of the build tool's manual (`man xcodebuild`), each entry one that takes a value; the flags
+// below take none, so the word after them is an argument or the action.
+describe("xcodebuild options and the action word", () => {
+  const VALUED = [
+    "project", "target", "workspace", "scheme", "destination", "destination-timeout", "configuration", "arch", "sdk", "enableAddressSanitizer",
+    "enableThreadSanitizer", "enableUndefinedBehaviorSanitizer", "enableCodeCoverage", "testLanguage", "testRegion", "derivedDataPath",
+    "resultBundlePath", "authenticationKeyPath", "authenticationKeyID", "authenticationKeyIssuerID", "archivePath", "exportPath", "exportOptionsPlist",
+    "localizationPath", "exportLanguage", "xcconfig", "testProductsPath", "xctestrun", "testPlan", "skip-testing", "only-testing", "skip-test-configuration",
+    "only-test-configuration", "maximum-concurrent-test-device-destinations", "maximum-concurrent-test-simulator-destinations", "parallel-testing-enabled",
+    "parallel-testing-worker-count", "maximum-parallel-testing-workers", "test-timeouts-enabled", "default-test-execution-time-allowance",
+    "maximum-test-execution-time-allowance", "test-iterations", "test-repetition-relaunch-enabled", "collect-test-diagnostics", "test-enumeration-style",
+    "test-enumeration-format", "test-enumeration-output-path", "toolchain",
+  ];
+  const FLAGS = [
+    "retry-tests-on-failure", "run-tests-until-failure", "disable-concurrent-destination-testing", "parallelize-tests-among-destinations", "enumerate-tests",
+    "quiet", "verbose", "allowProvisioningUpdates", "allowProvisioningDeviceRegistration", "skipUnavailableActions", "alltargets", "showBuildSettings",
+  ];
+
+  it.each(VALUED)("-%s takes a value, so a value that reads test is not the action", (option) => {
+    expect(isUiTestArgv([TOOL, `-${option}`, "test", "build"])).toBe(false);
+    expect(isUiTestArgv([TOOL, `-${option}`, "x", "test"])).toBe(true);
+    expect(isUiTestCommand(`${TOOL} -${option} test build`)).toBe(false);
+  });
+
+  it.each(FLAGS)("-%s takes no value, so the word after it is the action", (option) => {
+    expect(isUiTestArgv([TOOL, `-${option}`, "test"])).toBe(true);
+    expect(isUiTestCommand(`${TOOL} -${option} test`)).toBe(true);
   });
 });

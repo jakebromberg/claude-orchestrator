@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { simpleCommands } from "../src/shell-commands.js";
+import { shellCommands, simpleCommands } from "../src/shell-commands.js";
 
 // Issue #324 defect 4 and #302's owner decision: classifying a command by what it runs needs a tokenizer that knows quotes,
 // escapes, comments, heredocs and substitutions, and that gives up (undefined) on anything it cannot parse so the caller can fall back.
@@ -100,5 +100,22 @@ describe("simpleCommands", () => {
     const start = performance.now();
     expect(simpleCommands(text)!.length).toBeGreaterThan(5_000);
     expect(performance.now() - start).toBeLessThan(2_000);
+  });
+});
+
+describe("shellCommands: the heredoc a command reads as its stdin", () => {
+  it("attaches the body of a quoted heredoc to the command that holds the operator", () => {
+    expect(shellCommands("bash <<'EOF'\nrun a; b\nEOF\nf")).toEqual([{ words: ["bash"], stdin: "run a; b" }, { words: ["f"] }]);
+  });
+  it("attaches an unquoted body too, and the last heredoc of a command is its stdin", () => {
+    expect(shellCommands("cat <<A <<'B'\none\nA\ntwo\nB")).toEqual([{ words: ["cat"], stdin: "two" }]);
+    expect(shellCommands("zsh <<EOF\nbody $(x y)\nEOF")).toEqual(expect.arrayContaining([{ words: ["zsh"], stdin: "body $(x y)" }, { words: ["x", "y"] }]));
+  });
+  it("keeps the words and leaves stdin off a command with no heredoc, as simpleCommands returns the words only", () => {
+    expect(shellCommands("a b; c")).toEqual([{ words: ["a", "b"] }, { words: ["c"] }]);
+    expect(simpleCommands("bash <<'EOF'\nx\nEOF")).toEqual([["bash"]]);
+  });
+  it("joins a body's lines with newlines, tabs stripped for <<-", () => {
+    expect(shellCommands("sh <<-'EOF'\n\ta\n\tb\n\tEOF")).toEqual([{ words: ["sh"], stdin: "a\nb" }]);
   });
 });
