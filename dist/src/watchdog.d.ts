@@ -53,11 +53,13 @@ export interface Context {
         rssBytes: number | undefined;
         xctest: boolean;
     }>;
-    /** A UI-test holder file exists under `ui-tests/`: the lease knows the run, so a long test action is its. */
-    uiHolders: boolean;
+    /** The live, unexpired holders of the UI-test class (`ui-tests/`) with the time each started: a test process that started after one could be its run. */
+    uiHolders: {
+        startedAt: number;
+    }[];
 }
 export type Rule = (c: Context) => Finding[];
-/** A build tool test action with no UI-test holder behind it is reported once it has run this long. */
+/** A test in progress with no live UI-test holder that could own it is reported once it has run this long. */
 export declare const HUNG_TEST_AFTER_MS: number;
 /** The rules, in report order. A rule reads the context and returns findings; the reporters never change. */
 export declare const RULES: Rule[];

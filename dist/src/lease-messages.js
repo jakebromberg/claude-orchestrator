@@ -44,7 +44,7 @@ const uiTestReason = (refusal) => refusal.refused === "io-error"
                 ? `the UI-test slot was not taken: a UI-test run is in progress (pid ${refusal.pids.join(", ")}) that holds no slot; wait for it to end and rerun the command`
                 : `the UI-test slot was not taken: could not tell whether a UI-test run is in progress (the process table was unreadable for ${seconds(refusal.waitedMs)}s); rerun the command`
             : refusal.refused === "nested-ui-test"
-                ? "this UI test runs inside another call's lease slot (a hook call's, or a parent's heavy slot with no UI-test slot behind it), and waiting for the UI-test slot while that is held could deadlock; run the UI test as its own Bash call so it takes both slots"
+                ? "this UI test runs inside another call's lease slot (a hook call's, or a parent's heavy slot with no UI-test slot behind it), and waiting for the UI-test slot while that is held could deadlock; rerunning the same command will not help; run the UI test as its own Bash call so it takes both slots"
                 : undefined;
 /**
  * The one text of any refusal: the disk-full line for `disk-full`, the UI-test class's own reason for `io-error`, `slot-lost`, `nested-ui-test` and

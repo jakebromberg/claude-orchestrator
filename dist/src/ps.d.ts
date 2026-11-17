@@ -64,6 +64,11 @@ export declare const XCODEBUILD_VALUED: RegExp;
  */
 export declare const isXcodebuildTestProcess: (command: string) => boolean;
 /**
+ * Whether a process is the build tool or `simctl` itself, by executable (by path or through `xcrun`), whatever its action: a process whose command line only
+ * holds the names (a claude session whose prompt names them, a shell script) is not.
+ */
+export declare const isBuildToolProcess: (command: string) => boolean;
+/**
  * Whether a process is a UI-test runner: an executable under a `*-Runner.app/` bundle (in a simulator's container or in DerivedData). Xcode.app (Cmd-U)
  * spawns no build-tool process, so a run it drives shows as this. The match is on the executable's path, not on text anywhere in the command line.
  */
@@ -72,7 +77,15 @@ export declare const isTestRunnerProcess: (command: string) => boolean;
 export declare const isXctestProcess: (command: string) => boolean;
 /** Whether an ancestor of `pid` in `rows` is Xcode.app's main executable (`.../Xcode*.app/Contents/MacOS/Xcode`), not a shell or helper that only names it. */
 export declare const hasXcodeAppAncestor: (rows: ProcRow[], pid: number) => boolean;
-/** The pids of `uid`'s tests in progress in `rows` (a build tool test action, a UI-test runner, or an `xctest` that Xcode.app owns or that runs from a simulator path; a bare `xctest` does not count), leaving out `ownPid` and its ancestors (the wrapper that is asking, and the shell that holds its command line). */
+/** Whether `uid` is running Xcode.app's main executable (`.../Xcode*.app/Contents/MacOS/Xcode`) in `rows`. */
+export declare const xcodeAppRunning: (rows: ProcRow[], uid: number) => boolean;
+/** The processes in `rows` that are a test in progress of any kind, whether or not the lease's scan counts them (no Xcode.app needed): the watchdog's hung report reads these. */
+export declare const hungTestCandidates: (rows: ProcRow[]) => ProcRow[];
+/**
+ * The pids of `uid`'s tests in progress in `rows`, leaving out `ownPid` and its ancestors. A build tool test action always counts. A UI-test runner or an
+ * `xctest` that runs from a simulator path counts only while Xcode.app's main executable is running: a run the build tool drives is covered by its own
+ * process, and one left behind by a killed run would otherwise wedge the UI class for good (the watchdog reports it instead). An `xctest` with Xcode.app among
+ * its ancestors counts; a bare `xctest` does not (gates run it all day), leaving out `ownPid` and its ancestors (the wrapper that is asking, and the shell that holds its command line). */
 export declare function runningUiTestPids(rows: ProcRow[], uid: number, ownPid: number): number[];
 /** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */
 export declare const simulatorUdid: (command: string) => string | undefined;

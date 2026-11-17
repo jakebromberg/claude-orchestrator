@@ -20,12 +20,13 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { ancestry, isSimulatorCommand, parsePsTable, PS_TABLE_ARGS, runsTool, XCODE_TOOLS } from "./ps.js";
+import { ancestry, isSimulatorCommand, isTestRunnerProcess, isXcodebuildTestProcess, parsePsTable, PS_TABLE_ARGS, runsTool, XCODE_TOOLS } from "./ps.js";
 /** The bound on every `simctl` and `ps` call here: `simctl` can hang. */
 export const SIMCTL_TIMEOUT_MS = 30_000;
 const UDID = "[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}";
 const ENV_UDID = new RegExp(`^\\s*(\\d+)\\s.*?\\bSIMULATOR_UDID=(${UDID})\\b`);
-const isTestAction = (command) => runsTool(command, ["xcodebuild"]) && /\s(?:test|test-without-building)(?=\s|$)/.test(command);
+/** A process that is the build tool's test action or a UI-test runner (by executable, not by text anywhere in the command line: a claude session whose prompt names the build tool does not stand the reaper down). */
+const isTestAction = (command) => isXcodebuildTestProcess(command) || isTestRunnerProcess(command);
 /** The Xcode.app process itself: it drives CoreSimulator (parallel test clones included) without spawning `xcodebuild` or `simctl`. */
 const XCODE_APP = /\/Contents\/MacOS\/Xcode(?:\s|$)/;
 /** A daemon of the simulator's own system runtime; the test agents it ships live under `RuntimeRoot/Developer` and are not system. */

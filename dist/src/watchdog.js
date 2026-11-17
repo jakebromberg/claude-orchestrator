@@ -9,8 +9,8 @@ import { join } from "node:path";
 import { describeBoundedFailure } from "./bounded-failure.js";
 import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
-import { appendOwnLine, isOwnDir, readLeaseRecord, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
-import { ancestry, isClaudeCommand, isPid, isSimulatorCommand, isXcodebuildTestProcess, parsePsTable, ps, PS_TABLE_ARGS, runsTool, simulatorUdid, XCODE_TOOLS, xcTestDeviceUdid } from "./ps.js";
+import { appendOwnLine, isOwnDir, readLeaseRecord, readOwnFile, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
+import { ancestry, hungTestCandidates, isBuildToolProcess, isClaudeCommand, isPid, isSimulatorCommand, parsePsTable, ps, PS_TABLE_ARGS, simulatorUdid, xcTestDeviceUdid } from "./ps.js";
 import { isLeaseRecord, readSuspensions } from "./suspensions.js";
 const EX_USAGE = 64;
 const USAGE = "usage: claude-orchestrator-watchdog check | brief | print-plist | print-status-line";
@@ -69,18 +69,20 @@ const idleSimulator = (c) => [...c.idleSimulators]
     message: `simulator ${udid} booted and idle ${minutes(c.now - d.since)}m${d.rssBytes === undefined ? "" : `, holding ${(d.rssBytes / 2 ** 30).toFixed(1)} GB`}; to reclaim it run: xcrun simctl shutdown ${udid}`,
     once: true,
 }));
-/** A build tool test action with no UI-test holder behind it is reported once it has run this long. */
+/** A test in progress with no live UI-test holder that could own it is reported once it has run this long. */
 export const HUNG_TEST_AFTER_MS = 30 * 60_000;
-// Report only: a test action that hangs holds the machine in fact with no holder to show for it, so UI-test runs wait behind it (the lease's process scan)
-// and simulator reaping stands down (its test-action guard). The watchdog names it and never touches it.
-const hungTestAction = (c) => c.uiHolders
-    ? []
-    : c.procs
-        .filter((p) => p.elapsedMs >= HUNG_TEST_AFTER_MS && isXcodebuildTestProcess(p.command))
-        .map((p) => ({
-        key: `hung-test:${p.pid}`,
-        message: `test action pid ${p.pid} has run ${age(p.elapsedMs)} with no UI-test lease holder (hung?): UI-test runs wait behind it and simulator reaping is paused while it runs; it is left running`,
-    }));
+/** Clock slack when asking whether a process started after a holder did. */
+const HOLDER_START_SLACK_MS = 5_000;
+// Report only: a test process that hangs, or a runner left behind by a killed run, holds the machine in fact with no holder to show for it: simulator reaping
+// stands down (its test-action guard), and UI-test runs wait behind it (the lease's process scan: always for a build tool test action, while Xcode.app runs
+// for a runner or simulator xctest). Only a live, unexpired holder that started no later than the process could own it; a file that merely exists, an expired
+// holder, a holder whose process is gone, or a process older than the holder suppresses nothing. The watchdog names it and never touches it.
+const hungTestAction = (c) => hungTestCandidates(c.procs)
+    .filter((p) => p.elapsedMs >= HUNG_TEST_AFTER_MS && !c.uiHolders.some((h) => h.startedAt <= c.now - p.elapsedMs + HOLDER_START_SLACK_MS))
+    .map((p) => ({
+    key: `hung-test:${p.pid}`,
+    message: `test process pid ${p.pid} has run ${age(p.elapsedMs)} with no UI-test lease holder that could own it (hung?): simulator reaping is paused while it runs, and UI-test runs wait behind it (always for a build tool test action, while Xcode.app runs otherwise); it is left running, not killed`,
+}));
 const age = (ms) => (ms >= 3_600_000 ? `${Math.floor(ms / 3_600_000)}h${String(minutes(ms % 3_600_000)).padStart(2, "0")}m` : `${minutes(ms)}m`);
 /** The rules, in report order. A rule reads the context and returns findings; the reporters never change. */
 export const RULES = [unrecordedStoppedGroup, dueReminder, oldLeaseSuspension, stalledEngine, silentEngine, deadEngine, idleSimulator, hungTestAction];
@@ -136,7 +138,8 @@ function stoppedGroups(procs, engines) {
 }
 /** Booted simulators by UDID (the `launchd_sim` row naming `Devices/<udid>/`, or `XCTestDevices/<udid>/` for a test clone) with the readable rss of every simulator process under it, one pid map for the scan. Idle ones only: none when an `xcodebuild` or `simctl` is running. */
 function idleSimulatorRss(procs) {
-    const toolRunning = procs.some((p) => runsTool(p.command, XCODE_TOOLS));
+    // A process that is the build tool or simctl itself keeps a device from being idle; a command line that only holds their names does not.
+    const toolRunning = procs.some((p) => isBuildToolProcess(p.command));
     const byPid = new Map(procs.map((p) => [p.pid, p]));
     const roots = new Map(procs.flatMap((p) => {
         if (!p.command.includes("launchd_sim"))
@@ -159,15 +162,34 @@ function idleSimulatorRss(procs) {
     }
     return totals;
 }
-/** Whether `ui-tests/` holds any holder file (read without reaping; a missing, symlinked or foreign directory has none). */
-function hasUiHolder(dir) {
+/** A holder is live while its detached session is alive and `expiresAt` has not passed, or while its heartbeat is fresh (90 s, the lease's rule) or its child is alive. */
+const HOLDER_HEARTBEAT_MS = 90_000;
+/** The live UI-test holders, read without reaping (a missing, symlinked or foreign directory, an unreadable or malformed file has none). */
+function liveUiHolders(dir, procs, now) {
     try {
         const sub = join(dir, "ui-tests");
         const st = lstatSync(sub, { throwIfNoEntry: false });
-        return st !== undefined && isOwnDir(st) && readdirSync(sub).some((n) => n.endsWith(".json"));
+        if (st === undefined || !isOwnDir(st))
+            return [];
+        const alive = (pid) => procs.some((p) => p.pid === pid);
+        return readdirSync(sub).flatMap((name) => {
+            if (!name.endsWith(".json"))
+                return [];
+            try {
+                const file = readOwnFile(join(sub, name));
+                const rec = file && JSON.parse(file.text);
+                if (!rec || !isPid(rec.pid) || typeof rec.startedAt !== "number")
+                    return [];
+                const live = typeof rec.expiresAt === "number" ? now < rec.expiresAt && alive(rec.pid) : isWithinWindow(file.mtimeMs, now, HOLDER_HEARTBEAT_MS) || (isPid(rec.childPid) && alive(rec.childPid));
+                return live ? [{ startedAt: rec.startedAt }] : [];
+            }
+            catch {
+                return [];
+            }
+        });
     }
     catch {
-        return false;
+        return [];
     }
 }
 function readState(dir) {
@@ -224,7 +246,7 @@ export function check(d) {
     }
     const records = readSuspensions(d.dir);
     const suspended = new Set(records.map((r) => r.pgid));
-    const found = RULES.flatMap((rule) => rule({ now, procs, engines, suspended, records, stoppedSince, idleSimulators, uiHolders: hasUiHolder(d.dir) }));
+    const found = RULES.flatMap((rule) => rule({ now, procs, engines, suspended, records, stoppedSince, idleSimulators, uiHolders: liveUiHolders(d.dir, procs, now) }));
     const findings = found.filter((f) => !(f.once && prev.reported.includes(f.key)));
     const state = { stoppedSince: Object.fromEntries(stoppedSince), idleSimulators: Object.fromEntries([...idleSimulators].map(([udid, d]) => [udid, d.since])), simReaps, simSeen, reported: found.filter((f) => f.once).map((f) => f.key), findings };
     writeLeaseRecord(d.dir, "watchdog.json", JSON.stringify({ checkedAt: new Date(now).toISOString(), ...state }));

@@ -114,7 +114,9 @@ export const XCODEBUILD_VALUED = new RegExp(`^-(?:${[
  * 2.app, iOS 27.2.simruntime), so the match cannot run across the arguments of a shell whose script contains a path.
  */
 const PATH_PREFIX = String.raw `(?:\/(?:[^\s/]+|[^/]*\s[^/]*\.(?:app|simruntime)))*\/`;
-const XCODEBUILD_PROCESS = new RegExp(String.raw `^(?:xcrun\s+(?:-{1,2}(?:sdk|toolchain)\s+\S+\s+|-\S+\s+)*)?(?:${PATH_PREFIX})?xcodebuild\s(.*)$`, "s");
+const XCRUN_PREFIX = String.raw `(?:(?:${PATH_PREFIX})?xcrun\s+(?:-{1,2}(?:sdk|toolchain)\s+\S+\s+|-\S+\s+)*)?`;
+const XCODEBUILD_PROCESS = new RegExp(String.raw `^${XCRUN_PREFIX}(?:${PATH_PREFIX})?xcodebuild\s(.*)$`, "s");
+const BUILD_TOOL_PROCESS = new RegExp(String.raw `^${XCRUN_PREFIX}(?:${PATH_PREFIX})?(?:xcodebuild|simctl)(?:\s|$)`);
 const RUNNER_PROCESS = new RegExp(String.raw `^${PATH_PREFIX}[^\s/]*-Runner\.app\/(?:[^\s/]+\/)*[^\s/]+(?:\s|$)`);
 const XCTEST_PROCESS = new RegExp(String.raw `^((?:${PATH_PREFIX})?)xctest(?:\s|$)`);
 const XCODE_APP_PROCESS = new RegExp(String.raw `^(?:\/(?:[^\s/]+|[^/]*\s[^/]*\.(?:app|simruntime)))*\/Contents\/MacOS\/Xcode(?:\s|$)`);
@@ -140,6 +142,11 @@ export const isXcodebuildTestProcess = (command) => {
     return false;
 };
 /**
+ * Whether a process is the build tool or `simctl` itself, by executable (by path or through `xcrun`), whatever its action: a process whose command line only
+ * holds the names (a claude session whose prompt names them, a shell script) is not.
+ */
+export const isBuildToolProcess = (command) => BUILD_TOOL_PROCESS.test(command.trim());
+/**
  * Whether a process is a UI-test runner: an executable under a `*-Runner.app/` bundle (in a simulator's container or in DerivedData). Xcode.app (Cmd-U)
  * spawns no build-tool process, so a run it drives shows as this. The match is on the executable's path, not on text anywhere in the command line.
  */
@@ -150,10 +157,26 @@ export const isXctestProcess = (command) => XCTEST_PROCESS.test(command.trim());
 const xctestInSimulator = (command) => SIMULATOR_EXECUTABLE.test(XCTEST_PROCESS.exec(command.trim())?.[1] ?? "");
 /** Whether an ancestor of `pid` in `rows` is Xcode.app's main executable (`.../Xcode*.app/Contents/MacOS/Xcode`), not a shell or helper that only names it. */
 export const hasXcodeAppAncestor = (rows, pid) => ancestry(rows, pid, 64).chain.some((r) => r.pid !== pid && XCODE_APP_PROCESS.test(r.command.trim()) && /\/Xcode[^/]*\.app\/Contents\/MacOS\/Xcode/.test(r.command));
-/** The pids of `uid`'s tests in progress in `rows` (a build tool test action, a UI-test runner, or an `xctest` that Xcode.app owns or that runs from a simulator path; a bare `xctest` does not count), leaving out `ownPid` and its ancestors (the wrapper that is asking, and the shell that holds its command line). */
+/** Whether `uid` is running Xcode.app's main executable (`.../Xcode*.app/Contents/MacOS/Xcode`) in `rows`. */
+export const xcodeAppRunning = (rows, uid) => rows.some((r) => r.uid === uid && isXcodeAppMain(r.command));
+const isXcodeAppMain = (command) => XCODE_APP_PROCESS.test(command.trim()) && /\/Xcode[^/]*\.app\/Contents\/MacOS\/Xcode/.test(command);
+/** The processes in `rows` that are a test in progress of any kind, whether or not the lease's scan counts them (no Xcode.app needed): the watchdog's hung report reads these. */
+export const hungTestCandidates = (rows) => rows.filter((r) => isXcodebuildTestProcess(r.command) || isTestRunnerProcess(r.command) || (isXctestProcess(r.command) && (xctestInSimulator(r.command) || hasXcodeAppAncestor(rows, r.pid))));
+/**
+ * The pids of `uid`'s tests in progress in `rows`, leaving out `ownPid` and its ancestors. A build tool test action always counts. A UI-test runner or an
+ * `xctest` that runs from a simulator path counts only while Xcode.app's main executable is running: a run the build tool drives is covered by its own
+ * process, and one left behind by a killed run would otherwise wedge the UI class for good (the watchdog reports it instead). An `xctest` with Xcode.app among
+ * its ancestors counts; a bare `xctest` does not (gates run it all day), leaving out `ownPid` and its ancestors (the wrapper that is asking, and the shell that holds its command line). */
 export function runningUiTestPids(rows, uid, ownPid) {
     const own = new Set([ownPid, ...ancestry(rows, ownPid, 64).chain.map((r) => r.pid)]);
-    return rows.filter((r) => r.uid === uid && !own.has(r.pid) && (isXcodebuildTestProcess(r.command) || isTestRunnerProcess(r.command) || (isXctestProcess(r.command) && (xctestInSimulator(r.command) || hasXcodeAppAncestor(rows, r.pid))))).map((r) => r.pid);
+    const xcodeUp = xcodeAppRunning(rows, uid);
+    return rows
+        .filter((r) => r.uid === uid &&
+        !own.has(r.pid) &&
+        (isXcodebuildTestProcess(r.command) ||
+            (xcodeUp && (isTestRunnerProcess(r.command) || (isXctestProcess(r.command) && xctestInSimulator(r.command)))) ||
+            (isXctestProcess(r.command) && hasXcodeAppAncestor(rows, r.pid))))
+        .map((r) => r.pid);
 }
 /** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */
 export const simulatorUdid = (command) => /\/CoreSimulator\/Devices\/([0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12})\//i.exec(command)?.[1]?.toUpperCase();
