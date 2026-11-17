@@ -462,6 +462,8 @@ describe("isBuildToolProcess", () => {
     ["a shell script that holds the words", "/bin/zsh -c xcodebuild test"],
     ["a grep for the words", "grep -rn simctl docs"],
     ["a similar name", "myxcodebuild test"],
+    ["a longer name with the same start", "xcodebuilder test"],
+    ["a longer simctl name", "simctlx list"],
     ["an empty command", ""],
   ])("is false for %s", (_name, command) => {
     expect(isBuildToolProcess(command)).toBe(false);

@@ -276,12 +276,12 @@ describe("watchdog", () => {
         expect(hung()).toEqual([]);
       });
 
-      it.each<[string, object, number]>([
-        ["an expired detached holder", { expiresAt: now - 1_000 }, 0],
-        ["a detached holder whose session is gone", { pid: 4999 }, 0],
-        ["a heartbeat holder that stopped beating", { expiresAt: undefined, pid: 701 }, 5 * 60_000],
+      it.each<[string, () => object, number]>([
+        ["an expired detached holder", () => ({ expiresAt: now - 1_000 }), 0],
+        ["a detached holder whose session is gone", () => ({ pid: 4999 }), 0],
+        ["a heartbeat holder that stopped beating", () => ({ expiresAt: undefined, pid: 701 }), 5 * 60_000],
       ])("is reported despite %s", (_name, rec, beatAgoMs) => {
-        holder(rec, beatAgoMs);
+        holder(rec(), beatAgoMs);
         rows = [...SESSION, sessionRow, ...at("02:05:00")];
         checkAt(0);
         expect(hung()).toHaveLength(1);
@@ -298,6 +298,17 @@ describe("watchdog", () => {
         expect(hung()).toEqual([]);
       });
 
+      // Clocks of the holder and of ps differ by a little: a holder written within the slack after the process started could own it, one 6 s later could not.
+      it.each<[string, number, number]>([
+        ["3 s after the process started", 3_000, 0],
+        ["6 s after the process started", 6_000, 1],
+      ])("treats a holder that started %s: %#", (_name, laterMs, reported) => {
+        holder({ startedAt: now - 125 * 60_000 + laterMs });
+        rows = [...SESSION, sessionRow, ...at("02:05:00")];
+        checkAt(0);
+        expect(hung()).toHaveLength(reported);
+      });
+
       it("is reported when the process is older than the live holder: it is not that holder's run", () => {
         holder({ startedAt: now - 10 * 60_000 });
         rows = [...SESSION, sessionRow, ...at("02:05:00")];
@@ -307,8 +318,28 @@ describe("watchdog", () => {
 
       it("is reported beside a live holder for a process that is not the holder's, and a junk file suppresses nothing", () => {
         writeRecord("ui-tests", "junk.json", { nothing: true });
-        writeRecord("ui-tests", "notes.txt", { nothing: true });
         rows = [...SESSION, ...at("02:05:00")];
+        checkAt(0);
+        expect(hung()).toHaveLength(1);
+      });
+
+      it.each<[string, string, object]>([
+        ["a record with no pid", "nopid.json", { startedAt: 1, id: "x", command: "c", cwd: "/", level: "normal" }],
+        ["a record with no start time", "nostart.json", { pid: 700, id: "x", command: "c", cwd: "/", level: "normal", expiresAt: 1e15 }],
+        ["a holder record in a file that is not .json", "h-2.txt", { id: "h-2", pid: 700, command: "c", cwd: "/", startedAt: 1, level: "normal", expiresAt: 1e15 }],
+      ])("is reported despite %s: %#", (_name, file, rec) => {
+        writeRecord("ui-tests", file, rec);
+        rows = [...SESSION, sessionRow, ...at("02:05:00")];
+        checkAt(0);
+        expect(hung()).toHaveLength(1);
+      });
+
+      it("is reported when ui-tests is a symlink to a directory that holds a live holder", () => {
+        const elsewhere = join(dir, "elsewhere");
+        mkdirSync(elsewhere);
+        writeFileSync(join(elsewhere, "h-1.json"), JSON.stringify({ id: "h-1", pid: 700, command: "c", cwd: "/", startedAt: now - 3 * 3_600_000, level: "normal", expiresAt: now + 60_000 }));
+        symlinkSync(elsewhere, join(dir, "ui-tests"));
+        rows = [...SESSION, sessionRow, ...at("02:05:00")];
         checkAt(0);
         expect(hung()).toHaveLength(1);
       });
