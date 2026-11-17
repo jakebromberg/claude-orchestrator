@@ -64,12 +64,15 @@ export declare const XCODEBUILD_VALUED: RegExp;
  */
 export declare const isXcodebuildTestProcess: (command: string) => boolean;
 /**
- * Whether a process is a test runner: an executable under a `*-Runner.app/` bundle (a UI-test runner, in a simulator's container or in DerivedData) or `xctest`.
- * Xcode.app (Cmd-U) spawns no build-tool process, so a run it drives shows only as this. The match is on the executable's path, not on text anywhere
- * in the command line.
+ * Whether a process is a UI-test runner: an executable under a `*-Runner.app/` bundle (in a simulator's container or in DerivedData). Xcode.app (Cmd-U)
+ * spawns no build-tool process, so a run it drives shows as this. The match is on the executable's path, not on text anywhere in the command line.
  */
 export declare const isTestRunnerProcess: (command: string) => boolean;
-/** The pids of `uid`'s tests in progress in `rows` (a build tool test action, or a test runner), leaving out `ownPid` and its ancestors (the wrapper that is asking, and the shell that holds its command line). */
+/** Whether a process is `xctest` (by path or name). On its own it says little: a Swift gate runs `xcrun xctest <bundle>` for every XCTest bundle, all day. */
+export declare const isXctestProcess: (command: string) => boolean;
+/** Whether an ancestor of `pid` in `rows` is Xcode.app's main executable (`.../Xcode*.app/Contents/MacOS/Xcode`), not a shell or helper that only names it. */
+export declare const hasXcodeAppAncestor: (rows: ProcRow[], pid: number) => boolean;
+/** The pids of `uid`'s tests in progress in `rows` (a build tool test action, a UI-test runner, or an `xctest` that Xcode.app owns or that runs from a simulator path; a bare `xctest` does not count), leaving out `ownPid` and its ancestors (the wrapper that is asking, and the shell that holds its command line). */
 export declare function runningUiTestPids(rows: ProcRow[], uid: number, ownPid: number): number[];
 /** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */
 export declare const simulatorUdid: (command: string) => string | undefined;
