@@ -1118,9 +1118,11 @@ const SLOT_LOST = new Error("the UI-test slot was lost");
  * A UI-test run's two slots, in this order so it never holds up the heavy line while it waits for the other: the UI-test slot first (its own line,
  * `ui-tests-waiting/`), then the heavy slot at its normal weight. The two holders share one id (the detached id, or one made up front that
  * `childEnv()` exports), which `releaseHolder` removes from both classes and a nested acquire inherits to borrow both.
- * Nothing waits on a UI-test slot while holding the heavy one, so the two lines cannot deadlock: a nested acquire whose inherited holder is
- * live in the heavy class but not the UI-test one is refused at once (`nested-ui-test`) instead of waiting for a slot its parent's run may be
- * waiting on. A hook's UI-test holder expires with the call's time, which a heavy wait can outlast, so it is renewed on every heavy poll and at
+ * Nothing waits on a UI-test slot while holding the heavy one, so the two lines cannot deadlock: a nested acquire whose inherited holder
+ * (`CO_LEASE_HOLDER`) is live in the heavy class but not the UI-test one is refused at once (`nested-ui-test`) instead of waiting for a slot its
+ * parent's run may be waiting on. The same refusal is made by the CLI (`lease-run.ts`) before it calls this when any live hook holder's session is
+ * an ancestor, because a UI run that took the UI slot and then waited for heavy behind its own ancestor would hold the UI slot across that wait;
+ * nothing is borrowed from an ancestor hook holder for a UI-test run, in either class. A hook's UI-test holder expires with the call's time, which a heavy wait can outlast, so it is renewed on every heavy poll and at
  * the heavy admission; a holder found gone (reaped, removed) refuses the run (`slot-lost`) instead of letting it proceed beside another one.
  * `maxWaitMs` is spent across both waits, a refusal or a throw of the second gives the first back, and the returned handle releases both.
  */
@@ -1168,6 +1170,11 @@ async function acquireUiTest(opts: LeaseOptions, meta: HolderMeta, wait: LeaseWa
   // The check that decides whether this run proceeds beside another: definitive, so a busy mutex is retried (up to its staleness bound) and a
   // slot that cannot be confirmed is refused, where the keep-alive renewals above treat an unknown as fine.
   waiting = false;
+  // From here a signal must give back both holders: the window below can last as long as the mutex's staleness bound.
+  wait.onHold?.(() => {
+    heavy.release();
+    slot.release();
+  });
   if (!(await confirmed(opts, slot))) {
     heavy.release();
     slot.release();

@@ -313,6 +313,17 @@ const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 const MAX_CALL_TIMEOUT_MS = DETACHED_TTL_MAX_MS - GRACE_MS;
 /** Shorter than the lease's holder id bound (160): the `hook-` prefix keeps `hook-<id>` inside it. */
 const TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const DENY_BACKGROUNDED_UI = "lease: run a UI test in the foreground (no & that backgrounds it) so the lease can hold its slots for as long as it runs";
+/**
+ * Whether a UI-test command line may background work: an unquoted single `&` that is not part of `&&`, `>&`, `<&`, `&>` or `|&`, after quoted text and
+ * backslash-escaped characters are blanked. `PostToolUse` fires when the backgrounded shell returns, so its slots would be released while the test
+ * still runs; the line is denied instead. Conservative (it does not know which command the `&` follows): it can deny a line whose `&` backgrounds
+ * something else. Claude Code's own mid-run backgrounding (Ctrl+B) is not seen at all and can still release the slots early.
+ */
+export function uiRunBackgrounded(command: string): boolean {
+  const bare = command.replace(/\\./gs, "  ").replace(/'[^']*'/g, "''").replace(/"(?:\\.|[^"\\])*"/gs, '""');
+  return /(?<![&>|<])&(?![&>])/.test(bare);
+}
 const DENY_BACKGROUND = "lease: run heavy commands in the foreground so the lease can track them";
 
 interface HookInput {
@@ -358,6 +369,7 @@ async function handleEvent(stdin: string, io: HookIo): Promise<void> {
   // A hook with no session PID or no usable options stays inert, background calls included. A lease directory that
   // fails only at acquire (unwritable, a symlink) still denies them, while a foreground call there fails open.
   if (input.tool_input?.run_in_background === true) return io.out(decision({ permissionDecision: "deny", permissionDecisionReason: DENY_BACKGROUND }));
+  if (uiTest && uiRunBackgrounded(String(input.tool_input!.command))) return io.out(decision({ permissionDecision: "deny", permissionDecisionReason: DENY_BACKGROUNDED_UI }));
   const now = opts.now ?? Date.now;
   const timeoutMs = callTimeoutMs(input, env);
   const cwd = typeof input.cwd === "string" ? input.cwd : process.cwd();

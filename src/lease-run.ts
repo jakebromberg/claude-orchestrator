@@ -13,7 +13,7 @@ import type { PressureSampler } from "./memory-pressure.js";
 import { describeBoundedFailure } from "./bounded-failure.js";
 import { isUiTestArgv, isUiTestCommand } from "./lease-hook.js";
 import { weightFor } from "./lease-weights.js";
-import { acquireLease, defaultLeaseOptions, leaseStatus, PROCESS_COMMAND_TIMEOUT_MS, resumeOldest, SUSPEND_MIN_RUN_MS, suspendNewest, type LeaseOptions, type LeasePriority, type LeaseStatus } from "./lease.js";
+import { acquireLease, defaultLeaseOptions, leaseStatus, PROCESS_COMMAND_TIMEOUT_MS, resumeOldest, SUSPEND_MIN_RUN_MS, suspendNewest, type LeaseOptions, type LeasePriority, type LeaseRefusal, type LeaseStatus } from "./lease.js";
 import { formatAdmitted, formatRefusal, refusalExitCode, seconds, throttledProgress } from "./lease-messages.js";
 import { psAncestors, runsTool, signalGroup, XCODE_TOOLS } from "./ps.js";
 import { sampleUnowned, type UnownedMemory } from "./unowned-memory.js";
@@ -220,10 +220,18 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
   const unhook = (): void => handlers.forEach(([sig, forward]) => d.signals.off(sig, forward));
 
   const uiTest = args.shell !== undefined ? isUiTestCommand(args.shell) : isUiTestArgv(args.argv!);
-  // A hook slot the session already holds is borrowed through `inheritedHolderId`, never waited for a second time. Never for a UI-test run: a
-  // hook holder's pid is the Claude process, an ancestor of every Bash call of the session, so the slot may be a sibling call's, and borrowing it
-  // would run the two UI tests together (or refuse the run as nested).
-  const hookSlot = opts.inheritedHolderId || ownHolder || uiTest ? undefined : ancestorHookSlot(opts, d);
+  // A UI-test run under any live hook holder whose session is an ancestor is refused at once, holding no slot. The holder may be the run's own
+  // parent call (taking the UI slot and then waiting for heavy behind it would hold the UI slot for minutes, perhaps in a cycle) or a sibling's
+  // (a hook holder's pid is the Claude process, an ancestor of every Bash call of the session, so the two cannot be told apart, and borrowing a
+  // sibling's slot would run the two UI tests together): the UI test is run as its own Bash call instead.
+  if (uiTest && !opts.inheritedHolderId && ancestorHookSlot(opts, d)) {
+    unhook();
+    const refusal: LeaseRefusal = { refused: "nested-ui-test", waitedMs: 0, level: d.leaseStatus(opts).level, live: 0, class: "ui-tests" };
+    d.err(formatRefusal(refusal, d.leaseStatus(opts, "ui-tests")));
+    return refusalExitCode(refusal);
+  }
+  // A hook slot the session already holds is borrowed through `inheritedHolderId`, never waited for a second time.
+  const hookSlot = opts.inheritedHolderId || ownHolder ? undefined : ancestorHookSlot(opts, d);
   const weight = weightFor(command, d.cwd, d.env, d.err);
   const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command, label: args.label, cwd: d.cwd, gated: args.gated, suspendable: suspendable || undefined, ...(uiTest && { uiTest: true as const }), ...(high && { priority: "high" as const }), ...(weight !== undefined && { weight }) }, {
     maxWaitMs,

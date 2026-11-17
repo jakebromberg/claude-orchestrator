@@ -94,6 +94,7 @@ describe("hook mode and the UI-test class", () => {
     ["a redirect that holds a &", `${UI} 2>&1 | tail`],
     ["&> as a redirect", `${UI} &>build.log`],
     ["|& as a pipe", `${UI} |& tail`],
+    ["<& as a redirect", `${UI} <&3`],
     ["a >& redirect", `${UI} >&build.log`],
     ["a & inside single quotes", `${UI} -destination 'name=A & B'`],
     ["a & inside double quotes", `${UI} -scheme "A & B"`],

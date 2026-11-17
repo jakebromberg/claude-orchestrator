@@ -50,7 +50,7 @@ const uiTestReason = (refusal: LeaseRefusal): string | undefined =>
     : refusal.refused === "slot-lost"
       ? "the UI-test slot was lost while waiting for a heavy slot (it expired or was removed); rerun the command"
       : refusal.refused === "nested-ui-test"
-        ? "this UI test runs inside a heavy slot that holds no UI-test slot, and waiting for one could deadlock; run it as its own call so it takes both slots"
+        ? "this UI test runs inside another call's lease slot (a hook call's, or a parent's heavy slot with no UI-test slot behind it), and waiting for the UI-test slot while that is held could deadlock; run the UI test as its own Bash call so it takes both slots"
         : undefined;
 
 /** The one text of any refusal: the disk-full line for `disk-full`, the UI-test class's own line for `io-error`, `slot-lost` and `nested-ui-test`, else the no-slot line. */
