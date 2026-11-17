@@ -196,6 +196,7 @@ describe("blankInert", () => {
     ["a heredoc body that expands a substitution, which runs", "cat <<EOF\n$(f &)\nEOF", "cat <<EOF\n$(f &)\nEOF"],
     ["a heredoc body with a backtick substitution", "cat <<EOF\n`f &`\nEOF", "cat <<EOF\n`f &`\nEOF"],
     ["text that cannot be parsed, unchanged", "a 'x # y &", "a 'x # y &"],
+    ["text that cannot be parsed after a comment, unchanged", "a # c &\nb 'unterminated", "a # c &\nb 'unterminated"],
   ])("blanks %s", (_name, text, expected) => {
     expect(blankInert(text)).toBe(expected);
   });

@@ -384,6 +384,11 @@ describe("uiRunBackgrounded", () => {
     ["a heredoc body with a function and a &, then a run", `git commit -F - <<'EOF'\nsetUp() & tearDown()\nEOF\n${TOOL} test`],
     ["an unquoted heredoc body with a function and a &", `cat <<EOF\nsetUp() & tearDown()\nEOF\n${TOOL} test`],
     ["a tab-stripped heredoc body with a function and a &", `cat <<-EOF\n\tsetUp() & tearDown()\n\tEOF\n${TOOL} test`],
+    // Each raw check reads blanked text on its own: a definition only in prose beside a real &, and a real definition beside a & only in prose.
+    ["a function only in a comment, beside a & that backgrounds another command", `# setUp()\necho hi & ${TOOL} test`],
+    ["a function only in a heredoc body, beside a & that backgrounds another command", `cat <<'EOF'\nsetUp()\nEOF\necho hi & ${TOOL} test`],
+    ["a real function, and a & only in a trailing comment", `f() { echo hi; }; ${TOOL} test # fix & retry`],
+    ["a real function, and a & only in a heredoc body", `f() { echo hi; }\ncat <<'EOF'\nfix & retry\nEOF\n${TOOL} test`],
     ["a comment after the run on a later line", `${TOOL} test\n# f() & g`],
     ["a case run in a substitution in the foreground", `echo "$(case x in a) ${TOOL} test ;; esac)"`],
     ["a & inside a case arm of a substitution after a foreground run", `echo "$(${TOOL} test && case y in a) echo hi & ;; esac)"`],
