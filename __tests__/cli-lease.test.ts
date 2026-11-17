@@ -532,6 +532,26 @@ describe("runLeased", () => {
     });
   });
 
+  describe("UI-test class (issue #324)", () => {
+    const meta = (): Record<string, unknown> => acquired[0]!.meta as Record<string, unknown>;
+
+    it.each<[string, Partial<RunArgs>, boolean]>([
+      ["a test action in argv", { argv: ["xcodebuild", "test", "-scheme", "App"] }, true],
+      ["a test action under xcrun", { argv: ["xcrun", "xcodebuild", "test-without-building", "-xctestrun", "x"] }, true],
+      ["a test action in a --shell string", { argv: undefined, shell: "cd /w && xcodebuild test -scheme App 2>&1 | tail" }, true],
+      ["a build action", { argv: ["xcodebuild", "build", "-scheme", "App"] }, false],
+      ["a grep whose pattern names the words", { argv: ["grep", "-rn", "xcodebuild test", "docs"] }, false],
+      ["a --shell string that only echoes the words", { argv: undefined, shell: "echo 'xcodebuild test'" }, false],
+      ["an ordinary heavy command", { argv: ["npm", "test"] }, false],
+    ])("marks the holder uiTest for %s: %s", async (_name, args, expected) => {
+      const done = run(args);
+      await finishWith(0);
+      await done;
+      if (expected) expect(meta()).toMatchObject({ uiTest: true });
+      else expect(meta()).not.toHaveProperty("uiTest");
+    });
+  });
+
   describe("front-end options (gated, background, suspendable)", () => {
     const meta = () => acquired[0]!.meta as Record<string, unknown>;
     const killed = () => signals.kill.mock.calls.map((c) => c.join(":"));
