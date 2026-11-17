@@ -10,7 +10,7 @@ import { describeBoundedFailure } from "./bounded-failure.js";
 import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
 import { appendOwnLine, isOwnDir, readLeaseRecord, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
-import { ancestry, isClaudeCommand, isPid, isSimulatorCommand, parsePsTable, ps, PS_TABLE_ARGS, runsTool, simulatorUdid, XCODE_TOOLS } from "./ps.js";
+import { ancestry, isClaudeCommand, isPid, isSimulatorCommand, parsePsTable, ps, PS_TABLE_ARGS, runsTool, simulatorUdid, XCODE_TOOLS, xcTestDeviceUdid } from "./ps.js";
 import { isLeaseRecord, readSuspensions } from "./suspensions.js";
 const EX_USAGE = 64;
 const USAGE = "usage: claude-orchestrator-watchdog check | brief | print-plist | print-status-line";
@@ -61,9 +61,9 @@ const oldLeaseSuspension = (c) => c.records
 const silentEngine = (c) => c.engines
     .filter((e) => e.fresh && e.stallTimeout > 0 && c.now - e.activityMs > e.stallTimeout * 1000 + STALLED_MARGIN_MS)
     .map((e) => ({ key: `silent:${e.runId}`, message: `engine ${e.runId} (pid ${e.pid}) wrote no session log for ${minutes(c.now - e.activityMs)}m` }));
-// Report only: the owner runs the suggested `simctl shutdown`, the watchdog never does.
+// Report only, for main-set devices: the owner runs the suggested `simctl shutdown` (a device may be in use by hand), the watchdog never does.
 const idleSimulator = (c) => [...c.idleSimulators]
-    .filter(([, d]) => c.now - d.since >= SIMULATOR_IDLE_AFTER_MS)
+    .filter(([, d]) => !d.xctest && c.now - d.since >= SIMULATOR_IDLE_AFTER_MS)
     .map(([udid, d]) => ({
     key: `sim-idle:${udid}`,
     message: `simulator ${udid} booted and idle ${minutes(c.now - d.since)}m${d.rssBytes === undefined ? "" : `, holding ${(d.rssBytes / 2 ** 30).toFixed(1)} GB`}; to reclaim it run: xcrun simctl shutdown ${udid}`,
@@ -121,23 +121,28 @@ function stoppedGroups(procs, engines) {
         groups.set(p.pgid, [...(groups.get(p.pgid) ?? []), p]);
     return [...groups].filter(([pgid, members]) => members.every((p) => p.stat.startsWith("T")) && (enginePgids.has(pgid) || members.some(underClaude))).map(([pgid]) => pgid);
 }
-/** Booted simulators by UDID (the `launchd_sim` row naming `Devices/<udid>/`) with the readable rss of every simulator process under it, one pid map for the scan. Idle ones only: none when an `xcodebuild` or `simctl` is running. */
+/** Booted simulators by UDID (the `launchd_sim` row naming `Devices/<udid>/`, or `XCTestDevices/<udid>/` for a test clone) with the readable rss of every simulator process under it, one pid map for the scan. Idle ones only: none when an `xcodebuild` or `simctl` is running. */
 function idleSimulatorRss(procs) {
     const toolRunning = procs.some((p) => runsTool(p.command, XCODE_TOOLS));
     const byPid = new Map(procs.map((p) => [p.pid, p]));
-    const roots = new Map(procs.flatMap((p) => (p.command.includes("launchd_sim") && simulatorUdid(p.command) ? [[p.pid, simulatorUdid(p.command)]] : [])));
+    const roots = new Map(procs.flatMap((p) => {
+        if (!p.command.includes("launchd_sim"))
+            return [];
+        const udid = simulatorUdid(p.command) ?? xcTestDeviceUdid(p.command);
+        return udid ? [[p.pid, { udid, xctest: simulatorUdid(p.command) === undefined }]] : [];
+    }));
     const totals = new Map();
     if (toolRunning)
         return totals;
-    for (const udid of roots.values())
-        totals.set(udid, undefined);
+    for (const { udid, xctest } of roots.values())
+        totals.set(udid, { rssBytes: undefined, xctest });
     for (const p of procs.filter((p) => isSimulatorCommand(p.command))) {
         let up = p;
         for (let i = 0; up && i < 64 && !roots.has(up.pid); i++)
             up = byPid.get(up.ppid);
-        const udid = up && roots.get(up.pid);
-        if (udid && Number.isFinite(p.rssBytes))
-            totals.set(udid, (totals.get(udid) ?? 0) + p.rssBytes);
+        const root = up && roots.get(up.pid);
+        if (root && Number.isFinite(p.rssBytes))
+            totals.set(root.udid, { ...totals.get(root.udid), rssBytes: (totals.get(root.udid)?.rssBytes ?? 0) + p.rssBytes });
     }
     return totals;
 }
@@ -181,7 +186,7 @@ export function check(d) {
     }
     const engines = readEngines(d.dir, now, procs);
     const stoppedSince = new Map(stoppedGroups(procs, engines).map((pgid) => [pgid, prev.stoppedSince[pgid] ?? now]));
-    const idleSimulators = new Map([...idleSimulatorRss(procs)].map(([udid, rssBytes]) => [udid, { since: prev.idleSimulators[udid] ?? now, rssBytes }]));
+    const idleSimulators = new Map([...idleSimulatorRss(procs)].map(([udid, d]) => [udid, { since: prev.idleSimulators[udid] ?? now, ...d }]));
     let simReaps = prev.simReaps;
     try {
         const idleUdids = [...idleSimulators].filter(([, v]) => now - v.since >= SIMULATOR_IDLE_AFTER_MS).map(([udid]) => udid);

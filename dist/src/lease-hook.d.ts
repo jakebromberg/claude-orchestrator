@@ -29,6 +29,15 @@ export declare function isHeavyCommand(command: string, extraPatterns?: readonly
  */
 export declare function isUiTestCommand(command: string): boolean;
 /**
+ * Whether one simple command, given as its words, runs a UI-test action: past its leading words (assignments, `nohup`, `exec`, `command`,
+ * `time`, `env`, `nice`, `timeout`, `xcrun` and its sdk options), the command word's basename is `xcodebuild` and an argument that is not an
+ * option's value is `test` or `test-without-building`. A `sh -c` script goes to `inScript`. A caller that already has the words (the
+ * CLI's argv) uses it directly, so quoting is never lost to a join.
+ */
+export declare function runsUiTest(words: readonly string[], inScript: (script: string) => boolean): boolean;
+/** `isUiTestCommand` for a command whose words are already split (the CLI's `-- argv`). */
+export declare const isUiTestArgv: (argv: readonly string[]) => boolean;
+/**
  * Whether a hook's stdin is a heavy `PreToolUse` `Bash` call with the gate (`CO_LEASE_HOOK=on`) open.
  * Reads only `hook_event_name`, `tool_name` and `tool_input.command`; malformed input is not heavy and never throws.
  */

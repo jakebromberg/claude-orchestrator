@@ -83,6 +83,8 @@ export const XCODE_TOOLS = ["xcodebuild", "simctl"];
 export const runsTool = (command, names) => new RegExp(`(^|[\\s/;&|(])(${names.join("|")})(\\s|$)`).test(command);
 /** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */
 export const simulatorUdid = (command) => /\/CoreSimulator\/Devices\/([0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12})\//i.exec(command)?.[1]?.toUpperCase();
+/** The test clone's UDID in a command's `XCTestDevices/<udid>/` path (the device set only the build tool creates), else `undefined`. */
+export const xcTestDeviceUdid = (command) => /\/XCTestDevices\/([0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12})\//i.exec(command)?.[1]?.toUpperCase();
 /** `pid` and its parents through `rows`, nearest first, without pid 1. `complete` is false when a link is missing from the scan or the chain is not finished within `max` rows (a loop), so a caller that guards on the chain can fail closed. */
 export function ancestry(rows, pid, max) {
     const byPid = new Map(rows.map((r) => [r.pid, r]));

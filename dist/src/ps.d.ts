@@ -48,6 +48,8 @@ export declare const XCODE_TOOLS: string[];
 export declare const runsTool: (command: string, names: string[]) => boolean;
 /** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */
 export declare const simulatorUdid: (command: string) => string | undefined;
+/** The test clone's UDID in a command's `XCTestDevices/<udid>/` path (the device set only the build tool creates), else `undefined`. */
+export declare const xcTestDeviceUdid: (command: string) => string | undefined;
 /** `pid` and its parents through `rows`, nearest first, without pid 1. `complete` is false when a link is missing from the scan or the chain is not finished within `max` rows (a loop), so a caller that guards on the chain can fail closed. */
 export declare function ancestry<R extends Pick<ProcRow, "pid" | "ppid">>(rows: R[], pid: number, max: number): {
     chain: R[];

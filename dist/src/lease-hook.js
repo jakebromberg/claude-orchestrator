@@ -127,6 +127,54 @@ const UI_TEST = /(?:(?:xcrun )?xcodebuild(?: \S+)* (?:test|test-without-building
 export function isUiTestCommand(command) {
     return anySegmentMatches(command, UI_TEST);
 }
+/** `xcodebuild` options that take a separate value, so a value that reads `test` (a scheme or project of that name) is not the action. */
+const XCODEBUILD_VALUED = /^-(?:scheme|project|workspace|target|configuration|destination|sdk|arch|xctestrun|testPlan|resultBundlePath|derivedDataPath|archivePath|exportPath|exportOptionsPlist|toolchain|xcconfig|jobs|testLanguage|testRegion|resultStreamPath|clonedSourcePackagesDirPath|packageCachePath|only-testing|skip-testing|only-test-configuration|skip-test-configuration|destination-timeout|test-iterations|retry-tests-on-failure|test-timeouts-enabled|default-test-execution-time-allowance|maximum-test-execution-time-allowance|parallel-testing-enabled|parallel-testing-worker-count|maximum-parallel-testing-workers|maximum-concurrent-test-device-destinations|maximum-concurrent-test-simulator-destinations|enableCodeCoverage|enableAddressSanitizer|enableThreadSanitizer|enableUndefinedBehaviorSanitizer)$/;
+const XCRUN_VALUED = /^-{1,2}(?:sdk|toolchain)$/;
+/**
+ * Whether one simple command, given as its words, runs a UI-test action: past its leading words (assignments, `nohup`, `exec`, `command`,
+ * `time`, `env`, `nice`, `timeout`, `xcrun` and its sdk options), the command word's basename is `xcodebuild` and an argument that is not an
+ * option's value is `test` or `test-without-building`. A `sh -c` script goes to `inScript`. A caller that already has the words (the
+ * CLI's argv) uses it directly, so quoting is never lost to a join.
+ */
+export function runsUiTest(words, inScript) {
+    for (let i = 0; i < words.length; i++) {
+        const w = words[i];
+        if (/^[A-Za-z_]\w*=/.test(w) || PREFIX_WORDS.has(w) || w === "{" || w === "}")
+            continue;
+        const wrapper = WRAPPERS.get(w);
+        if (wrapper) {
+            let j = i + 1;
+            while (words[j]?.startsWith("-"))
+                j += wrapper.test(words[j]) ? 2 : 1;
+            i = w === "timeout" ? j : j - 1; // `timeout` also takes a duration
+            continue;
+        }
+        const name = path.basename(w);
+        if (/^(?:ba|z)?sh$/.test(name)) {
+            let j = i + 1;
+            while (words[j]?.startsWith("-") && !/^-[a-z]*c$/.test(words[j]))
+                j += /^-[a-z]*o$/.test(words[j]) ? 2 : 1;
+            return /^-[a-z]*c$/.test(words[j] ?? "") && inScript(words[j + 1] ?? "");
+        }
+        if (name === "xcrun") {
+            while (words[i + 1]?.startsWith("-"))
+                i += XCRUN_VALUED.test(words[i + 1]) ? 2 : 1;
+            continue;
+        }
+        if (name !== "xcodebuild")
+            return false;
+        for (let k = i + 1; k < words.length; k++) {
+            if (XCODEBUILD_VALUED.test(words[k]))
+                k++;
+            else if (words[k] === "test" || words[k] === "test-without-building")
+                return true;
+        }
+        return false;
+    }
+    return false;
+}
+/** `isUiTestCommand` for a command whose words are already split (the CLI's `-- argv`). */
+export const isUiTestArgv = (argv) => runsUiTest(argv, isUiTestCommand);
 /**
  * Strips the segment's leading words one whitespace token at a time, then tests the command word and the rest. A
  * command word that fails is stripped too when it looks like the tail of a word split at a separator inside it: glued

@@ -47,10 +47,11 @@ export interface Context {
     records: SuspensionRecord[];
     /** In-scope stopped groups, with the time each was first seen stopped. */
     stoppedSince: Map<number, number>;
-    /** Booted simulators with no `xcodebuild` or `simctl` anywhere in the scan, by UDID: when each was first seen idle and its readable rss total (`undefined` when no row's rss is readable). */
+    /** Booted simulators with no `xcodebuild` or `simctl` anywhere in the scan, by UDID: when each was first seen idle and its readable rss total (`undefined` when no row's rss is readable). `xctest` marks a clone of the XCTestDevices set, which only the reaper acts on; the report is for main-set devices. */
     idleSimulators: Map<string, {
         since: number;
         rssBytes: number | undefined;
+        xctest: boolean;
     }>;
 }
 export type Rule = (c: Context) => Finding[];
