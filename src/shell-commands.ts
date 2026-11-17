@@ -40,6 +40,8 @@ interface FunctionDef {
   end: number;
 }
 const FUNCTIONS = new WeakMap<ShellCommand[], FunctionDef[]>();
+/** The ranges of the top-level text that run nothing: `#` comments and the bodies of heredocs that expand no substitution, by the `out` list of the parse that read them. */
+const INERT = new WeakMap<ShellCommand[], [number, number][]>();
 
 /** Words that open a compound command when they lead a command (after `then`, `do` or `else`), and the words that close one. */
 const OPENERS = new Set(["{", "if", "for", "while", "until", "case", "select"]);
@@ -68,6 +70,19 @@ export function shellCommands(text: string): ShellCommand[] | undefined {
   return out;
 }
 
+/**
+ * `text` with its comments and its heredoc bodies that run nothing replaced by spaces (newlines kept), so a check that reads the raw text (a function
+ * definition, a lone `&`) does not read prose as code. A heredoc body is a script when the command that reads it is a shell; the caller reads that
+ * script as text of its own. Text that cannot be parsed comes back unchanged.
+ */
+export function blankInert(text: string): string {
+  const out: ShellCommand[] = [];
+  if (parse(text, 0, false, 0, out) === undefined) return text;
+  let blanked = text;
+  for (const [from, to] of INERT.get(out) ?? []) blanked = blanked.slice(0, from) + blanked.slice(from, to).replace(/[^\n]/g, " ") + blanked.slice(to);
+  return blanked;
+}
+
 /** `shellCommands`, as the words of each command only. */
 export function simpleCommands(text: string): string[][] | undefined {
   return shellCommands(text)?.map((c) => c.words);
@@ -92,7 +107,14 @@ function parse(text: string, from: number, closer: boolean, depth: number, out: 
   let segStart = out.length;
   const groups: { seg: number; start: number; proc: boolean }[] = [];
   /** The open compound commands (`if`, `for`, `{` ...): where each started in `out`, the statement start it belongs to, and the function it is the body of. */
-  const compounds: { idx: number; seg: number; fn?: string }[] = [];
+  const compounds: { idx: number; seg: number; head: string; fn?: string }[] = [];
+  /** Records a range of the top-level text (not of a slice a nested parse reads) that runs nothing. */
+  const markInert = (from: number, to: number): void => {
+    if (depth !== 0 || to <= from) return;
+    const ranges = INERT.get(out) ?? [];
+    ranges.push([from, to]);
+    INERT.set(out, ranges);
+  };
   /** A name followed by `()`: the next `{` command is its body. */
   let pendingFn: string | undefined;
   let parens = 0;
@@ -125,7 +147,7 @@ function parse(text: string, from: number, closer: boolean, depth: number, out: 
       const head = lead < 0 ? undefined : words[lead];
       const opens = head !== undefined && (OPENERS.has(head) || ((head === "function" || head === "coproc") && words.includes("{")));
       if (opens) {
-        compounds.push({ idx: out.length - 1, seg, ...(pendingFn !== undefined && head === "{" && { fn: pendingFn }), ...(head === "function" && words[lead + 1] !== undefined && { fn: words[lead + 1] }) });
+        compounds.push({ idx: out.length - 1, seg, head: head!, ...(pendingFn !== undefined && head === "{" && { fn: pendingFn }), ...(head === "function" && words[lead + 1] !== undefined && { fn: words[lead + 1] }) });
       } else if (lead === 0 && head !== undefined && CLOSERS.has(head) && compounds.length > 0) {
         const open = compounds.pop()!;
         segStart = open.seg;
@@ -175,6 +197,7 @@ function parse(text: string, from: number, closer: boolean, depth: number, out: 
   const readHeredocs = (start: number): number | undefined => {
     let i = start;
     for (const h of heredocs.splice(0)) {
+      const from = i;
       const body: string[] = [];
       for (;;) {
         if (i > text.length) return undefined;
@@ -187,6 +210,8 @@ function parse(text: string, from: number, closer: boolean, depth: number, out: 
         if (atEnd) return undefined;
       }
       const bodyText = (h.stripTabs ? body.map((l) => l.replace(/^\t+/, "")) : body).join("\n");
+      // A body that expands a substitution runs it, so only a body with none is prose.
+      if (!h.expands || !/\$\(|`/.test(bodyText)) markInert(from, Math.min(i, text.length));
       if (h.owner) h.owner.stdin = bodyText;
       if (h.expands && !expandBody(body.join("\n"))) return undefined;
     }
@@ -293,7 +318,9 @@ function parse(text: string, from: number, closer: boolean, depth: number, out: 
       substituted();
       i = end;
     } else if (c === "#" && !inWord) {
+      const from = i;
       while (i < text.length && text[i] !== "\n") i++;
+      markInert(from, i);
     } else if (isSpace(c)) {
       endWord();
       i++;
@@ -307,7 +334,11 @@ function parse(text: string, from: number, closer: boolean, depth: number, out: 
         i = after;
       }
     } else if (c === "<" && text.startsWith("<<<", i)) {
-      // A here-string is a redirect, not a heredoc.
+      // A here-string is a redirect, not a heredoc, and it ends the word before it (a bare number there is its file descriptor).
+      if (inWord && !quoted && /^\d+$/.test(word)) {
+        word = "";
+        inWord = false;
+      } else endWord();
       word += "<<<";
       inWord = true;
       i += 3;
@@ -353,7 +384,9 @@ function parse(text: string, from: number, closer: boolean, depth: number, out: 
           segStart = group.seg; // what follows `)` (an `&`) reaches the whole group
           if (group.proc) for (let k = group.start; k < out.length; k++) out[k]!.background = true;
         }
-      } else if (closer) return heredocs.length === 0 ? i + 1 : undefined;
+      } else if (closer && compounds.at(-1)?.head !== "case") return heredocs.length === 0 ? i + 1 : undefined;
+      // The `)` of a case arm's pattern inside a substitution ends the pattern, not the substitution: what follows is the arm's body.
+      else if (closer) segStart = out.length;
       i++;
     } else if (c === "&") {
       if (text[i + 1] === ">") {

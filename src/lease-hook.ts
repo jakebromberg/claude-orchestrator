@@ -23,7 +23,7 @@ import { XCODEBUILD_VALUED } from "./ps.js";
 import { acquireLease, defaultLeaseOptions, DETACHED_TTL_MAX_MS, isPid, leaseStatus, releaseHolder, type LeaseOptions } from "./lease.js";
 import { BACKGROUNDED_UI_REASON, formatAdmitted, formatRefusal } from "./lease-messages.js";
 import { weightFor } from "./lease-weights.js";
-import { shellCommands } from "./shell-commands.js";
+import { blankInert, shellCommands } from "./shell-commands.js";
 import { shellQuote } from "./shell-quote.js";
 
 /**
@@ -163,7 +163,7 @@ export function uiArgvBackgrounded(argv: readonly string[]): boolean {
 
 /** Whether the text defines a shell function: `name()`, `name ()` or `function name`, with a brace or subshell body (quoted text blanked first). */
 const definesFunction = (command: string): boolean => {
-  const bare = command.replace(/\\./gs, "  ").replace(/'[^']*'/g, "''").replace(/"(?:\\.|[^"\\])*"/gs, '""');
+  const bare = blankInert(command).replace(/\\./gs, "  ").replace(/'[^']*'/g, "''").replace(/"(?:\\.|[^"\\])*"/gs, '""');
   return /(?:^|[\s;&|({])(?:function\s+[\w.:@+-]+|[\w.:@+-]+\s*\(\s*\))/.test(bare);
 };
 
@@ -192,16 +192,16 @@ const MAX_SCRIPT_DEPTH = 8;
  * (`man taskpolicy`, `caffeinate`, `arch`, `time`, `env`, `nice`, `timeout`); every other option is a flag. The heavy matcher has its own, smaller table (#327).
  */
 const UI_WRAPPERS = new Map<string, RegExp>([
-  ["time", /^-o$/],
-  ["env", /^-[uCSP]$/],
-  ["nice", /^-n$/],
-  ["timeout", /^-[ks]$/],
-  ["gtimeout", /^-[ks]$/],
-  ["stdbuf", /^-[ioe]$/],
+  ["time", /^(?:-[of]|--output|--format)$/],
+  ["env", /^(?:-[uCSP]|--unset|--chdir|--split-string)$/],
+  ["nice", /^(?:-n|--adjustment)$/],
+  ["timeout", /^(?:-[ks]|--kill-after|--signal)$/],
+  ["gtimeout", /^(?:-[ks]|--kill-after|--signal)$/],
+  ["stdbuf", /^(?:-[ioe]|--input|--output|--error)$/],
   ["taskpolicy", /^-[dgcmjPStlp]$/],
   ["caffeinate", /^-[tw]$/],
   ["arch", /^-(?:arch|d|e)$/],
-  ["sudo", /^-[CDghpRTUu]$/],
+  ["sudo", /^(?:-[CDghprRtTUu]|--close-from|--chdir|--group|--host|--prompt|--role|--chroot|--type|--command-timeout|--other-user|--user)$/],
   ["script", /^-[tT]$/],
   ["noglob", /^$/],
 ]);
@@ -410,7 +410,7 @@ const DENY_BACKGROUNDED_UI = `lease: no slot after 0s: ${BACKGROUNDED_UI_REASON}
  * something else. Claude Code's own mid-run backgrounding (Ctrl+B) is not seen at all and can still release the slots early.
  */
 function rawUiRunBackgrounded(command: string): boolean {
-  const bare = command.replace(/\\./gs, "  ").replace(/'[^']*'/g, "''").replace(/"(?:\\.|[^"\\])*"/gs, '""');
+  const bare = blankInert(command).replace(/\\./gs, "  ").replace(/'[^']*'/g, "''").replace(/"(?:\\.|[^"\\])*"/gs, '""');
   // A coprocess and a process substitution run concurrently too, whether or not the text shows where they end.
   return /(?<![&>|<])&(?![&>])/.test(bare) || /\bcoproc\b|[<>]\(/.test(bare);
 }

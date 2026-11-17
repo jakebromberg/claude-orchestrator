@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { shellCommands, simpleCommands } from "../src/shell-commands.js";
+import { blankInert, shellCommands, simpleCommands } from "../src/shell-commands.js";
 
 // Issue #324 defect 4 and #302's owner decision: classifying a command by what it runs needs a tokenizer that knows quotes,
 // escapes, comments, heredocs and substitutions, and that gives up (undefined) on anything it cannot parse so the caller can fall back.
@@ -182,6 +182,30 @@ describe("shellCommands: which commands a & backgrounds", () => {
 // Issue #324 review: a `;` inside a compound command (`if`, `for`, `while`, `until`, `case`, `{ }`, a function body) ended the statement, so a lone `&`
 // after its closer marked only the last inner command. The closer now restores the statement to its opener, and a function whose call is backgrounded
 // takes its body with it.
+// Issue #324 review: the raw checks read the text with its comments and the bodies of heredocs that run nothing blanked.
+describe("blankInert", () => {
+  const sp = (n: number): string => " ".repeat(n);
+  it.each<[string, string, string]>([
+    ["a trailing comment", "a x # f() & g", `a x ${sp(9)}`],
+    ["a comment line, keeping the newline", "# f() & g\na x", `${sp(9)}\na x`],
+    ["a quoted heredoc body and its delimiter line", "cat <<'EOF'\nf() & g\nEOF\na x", `cat <<'EOF'\n${sp(7)}\n${sp(3)}\na x`],
+    ["a heredoc body with no substitution", "cat <<EOF\nf() & g\nEOF\na x", `cat <<EOF\n${sp(7)}\n${sp(3)}\na x`],
+    ["a tab-stripped heredoc body", "cat <<-EOF\n\tf() & g\n\tEOF\na x", `cat <<-EOF\n${sp(8)}\n${sp(4)}\na x`],
+    ["a hash inside a word, which is no comment", "a x#y &", "a x#y &"],
+    ["a hash inside quotes", "a '# f() & g'", "a '# f() & g'"],
+    ["a heredoc body that expands a substitution, which runs", "cat <<EOF\n$(f &)\nEOF", "cat <<EOF\n$(f &)\nEOF"],
+    ["a heredoc body with a backtick substitution", "cat <<EOF\n`f &`\nEOF", "cat <<EOF\n`f &`\nEOF"],
+    ["text that cannot be parsed, unchanged", "a 'x # y &", "a 'x # y &"],
+  ])("blanks %s", (_name, text, expected) => {
+    expect(blankInert(text)).toBe(expected);
+  });
+
+  it("does not take a comment read from a slice of the text (a backtick substitution) for a range of the text itself", () => {
+    const text = "f() ( a ); f & echo `# xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n`";
+    expect(blankInert(text).startsWith("f() ( a ); f & echo")).toBe(true);
+  });
+});
+
 // Issue #324 review: a case arm's `)` closed a `$(` early, so the rest of a double-quoted substitution was text and a UI run inside it was lost.
 describe("shellCommands: a case inside a substitution", () => {
   const words = (text: string): string[] => shellCommands(text)!.map((c) => c.words.join(" "));
