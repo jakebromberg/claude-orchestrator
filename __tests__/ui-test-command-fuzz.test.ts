@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isUiTestCommand, isUiTestCommandUntokenized } from "../src/lease-hook.js";
+import { isUiTestCommand, isUiTestCommandUntokenized, uiRunBackgrounded } from "../src/lease-hook.js";
 
 // Issue #324 defect 4 and #302's owner decision: the classifier is checked by a seeded generative differential, not a few rows. Each
 // command is built from pieces whose truth is known by construction (a real invocation in command position, or text that only
@@ -82,6 +82,43 @@ const EXTRA_MENTION = [
   `${TOOL} build &> test`,
   `timeout 5 grep '${TOOL} test' f`,
   `stdbuf -oL echo ${TOOL} test`,
+];
+
+// Placements that background a real invocation, and that leave it in the foreground, built around every real form: `uiRunBackgrounded` must agree.
+const BACKGROUND_PLACEMENTS: ((t: string) => string)[] = [
+  (t) => `${t} &`,
+  (t) => `${t} > x.log 2>&1 & echo $!`,
+  (t) => `(${t} &)`,
+  (t) => `(${t}) &`,
+  (t) => `{ ${t}; } &`,
+  (t) => `if true; then ${t}; fi &`,
+  (t) => `if c; then echo x; else ${t}; fi > log 2>&1 &`,
+  (t) => `for s in A B; do ${t}; done &`,
+  (t) => `while true; do ${t}; done > log &`,
+  (t) => `until false; do ${t}; done &`,
+  (t) => `case $x in a) ${t} ;; esac &`,
+  (t) => `if c; then for s in A; do ${t}; done; fi &`,
+  (t) => `cd /w && if c; then ${t}; fi &`,
+  (t) => `f() { ${t}; }; f &`,
+  (t) => `function f { ${t}; }; f | tee log &`,
+  (t) => `${t} | tee out.log &`,
+  (t) => `coproc ${t}`,
+  (t) => `tee out.log >(${t})`,
+  (t) => `cat <(${t})`,
+];
+
+const FOREGROUND_PLACEMENTS: ((t: string) => string)[] = [
+  (t) => t,
+  (t) => `if true; then ${t}; fi`,
+  (t) => `for s in A B; do ${t}; done`,
+  (t) => `while true; do ${t}; done`,
+  (t) => `{ ${t}; }`,
+  (t) => `f() { ${t}; }; f`,
+  (t) => `f() { ${t}; }; g &`,
+  (t) => `if true; then ${t}; fi; echo hi &`,
+  (t) => `echo hi & ${t}`,
+  (t) => `${t}; echo hi &`,
+  (t) => `cd /w && ${t}`,
 ];
 
 const MENTIONS = [`${TOOL} test`, `${TOOL} test -scheme A`, `${TOOL} test-without-building -xctestrun x`, `run ${TOOL} test first`];
@@ -185,5 +222,21 @@ describe("isUiTestCommand against the generator (seeded)", () => {
     // The corpus is not vacuous: the untokenized rule finds a share of it, and the tokenizer finds all.
     expect(corpus.filter((c) => isUiTestCommandUntokenized(c)).length).toBeGreaterThan(500);
     expect(corpus.filter((c) => !isUiTestCommand(c))).toEqual([]);
+  });
+
+  it("denies every real form in every backgrounding placement, and none in a foreground one", () => {
+    const wrong: string[] = [];
+    for (const form of REAL_FORMS) {
+      // A form that itself ends in a redirect to a file is wrapped like any other; the wrapped text must still read as a UI run.
+      for (const place of BACKGROUND_PLACEMENTS) {
+        const command = place(form);
+        if (!isUiTestCommand(command) || !uiRunBackgrounded(command)) wrong.push(`bg: ${command}`);
+      }
+      for (const place of FOREGROUND_PLACEMENTS) {
+        const command = place(form);
+        if (!isUiTestCommand(command) || uiRunBackgrounded(command)) wrong.push(`fg: ${command}`);
+      }
+    }
+    expect(wrong.slice(0, 5)).toEqual([]);
   });
 });

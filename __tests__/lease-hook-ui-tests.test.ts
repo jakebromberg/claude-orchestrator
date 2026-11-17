@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -20,11 +20,13 @@ describe("hook mode and the UI-test class", () => {
   const call = (event: string, command: string, id = "toolu_1", timeout?: number): string =>
     JSON.stringify({ hook_event_name: event, tool_name: "Bash", tool_use_id: id, cwd: "/work", tool_input: { command, ...(timeout && { timeout }) } });
 
-  const run = async (stdin: string, lease: Partial<LeaseOptions> = {}, envOver: NodeJS.ProcessEnv = {}): Promise<string> => {
+  const run = async (stdin: string, lease: Partial<LeaseOptions> = {}, envOver: NodeJS.ProcessEnv = {}, shim = false): Promise<string> => {
     const env = isolatedLeaseEnv(dir, { CO_LEASE_HOOK: "on", CO_LEASE_SESSION_PID: String(SESSION), BASH_DEFAULT_TIMEOUT_MS: undefined, ...envOver });
     let out = "";
     const { dir: _d, policy: _p, warn: _w, ...injected } = scripted.opts(lease);
-    await runHook([], { env, readStdin: async () => stdin, out: (t) => void (out += t), lease: injected, heavyQueuePath: join(tmp, "no-heavy-queue") });
+    // With `shim`, the file at the heavy-queue path is the front-end shim, so `heavy-queue run` leases for itself.
+    if (shim) writeFileSync(join(tmp, "heavy-queue"), "#!/bin/sh\nexec node cli-heavy-queue.js \"$@\"\n");
+    await runHook([], { env, readStdin: async () => stdin, out: (t) => void (out += t), lease: injected, heavyQueuePath: join(tmp, shim ? "heavy-queue" : "no-heavy-queue") });
     return out;
   };
 
@@ -62,10 +64,34 @@ describe("hook mode and the UI-test class", () => {
     expect([names("ui-tests"), names("holders")]).toEqual([[], []]);
   });
 
-  it("still leases nothing for a command that mentions the CLI, which leases for itself", async () => {
-    expect(await run(call("PreToolUse", "claude-orchestrator-lease -- xcrun --sdk iphonesimulator xcodebuild test"))).toBe("");
-    // The whole-text rule: a command that only mentions the CLI is exempt even when a later segment is a UI run (the documented trade).
-    expect(await run(call("PreToolUse", "echo claude-orchestrator-lease && xcrun --sdk iphonesimulator xcodebuild test", "toolu_2"))).toBe("");
+  // Issue #324 review: with the tokenizer a command is exempt only when the simple command that runs the UI test is itself an argument of the lease CLI or
+  // `heavy-queue run`. A mention in another command, a comment or a sibling segment is not an exemption: the UI run beside it is leased.
+  it.each([
+    ["the lease CLI with an argv", "claude-orchestrator-lease -- xcrun --sdk iphonesimulator xcodebuild test"],
+    ["the lease CLI with --shell", "claude-orchestrator-lease --shell 'cd /w && xcodebuild test -scheme A'"],
+    ["the built bin by path", "node /opt/co/dist/src/cli-lease.js -- xcodebuild -scheme A test"],
+    ["heavy-queue with the shim", "heavy-queue run --shell 'xcodebuild test -scheme A'"],
+    ["heavy-queue with the shim and an argv", "heavy-queue run -- xcodebuild -scheme A test"],
+  ])("leases nothing for %s, which leases for itself", async (_name, command) => {
+    expect(await run(call("PreToolUse", command), {}, {}, true)).toBe("");
+    expect([names("ui-tests"), names("holders")]).toEqual([[], []]);
+  });
+
+  it.each([
+    ["a sibling command that mentions the CLI", `claude-orchestrator-lease status; ${UI}`],
+    ["an echo of the CLI before it", `echo claude-orchestrator-lease && ${UI}`],
+    ["a comment that mentions the CLI", `${UI} # see claude-orchestrator-lease`],
+    ["a comment on an earlier line", `# claude-orchestrator-lease\n${UI}`],
+    ["a quoted mention in another command", `echo 'cli-lease.js' && xcrun --sdk iphonesimulator ${UI}`],
+    ["heavy-queue run for another command", `heavy-queue run --shell 'npm run lint' && ${UI}`],
+    ["a heavy-queue status", `heavy-queue run -- ls && ${UI}`],
+  ])("still leases both slots for a UI run beside %s", async (_name, command) => {
+    expect(await run(call("PreToolUse", command), {}, {}, true)).toContain("lease: admitted");
+    expect([names("ui-tests"), names("holders")]).toEqual([["hook-toolu_1.json"], ["hook-toolu_1.json"]]);
+  });
+
+  it("keeps the whole-text exemption for text it cannot tokenize", async () => {
+    expect(await run(call("PreToolUse", `echo 'unterminated claude-orchestrator-lease; ${UI}`))).toBe("");
     expect([names("ui-tests"), names("holders")]).toEqual([[], []]);
   });
 
@@ -110,6 +136,22 @@ describe("hook mode and the UI-test class", () => {
   ])("does not deny %s", async (_name, command) => {
     const out = await run(call("PreToolUse", command));
     expect(out).not.toContain("foreground");
+  });
+
+  it.each([
+    ["an if", `if true; then ${UI}; fi &`],
+    ["a for loop", `for s in A B; do ${UI}; done > log 2>&1 &`],
+    ["a while loop", `while true; do ${UI}; done &`],
+    ["an until loop", `until false; do ${UI}; done &`],
+    ["a case", `case $x in a) ${UI} ;; esac &`],
+    ["a function whose call is backgrounded", `f() { ${UI}; }; f &`],
+    ["a coproc", `coproc ${UI}`],
+    ["an output process substitution", `tee out.log >(${UI})`],
+  ])("denies a UI-test call that backgrounds the run through %s", async (_name, command) => {
+    const out = JSON.parse(await run(call("PreToolUse", command)));
+    expect(out.hookSpecificOutput).toMatchObject({ permissionDecision: "deny" });
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain("foreground");
+    expect([names("ui-tests"), names("holders")]).toEqual([[], []]);
   });
 
   it("does not deny a heavy command that is not a UI run, whatever it does with &", async () => {

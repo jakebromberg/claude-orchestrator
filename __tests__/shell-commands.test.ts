@@ -178,3 +178,73 @@ describe("shellCommands: which commands a & backgrounds", () => {
     expect(marked.filter((w) => w.startsWith("a x") || w === "a")).toEqual([]);
   });
 });
+
+// Issue #324 review: a `;` inside a compound command (`if`, `for`, `while`, `until`, `case`, `{ }`, a function body) ended the statement, so a lone `&`
+// after its closer marked only the last inner command. The closer now restores the statement to its opener, and a function whose call is backgrounded
+// takes its body with it.
+describe("shellCommands: compound commands, functions, coproc and process substitution", () => {
+  const marked = (text: string): string[] => shellCommands(text)!.filter((c) => c.background).map((c) => c.words.join(" "));
+
+  it.each<[string, string, string[]]>([
+    ["if", "if c; then a x; fi &", ["if c", "then a x", "fi"]],
+    ["if with else", "if c; then a x; else b y; fi &", ["if c", "then a x", "else b y", "fi"]],
+    ["for with redirects on done", "for s in A B; do a x; done > log 2>&1 &", ["for s in A B", "do a x", "done"]],
+    ["while", "while c; do a x; done &", ["while c", "do a x", "done"]],
+    ["until", "until c; do a x; done &", ["until c", "do a x", "done"]],
+    ["case", "case $v in p) a x ;; esac &", ["case $v in p", "a x", "esac"]],
+    ["a nested compound", "if c; then for s in A; do a x; done; fi &", ["if c", "then for s in A", "do a x", "done", "fi"]],
+    ["after an and-or list", "cd /w && if c; then a x; fi &", ["cd /w", "if c", "then a x", "fi"]],
+    ["a pipeline into a group", "a x | { cat; } &", ["a x", "{ cat", "}"]],
+    ["a pipeline into a subshell", "a x | (cat) &", ["a x", "cat"]],
+    ["a compound after a statement", "z; if c; then a x; fi &", ["if c", "then a x", "fi"]],
+  ])("a trailing & after %s marks everything back to its opener", (_name, text, expected) => {
+    expect(marked(text)).toEqual(expected);
+  });
+
+  it.each<[string, string, string[]]>([
+    ["a foreground if, then a backgrounded command", "if c; then a x; fi; b &", ["b"]],
+    ["a compound that is not backgrounded", "if c; then a x; fi", []],
+    ["a for loop with a command after it", "for s in A; do a x; done; echo hi", []],
+    ["a backgrounded command before a compound", "b & if c; then a x; fi", ["b"]],
+    ["the word fi as an argument", "echo fi &", ["echo fi"]],
+  ])("is exact for %s", (_name, text, expected) => {
+    expect(marked(text)).toEqual(expected);
+  });
+
+  it.each<[string, string, string[]]>([
+    ["a backgrounded call of a function", "f() { a x; }; f &", ["{ a x", "}", "f"]],
+    ["the function keyword", "function f { a x; }; f &", ["function f { a x", "}", "f"]],
+    ["a call in a backgrounded pipeline", "f() { a x; }; f | tee log &", ["{ a x", "}", "f", "tee log"]],
+    ["a call with arguments", "f() { a x; }; f one two &", ["{ a x", "}", "f one two"]],
+    ["a function that is defined but called in the foreground", "f() { a x; }; f", []],
+    ["a function that is never called", "f() { a x; }", []],
+    ["another function's call", "f() { a x; }; g &", ["g"]],
+  ])("takes a function body with its backgrounded call: %s", (_name, text, expected) => {
+    expect(marked(text)).toEqual(expected);
+  });
+
+  it.each<[string, string, string[]]>([
+    ["coproc", "coproc a x", ["coproc a x"]],
+    ["a named coproc", "coproc NAME a x", ["coproc NAME a x"]],
+    ["a coproc group", "coproc { a x; }", ["coproc { a x"]],
+    ["a coproc is not a word inside another command", "echo coproc", []],
+  ])("marks %s as backgrounded", (_name, text, expected) => {
+    expect(marked(text)).toEqual(expected);
+  });
+
+  it.each<[string, string, string[]]>([
+    ["an output process substitution", "tee >(a x)", ["a x"]],
+    ["an input process substitution", "cat <(a x)", ["a x"]],
+    ["two of them", "diff <(a x) <(b y)", ["a x", "b y"]],
+    ["a substitution with several commands", "tee >(a x; b y)", ["a x", "b y"]],
+    ["a plain subshell next to a redirect is not one", "(a x) > f", []],
+    ["a here-string and a subshell", "cat <<< x; (a x)", []],
+  ])("marks the commands inside %s as backgrounded", (_name, text, expected) => {
+    expect(marked(text)).toEqual(expected);
+  });
+
+  it("still marks a statement's own & as before", () => {
+    expect(marked("a x & b y")).toEqual(["a x"]);
+    expect(marked("(a x; b) &")).toEqual(["a x", "b"]);
+  });
+});

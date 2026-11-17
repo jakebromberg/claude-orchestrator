@@ -212,6 +212,29 @@ describe("leased postSessionCheck", () => {
     expect("override" in events[0]).toBe(overridden);
   });
 
+  // Issue #324 review: a check command that backgrounds a UI-test run returns at once, so the check's slot would be released while the test still
+  // runs. The check is stopped before any command runs, with the foreground message, instead of leasing a run it cannot hold the slot for.
+  it.each([
+    ["a trailing &", ["npm run lint", "xcodebuild test -scheme App &"]],
+    ["a compound", ["if true; then xcodebuild test; fi &"]],
+    ["a script", ["bash -c 'xcodebuild -scheme App test &'"]],
+  ])("stops a check whose command backgrounds a UI-test run (%s) as lease-wait, runs nothing and takes no slot", async (_name, commands) => {
+    const runCommand = vi.fn(async () => "");
+    const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands } }), { runCommand });
+    const result = await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions() });
+    expect(result).toMatchObject({ passed: false, stopped: "lease-wait" });
+    expect(result.summary).toContain("run a UI test in the foreground");
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+  });
+
+  it("runs a check whose UI-test command is in the foreground, and one that backgrounds something else", async () => {
+    const runCommand = vi.fn(async () => "");
+    const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands: ["echo hi & xcodebuild test -scheme App", "npm test &"] } }), { runCommand });
+    expect(await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions() })).toEqual({ passed: true });
+    expect(runCommand).toHaveBeenCalledTimes(2);
+  });
+
   // Issue #324 review: a lease problem of the UI-test slot is not memory pressure, which would be recorded as the reason the issue failed.
   it("stops a UI-test check whose slot cannot be taken as lease-wait, not memory-critical, and runs no command", async () => {
     const restore = failFsCall("openSync", (p) => p.endsWith(".mutex"), "EACCES");
