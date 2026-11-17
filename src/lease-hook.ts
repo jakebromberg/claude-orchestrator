@@ -116,8 +116,25 @@ export function isHeavyCommand(command: string, extraPatterns: readonly string[]
   if (CLI.test(command) || (HEAVY_QUEUE_RUN.test(command) && heavyQueueShim())) return false;
   const patterns = [...DEFAULT_PATTERNS.map(([, p]) => p), ...extraPatterns.filter(isRegex)];
   const heavy = new RegExp(`(?:${patterns.map((p) => `(?:${p})`).join("|")})(?![\\w./-])`, "y");
+  return anySegmentMatches(command, heavy);
+}
+
+/** Whether a segment of the command's raw split, after its leading words, begins with a match of the sticky `pattern`: the one command-position rule of the heavy matcher and the UI-test class. */
+function anySegmentMatches(command: string, pattern: RegExp): boolean {
   const parts = command.replace(/\\\n/g, " ").split(SEPARATOR);
-  return parts.some((segment, i) => i % 2 === 0 && isHeavySegment(segment, heavy, parts[i - 1]));
+  return parts.some((segment, i) => i % 2 === 0 && isHeavySegment(segment, pattern, parts[i - 1]));
+}
+
+/** A UI-test action of the build tool: its name (through `xcrun` or a path), any words, then the `test` or `test-without-building` action as a word of its own. */
+const UI_TEST = /(?:(?:xcrun )?xcodebuild(?: \S+)* (?:test|test-without-building))(?![\w./-])/y;
+
+/**
+ * Whether `command` runs a UI-test action: the build tool, with the test action, as a command (the same segment rule as `isHeavyCommand`, so
+ * text that only mentions it, a `grep` pattern, an `echo` or a commit message, is not one). It decides the UI-test class only: a miss
+ * leaves the command in the heavy class, where it is still leased, and it never makes a command light. Quotes, heredocs and comments are not tracked.
+ */
+export function isUiTestCommand(command: string): boolean {
+  return anySegmentMatches(command, UI_TEST);
 }
 
 /**
@@ -286,7 +303,7 @@ async function handleEvent(stdin: string, io: HookIo): Promise<void> {
   const detached = { id, sessionPid, get expiresAt() { return now() + timeoutMs + GRACE_MS; } };
   const command = String(input.tool_input!.command);
   const weight = weightFor(command, cwd, env, () => {});
-  const got = await acquireLease(opts, { command, cwd, detached, ...(weight !== undefined && { weight }) }, { maxWaitMs: WAIT_MS });
+  const got = await acquireLease(opts, { command, cwd, detached, ...(weight !== undefined && { weight }), ...(isUiTestCommand(command) && { uiTest: true as const }) }, { maxWaitMs: WAIT_MS });
   if (!("leased" in got)) io.out(decision({ permissionDecision: "deny", permissionDecisionReason: formatRefusal(got, leaseStatus(opts)) }));
   else if (got.leased) io.out(decision({ additionalContext: formatAdmitted(got.admission) }));
 }

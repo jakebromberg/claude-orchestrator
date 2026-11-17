@@ -4,7 +4,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireLease, releaseHolder, tryAcquireLease, type HolderMeta, type LeaseHandle, type LeaseOptions, type LeaseRefusal } from "../src/lease.js";
-import { failFsCall, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
+import { failFsCall, plantHolder, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
 
 // Issue #324, defect 2. A command that runs a UI-test action takes one slot of the UI-test class, capacity 1 machine-wide,
 // before it waits in the heavy line, so a second run waits in its own line and never holds up an unrelated heavy command.
@@ -93,11 +93,14 @@ describe("UI-test holder class (issue #324)", () => {
   });
 
   it("spends one maxWaitMs across both waits", async () => {
-    const first = (await take(ui)) as LeaseHandle;
-    const refused = await take(ui, { maxWaitMs: 10_000 });
+    // Another process's UI-test run expires 6 s in; the heavy slot is never free.
+    plantHolder(lease, "other-ui", { pid: process.pid, expiresAt: lease.clock.ms + 6_000 }, { sub: "ui-tests" });
+    const blocker = tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), plain)!;
+    const refused = await take(ui, { maxWaitMs: 10_000 }, { policy: { heavyCeiling: 1, heavyWarning: 1 } });
     expect(refused).toMatchObject({ refused: "max-wait" });
-    expect(lease.clock.sleeps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(10_000);
-    first.release();
+    expect(lease.clock.sleeps.length).toBeGreaterThan(2);
+    expect(lease.clock.sleeps.reduce((a, b) => a + b, 0)).toBe(10_000);
+    blocker.release();
   });
 
   describe("never runs unchecked", () => {

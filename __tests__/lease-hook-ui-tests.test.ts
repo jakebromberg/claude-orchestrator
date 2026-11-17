@@ -17,8 +17,8 @@ describe("hook mode and the UI-test class", () => {
   let dir: string;
   let scripted: ScriptedLease;
   const names = (sub: string): string[] => (existsSync(join(dir, sub)) ? readdirSync(join(dir, sub)).sort() : []);
-  const call = (event: string, command: string, id = "toolu_1"): string =>
-    JSON.stringify({ hook_event_name: event, tool_name: "Bash", tool_use_id: id, cwd: "/work", tool_input: { command } });
+  const call = (event: string, command: string, id = "toolu_1", timeout?: number): string =>
+    JSON.stringify({ hook_event_name: event, tool_name: "Bash", tool_use_id: id, cwd: "/work", tool_input: { command, ...(timeout && { timeout }) } });
 
   const run = async (stdin: string, lease: Partial<LeaseOptions> = {}): Promise<string> => {
     const env = isolatedLeaseEnv(dir, { CO_LEASE_HOOK: "on", CO_LEASE_SESSION_PID: String(SESSION), BASH_DEFAULT_TIMEOUT_MS: undefined });
@@ -68,7 +68,8 @@ describe("hook mode and the UI-test class", () => {
   });
 
   it("denies a second run after 450 s instead of running it, and leaves the first run's slots alone", async () => {
-    await run(call("PreToolUse", UI));
+    // The first call outlives the second one's 450 s wait.
+    await run(call("PreToolUse", UI, "toolu_1", 600_000));
     scripted.alive.add(SESSION);
     const out = await run(call("PreToolUse", UI, "toolu_2"));
     expect(JSON.parse(out).hookSpecificOutput).toMatchObject({ permissionDecision: "deny" });

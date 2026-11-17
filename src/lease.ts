@@ -96,7 +96,7 @@ export type LeaseEvent = (
   | { type: "suspend" | "resume"; id: string; pgid: number; reason: string }
 ) & {
   /** The holder class the event is about; absent in a record an older writer wrote, which means `heavy`. */
-  class?: "heavy" | "sessions";
+  class?: "heavy" | "sessions" | "ui-tests";
 };
 
 /** Cumulative CPU tick counters over all cores. */
@@ -171,6 +171,12 @@ export interface HolderMeta {
   suspendable?: boolean;
   /** Heavy class only: `"high"` puts a waiter's ticket (`acquireLease`) ahead of every normal ticket whatever their `seq`, and tickets of one priority keep `seq` order. It changes who goes next, never how much runs at once. `tryAcquireLease` writes no ticket, so the field does not order it, but a holder it admits still records `priority: "high"`. Set only by the heavy-queue front end; absent or `"normal"` is the first-come order. */
   priority?: LeasePriority;
+  /**
+   * The command runs a UI-test action (`isUiTestCommand`). Before it waits for a heavy slot it takes the one slot of the UI-test class, machine-wide
+   * (`acquireLease` only; every other field of the request goes to the heavy class as before), so a second run waits in its own line and holds up no
+   * unrelated command. That class never fails open: an I/O error is waited out, and the caller's `maxWaitMs` is spent across both waits.
+   */
+  uiTest?: true;
   /** Heavy class only: the bytes of memory the command is expected to use. Absent, or not a positive number, takes the unmatched weight (`usable / heavyCeiling`). Ignored while the machine's memory is unknown. */
   weight?: number;
 }
@@ -252,6 +258,8 @@ export interface LeaseHandle {
    * not a positive integer, and once the holder has been reaped: a reaped holder's file is not recreated.
    */
   setChildPid(pid: number, pgid?: number): void;
+  /** Detached holders only: rewrites `expiresAt` from the request's getter, so a holder admitted before a long wait for another slot still lasts the call's whole time. */
+  renew?(): void;
   /** Sets or clears the holder's `suspended` mark, and records `resumedAt` when given (a resume); throws when the mark cannot be written or the holder is gone. Present on a holder this process owns. */
   setSuspended?(on: boolean, resumedAt?: number): void;
   release(outcome?: { exitCode?: number }): void;
@@ -282,13 +290,15 @@ type Attempt =
  */
 interface LeaseClass {
   /** Tags every event the class emits. */
-  name: "heavy" | "sessions";
+  name: "heavy" | "sessions" | "ui-tests";
   holders: string;
   waiting: string;
   ceiling(opts: LeaseOptions): number;
   capacity(step: number, ceiling: number): number;
   budget?(step: number, usable: number, free?: FreeBudget): number;
   heartbeatOnly: boolean;
+  /** Whether an I/O error below `critical` admits the request unleased; a class that guards against running something at once never does, it waits and the caller's `maxWaitMs` refuses. */
+  failsOpen: boolean;
 }
 
 const HEAVY: LeaseClass = {
@@ -299,6 +309,7 @@ const HEAVY: LeaseClass = {
   capacity: headroomCapacity,
   budget: heavyBudget,
   heartbeatOnly: false,
+  failsOpen: true,
 };
 
 /** Engine implementer sessions: a stopped engine's `claude` children still answer `kill(pid, 0)`, so only the engine's heartbeat keeps a slot. */
@@ -309,6 +320,18 @@ const SESSIONS: LeaseClass = {
   ceiling: (opts) => opts.sessionSlots ?? DEFAULT_SESSION_SLOTS,
   capacity: sessionHeadroomCapacity,
   heartbeatOnly: true,
+  failsOpen: true,
+};
+
+/** Runs of a UI-test action: one at a time machine-wide, whatever the headroom step (the heavy class still gates each at its own weight), counted rather than weighed. */
+const UI_TESTS: LeaseClass = {
+  name: "ui-tests",
+  holders: "ui-tests",
+  waiting: "ui-tests-waiting",
+  ceiling: () => 1,
+  capacity: () => 1,
+  heartbeatOnly: false,
+  failsOpen: false,
 };
 
 /** The machine step and its capacity for `cls`; with no `headroom` sampler, a step derived from the level (critical 0, warning `heavyWarning`, else 4). `fresh` bypasses every cache. */
@@ -791,6 +814,18 @@ function createHolder(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, com
         // The previous record still names this holder.
       }
     },
+    renew() {
+      if (released || !detached) return;
+      try {
+        // Only a file still there is replaced, as in `setChildPid`.
+        if (unlessGone(() => statSync(file))) {
+          rec.expiresAt = detached.expiresAt;
+          write();
+        }
+      } catch {
+        // The previous record still names this holder, with the earlier expiry.
+      }
+    },
     setSuspended(on, resumedAt) {
       if (released || !unlessGone(() => statSync(file))) throw new Error(`holder ${id} is gone`);
       if (on) rec.suspended = true;
@@ -1037,7 +1072,41 @@ const statusOf = (opts: LeaseOptions, cls: LeaseClass, snap: Snapshot): LeaseSta
  */
 export async function acquireLease(opts: LeaseOptions, meta: HolderMeta, wait: LeaseWait = {}): Promise<LeaseHandle | LeaseRefusal> {
   checkDetached(meta);
-  return acquire(opts, HEAVY, meta, wait, meta.detached?.id);
+  return meta.uiTest ? acquireUiTest(opts, meta, wait) : acquire(opts, HEAVY, meta, wait, meta.detached?.id);
+}
+
+/**
+ * A UI-test run's two slots, in this order so it never holds up the heavy line while it waits for the other: the UI-test slot first (its own line,
+ * `ui-tests-waiting/`), then the heavy slot at its normal weight. The UI-test holder carries the same id for a detached request, which
+ * `releaseHolder` removes from both classes. Nothing waits on a UI-test slot while holding the heavy one, so the two lines cannot deadlock
+ * unless a nested acquire inherits a heavy slot and then waits for the UI-test one (`inheritedHolderId` borrows a slot only in the class it is live in).
+ * `maxWaitMs` is spent across both waits, a refusal of the second gives the first back, and the returned handle releases both.
+ */
+async function acquireUiTest(opts: LeaseOptions, meta: HolderMeta, wait: LeaseWait): Promise<LeaseHandle | LeaseRefusal> {
+  const now = opts.now ?? Date.now;
+  const start = now();
+  // Rebuilt field by field, so a weight, priority, gate or suspension never reaches the UI-test class.
+  const slot = await acquire(opts, UI_TESTS, { command: meta.command, cwd: meta.cwd, ...(meta.label !== undefined && { label: meta.label }), ...(meta.detached && { detached: meta.detached }) }, wait, meta.detached?.id);
+  if (!("leased" in slot)) return slot;
+  const spent = now() - start;
+  const heavy = await acquire(opts, HEAVY, meta, { ...wait, ...(wait.maxWaitMs !== undefined && { maxWaitMs: Math.max(0, wait.maxWaitMs - spent) }) }, meta.detached?.id);
+  if (!("leased" in heavy)) {
+    slot.release();
+    return { ...heavy, waitedMs: heavy.waitedMs + spent };
+  }
+  slot.renew?.();
+  return {
+    ...heavy,
+    admission: { ...heavy.admission, waitedMs: heavy.admission.waitedMs + spent },
+    setChildPid(pid, pgid) {
+      heavy.setChildPid(pid, pgid);
+      slot.setChildPid(pid, pgid);
+    },
+    release(outcome) {
+      heavy.release(outcome);
+      slot.release(outcome);
+    },
+  };
 }
 
 /** What a session holder records; it is never detached, gated or suspendable. */
@@ -1084,7 +1153,7 @@ async function pollForLease(opts: LeaseOptions, cls: LeaseClass, meta: HolderMet
     }
     // A busy mutex is only waited out: a dead holder's lock is reaped after `MUTEX_STALE_MS` and a live one releases in milliseconds, so
     // there is no state in which waiting never ends, and a wall-clock streak measures a stopped process, not a busy mutex.
-    if (r.kind === "error" && r.level !== "critical") return failOpen(opts, cls, r.level, r.capacity, waitedMs, "io-error", r.error);
+    if (r.kind === "error" && r.level !== "critical" && cls.failsOpen) return failOpen(opts, cls, r.level, r.capacity, waitedMs, "io-error", r.error);
     const status = r.kind === "error" ? { level: r.level, capacity: r.capacity, step: r.step, signals: r.signals, live: [] } : statusOf(opts, cls, r);
     const refuse = (refused: LeaseRefusal["refused"], level: PressureLevel, live: number): LeaseRefusal => {
       emit(opts, cls, { type: "timeout", refused, waitedMs, ...(refused === "stopped" && { level }) });
@@ -1103,25 +1172,30 @@ async function pollForLease(opts: LeaseOptions, cls: LeaseClass, meta: HolderMet
 
 /**
  * Releases a detached holder by id from any process; idempotent. Returns whether a holder file was removed, and emits
- * one `release` event with `heldMs` only then. It removes only a valid detached record (one with `expiresAt`): a
+ * one `release` event with `heldMs` for each class (heavy, and the UI-test class for a UI-test run) that had one. It removes only a valid detached record (one with `expiresAt`): a
  * wrapper's own holder and a corrupt file are left to their owner and the reaper. An id that is not 1 to 160 of
  * `[A-Za-z0-9_-]` names no holder, and a holders or lease directory that breaks the directory rule (a symlink, or
  * another user's) is not read, so neither can reach a file outside `holders/`.
  */
 export function releaseHolder(opts: LeaseOptions, id: string): boolean {
   if (!HOLDER_ID.test(id)) return false;
-  const dir = join(opts.dir, HEAVY.holders);
   const ownDir = (d: string): boolean => {
     const st = unlessGone(() => lstatSync(d));
     return st !== undefined && isOwnDir(st);
   };
-  if (!ownDir(opts.dir) || !ownDir(dir)) return false;
-  const file = join(dir, `${id}.json`);
-  const text = unlessGone(() => readOwnFile(file))?.text;
-  const rec = text === undefined ? null : parseHolder(text);
-  if (rec?.expiresAt === undefined || unlessGone(() => (unlinkSync(file), true)) === undefined) return false;
-  emit(opts, HEAVY, { type: "release", id, heldMs: (opts.now ?? Date.now)() - rec.startedAt });
-  return true;
+  if (!ownDir(opts.dir)) return false;
+  // A UI-test run's hook call holds a detached holder of the same id in the UI-test class too.
+  const released = [HEAVY, UI_TESTS].map((cls) => {
+    const dir = join(opts.dir, cls.holders);
+    if (!ownDir(dir)) return false;
+    const file = join(dir, `${id}.json`);
+    const text = unlessGone(() => readOwnFile(file))?.text;
+    const rec = text === undefined ? null : parseHolder(text);
+    if (rec?.expiresAt === undefined || unlessGone(() => (unlinkSync(file), true)) === undefined) return false;
+    emit(opts, cls, { type: "release", id, heldMs: (opts.now ?? Date.now)() - rec.startedAt });
+    return true;
+  });
+  return released.some(Boolean);
 }
 
 /** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. */
