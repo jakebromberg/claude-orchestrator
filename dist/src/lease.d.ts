@@ -196,6 +196,18 @@ export interface LeaseStatus {
         capacity: number;
         live: HolderInfo[];
     };
+    /** Set by `leaseStatus` only, and only while a UI-test run holds or awaits the one UI-test slot: its capacity, live holders and eligible tickets in arrival order. */
+    uiTests?: {
+        capacity: number;
+        live: HolderInfo[];
+        waiting?: {
+            seq: number;
+            label: string;
+            gated: boolean;
+            ready?: boolean;
+            priority?: "high";
+        }[];
+    };
     /** Set by `leaseStatus` only, and only while a heavy ticket waits: the eligible tickets in admission order (high priority first, then `seq`). `ready` is absent on a ticket from a build that predates it, and `priority` on a normal one. */
     waiting?: {
         seq: number;
@@ -233,7 +245,7 @@ export interface LeaseHandle {
      * not a positive integer, and once the holder has been reaped: a reaped holder's file is not recreated.
      */
     setChildPid(pid: number, pgid?: number): void;
-    /** Detached holders only: rewrites `expiresAt` from the request's getter, so a holder admitted before a long wait for another slot still lasts the call's whole time. Returns false when the holder's file is gone (reaped or removed): the slot is lost. */
+    /** Rewrites a detached holder's `expiresAt` from the request's getter (so a holder admitted before a long wait for another slot still lasts the call's whole time) or touches another holder's heartbeat, under the mutex. Returns false when the holder's file is gone (reaped or removed): the slot is lost. */
     renew?(): boolean;
     /** Sets or clears the holder's `suspended` mark, and records `resumedAt` when given (a resume); throws when the mark cannot be written or the holder is gone. Present on a holder this process owns. */
     setSuspended?(on: boolean, resumedAt?: number): void;

@@ -595,17 +595,30 @@ function createHolder(opts, cls, meta, command, admission, sharedId) {
         renew() {
             if (released)
                 return false;
-            if (!detached)
-                return true;
+            // Under the mutex, the one place holders are reaped, so a file found there cannot be reaped between the check and the write and then
+            // recreated. A busy mutex or an I/O error is unknown, not lost: the next poll renews again.
+            let lock = null;
             try {
-                // Only a file still there is replaced, as in `setChildPid`.
+                lock = tryLockOnce(join(opts.dir, ".mutex"), { staleAfterMs: MUTEX_STALE_MS, now: opts.now });
+                if (!lock)
+                    return true;
                 if (!unlessGone(() => statSync(file)))
                     return false;
-                rec.expiresAt = detached.expiresAt;
-                write();
+                if (detached) {
+                    rec.expiresAt = detached.expiresAt;
+                    write();
+                }
+                else {
+                    // A holder with no `expiresAt` lives by its heartbeat, which a stalled event loop stops: touching it here is the beat a stall missed.
+                    const at = now() / 1000;
+                    utimesSync(file, at, at);
+                }
             }
             catch {
-                // The previous record still names this holder, with the earlier expiry.
+                // The previous record still names this holder, with the earlier expiry or beat.
+            }
+            finally {
+                lock?.release();
             }
             return true;
         },
@@ -844,9 +857,9 @@ function liveOf(opts, cls) {
     }
 }
 /** The heavy class's eligible tickets in admission order (high priority first, then `seq`), read without the mutex and without removing any (status deletes nothing); an I/O error reads as none. */
-function waitingOf(opts) {
+function waitingOf(opts, cls = HEAVY) {
     try {
-        const waiting = scanTickets(opts, HEAVY, false).filter((t) => t.eligible).sort(byAdmission).map(({ seq, label, gated, ready, priority }) => ({ seq, label, gated, ...(ready !== undefined && { ready }), ...(priority && { priority }) }));
+        const waiting = scanTickets(opts, cls, false).filter((t) => t.eligible).sort(byAdmission).map(({ seq, label, gated, ready, priority }) => ({ seq, label, gated, ...(ready !== undefined && { ready }), ...(priority && { priority }) }));
         return waiting.length > 0 ? { waiting } : {};
     }
     catch {
@@ -1041,7 +1054,10 @@ export function leaseStatus(opts, holderClass) {
     if (holderClass === "ui-tests")
         return statusOf(opts, UI_TESTS, snapshot(opts, UI_TESTS));
     const snap = snapshot(opts, HEAVY);
-    return { ...statusOf(opts, HEAVY, snap), ...waitingOf(opts), sessions: { capacity: SESSIONS.capacity(snap.step, SESSIONS.ceiling(opts)), live: liveOf(opts, SESSIONS) } };
+    const uiLive = liveOf(opts, UI_TESTS);
+    const uiWaiting = waitingOf(opts, UI_TESTS).waiting;
+    const uiTests = uiLive.length > 0 || uiWaiting ? { uiTests: { capacity: UI_TESTS.capacity(snap.step, 1), live: uiLive, ...(uiWaiting && { waiting: uiWaiting }) } } : {};
+    return { ...statusOf(opts, HEAVY, snap), ...waitingOf(opts), ...uiTests, sessions: { capacity: SESSIONS.capacity(snap.step, SESSIONS.ceiling(opts)), live: liveOf(opts, SESSIONS) } };
 }
 /**
  * Production wiring: the real lease directory, the engine's own sampler and policy, and the `events.jsonl` sink. Creates nothing on disk.
