@@ -57,6 +57,8 @@ const ORPHAN_MAX_MS = 2 * 60 * 60_000;
 export const HEARTBEAT_MS = 30_000;
 export const HEARTBEAT_STALE_MS = 90_000;
 const POLL_MS = 3_000;
+/** Consecutive polls that hit an I/O error after which a class that never fails open refuses (about a minute). */
+const MAX_ERROR_POLLS = 20;
 const COMMAND_MAX = 200;
 /** A waiter's ticket is eligible while its mtime is this close to the reader's clock; a waiter refreshes it on every poll. */
 const TICKET_FRESH_MS = 15_000;
@@ -771,10 +773,10 @@ function recordedCommand({ command, label }: HolderMeta): string {
   return (cut ? `${command.slice(0, cut.index + cut[0].length)}…` : command).slice(0, COMMAND_MAX);
 }
 
-function createHolder(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, command: string, admission: LeaseHandle["admission"]): LeaseHandle {
+function createHolder(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, command: string, admission: LeaseHandle["admission"], sharedId?: string): LeaseHandle {
   const now = opts.now ?? Date.now;
   const { detached } = meta;
-  const id = detached?.id ?? `${process.pid}-${randomBytes(4).toString("hex")}`;
+  const id = detached?.id ?? sharedId ?? `${process.pid}-${randomBytes(4).toString("hex")}`;
   const file = join(opts.dir, cls.holders, `${id}.json`);
   const rec: HolderRecord = { id, pid: detached?.sessionPid ?? process.pid, command, cwd: meta.cwd, startedAt: now(), level: admission.level };
   if (detached) rec.expiresAt = detached.expiresAt;
@@ -883,7 +885,7 @@ function weigh(opts: LeaseOptions, cls: LeaseClass, { step, capacity = 0, signal
  * only when it fits and no ticket counts as ahead, and writes none. Caller code (`warn`, `onEvent`) runs only after the mutex is released,
  * so a slow callback cannot outlive its staleness window.
  */
-function attempt(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, waitedMs: number, ticketId?: string): Attempt {
+function attempt(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, waitedMs: number, ticketId?: string, shareId?: true): Attempt {
   const snap = snapshot(opts, cls);
   const { level, capacity } = snap;
   const overridden = (opts.headroom ?? opts.level).overridden?.() === true;
@@ -955,7 +957,7 @@ function attempt(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, waitedMs
         const ready = !gated || gatesPass(opts, live, nowMs) || (live.length === 0 && snap.step > 0);
         if (ready && !behindGated && fits && (ticketId !== undefined || ahead.length === 0)) {
           if (gated) writeMark(opts.dir, "lastAdmit", nowMs);
-          r = { kind: "admitted", handle: createHolder(opts, cls, meta, command, admission) };
+          r = { kind: "admitted", handle: createHolder(opts, cls, meta, command, admission, shareId && ticketId) };
           try {
             if (mine) removeTicket(opts, cls, mine.id);
           } catch {
@@ -1086,10 +1088,18 @@ async function acquireUiTest(opts: LeaseOptions, meta: HolderMeta, wait: LeaseWa
   const now = opts.now ?? Date.now;
   const start = now();
   // Rebuilt field by field, so a weight, priority, gate or suspension never reaches the UI-test class.
-  const slot = await acquire(opts, UI_TESTS, { command: meta.command, cwd: meta.cwd, ...(meta.label !== undefined && { label: meta.label }), ...(meta.detached && { detached: meta.detached }) }, wait, meta.detached?.id);
+  // One id for both holders of a run that has no detached id, because `childEnv()` exports one: a nested acquire that inherits it then borrows both.
+  const id = meta.detached?.id ?? `${process.pid}-${randomBytes(4).toString("hex")}`;
+  const slot = await acquire(opts, UI_TESTS, { command: meta.command, cwd: meta.cwd, ...(meta.label !== undefined && { label: meta.label }), ...(meta.detached && { detached: meta.detached }) }, wait, id, true);
   if (!("leased" in slot)) return slot;
   const spent = now() - start;
-  const heavy = await acquire(opts, HEAVY, meta, { ...wait, ...(wait.maxWaitMs !== undefined && { maxWaitMs: Math.max(0, wait.maxWaitMs - spent) }) }, meta.detached?.id);
+  let heavy: LeaseHandle | LeaseRefusal;
+  try {
+    heavy = await acquire(opts, HEAVY, meta, { ...wait, ...(wait.maxWaitMs !== undefined && { maxWaitMs: Math.max(0, wait.maxWaitMs - spent) }) }, id, true);
+  } catch (err) {
+    slot.release();
+    throw err;
+  }
   if (!("leased" in heavy)) {
     slot.release();
     return { ...heavy, waitedMs: heavy.waitedMs + spent };
@@ -1124,10 +1134,10 @@ export function acquireSessionLease(opts: LeaseOptions, meta: SessionMeta, wait:
   return acquire(opts, SESSIONS, { command: meta.command, cwd: meta.cwd, ...(meta.label !== undefined && { label: meta.label }) }, wait);
 }
 
-async function acquire(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, wait: LeaseWait, id?: string): Promise<LeaseHandle | LeaseRefusal> {
+async function acquire(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, wait: LeaseWait, id?: string, shareId?: true): Promise<LeaseHandle | LeaseRefusal> {
   const ticketId = id ?? `${process.pid}-${randomBytes(4).toString("hex")}`;
   try {
-    return await pollForLease(opts, cls, meta, wait, ticketId);
+    return await pollForLease(opts, cls, meta, wait, ticketId, shareId);
   } finally {
     try {
       removeTicket(opts, cls, ticketId);
@@ -1139,13 +1149,15 @@ async function acquire(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, wa
 
 type LeaseWait = { maxWaitMs?: number; onWait?(s: LeaseStatus & { waitedMs: number }): void; stopWhen?(s: LeaseStatus): boolean };
 
-async function pollForLease(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, wait: LeaseWait, ticketId: string): Promise<LeaseHandle | LeaseRefusal> {
+async function pollForLease(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, wait: LeaseWait, ticketId: string, shareId?: true): Promise<LeaseHandle | LeaseRefusal> {
   const { now = Date.now, sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)), pollMs = POLL_MS } = opts;
   const start = now();
+  let errorPolls = 0;
   for (;;) {
     const waitedMs = now() - start;
-    const r = attempt(opts, cls, meta, waitedMs, ticketId);
+    const r = attempt(opts, cls, meta, waitedMs, ticketId, shareId);
     if (r.kind === "admitted") return r.handle;
+    errorPolls = r.kind === "error" ? errorPolls + 1 : 0;
     const code = r.kind === "error" ? diskFullCode(r.error) : undefined;
     if (code !== undefined) {
       emit(opts, cls, { type: "timeout", refused: "disk-full", waitedMs });
@@ -1159,6 +1171,8 @@ async function pollForLease(opts: LeaseOptions, cls: LeaseClass, meta: HolderMet
       emit(opts, cls, { type: "timeout", refused, waitedMs, ...(refused === "stopped" && { level }) });
       return { refused, waitedMs, level, live };
     };
+    // A class that never fails open waits out an I/O error, but not for ever when the caller set no `maxWaitMs`: it refuses once `MAX_ERROR_POLLS` polls in a row failed.
+    if (!cls.failsOpen && errorPolls >= MAX_ERROR_POLLS) return refuse("max-wait", r.level, 0);
     if (wait.stopWhen?.(status)) {
       const confirmed = snapshot(opts, cls, true);
       if (wait.stopWhen({ ...status, ...confirmed })) return refuse("stopped", confirmed.level, status.live.length);

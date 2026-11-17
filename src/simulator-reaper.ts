@@ -2,16 +2,22 @@
  * Reaps what a simulator run leaves behind, for the watchdog bin (`cli-watchdog.ts`; `watchdog.ts` itself sends no signal and takes this as
  * its optional `reap` dependency). Two cases, both for this user's own processes only:
  *
- * - A device CoreSimulator reports `Shutdown` (or no longer lists) that still has runtime processes, found by `SIMULATOR_UDID` in their
- *   environment: they are sent SIGTERM, and SIGKILL once they have outlived a cycle. A killed test run leaves these behind with their
+ * - A device that the list of its own set explicitly reports `Shutdown` and that still has runtime processes, found by `SIMULATOR_UDID` in
+ *   their environment, the set by the device-data path in it (the main set or the XCTestDevices set; any other set is left alone): they
+ *   are sent SIGTERM, and SIGKILL once they have outlived a cycle. A device the list does not name is unknown, never reaped. A killed test run leaves these behind with their
  *   `launchd_sim` gone, so nothing else would ever stop them.
- * - A device that is `Booted` and idle past the watchdog's threshold: `simctl shutdown`, bounded. Its processes exit with it, and any that do not
- *   are the first case from the next cycle.
+ * - A test clone, a device of the XCTestDevices set that only `xcodebuild` creates, that is `Booted` and idle past the watchdog's threshold:
+ *   `simctl --set <that set> shutdown`, bounded. Its processes exit with it, and any that do not are the first case from the next cycle.
+ *   A device of the main set (`~/Library/Developer/CoreSimulator/Devices`) is never shut down for being idle: the owner uses those by hand
+ *   in Simulator.app, where no `xcodebuild` or `simctl` running says nothing about use.
  *
  * Nothing is touched while any `xcodebuild` test action runs on the machine or a tool of the build chain names the device, and nothing at
  * all when the device list cannot be read. Every action is one `simulator-reap` line in `events.jsonl`.
  */
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { isSimulatorCommand, runsTool, XCODE_TOOLS, type ProcRow } from "./ps.js";
 
 /** The bound on every `simctl` and `ps` call here: `simctl` can hang. */
@@ -29,13 +35,16 @@ export interface SimulatorReapEvent {
   message?: string;
 }
 
+/** `main` is `~/Library/Developer/CoreSimulator/Devices`; `xctest` is the test clones' set, `~/Library/Developer/XCTestDevices`. */
+export type DeviceSet = "main" | "xctest";
+
 export interface ReaperDeps {
-  /** `simctl list devices -j`; throws when it fails or times out. */
-  listDevices(): string;
+  /** `simctl list devices -j` for a device set; throws when it fails or times out. */
+  listDevices(set: DeviceSet): string;
   /** `ps -E` for the given pids, one `pid command environment` line each. */
   processEnv(pids: number[]): string;
-  /** `simctl shutdown <udid>`; throws when it fails or times out. */
-  shutdown(udid: string): void;
+  /** `simctl shutdown <udid>` in the device's set; throws when it fails or times out. */
+  shutdown(udid: string, set: DeviceSet): void;
   signal(pid: number, signal: "SIGTERM" | "SIGKILL"): void;
   log(event: SimulatorReapEvent): void;
   /** Only processes of this user are signalled. */
@@ -44,7 +53,7 @@ export interface ReaperDeps {
 
 export interface ReapInput {
   procs: ProcRow[];
-  /** Booted devices with no `xcodebuild` or `simctl` running for the watchdog's idle threshold. */
+  /** Booted devices with no `xcodebuild` or `simctl` running for the watchdog's idle threshold; only those of the `xctest` set are shut down. */
   idleUdids: string[];
   /** Cycles each device's leftovers have been signalled so far, from the last cycle. */
   attempts: Record<string, number>;
@@ -55,42 +64,63 @@ const ENV_UDID = new RegExp(`^\\s*(\\d+)\\s.*?\\bSIMULATOR_UDID=(${UDID})\\b`);
 
 const isTestAction = (command: string): boolean => runsTool(command, ["xcodebuild"]) && /\s(?:test|test-without-building)(?=\s|$)/.test(command);
 
-/** Device UDID → state from `simctl list devices -j`. Throws on text that is not that shape. */
+/** Device UDID → state from `simctl list devices -j` for one set. Throws on text that is not that shape. */
 function deviceStates(text: string): Map<string, string> {
   const { devices } = JSON.parse(text) as { devices: Record<string, { udid: string; state: string }[]> };
   return new Map(Object.values(devices).flatMap((list) => list.map((d) => [d.udid.toUpperCase(), d.state] as const)));
 }
 
-/** Leftover runtime pids by device UDID: this user's simulator rows whose environment names a device. */
-function runtimePidsByDevice(procs: ProcRow[], deps: ReaperDeps): Map<string, number[]> {
+/** The set a device lives in, from the device-data path in a runtime process's environment (its `HOME` is `<set>/<udid>/data`); `undefined` for any other set (SwiftUI Previews, Playgrounds), which is left alone entirely. */
+function deviceSetOf(envLine: string, udid: string): DeviceSet | undefined {
+  const text = envLine.toUpperCase();
+  if (text.includes(`/CORESIMULATOR/DEVICES/${udid}/`)) return "main";
+  if (text.includes(`/XCTESTDEVICES/${udid}/`)) return "xctest";
+  return undefined;
+}
+
+/** This user's simulator runtime processes whose environment names a device of a set the reaper handles, grouped by device. */
+function runtimeDevices(procs: ProcRow[], deps: ReaperDeps): Map<string, { udid: string; set: DeviceSet; pids: number[] }> {
   const pids = procs.filter((p) => p.uid === deps.uid && isSimulatorCommand(p.command)).map((p) => p.pid);
-  const byDevice = new Map<string, number[]>();
+  const byDevice = new Map<string, { udid: string; set: DeviceSet; pids: number[] }>();
   if (pids.length === 0) return byDevice;
   for (const line of deps.processEnv(pids).split("\n")) {
     const m = ENV_UDID.exec(line);
-    if (m) byDevice.set(m[2]!.toUpperCase(), [...(byDevice.get(m[2]!.toUpperCase()) ?? []), Number(m[1])]);
+    const udid = m?.[2]!.toUpperCase();
+    const set = udid && deviceSetOf(line, udid);
+    if (!udid || !set) continue;
+    const key = `${set}:${udid}`;
+    byDevice.set(key, { udid, set, pids: [...(byDevice.get(key)?.pids ?? []), Number(m![1])] });
   }
   return byDevice;
 }
 
-/** Runs one cycle and returns the attempts to carry to the next: only devices that still have leftovers. Never throws. */
+/**
+ * Runs one cycle and returns the attempts to carry to the next: only devices that still have leftovers. Never throws. A device is acted on
+ * only when the list of its own set explicitly reports it `Shutdown` (or, for the idle shutdown, an XCTestDevices clone `Booted`): `simctl
+ * list` covers one set, so a device it does not name, an empty list and an unreadable one all mean unknown, and nothing is done.
+ */
 export function reapSimulators({ procs, idleUdids, attempts }: ReapInput, deps: ReaperDeps): Record<string, number> {
   if (procs.some((p) => isTestAction(p.command))) return attempts;
-  let states: Map<string, string>;
-  let leftovers: Map<string, number[]>;
+  const states: Partial<Record<DeviceSet, Map<string, string>>> = {};
+  for (const set of ["main", "xctest"] as const) {
+    try {
+      states[set] = deviceStates(deps.listDevices(set));
+    } catch {
+      // That set's devices are unknown this cycle.
+    }
+  }
+  let leftovers: ReturnType<typeof runtimeDevices>;
   try {
-    states = deviceStates(deps.listDevices());
-    leftovers = runtimePidsByDevice(procs, deps);
+    leftovers = runtimeDevices(procs, deps);
   } catch {
     return attempts;
   }
   const inUse = (udid: string): boolean => procs.some((p) => runsTool(p.command, XCODE_TOOLS) && p.command.toUpperCase().includes(udid));
   const next: Record<string, number> = {};
-  for (const [udid, pids] of leftovers) {
-    const state = states.get(udid);
-    if (state !== undefined && state !== "Shutdown") continue;
-    if (inUse(udid)) {
-      if (attempts[udid] !== undefined) next[udid] = attempts[udid]!;
+  for (const { udid, set, pids } of leftovers.values()) {
+    const state = states[set]?.get(udid);
+    if (state !== "Shutdown" || inUse(udid)) {
+      if (attempts[udid] !== undefined && (states[set] === undefined || inUse(udid))) next[udid] = attempts[udid]!;
       continue;
     }
     const attempt = (attempts[udid] ?? 0) + 1;
@@ -110,9 +140,9 @@ export function reapSimulators({ procs, idleUdids, attempts }: ReapInput, deps: 
     for (const { pid, message } of failed) deps.log({ type: "simulator-reap", udid, reason: "shutdown-leftovers", action, pids: [pid], ok: false, message });
   }
   for (const udid of idleUdids) {
-    if (states.get(udid) !== "Booted" || inUse(udid)) continue;
+    if (states.xctest?.get(udid.toUpperCase()) !== "Booted" || inUse(udid)) continue;
     try {
-      deps.shutdown(udid);
+      deps.shutdown(udid, "xctest");
       deps.log({ type: "simulator-reap", udid, reason: "booted-idle", action: "shutdown", ok: true });
     } catch (err) {
       deps.log({ type: "simulator-reap", udid, reason: "booted-idle", action: "shutdown", ok: false, message: (err as Error).message });
@@ -121,15 +151,39 @@ export function reapSimulators({ procs, idleUdids, attempts }: ReapInput, deps: 
   return next;
 }
 
+/** `ps -p` exits 1 when a listed pid is gone by the time it runs but prints the rest, so the rows of a status-1 exit with output are the answer; any other failure throws. */
+function psRows(exec: (file: string, args: string[], timeoutMs: number) => string, args: string[]): string {
+  try {
+    return exec("ps", args, SIMCTL_TIMEOUT_MS);
+  } catch (err) {
+    const { status, stdout } = err as { status?: unknown; stdout?: unknown };
+    if (status === 1 && typeof stdout === "string" && stdout.length > 0) return stdout;
+    throw err;
+  }
+}
+
 const execBounded = (file: string, args: string[], timeoutMs: number): string =>
   execFileSync(file, args, { encoding: "utf8", timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
 
-/** The real seams: `xcrun simctl`, `ps -E` and `process.kill`, each external call bounded by `SIMCTL_TIMEOUT_MS`; `exec` and `uid` are test seams. */
-export function realReaperDeps({ log, exec = execBounded, uid = process.getuid!() }: { log: ReaperDeps["log"]; exec?: (file: string, args: string[], timeoutMs: number) => string; uid?: number }): ReaperDeps {
+/** The real seams: `xcrun simctl`, `ps -E` and `process.kill`, each external call bounded by `SIMCTL_TIMEOUT_MS`; `exec`, `uid`, `testSetDir` and `exists` are test seams. A test set that does not exist lists no devices. */
+export function realReaperDeps({
+  log,
+  exec = execBounded,
+  uid = process.getuid!(),
+  testSetDir = join(homedir(), "Library", "Developer", "XCTestDevices"),
+  exists = existsSync,
+}: {
+  log: ReaperDeps["log"];
+  exec?: (file: string, args: string[], timeoutMs: number) => string;
+  uid?: number;
+  testSetDir?: string;
+  exists?: (dir: string) => boolean;
+}): ReaperDeps {
+  const setArgs = (set: DeviceSet): string[] => (set === "main" ? [] : ["--set", testSetDir]);
   return {
-    listDevices: () => exec("xcrun", ["simctl", "list", "devices", "-j"], SIMCTL_TIMEOUT_MS),
-    processEnv: (pids) => (pids.length === 0 ? "" : exec("ps", ["-Eww", "-p", pids.join(","), "-o", "pid=,command="], SIMCTL_TIMEOUT_MS)),
-    shutdown: (udid) => void exec("xcrun", ["simctl", "shutdown", udid], SIMCTL_TIMEOUT_MS),
+    listDevices: (set) => (set === "xctest" && !exists(testSetDir) ? '{"devices":{}}' : exec("xcrun", ["simctl", ...setArgs(set), "list", "devices", "-j"], SIMCTL_TIMEOUT_MS)),
+    processEnv: (pids) => (pids.length === 0 ? "" : psRows(exec, ["-Eww", "-p", pids.join(","), "-o", "pid=,command="])),
+    shutdown: (udid, set) => void exec("xcrun", ["simctl", ...setArgs(set), "shutdown", udid], SIMCTL_TIMEOUT_MS),
     signal: (pid, signal) => void process.kill(pid, signal),
     log,
     uid,
