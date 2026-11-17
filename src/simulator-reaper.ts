@@ -20,7 +20,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { ancestry, isSimulatorCommand, isTestRunnerProcess, isXcodebuildTestProcess, parsePsTable, PS_TABLE_ARGS, runsTool, XCODE_TOOLS, type ProcRow } from "./ps.js";
+import { ancestry, isSimulatorCommand, isTestRunnerProcess, isXcodebuildTestProcess, launchdSimAlive, parsePsTable, PS_TABLE_ARGS, runsTool, XCODE_TOOLS, type ProcRow } from "./ps.js";
 
 /** The bound on every `simctl` and `ps` call here: `simctl` can hang. */
 export const SIMCTL_TIMEOUT_MS = 30_000;
@@ -74,8 +74,18 @@ export interface ReapResult {
 const UDID = "[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}";
 const ENV_UDID = new RegExp(`^\\s*(\\d+)\\s.*?\\bSIMULATOR_UDID=(${UDID})\\b`);
 
+/** A process of a device: a simulator runtime process, or an app or runner under a test clone's own data directory (`XCTestDevices/<udid>/`), whose path does not match `isSimulatorCommand`. */
+const isDeviceProcess = (command: string): boolean => isSimulatorCommand(command) || new RegExp(`/XCTestDevices/${UDID}/`, "i").test(command);
+
 /** A process that is the build tool's test action or a UI-test runner (by executable, not by text anywhere in the command line: a claude session whose prompt names the build tool does not stand the reaper down). */
 const isTestAction = (command: string): boolean => isXcodebuildTestProcess(command) || isTestRunnerProcess(command);
+
+/**
+ * A test action names the devices it runs on (`-destination id=<udid>`, a runner's path under `Devices/<udid>/`) and stands down those; one that names none,
+ * a build tool test action with a destination by name or a runner outside a device directory, may be running on any, so it stands down everything. A runner
+ * whose device is gone is one of its device's leftovers and is reaped with them, so it must not stand anything down.
+ */
+const standsDownAll = (command: string): boolean => isTestAction(command) && !new RegExp(UDID).test(command);
 
 /** The Xcode.app process itself: it drives CoreSimulator (parallel test clones included) without spawning `xcodebuild` or `simctl`. */
 const XCODE_APP = /\/Contents\/MacOS\/Xcode(?:\s|$)/;
@@ -87,9 +97,6 @@ const isSystemRuntime = (command: string): boolean => command.includes("/Runtime
  * process besides the clone's system runtime is in the clone's tree (a descendant of its `launchd_sim`: a test runner, an app) or names its UDID in
  * its command line (an app under `XCTestDevices/<udid>/data/Containers`, a tool given the device).
  */
-/** Whether a `launchd_sim` of the device is alive in `procs`, in either device set: a device that reads `Shutdown` with one running is booting or shutting down, not left behind. */
-const launchdAlive = (procs: ProcRow[], udid: string): boolean => procs.some((p) => p.command.includes("launchd_sim") && p.command.toUpperCase().includes(`/${udid.toUpperCase()}/`));
-
 const cloneRoot = (procs: ProcRow[], udid: string): ProcRow | undefined =>
   procs.find((p) => p.command.includes("launchd_sim") && p.command.toUpperCase().includes(`/XCTESTDEVICES/${udid.toUpperCase()}/`));
 
@@ -116,7 +123,7 @@ function deviceSetOf(envLine: string, udid: string): DeviceSet | undefined {
 
 /** This user's simulator runtime processes whose environment names a device of a set the reaper handles, grouped by device. */
 function runtimeDevices(procs: ProcRow[], deps: ReaperDeps): Map<string, { udid: string; set: DeviceSet; pids: number[] }> {
-  const pids = procs.filter((p) => p.uid === deps.uid && isSimulatorCommand(p.command)).map((p) => p.pid);
+  const pids = procs.filter((p) => p.uid === deps.uid && isDeviceProcess(p.command)).map((p) => p.pid);
   const byDevice = new Map<string, { udid: string; set: DeviceSet; pids: number[] }>();
   if (pids.length === 0) return byDevice;
   for (const line of deps.processEnv(pids).split("\n")) {
@@ -150,9 +157,9 @@ function stillNamingDevice(pids: number[], udid: string, set: DeviceSet, deps: R
  * list` covers one set, so a device it does not name, an empty list and an unreadable one all mean unknown, and nothing is done.
  */
 export function reapSimulators({ procs, idleUdids, attempts, seen }: ReapInput, deps: ReaperDeps): ReapResult {
-  if (procs.some((p) => isTestAction(p.command))) return { attempts, seen };
+  if (procs.some((p) => standsDownAll(p.command))) return { attempts, seen };
   // Nothing of this user's is running in a simulator and no device is idle: there is nothing to decide, so no `simctl` is spawned.
-  if (idleUdids.length === 0 && !procs.some((p) => p.uid === deps.uid && isSimulatorCommand(p.command))) return { attempts: {}, seen: {} };
+  if (idleUdids.length === 0 && !procs.some((p) => p.uid === deps.uid && isDeviceProcess(p.command))) return { attempts: {}, seen: {} };
   const states: Partial<Record<DeviceSet, Map<string, string>>> = {};
   for (const set of ["main", "xctest"] as const) {
     try {
@@ -169,11 +176,11 @@ export function reapSimulators({ procs, idleUdids, attempts, seen }: ReapInput, 
   }
   const inUseIn = (table: ProcRow[], udid: string): boolean => table.some((p) => runsTool(p.command, XCODE_TOOLS) && p.command.toUpperCase().includes(udid));
   const inUse = (udid: string): boolean => inUseIn(procs, udid);
-  /** The table right before an action, once per action; `undefined` when it cannot be read or a test action runs in it, so nothing is done. */
+  /** The table right before an action, once per action; `undefined` when it cannot be read or a test action that names no device runs in it, so nothing is done. */
   const freshTable = (): ProcRow[] | undefined => {
     try {
       const table = deps.scan();
-      return table.some((p) => isTestAction(p.command)) ? undefined : table;
+      return table.some((p) => standsDownAll(p.command)) ? undefined : table;
     } catch {
       return undefined;
     }
@@ -182,7 +189,7 @@ export function reapSimulators({ procs, idleUdids, attempts, seen }: ReapInput, 
   const nextSeen: Record<string, number[]> = {};
   for (const { udid, set, pids } of leftovers.values()) {
     const state = states[set]?.get(udid);
-    if (state !== "Shutdown" || inUse(udid) || launchdAlive(procs, udid)) {
+    if (state !== "Shutdown" || inUse(udid) || launchdSimAlive(procs, udid)) {
       // Unknown this cycle (its list unreadable, or a tool is using it): what was known stays; a device that reads otherwise starts over.
       if (states[set] === undefined || inUse(udid)) {
         if (attempts[udid] !== undefined) next[udid] = attempts[udid]!;
@@ -200,7 +207,7 @@ export function reapSimulators({ procs, idleUdids, attempts, seen }: ReapInput, 
     // The decision was made on an older scan: read the table again for this device's batch and apply the guards to it, signalling only the pids
     // still there as a simulator process of this user. Nothing is done, and what was known stays, when it cannot be read or a guard now holds.
     const fresh = freshTable();
-    const stillThere = fresh && !inUseIn(fresh, udid) && !launchdAlive(fresh, udid) ? confirmedPids.filter((pid) => fresh.some((p) => p.pid === pid && p.uid === deps.uid && isSimulatorCommand(p.command))) : [];
+    const stillThere = fresh && !inUseIn(fresh, udid) && !launchdSimAlive(fresh, udid) ? confirmedPids.filter((pid) => fresh.some((p) => p.pid === pid && p.uid === deps.uid && isDeviceProcess(p.command))) : [];
     // A pid can be reused between the scans: its environment is read again, and only a pid that still names this device is signalled.
     const present = stillThere.length > 0 ? stillNamingDevice(stillThere, udid, set, deps) : [];
     if (present.length === 0) {
@@ -224,11 +231,13 @@ export function reapSimulators({ procs, idleUdids, attempts, seen }: ReapInput, 
     if (done.length > 0) deps.log({ type: "simulator-reap", udid, reason: "shutdown-leftovers", action, pids: done, ok: true });
     for (const { pid, message } of failed) deps.log({ type: "simulator-reap", udid, reason: "shutdown-leftovers", action, pids: [pid], ok: false, message });
   }
+  // A clone is shut down only while no build tool test action runs at all, whatever it names: its parallel run creates and uses clones its command line does not.
+  const buildToolTests = (table: ProcRow[]): boolean => table.some((p) => isXcodebuildTestProcess(p.command));
   for (const udid of idleUdids) {
-    if (states.xctest?.get(udid.toUpperCase()) !== "Booted" || inUse(udid) || cloneMayBeInUse(procs, udid)) continue;
+    if (states.xctest?.get(udid.toUpperCase()) !== "Booted" || inUse(udid) || cloneMayBeInUse(procs, udid) || buildToolTests(procs)) continue;
     // Read the table again for this clone: Xcode.app, a test run or a runner may have started since the decision, and the clone may be gone.
     const fresh = freshTable();
-    if (!fresh || !cloneRoot(fresh, udid) || inUseIn(fresh, udid) || cloneMayBeInUse(fresh, udid)) continue;
+    if (!fresh || buildToolTests(fresh) || !cloneRoot(fresh, udid) || inUseIn(fresh, udid) || cloneMayBeInUse(fresh, udid)) continue;
     try {
       deps.shutdown(udid, "xctest");
       deps.log({ type: "simulator-reap", udid, reason: "booted-idle", action: "shutdown", ok: true });

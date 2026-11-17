@@ -201,19 +201,56 @@ export const hungTestCandidates = (rows: ProcRow[]): ProcRow[] =>
  * `xctest` that runs from a simulator path counts only while Xcode.app's main executable is running: a run the build tool drives is covered by its own
  * process, and one left behind by a killed run would otherwise wedge the UI class for good (the watchdog reports it instead). An `xctest` with Xcode.app among
  * its ancestors counts; a bare `xctest` does not (gates run it all day), leaving out `ownPid` and its ancestors (the wrapper that is asking, and the shell that holds its command line). */
-export function runningUiTestPids(rows: ProcRow[], uid: number, ownPid: number): number[] {
+export function runningUiTestPids(rows: ProcRow[], uid: number, ownPid: number, envUdids?: (pids: number[]) => Map<number, string>): number[] {
   const own = new Set([ownPid, ...ancestry(rows, ownPid, 64).chain.map((r) => r.pid)]);
   const xcodeUp = xcodeAppRunning(rows, uid);
-  return rows
-    .filter(
-      (r) =>
-        r.uid === uid &&
-        !own.has(r.pid) &&
-        (isXcodebuildTestProcess(r.command) ||
-          (xcodeUp && (isTestRunnerProcess(r.command) || (isXctestProcess(r.command) && xctestInSimulator(r.command)))) ||
-          (isXctestProcess(r.command) && hasXcodeAppAncestor(rows, r.pid))),
-    )
-    .map((r) => r.pid);
+  const mine = rows.filter((r) => r.uid === uid && !own.has(r.pid));
+  // A runner or simulator `xctest` on a device that no `launchd_sim` of this table runs is a leftover of a killed run, not a test in progress. The device
+  // comes from the process's path, else (`envUdids`, one `ps -E` for those with none) from `SIMULATOR_UDID`; one that cannot be placed keeps counting.
+  const simCandidates = xcodeUp ? mine.filter((r) => isTestRunnerProcess(r.command) || (isXctestProcess(r.command) && xctestInSimulator(r.command))) : [];
+  const unplaced = simCandidates.filter((r) => deviceOfPath(r.command) === undefined).map((r) => r.pid);
+  let fromEnv = new Map<number, string>();
+  if (unplaced.length > 0 && envUdids) {
+    try {
+      fromEnv = envUdids(unplaced);
+    } catch {
+      // Unreadable: they keep counting.
+    }
+  }
+  const leftover = (r: ProcRow): boolean => {
+    const udid = deviceOfPath(r.command) ?? fromEnv.get(r.pid);
+    return udid !== undefined && !launchdSimAlive(rows, udid);
+  };
+  const sim = new Set(simCandidates.filter((r) => !leftover(r)).map((r) => r.pid));
+  return mine.filter((r) => isXcodebuildTestProcess(r.command) || sim.has(r.pid) || (isXctestProcess(r.command) && hasXcodeAppAncestor(rows, r.pid))).map((r) => r.pid);
+}
+
+const deviceOfPath = (command: string): string | undefined => simulatorUdid(command) ?? xcTestDeviceUdid(command);
+
+/** Whether a `launchd_sim` of the device (either set) is in `rows`, by executable (a `/launchd_sim` path segment, so a command that only names it does not count): a device without one is not running. */
+export const launchdSimAlive = (rows: ProcRow[], udid: string): boolean => rows.some((r) => /\/launchd_sim(?:\s|$)/.test(r.command) && r.command.toUpperCase().includes(`/${udid.toUpperCase()}/`));
+
+const ENV_UDID = /^\s*(\d+)\s.*?\bSIMULATOR_UDID=([0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12})\b/;
+
+/**
+ * The `SIMULATOR_UDID` of each of `pids` that has one, from one bounded `ps -E` (a status-1 exit with output is the answer: a listed pid was gone by the time it
+ * ran); throws on any other failure.
+ */
+export function psEnvUdids(pids: number[], { timeoutMs = PS_TIMEOUT_MS }: { timeoutMs?: number } = {}): Map<number, string> {
+  let text: string;
+  try {
+    text = execFileSync("ps", ["-Eww", "-p", pids.join(","), "-o", "pid=,command="], { encoding: "utf8", timeout: timeoutMs, maxBuffer: PS_MAX_BUFFER, stdio: ["ignore", "pipe", "ignore"] });
+  } catch (err) {
+    const { status, stdout } = err as { status?: unknown; stdout?: unknown };
+    if (status !== 1 || typeof stdout !== "string" || stdout.length === 0) throw err;
+    text = stdout;
+  }
+  const out = new Map<number, string>();
+  for (const line of text.split("\n")) {
+    const m = ENV_UDID.exec(line);
+    if (m) out.set(Number(m[1]), m[2]!.toUpperCase());
+  }
+  return out;
 }
 
 /** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */

@@ -452,7 +452,7 @@ describe("runningUiTestPids and a leftover runner", () => {
   });
 
   it("does not take a process that only names launchd_sim for one", () => {
-    expect(runningUiTestPids([row(40, 1, XCODE), row(5, 1, `grep launchd_sim /Users/x/Library/Developer/CoreSimulator/Devices/${U1}/data/x`), row(10, 1, runnerOn(U1))], 501, 99)).toEqual([10]);
+    expect(runningUiTestPids([row(40, 1, XCODE), row(5, 1, `grep launchd_sim /Users/x/Library/Developer/CoreSimulator/Devices/${U1}/data/x`), row(10, 1, runnerOn(U1))], 501, 99)).toEqual([]);
   });
 
   it("keeps counting a runner whose command names no device", () => {

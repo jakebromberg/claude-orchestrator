@@ -148,7 +148,7 @@ const hungTestAction: Rule = (c) =>
     .filter((p) => p.elapsedMs >= HUNG_TEST_AFTER_MS && !c.uiHolders.some((h) => h.startedAt <= c.now - p.elapsedMs + HOLDER_START_SLACK_MS))
     .map((p) => ({
       key: `hung-test:${p.pid}`,
-      message: `test process pid ${p.pid} has run ${age(p.elapsedMs)} with no UI-test lease holder that could own it (hung?): simulator reaping is paused while it runs, and UI-test runs wait behind it (always for a build tool test action, while Xcode.app runs otherwise); it is left running, not killed`,
+      message: `test process pid ${p.pid} has run ${age(p.elapsedMs)} with no UI-test lease holder that could own it (hung, or left behind by a killed run?): UI-test runs wait behind it (always for a build tool test action; for a runner or simulator xctest only while Xcode.app runs and its device has a launchd_sim), and simulator reaping is paused by a build tool test action or a runner that names no device (the reaper signals a runner whose device reads Shutdown); it is left running, not killed`,
     }));
 
 const age = (ms: number): string => (ms >= 3_600_000 ? `${Math.floor(ms / 3_600_000)}h${String(minutes(ms % 3_600_000)).padStart(2, "0")}m` : `${minutes(ms)}m`);
