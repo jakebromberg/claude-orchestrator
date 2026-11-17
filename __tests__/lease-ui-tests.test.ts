@@ -161,4 +161,59 @@ describe("UI-test holder class (issue #324)", () => {
       expect(names("ui-tests")).toEqual(["hook-t1.json"]);
     });
   });
+
+  // Issue #324 review: `childEnv()` exports one holder id, so the two holders of a run that has no detached id must share it, or a nested
+  // acquire that inherits it borrows the heavy slot and then waits forever for the UI-test slot its own parent holds.
+  describe("a run's two holders share one id", () => {
+    it("so a nested acquire that inherits the exported id borrows both slots at once", async () => {
+      const parent = (await take(ui)) as LeaseHandle;
+      expect(names("ui-tests")).toEqual(names("holders"));
+      const inherited = parent.childEnv().CO_LEASE_HOLDER!;
+      expect(names("ui-tests")).toEqual([`${inherited}.json`]);
+      const nested = await take(ui, { maxWaitMs: 0 }, { inheritedHolderId: inherited });
+      expect(isHandle(nested) && nested.leased).toBe(true);
+      expect(names("ui-tests")).toEqual([`${inherited}.json`]);
+      expect(names("holders")).toEqual([`${inherited}.json`]);
+      (nested as LeaseHandle).release();
+      expect(names("ui-tests")).toEqual([`${inherited}.json`]);
+      parent.release();
+      expect(names("ui-tests")).toEqual([]);
+    });
+  });
+
+  describe("a persistent I/O error", () => {
+    let restore = () => {};
+    afterEach(() => restore());
+
+    it("is refused after a bounded number of consecutive polls even when the caller sets no maxWaitMs", async () => {
+      restore = failFsCall("openSync", (p) => p.endsWith(".mutex"), "EACCES");
+      const r = await take(ui, {});
+      expect(r).toMatchObject({ refused: "max-wait" });
+      expect(lease.clock.sleeps).toHaveLength(19);
+      expect(lease.events.some((e) => e.type === "fail-open")).toBe(false);
+      expect(lease.events.filter((e) => e.type === "timeout")).toEqual([expect.objectContaining({ refused: "max-wait", class: "ui-tests" })]);
+      expect(names("ui-tests")).toEqual([]);
+    });
+
+    it("is not refused when it clears: one good poll resets the count", async () => {
+      restore = failFsCall("openSync", (p) => p.endsWith(".mutex"), "EACCES");
+      lease.clock.onSleep = () => {
+        if (lease.clock.sleeps.length === 15) restore();
+      };
+      const r = await take(ui, {});
+      expect(isHandle(r) && r.leased).toBe(true);
+      (r as LeaseHandle).release();
+    });
+  });
+
+  it("gives the UI-test slot back when the heavy acquire throws", async () => {
+    const blocker = tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), plain)!;
+    const sleep = async (): Promise<void> => {
+      throw new Error("sleep failed");
+    };
+    await expect(take(ui, { maxWaitMs: 60_000 }, { policy: { heavyCeiling: 1, heavyWarning: 1 }, sleep })).rejects.toThrow("sleep failed");
+    expect(names("ui-tests")).toEqual([]);
+    expect(names("ui-tests-waiting")).toEqual([]);
+    blocker.release();
+  });
 });

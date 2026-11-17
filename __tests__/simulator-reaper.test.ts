@@ -17,13 +17,28 @@ const runtimeRow = (pid: number, over: Partial<PsTextRow> = {}): PsTextRow => ({
 const devices = (states: Record<string, string>): string =>
   JSON.stringify({ devices: { "com.apple.CoreSimulator.SimRuntime.iOS-27-2": Object.entries(states).map(([udid, state]) => ({ udid, state, name: "iPhone" })) } });
 
+// A runtime process's environment as `ps -E` prints it: `SIMULATOR_UDID`, and a `HOME` under its device's own data directory, which names the
+// device set the device lives in. A bare UDID means the main set.
+type SetName = "main" | "xctest" | "previews";
+type EnvSpec = string | undefined | { udid: string; set: SetName };
+const HOMES: Record<SetName, (udid: string) => string> = {
+  main: (u) => `/Users/x/Library/Developer/CoreSimulator/Devices/${u}/data`,
+  xctest: (u) => `/Users/x/Library/Developer/XCTestDevices/${u}/data`,
+  previews: (u) => `/Users/x/Library/Developer/Xcode/UserData/Previews/Simulator Devices/${u}/data`,
+};
+const envText = (spec: EnvSpec): string => {
+  if (spec === undefined) return "HOME=/x";
+  const { udid, set } = typeof spec === "string" ? { udid: spec, set: "main" as const } : spec;
+  return `SIMULATOR_UDID=${udid} HOME=${HOMES[set](udid)}`;
+};
+
 describe("reapSimulators", () => {
   let events: SimulatorReapEvent[];
   let signals: [number, string][];
   let shutdowns: string[];
   let shutdownSets: DeviceSet[];
   let envLookups: number[][];
-  let envOf: Record<number, string | undefined>;
+  let envOf: Record<number, EnvSpec>;
   let list: () => string;
   let testList: () => string;
   let shutdownFails: Error | undefined;
@@ -33,7 +48,7 @@ describe("reapSimulators", () => {
     listDevices: (set) => (set === "main" ? list() : testList()),
     processEnv: (pids) => {
       envLookups.push(pids);
-      return pids.flatMap((pid) => (pid in envOf ? [`${pid} ${runtimeRow(pid).command} ${envOf[pid] === undefined ? "HOME=/x" : `SIMULATOR_UDID=${envOf[pid]} HOME=/x`}`] : [])).join("\n");
+      return pids.flatMap((pid) => (pid in envOf ? [`${pid} ${runtimeRow(pid).command} ${envText(envOf[pid])}`] : [])).join("\n");
     },
     shutdown: (udid, set) => {
       shutdowns.push(udid);
@@ -90,10 +105,58 @@ describe("reapSimulators", () => {
       expect(signals).toEqual([]);
     });
 
-    it("treats a device missing from the list as Shutdown", () => {
+    // Issue #324 review: `simctl list devices -j` covers one device set, so a device the list does not name may simply live in another set
+    // (a test clone, a SwiftUI Previews device, a Playgrounds device) and be running. Only an explicit `Shutdown` from the list of the
+    // device's own set is acted on; absence, an empty list and an unreadable list are unknown.
+    it.each<[string, () => void]>([
+      ["a valid but empty list", () => { list = () => devices({}); }],
+      ["a list that names only other devices", () => { list = () => devices({ [U2]: "Shutdown" }); }],
+      ["a list with no devices key", () => { list = () => "{}"; }],
+      ["a list that cannot be read", () => { list = () => { throw new Error("simctl timed out"); }; }],
+    ])("does nothing for a device its own set's list does not name: %s", (_name, setUp) => {
+      setUp();
+      reap(leftovers);
+      expect(signals).toEqual([]);
+      expect(events).toEqual([]);
+    });
+
+    it("acts on a test clone the XCTestDevices list reports Shutdown", () => {
+      envOf = { 300: { udid: U1, set: "xctest" }, 301: { udid: U1, set: "xctest" }, 302: { udid: U1, set: "xctest" } };
       list = () => devices({});
+      testList = () => devices({ [U1]: "Shutdown" });
       reap(leftovers);
       expect(signals).toHaveLength(3);
+    });
+
+    it.each<[string, () => void]>([
+      ["a clone the main list calls Shutdown but its own set does not name", () => { list = () => devices({ [U1]: "Shutdown" }); testList = () => devices({}); }],
+      ["a clone its own set lists as Booted", () => { list = () => devices({ [U1]: "Shutdown" }); testList = () => devices({ [U1]: "Booted" }); }],
+      ["a clone when the test set's list cannot be read", () => { testList = () => { throw new Error("simctl timed out"); }; }],
+    ])("leaves %s alone", (_name, setUp) => {
+      envOf = { 300: { udid: U1, set: "xctest" } };
+      setUp();
+      reap([runtimeRow(300)]);
+      expect(signals).toEqual([]);
+    });
+
+    it("leaves a SwiftUI Previews or Playgrounds device alone, whatever the lists say", () => {
+      envOf = { 300: { udid: U1, set: "previews" } };
+      list = () => devices({ [U1]: "Shutdown" });
+      testList = () => devices({ [U1]: "Shutdown" });
+      expect(reap([runtimeRow(300)])).toEqual({});
+      expect(signals).toEqual([]);
+    });
+
+    it("an unreadable test list does not stop main-set leftovers from being reaped, and the reverse", () => {
+      envOf = { 300: U1, 301: { udid: U2, set: "xctest" } };
+      testList = () => { throw new Error("simctl timed out"); };
+      reap([runtimeRow(300), runtimeRow(301)]);
+      expect(signals).toEqual([[300, "SIGTERM"]]);
+      signals.length = 0;
+      testList = () => devices({ [U2]: "Shutdown" });
+      list = () => { throw new Error("simctl timed out"); };
+      reap([runtimeRow(300), runtimeRow(301)]);
+      expect(signals).toEqual([[301, "SIGTERM"]]);
     });
 
     it("looks up the environment of simulator runtime rows only, in one call", () => {
@@ -141,21 +204,6 @@ describe("reapSimulators", () => {
       expect(reap(leftovers, [], { [U1]: 1 })).toEqual({ [U1]: 1 });
       expect(signals).toEqual([]);
       expect(events).toEqual([]);
-    });
-
-    it("touches nothing when the test set's device list cannot be read either", () => {
-      testList = () => {
-        throw new Error("simctl timed out");
-      };
-      reap(leftovers, [], { [U1]: 1 });
-      expect(signals).toEqual([]);
-    });
-
-    it("sees a device the test set lists as Booted, so its processes are left alone", () => {
-      list = () => devices({});
-      testList = () => devices({ [U1]: "Booted" });
-      reap(leftovers);
-      expect(signals).toEqual([]);
     });
 
     it("touches nothing when the device list is not JSON", () => {
@@ -311,6 +359,17 @@ describe("realReaperDeps", () => {
   it("reads the environment of exactly the named pids with ps -E", () => {
     build({ exec: fake("300 cmd SIMULATOR_UDID=x") }).processEnv([300, 301]);
     expect(calls).toEqual([{ file: "ps", args: ["-Eww", "-p", "300,301", "-o", "pid=,command="], timeoutMs: SIMCTL_TIMEOUT_MS }]);
+  });
+
+  // `ps -p` exits 1 when any listed pid is gone by the time it runs, though it prints the rest.
+  it("uses the rows of a ps that exits 1 because a listed pid vanished", () => {
+    const exits = (status: number, stdout: unknown) => (): string => {
+      throw Object.assign(new Error(`exit ${status}`), { status, stdout });
+    };
+    expect(build({ exec: exits(1, "300 cmd SIMULATOR_UDID=x") }).processEnv([300, 301])).toBe("300 cmd SIMULATOR_UDID=x");
+    expect(() => build({ exec: exits(1, "") }).processEnv([300])).toThrow("exit 1");
+    expect(() => build({ exec: exits(2, "300 cmd") }).processEnv([300])).toThrow("exit 2");
+    expect(() => build({ exec: exits(1, undefined) }).processEnv([300])).toThrow("exit 1");
   });
 
   it("does not run ps for no pids", () => {

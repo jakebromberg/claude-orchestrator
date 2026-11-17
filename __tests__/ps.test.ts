@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { ancestry, groupAlive, signalGroup, isPid, pidAlive, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, isSimulatorCommand, runsTool, XCODE_TOOLS, type ProcRow } from "../src/ps.js";
+import { ancestry, groupAlive, signalGroup, isPid, pidAlive, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, isSimulatorCommand, runsTool, simulatorUdid, xcTestDeviceUdid, XCODE_TOOLS, type ProcRow } from "../src/ps.js";
 import { psText } from "./helpers/ps-text.js";
 
 vi.mock("node:child_process", async (orig) => ({ ...(await orig<typeof import("node:child_process")>()), execFileSync: vi.fn() }));
@@ -206,5 +206,17 @@ describe("runsTool", () => {
     ["no match", "npm test", false],
   ])("classifies %s", (_name, command, expected) => {
     expect(runsTool(command, XCODE_TOOLS)).toBe(expected);
+  });
+});
+
+describe("xcTestDeviceUdid and simulatorUdid name different device sets (issue #324)", () => {
+  const U = "5E2F590B-1111-4222-8333-444455556666";
+  it("reads a test clone's UDID from its XCTestDevices path only", () => {
+    expect(xcTestDeviceUdid(`/launchd_sim /Users/x/Library/Developer/XCTestDevices/${U.toLowerCase()}/data/x`)).toBe(U);
+    expect(xcTestDeviceUdid(`/launchd_sim /Users/x/Library/Developer/CoreSimulator/Devices/${U}/data/x`)).toBeUndefined();
+    expect(xcTestDeviceUdid("/usr/bin/other-tool")).toBeUndefined();
+  });
+  it("is not read as a main-set device", () => {
+    expect(simulatorUdid(`/launchd_sim /Users/x/Library/Developer/XCTestDevices/${U}/data/x`)).toBeUndefined();
   });
 });

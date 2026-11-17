@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isUiTestCommand } from "../src/lease-hook.js";
+import { isUiTestArgv, isUiTestCommand } from "../src/lease-hook.js";
 
 // Issue #324, defects 2 and 4. The UI-test class takes a real invocation of the build tool with a test action, in command
 // position, and nothing else. The stopgap weight rule matched the words anywhere in the text, so a `grep` whose pattern said
@@ -63,5 +63,32 @@ describe("isUiTestCommand", () => {
     const start = performance.now();
     expect(isUiTestCommand(long)).toBe(false);
     expect(performance.now() - start).toBeLessThan(1_000);
+  });
+});
+
+// Issue #324 review: `claude-orchestrator-lease -- <argv>` has its words already, so they are read as words; joining them with spaces loses
+// the quoting that tells a destination's parentheses or a scheme's `;` from shell syntax.
+describe("isUiTestArgv", () => {
+  it.each<[string, string[], boolean]>([
+    ["a destination with parentheses and spaces", [TOOL, "-scheme", "PhaseMatrix", "-destination", "platform=iOS Simulator,name=iPad Pro 13-inch (M5)", "test"], true],
+    ["a scheme with a semicolon", [TOOL, "-scheme", "My;Scheme", "test"], true],
+    ["a bash -c script", ["bash", "-c", `${TOOL} -scheme S test`], true],
+    ["a bash -c script with a quoted destination", ["sh", "-lc", `${TOOL} -destination 'platform=iOS Simulator,name=iPhone 16' test`], true],
+    ["xcrun and an only-testing option", ["xcrun", TOOL, "-scheme", "S", "-only-testing:AppUITests/LoginTests", "test"], true],
+    ["test-without-building", [TOOL, "test-without-building", "-xctestrun", "x"], true],
+    ["a path to the tool", [`/Applications/Xcode Beta 2.app/Contents/Developer/usr/bin/${TOOL}`, "test"], true],
+    ["env and an assignment first", ["env", "FOO=1", TOOL, "test"], true],
+    ["a build action", [TOOL, "-scheme", "S", "build"], false],
+    ["build-for-testing", [TOOL, "build-for-testing", "-scheme", "S"], false],
+    ["a scheme named test", [TOOL, "-scheme", "test", "build"], false],
+    ["a project named test", [TOOL, "-project", "test", "-scheme", "S", "build"], false],
+    ["a destination named test", [TOOL, "-destination", "test", "build"], false],
+    ["a scheme named test and then the action", [TOOL, "-scheme", "test", "test"], true],
+    ["another tool given the words", ["grep", "-rn", `${TOOL} test`, "docs"], false],
+    ["echo of the words", ["echo", TOOL, "test"], false],
+    ["a bash -c script that only echoes it", ["bash", "-c", `echo "${TOOL} test"`], false],
+    ["no words", [], false],
+  ])("%s", (_name, argv, expected) => {
+    expect(isUiTestArgv(argv)).toBe(expected);
   });
 });
