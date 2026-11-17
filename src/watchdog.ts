@@ -11,7 +11,7 @@ import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
 import { appendOwnLine, isOwnDir, readLeaseRecord, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
 import { ancestry, isClaudeCommand, isPid, isSimulatorCommand, parsePsTable, ps, PS_TABLE_ARGS, runsTool, simulatorUdid, XCODE_TOOLS, xcTestDeviceUdid, type ProcRow } from "./ps.js";
-import type { ReapInput } from "./simulator-reaper.js";
+import type { ReapInput, ReapResult } from "./simulator-reaper.js";
 import { isLeaseRecord, readSuspensions, type SuspensionRecord } from "./suspensions.js";
 
 const EX_USAGE = 64;
@@ -150,7 +150,7 @@ export interface WatchdogDeps {
   /** The volume reader behind `brief`'s disk-full line (default `statfsSync`). */
   statfs?: (dir: string) => { bavail: number; blocks: number };
   /** Reaps leftover simulator processes and shuts down idle booted devices once per cycle, after the scan: given the devices idle for `SIMULATOR_IDLE_AFTER_MS` and the last cycle's attempts, it returns the attempts to carry on. Absent, nothing is reaped. */
-  reap?: (input: ReapInput) => Record<string, number>;
+  reap?: (input: ReapInput) => ReapResult;
 }
 
 interface State {
@@ -159,6 +159,8 @@ interface State {
   idleSimulators: Record<string, number>;
   /** Cycles each shut-down device's leftover processes have been signalled, by UDID (`ReapInput.attempts`). */
   simReaps: Record<string, number>;
+  /** The pids each shut-down device's leftovers read with on the last cycle (`ReapInput.seen`). */
+  simSeen: Record<string, number[]>;
   /** Keys of `once` findings already emitted. */
   reported: string[];
   /** The latest cycle's emitted findings. */
@@ -234,9 +236,9 @@ function idleSimulatorRss(procs: ProcRow[]): Map<string, { rssBytes: number | un
 function readState(dir: string): State {
   try {
     const s = JSON.parse(readLeaseRecord(dir, "watchdog.json")?.text ?? "{}");
-    return { stoppedSince: s.stoppedSince ?? {}, idleSimulators: s.idleSimulators ?? {}, simReaps: s.simReaps ?? {}, reported: s.reported ?? [], findings: s.findings ?? [] };
+    return { stoppedSince: s.stoppedSince ?? {}, idleSimulators: s.idleSimulators ?? {}, simReaps: s.simReaps ?? {}, simSeen: s.simSeen ?? {}, reported: s.reported ?? [], findings: s.findings ?? [] };
   } catch {
-    return { stoppedSince: {}, idleSimulators: {}, simReaps: {}, reported: [], findings: [] };
+    return { stoppedSince: {}, idleSimulators: {}, simReaps: {}, simSeen: {}, reported: [], findings: [] };
   }
 }
 
@@ -270,9 +272,12 @@ export function check(d: WatchdogDeps): void {
   const stoppedSince = new Map(stoppedGroups(procs, engines).map((pgid) => [pgid, prev.stoppedSince[pgid] ?? now]));
   const idleSimulators = new Map([...idleSimulatorRss(procs)].map(([udid, d]) => [udid, { since: prev.idleSimulators[udid] ?? now, ...d }]));
   let simReaps = prev.simReaps;
+  let simSeen = prev.simSeen;
   try {
     const idleUdids = [...idleSimulators].filter(([, v]) => now - v.since >= SIMULATOR_IDLE_AFTER_MS).map(([udid]) => udid);
-    simReaps = d.reap?.({ procs, idleUdids, attempts: prev.simReaps }) ?? simReaps;
+    const reaped = d.reap?.({ procs, idleUdids, attempts: prev.simReaps, seen: prev.simSeen });
+    simReaps = reaped?.attempts ?? simReaps;
+    simSeen = reaped?.seen ?? simSeen;
   } catch (err) {
     appendLog(d.dir, now, `simulator reaping failed: ${(err as Error).message}`);
   }
@@ -280,7 +285,7 @@ export function check(d: WatchdogDeps): void {
   const suspended = new Set(records.map((r) => r.pgid));
   const found = RULES.flatMap((rule) => rule({ now, procs, engines, suspended, records, stoppedSince, idleSimulators }));
   const findings = found.filter((f) => !(f.once && prev.reported.includes(f.key)));
-  const state: State = { stoppedSince: Object.fromEntries(stoppedSince), idleSimulators: Object.fromEntries([...idleSimulators].map(([udid, d]) => [udid, d.since])), simReaps, reported: found.filter((f) => f.once).map((f) => f.key), findings };
+  const state: State = { stoppedSince: Object.fromEntries(stoppedSince), idleSimulators: Object.fromEntries([...idleSimulators].map(([udid, d]) => [udid, d.since])), simReaps, simSeen, reported: found.filter((f) => f.once).map((f) => f.key), findings };
   writeLeaseRecord(d.dir, "watchdog.json", JSON.stringify({ checkedAt: new Date(now).toISOString(), ...state }));
   writeLeaseRecord(d.dir, "watchdog.brief", findings.length ? `watchdog: ${findings.map((f) => f.message).join("; ")}` : "");
   for (const f of findings) if (!prev.findings.some((p) => p.key === f.key)) appendLog(d.dir, now, f.message);

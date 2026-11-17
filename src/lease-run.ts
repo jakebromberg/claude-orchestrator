@@ -190,8 +190,10 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
   };
 
   // Installed before acquiring: a signal's default action would otherwise kill the wrapper between the holder file's
-  // write and the spawn, leaving a slot that no child holds. A handler can only run while waiting (nothing is held, so
-  // the signal is re-raised to kill the wrapper as before) or once the child exists, never in between.
+  // write and the spawn, leaving a slot that no child holds. A handler can only run while waiting (no heavy slot is held, so
+  // the signal is re-raised to kill the wrapper as before, after giving back the UI-test slot a UI-test run may already hold
+  // while it awaits the heavy one, which the killed wrapper's heartbeat would otherwise keep for 90 s) or once the child exists, never in between.
+  let releaseHeld: (() => void) | undefined;
   let child: LeaseChild | undefined;
   let signalled: number | undefined;
   let grace: NodeJS.Timeout | undefined;
@@ -200,6 +202,7 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
   const handlers = FORWARDED.map((sig) => {
     const forward = (): void => {
       if (child === undefined) {
+        releaseHeld?.();
         unhook();
         d.signals.kill(d.signals.pid, sig);
         return;
@@ -224,8 +227,12 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
   const weight = weightFor(command, d.cwd, d.env, d.err);
   const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command, label: args.label, cwd: d.cwd, gated: args.gated, suspendable: suspendable || undefined, ...(uiTest && { uiTest: true as const }), ...(high && { priority: "high" as const }), ...(weight !== undefined && { weight }) }, {
     maxWaitMs,
+    onHold: (release) => {
+      releaseHeld = release;
+    },
     onWait: throttledProgress((s) => d.err(`lease: waiting ${seconds(s.waitedMs)}s for a slot (pressure=${s.level}, ${s.live.length}/${s.capacity} live)`), { skipFirst: true }),
   });
+  releaseHeld = undefined;
   if (!("leased" in got)) {
     unhook();
     d.err(formatRefusal(got, d.leaseStatus(opts, got.class)));
