@@ -80,7 +80,9 @@ describe("hook mode and the UI-test class", () => {
     ["a & that is followed by sleep", `${UI} & sleep 5`],
     ["a subshell that backgrounds it", `(${UI} &)`],
     ["a group that backgrounds it", `{ ${UI} & }`],
-    ["a & on an earlier line", `echo hi &\n${UI}`],
+    ["a pipeline element that is backgrounded", `${UI} | tee out.log &`],
+    ["a backgrounded subshell", `(${UI}) &`],
+    ["a wrapper around it", `taskpolicy -b ${UI} &`],
     ["a lone & after a quoted &", `echo 'a & b' && ${UI} &`],
   ])("denies a UI-test call that backgrounds with %s, asks for the foreground, and takes no slot", async (_name, command) => {
     const out = JSON.parse(await run(call("PreToolUse", command)));
@@ -101,6 +103,10 @@ describe("hook mode and the UI-test class", () => {
     ["a & inside double quotes", `${UI} -scheme "A & B"`],
     ["an escaped &", `${UI} -scheme A\\&B`],
     ["a trailing && that continues the line", `${UI} &&`],
+    // The tokenizer knows which command a & backgrounds: here it backgrounds something else, and the UI run is in the foreground.
+    ["a & that backgrounds an earlier command", `echo hi & ${UI}`],
+    ["a & on an earlier line", `echo hi &\n${UI}`],
+    ["a & after a ; that ends the run's statement", `${UI}; echo hi &`],
   ])("does not deny %s", async (_name, command) => {
     const out = await run(call("PreToolUse", command));
     expect(out).not.toContain("foreground");

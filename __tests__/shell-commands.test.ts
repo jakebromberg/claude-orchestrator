@@ -16,8 +16,28 @@ describe("simpleCommands", () => {
     ["a newline", "a\nb c", [["a"], ["b", "c"]]],
     ["a subshell", "(a; b) c", [["a"], ["b"], ["c"]]],
     ["a brace group", "{ a; }", [["{", "a"], ["}"]]],
-    ["a redirect that holds a &", "a 2>&1 | b", [["a", "2>&1"], ["b"]]],
-    ["&> and >&", "a &> f; b >&2", [["a", "&>", "f"], ["b", ">&2"]]],
+    ["a redirect that holds a &", "a 2>&1 | b", [["a"], ["b"]]],
+    ["&> and >&", "a &> f; b >&2", [["a"], ["b"]]],
+    // A redirect operator ends the word before it, and its target is not a word (issue #324 review: `test>build.log` hid the action word).
+    ["a glued > redirect", "a test>x.log", [["a", "test"]]],
+    ["a glued &> redirect", "a test&>x.log", [["a", "test"]]],
+    ["a glued >> redirect", "a test>>x.log b", [["a", "test", "b"]]],
+    ["a glued < redirect", "a test<in.txt", [["a", "test"]]],
+    ["a spaced redirect and a word after its target", "a > f b", [["a", "b"]]],
+    ["a redirect before the words", "> f a b", [["a", "b"]]],
+    ["a numeric fd kept with its operator", "a 2>f b", [["a", "b"]]],
+    ["a numeric fd and a duplication", "a 2>&1 b", [["a", "b"]]],
+    ["a duplication to a closed fd", "a >&- b", [["a", "b"]]],
+    ["&>> and >|", "a &>>f b >|g", [["a", "b"]]],
+    ["<>", "a <>f b", [["a", "b"]]],
+    ["a word that only ends in a digit is a word", "a test2>x", [["a", "test2"]]],
+    ["a digit word apart from the operator is an argument", "a 2 >x", [["a", "2"]]],
+    ["a quoted digit is not an fd", `a "2">x`, [["a", "2"]]],
+    ["a quoted > is text", `a ">" b`, [["a", ">", "b"]]],
+    ["an escaped > is text", "a \\> b", [["a", ">", "b"]]],
+    ["a redirect target ends at the separator", "a >f; b", [["a"], ["b"]]],
+    ["a redirect target that is quoted", `a > "f g" b`, [["a", "b"]]],
+    ["a redirect with no target at the end", "a >", [["a"]]],
     ["single quotes", "echo 'a b; c && d'", [["echo", "a b; c && d"]]],
     ["double quotes", 'echo "a b; c && d"', [["echo", "a b; c && d"]]],
     ["quotes joined to a word", `a"b c"'d e'f`, [["ab cd ef"]]],
@@ -67,7 +87,7 @@ describe("simpleCommands", () => {
       expect(simpleCommands("cat <<A <<'B'\none\nA\ntwo\nB\nf")).toEqual([["cat"], ["f"]]);
     });
     it("keeps the rest of the line after the heredoc operator", () => {
-      expect(simpleCommands("cat <<'EOF' > out.txt && g\nbody\nEOF")).toEqual([["cat", ">", "out.txt"], ["g"]]);
+      expect(simpleCommands("cat <<'EOF' > out.txt && g\nbody\nEOF")).toEqual([["cat"], ["g"]]);
     });
     it("handles the commit-message form inside a substitution, apostrophes and parentheses in the body included", () => {
       const text = "git commit -m \"$(cat <<'EOF'\nIt doesn't (yet) run a; b\nEOF\n)\" && c";
@@ -117,5 +137,44 @@ describe("shellCommands: the heredoc a command reads as its stdin", () => {
   });
   it("joins a body's lines with newlines, tabs stripped for <<-", () => {
     expect(shellCommands("sh <<-'EOF'\n\ta\n\tb\n\tEOF")).toEqual([{ words: ["sh"], stdin: "a\nb" }]);
+  });
+});
+
+// Issue #324 review: a UI-test run that is backgrounded returns at once, so the decision whether a `&` backgrounds a command is the tokenizer's: the
+// command followed by an `&` separator, or in a pipeline, group or subshell that is, up to the last `;` or newline.
+describe("shellCommands: which commands a & backgrounds", () => {
+  const backgrounded = (text: string): string[] => shellCommands(text)!.filter((c) => c.background).map((c) => c.words.join(" "));
+
+  it.each<[string, string, string[]]>([
+    ["a trailing &", "a x &", ["a x"]],
+    ["a & before another command", "a x & b y", ["a x"]],
+    ["each & backgrounds the command before it", "a & b & c", ["a", "b"]],
+    ["a & after a redirect", "a x > f 2>&1 & echo $!", ["a x"]],
+    ["a pipeline", "a | b | c &", ["a", "b", "c"]],
+    ["an and-or list", "a && b || c &", ["a", "b", "c"]],
+    ["a command in a subshell that backgrounds itself", "(a x &)", ["a x"]],
+    ["a subshell that is backgrounded", "(a x; b) &", ["a x", "b"]],
+    ["a group that backgrounds a command", "{ a x & }", ["{ a x"]],
+    ["a group that is backgrounded", "{ a x; b; } &", ["{ a x", "b", "}"]],
+    ["only the last statement before the &", "a; b &", ["b"]],
+    ["a newline ends the statement", "a\nb &", ["b"]],
+    ["a & ends the statement", "a & b", ["a"]],
+    ["a & inside a subshell does not reach before it", "a; (b &); c", ["b"]],
+  ])("marks %s", (_name, text, expected) => {
+    expect(backgrounded(text)).toEqual(expected);
+  });
+
+  it.each<[string, string]>([
+    ["no &", "a x"],
+    ["&&", "a && b"],
+    ["a & in a redirect", "a 2>&1 && b"],
+    ["&>", "a &>f"],
+    ["|&", "a |& b"],
+    ["a quoted &", "a 'x & y'"],
+    ["a & in a heredoc body", "cat <<'EOF'\na &\nEOF"],
+    ["a command before a ; that ends the statement", "a x; b &"],
+  ])("marks nothing for %s", (_name, text) => {
+    const marked = backgrounded(text);
+    expect(marked.filter((w) => w.startsWith("a x") || w === "a")).toEqual([]);
   });
 });

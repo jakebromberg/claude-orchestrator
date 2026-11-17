@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isUiTestArgv, isUiTestCommand } from "../src/lease-hook.js";
+import { isUiTestArgv, isUiTestCommand, uiRunBackgrounded } from "../src/lease-hook.js";
 
 // Issue #324, defects 2 and 4. The UI-test class takes a real invocation of the build tool with a test action, in command
 // position, and nothing else. The stopgap weight rule matched the words anywhere in the text, so a `grep` whose pattern said
@@ -80,6 +80,23 @@ describe("isUiTestCommand", () => {
     ["under /usr/bin/sudo, with -p and -h values", `/usr/bin/sudo -p 'pw: ' -h host ${TOOL} test`],
     ["under sudo around taskpolicy", `sudo taskpolicy -b ${TOOL} test`],
     ["a heredoc fed to bash -e", `bash -e <<-'EOF'\n\t${TOOL} test\nEOF`],
+    // Issue #324 review: redirects glued to the action word ended it inside the word, which hid it.
+    ["a glued > redirect", `${TOOL} -scheme App test>build.log`],
+    ["a glued &> redirect", `${TOOL} -scheme App test&>build.log`],
+    ["a glued >> redirect", `${TOOL} test>>build.log 2>&1`],
+    ["a glued < redirect", `${TOOL} test<in.txt`],
+    ["a glued pipe", `${TOOL} test|tee out.log`],
+    ["a spaced redirect and the action after it", `${TOOL} > build.log -scheme App test`],
+    ["a numeric redirect before the action", `${TOOL} 2>err.log test`],
+    ["a redirect on the wrapper", `taskpolicy -b ${TOOL} test >out.log 2>&1`],
+    // timeout and stdbuf, matched by basename.
+    ["under timeout", `timeout 600 ${TOOL} test`],
+    ["under timeout with -k and -s", `timeout -k 5 -s KILL 1h ${TOOL} test`],
+    ["under gtimeout", `gtimeout 30m ${TOOL} test`],
+    ["under gtimeout by path with options", `/opt/homebrew/bin/gtimeout -k 10s -s TERM 1h ${TOOL} test`],
+    ["under stdbuf", `stdbuf -oL -eL ${TOOL} test`],
+    ["under stdbuf with valued options", `stdbuf -i 0 -o L -e 0 ${TOOL} test`],
+    ["under stdbuf by path", `/usr/local/bin/stdbuf -o0 ${TOOL} test`],
     ["when the text cannot be tokenized and the raw rule sees xcrun --sdk", `echo 'unterminated; xcrun --sdk iphonesimulator ${TOOL} test -scheme App`],
     ["when the text cannot be tokenized and the raw rule sees xcrun -sdk", `echo 'unterminated; xcrun -sdk iphonesimulator ${TOOL} test -scheme App`],
     ["when the text cannot be tokenized and the raw rule sees bash -c --", `echo 'unterminated; bash -c -- "${TOOL} test -scheme App"`],
@@ -132,6 +149,17 @@ describe("isUiTestCommand", () => {
     ["arch around a grep", `arch -arm64 grep '${TOOL} test' notes.md`],
     ["time around a different tool", `/usr/bin/time -l ls ${TOOL} test`],
     ["a wrapper around a scheme named test and a build action", `taskpolicy -b ${TOOL} -scheme test build`],
+    ["a build whose output is redirected to a file named test", `${TOOL} -scheme App build > test`],
+    ["a build whose stderr is redirected to a file named test", `${TOOL} -scheme App build 2> test`],
+    ["a build with &> to a file named test", `${TOOL} build &> test`],
+    ["a build with >> to a file named test", `${TOOL} build >> test`],
+    ["a build with a glued redirect to a file named test", `${TOOL} build >test`],
+    ["a build that reads a file named test", `${TOOL} build < test`],
+    ["a build whose duplicated fd is test", `${TOOL} build 2>&test`],
+    ["timeout around a grep", `timeout 5 grep '${TOOL} test' f`],
+    ["gtimeout around an echo", `gtimeout 5 echo ${TOOL} test`],
+    ["stdbuf around an echo", `stdbuf -oL echo ${TOOL} test`],
+    ["stdbuf with a valued option and a command that is not the build tool", `stdbuf -o L cat ${TOOL}.log test`],
     ["a here-string fed to cat", `cat <<< '${TOOL} test'`],
     ["a here-string fed to a script file", `bash run.sh <<< '${TOOL} test'`],
     ["a here-string to a shell whose text only mentions it", `bash <<< "echo ${TOOL} test"`],
@@ -227,5 +255,47 @@ describe("xcodebuild options and the action word", () => {
   it.each(FLAGS)("-%s takes no value, so the word after it is the action", (option) => {
     expect(isUiTestArgv([TOOL, `-${option}`, "test"])).toBe(true);
     expect(isUiTestCommand(`${TOOL} -${option} test`)).toBe(true);
+  });
+});
+
+// Issue #324 review: the tokenizer decides whether a UI-test run is backgrounded (and so would lose its slots when the shell returns): the
+// simple command that runs it, or a pipeline, group or subshell holding it, is followed by an `&` separator.
+describe("uiRunBackgrounded", () => {
+  it.each<[string, string]>([
+    ["a trailing &", `${TOOL} test &`],
+    ["a & after redirects, then another command", `${TOOL} -scheme App test > x.log 2>&1 & echo $!`],
+    ["a subshell that backgrounds it", `(${TOOL} test &)`],
+    ["a & then sleep", `${TOOL} test & sleep 5`],
+    ["a backgrounded subshell", `(${TOOL} test) &`],
+    ["a backgrounded group", `{ ${TOOL} test; } &`],
+    ["a pipeline element that is backgrounded", `${TOOL} test | tee out.log &`],
+    ["an and-or list that is backgrounded", `cd /w && ${TOOL} test &`],
+    ["a wrapper around it", `taskpolicy -b ${TOOL} test &`],
+    ["a glued redirect before the &", `${TOOL} test>x.log &`],
+    ["a bash -c script that is backgrounded", `bash -c '${TOOL} test' &`],
+    ["a bash -c script that backgrounds it itself", `bash -c '${TOOL} test &'`],
+    ["a heredoc script that backgrounds it", `bash <<'EOF'\n${TOOL} test &\nEOF`],
+    ["a & on the following line", `${TOOL} test &\nwait`],
+    ["text that cannot be tokenized and holds a lone &", `echo 'unterminated; ${TOOL} test &`],
+  ])("is true for %s", (_name, command) => {
+    expect(isUiTestCommand(command)).toBe(true);
+    expect(uiRunBackgrounded(command)).toBe(true);
+  });
+
+  it.each<[string, string]>([
+    ["a foreground run", `${TOOL} test`],
+    ["redirects and a pipe", `${TOOL} test 2>&1 | tail`],
+    ["&&", `cd /w && ${TOOL} test`],
+    ["&> as a redirect", `${TOOL} test &>build.log`],
+    ["|& as a pipe", `${TOOL} test |& tail`],
+    ["a quoted &", `${TOOL} -destination 'name=A & B' test`],
+    ["a & that backgrounds a command before it, not the run", `echo hi & ${TOOL} test`],
+    ["a & on an earlier line", `echo hi &\n${TOOL} test`],
+    ["a & after a ; that ends the run's statement", `${TOOL} test; echo hi &`],
+    ["a backgrounded subshell that does not hold the run", `(sleep 5) & ${TOOL} test`],
+    ["a backgrounded command that is not a UI run", "npm test &"],
+    ["text that only mentions the build tool", `echo '${TOOL} test' &`],
+  ])("is false for %s", (_name, command) => {
+    expect(uiRunBackgrounded(command)).toBe(false);
   });
 });

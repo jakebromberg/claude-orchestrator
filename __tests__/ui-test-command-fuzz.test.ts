@@ -24,6 +24,14 @@ const REAL_FORMS = [
   `arch -arm64 -e FOO=1 ${TOOL} test`,
   `/usr/bin/time -l -o /dev/null xcrun ${TOOL} test`,
   `${TOOL} -retry-tests-on-failure -scheme A test`,
+  // Redirects glued to the action word, and the wrappers added after the review.
+  `${TOOL} -scheme A test>build.log`,
+  `${TOOL} test&>build.log`,
+  `${TOOL} test 2>&1`,
+  `${TOOL} test<in.txt`,
+  `gtimeout 30m ${TOOL} test`,
+  `timeout -k 5 600 ${TOOL} test`,
+  `stdbuf -oL -eL ${TOOL} test`,
 ];
 
 const REAL_PLACEMENTS: ((t: string) => string)[] = [
@@ -56,6 +64,9 @@ const EXTRA_REAL = [
   `taskpolicy -b caffeinate -i arch -arm64 /usr/bin/time -l xcrun --sdk iphonesimulator ${TOOL} test`,
   `${TOOL} -quiet -allowProvisioningUpdates -parallelize-tests-among-destinations -scheme A test-without-building`,
   `bash -c -- '${TOOL} -scheme A test'`,
+  `taskpolicy -b ${TOOL} -scheme A test>build.log 2>&1`,
+  `sudo -u jake gtimeout 1h stdbuf -o0 ${TOOL} test&>x.log`,
+  `bash <<< '${TOOL} test>out.log'`,
   `echo start && taskpolicy -b ${TOOL} -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' test`,
 ];
 
@@ -66,6 +77,11 @@ const EXTRA_MENTION = [
   `caffeinate -i echo ${TOOL} test`,
   `${TOOL} -scheme test build`,
   `bash <<'EOF'\necho '${TOOL} test'\nEOF`,
+  `${TOOL} -scheme A build > test`,
+  `${TOOL} build 2> test`,
+  `${TOOL} build &> test`,
+  `timeout 5 grep '${TOOL} test' f`,
+  `stdbuf -oL echo ${TOOL} test`,
 ];
 
 const MENTIONS = [`${TOOL} test`, `${TOOL} test -scheme A`, `${TOOL} test-without-building -xctestrun x`, `run ${TOOL} test first`];
