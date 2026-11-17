@@ -8,5 +8,12 @@
  * Text it cannot parse (an unterminated quote, substitution or heredoc, or nesting deeper than `MAX_DEPTH`) returns `undefined`, so a caller keeps
  * its own fallback instead of guessing; this module never throws and does linear work.
  */
+/** One simple command: its words, and the body of the last heredoc fed to it, which is its stdin. */
+export interface ShellCommand {
+    words: string[];
+    stdin?: string;
+}
 /** The simple commands of `text`, in order of completion (a command inside a substitution is listed before the command that holds it), or `undefined` when it cannot be parsed. */
+export declare function shellCommands(text: string): ShellCommand[] | undefined;
+/** `shellCommands`, as the words of each command only. */
 export declare function simpleCommands(text: string): string[][] | undefined;

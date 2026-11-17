@@ -39,7 +39,7 @@ export declare const isUiTestCommand: (command: string) => boolean;
  * option's value is `test` or `test-without-building`. A `sh -c` script goes to `inScript`. A caller that already has the words (the
  * CLI's argv) uses it directly, so quoting is never lost to a join.
  */
-export declare function runsUiTest(words: readonly string[], inScript: (script: string) => boolean): boolean;
+export declare function runsUiTest(words: readonly string[], inScript: (script: string) => boolean, stdin?: string): boolean;
 /** `isUiTestCommand` for a command whose words are already split (the CLI's `-- argv`). */
 export declare const isUiTestArgv: (argv: readonly string[]) => boolean;
 /**
