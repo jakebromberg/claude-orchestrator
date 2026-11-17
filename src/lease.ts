@@ -237,6 +237,8 @@ export interface LeaseStatus {
   weights?: Weights;
   /** Set by `leaseStatus` only: the session class's capacity at the same reading, and its live holders. */
   sessions?: { capacity: number; live: HolderInfo[] };
+  /** Set by `leaseStatus` only, and only while a UI-test run holds or awaits the one UI-test slot: its capacity, live holders and eligible tickets in arrival order. */
+  uiTests?: { capacity: number; live: HolderInfo[]; waiting?: { seq: number; label: string; gated: boolean; ready?: boolean; priority?: "high" }[] };
   /** Set by `leaseStatus` only, and only while a heavy ticket waits: the eligible tickets in admission order (high priority first, then `seq`). `ready` is absent on a ticket from a build that predates it, and `priority` on a normal one. */
   waiting?: { seq: number; label: string; gated: boolean; ready?: boolean; priority?: "high" }[];
 }
@@ -260,7 +262,7 @@ export interface LeaseHandle {
    * not a positive integer, and once the holder has been reaped: a reaped holder's file is not recreated.
    */
   setChildPid(pid: number, pgid?: number): void;
-  /** Detached holders only: rewrites `expiresAt` from the request's getter, so a holder admitted before a long wait for another slot still lasts the call's whole time. Returns false when the holder's file is gone (reaped or removed): the slot is lost. */
+  /** Rewrites a detached holder's `expiresAt` from the request's getter (so a holder admitted before a long wait for another slot still lasts the call's whole time) or touches another holder's heartbeat, under the mutex. Returns false when the holder's file is gone (reaped or removed): the slot is lost. */
   renew?(): boolean;
   /** Sets or clears the holder's `suspended` mark, and records `resumedAt` when given (a resume); throws when the mark cannot be written or the holder is gone. Present on a holder this process owns. */
   setSuspended?(on: boolean, resumedAt?: number): void;
@@ -824,14 +826,25 @@ function createHolder(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, com
     },
     renew() {
       if (released) return false;
-      if (!detached) return true;
+      // Under the mutex, the one place holders are reaped, so a file found there cannot be reaped between the check and the write and then
+      // recreated. A busy mutex or an I/O error is unknown, not lost: the next poll renews again.
+      let lock: ReturnType<typeof tryLockOnce> = null;
       try {
-        // Only a file still there is replaced, as in `setChildPid`.
+        lock = tryLockOnce(join(opts.dir, ".mutex"), { staleAfterMs: MUTEX_STALE_MS, now: opts.now });
+        if (!lock) return true;
         if (!unlessGone(() => statSync(file))) return false;
-        rec.expiresAt = detached.expiresAt;
-        write();
+        if (detached) {
+          rec.expiresAt = detached.expiresAt;
+          write();
+        } else {
+          // A holder with no `expiresAt` lives by its heartbeat, which a stalled event loop stops: touching it here is the beat a stall missed.
+          const at = now() / 1000;
+          utimesSync(file, at, at);
+        }
       } catch {
-        // The previous record still names this holder, with the earlier expiry.
+        // The previous record still names this holder, with the earlier expiry or beat.
+      } finally {
+        lock?.release();
       }
       return true;
     },
@@ -1056,9 +1069,9 @@ function liveOf(opts: LeaseOptions, cls: LeaseClass): HolderInfo[] {
 }
 
 /** The heavy class's eligible tickets in admission order (high priority first, then `seq`), read without the mutex and without removing any (status deletes nothing); an I/O error reads as none. */
-function waitingOf(opts: LeaseOptions): Pick<LeaseStatus, "waiting"> {
+function waitingOf(opts: LeaseOptions, cls: LeaseClass = HEAVY): Pick<LeaseStatus, "waiting"> {
   try {
-    const waiting = scanTickets(opts, HEAVY, false).filter((t) => t.eligible).sort(byAdmission).map(({ seq, label, gated, ready, priority }) => ({ seq, label, gated, ...(ready !== undefined && { ready }), ...(priority && { priority }) }));
+    const waiting = scanTickets(opts, cls, false).filter((t) => t.eligible).sort(byAdmission).map(({ seq, label, gated, ready, priority }) => ({ seq, label, gated, ...(ready !== undefined && { ready }), ...(priority && { priority }) }));
     return waiting.length > 0 ? { waiting } : {};
   } catch {
     return {};
@@ -1249,7 +1262,10 @@ export function releaseHolder(opts: LeaseOptions, id: string): boolean {
 export function leaseStatus(opts: LeaseOptions, holderClass?: "ui-tests"): LeaseStatus {
   if (holderClass === "ui-tests") return statusOf(opts, UI_TESTS, snapshot(opts, UI_TESTS));
   const snap = snapshot(opts, HEAVY);
-  return { ...statusOf(opts, HEAVY, snap), ...waitingOf(opts), sessions: { capacity: SESSIONS.capacity(snap.step, SESSIONS.ceiling(opts)), live: liveOf(opts, SESSIONS) } };
+  const uiLive = liveOf(opts, UI_TESTS);
+  const uiWaiting = waitingOf(opts, UI_TESTS).waiting;
+  const uiTests = uiLive.length > 0 || uiWaiting ? { uiTests: { capacity: UI_TESTS.capacity(snap.step, 1), live: uiLive, ...(uiWaiting && { waiting: uiWaiting }) } } : {};
+  return { ...statusOf(opts, HEAVY, snap), ...waitingOf(opts), ...uiTests, sessions: { capacity: SESSIONS.capacity(snap.step, SESSIONS.ceiling(opts)), live: liveOf(opts, SESSIONS) } };
 }
 
 /**
