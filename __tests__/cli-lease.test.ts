@@ -523,6 +523,37 @@ describe("runLeased", () => {
       expect(lease.events.map((e) => e.type)).toEqual(["acquire", "release"]);
     });
 
+    // Issue #324 review: the hook holder's pid is the Claude process, an ancestor of every Bash call of the session, so a sibling call's slot
+    // must never be borrowed by a UI-test run (it would run beside the sibling's UI test, or be refused as nested).
+    describe("a UI-test run", () => {
+      const uiArgv = ["xcodebuild", "-scheme", "S", "test"];
+      const runUi = (over: Partial<LeaseCliDeps>, opts: Partial<LeaseOptions> = {}, args: Partial<RunArgs> = {}) =>
+        run({ argv: uiArgv, ...args }, { leaseOptions: () => lease.opts(opts), acquire: acquireLease, leaseStatus, ...over });
+
+      it("never borrows an ancestor's hook slot: it takes its own two slots and never looks the ancestors up", async () => {
+        await plantHook(SESSION);
+        const ancestors = vi.fn(() => [SESSION]);
+        const done = runUi({ ancestors }, { policy: { heavyCeiling: 2, heavyWarning: 2 } });
+        await vi.waitFor(() => expect(spawned).toHaveLength(1));
+        child.emit("close", 0, null);
+        expect(await done).toBe(0);
+        expect(ancestors).not.toHaveBeenCalled();
+        expect(err[0]).toMatch(/^lease: admitted after /);
+        expect(spawned[0]!.env.CO_LEASE_HOLDER).not.toBe("hook-toolu_1");
+        expect(lease.events.filter((e) => e.type === "acquire").map((e) => e.class)).toEqual(["ui-tests", "heavy"]);
+      });
+
+      it("waits for a sibling call's UI-test slot instead of running beside it or refusing as nested", async () => {
+        await acquireLease(lease.opts({ policy: { heavyCeiling: 2, heavyWarning: 2 } }), { command: "xcodebuild test -scheme A", cwd: "/w", uiTest: true, detached: { id: "hook-A", sessionPid: SESSION, expiresAt: lease.clock.ms + 600_000 } });
+        lease.events.length = 0;
+        const code = await runUi({ ancestors: () => [SESSION] }, { policy: { heavyCeiling: 2, heavyWarning: 2 } }, { maxWaitSec: 0 });
+        expect(code).toBe(75);
+        expect(err.join("\n")).toContain("lease: no slot after");
+        expect(err.join("\n")).not.toContain("inside a heavy slot");
+        expect(spawned).toEqual([]);
+      });
+    });
+
     it("does not look up ancestors when CO_LEASE_HOLDER names a live holder", async () => {
       await plantHook(SESSION);
       const ancestors = vi.fn(() => [SESSION]);
@@ -781,6 +812,16 @@ describe("runLeased", () => {
           { pid: 12, command: "tsc", ageSec: 3, override: true },
         ],
       });
+    });
+
+    it("prints the UI-test class's holders and waiting tickets under uiTests, and leaves it out when there are none", () => {
+      const waiting = [{ seq: 2, label: "xcodebuild test -scheme B", gated: false }];
+      const base = { level: "normal" as const, capacity: 3, step: 3, signals: null, live: [holder()] };
+      expect(runStatus(deps({ leaseStatus: () => ({ ...base, uiTests: { capacity: 1, live: [holder({ pid: 21, command: "xcodebuild test -scheme A", ageSec: 4 })], waiting } }) }))).toBe(0);
+      expect(JSON.parse(out.join("")).uiTests).toEqual({ capacity: 1, live: [{ pid: 21, command: "xcodebuild test -scheme A", ageSec: 4 }], waiting });
+      out.length = 0;
+      expect(runStatus(deps({ leaseStatus: () => base }))).toBe(0);
+      expect(JSON.parse(out.join(""))).not.toHaveProperty("uiTests");
     });
 
     it("prints priority high on a high holder and on a high waiting ticket, and leaves it out of a normal holder", () => {

@@ -3,8 +3,8 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireLease, releaseHolder, tryAcquireLease, type HolderMeta, type LeaseHandle, type LeaseOptions, type LeaseRefusal } from "../src/lease.js";
-import { failFsCall, plantHolder, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
+import { acquireLease, leaseStatus, releaseHolder, tryAcquireLease, type HolderMeta, type LeaseHandle, type LeaseOptions, type LeaseRefusal } from "../src/lease.js";
+import { failFsCall, plantHolder, plantTicket, scriptedLease, type ScriptedLease } from "./helpers/lease.js";
 
 // Issue #324, defect 2. A command that runs a UI-test action takes one slot of the UI-test class, capacity 1 machine-wide,
 // before it waits in the heavy line, so a second run waits in its own line and never holds up an unrelated heavy command.
@@ -277,6 +277,85 @@ describe("UI-test holder class (issue #324)", () => {
       expect(r).toMatchObject({ refused: "slot-lost", class: "ui-tests" });
       expect(names("holders")).toEqual([]);
       expect(names("ui-tests")).toEqual([]);
+    });
+  });
+
+  // Issue #324 review: a heavy-queue, `cli-lease run` or post-check UI holder has no `expiresAt`, only a heartbeat; the heavy wait must keep it
+  // fresh, and a holder that a stall let another waiter reap must refuse the run rather than be admitted beside the new holder.
+  describe("a non-detached UI-test holder during a long heavy wait", () => {
+    const policy = { heavyCeiling: 1, heavyWarning: 1 };
+    const blockerFor = () => tryAcquireLease(opts({ policy }), { ...plain, detached: { id: "hook-blocker", sessionPid: process.pid, expiresAt: lease.clock.ms + 700_000 } })!;
+    const uiAcquires = (): string[] => lease.events.filter((e) => e.type === "acquire" && e.class === "ui-tests").map((e) => (e as { id: string }).id);
+
+    it("keeps its heartbeat fresh past 90 s, so a competing UI-test waiter never reaps it", async () => {
+      const blocker = blockerFor();
+      const start = lease.clock.ms;
+      const competitors: Promise<LeaseHandle | LeaseRefusal>[] = [];
+      lease.clock.onSleep = () => {
+        const waited = lease.clock.ms - start;
+        if (waited >= 200_000 && competitors.length < 3) competitors.push(acquireLease(opts({ policy }), ui, { maxWaitMs: 0 }));
+        if (waited >= 400_000) blocker.release();
+      };
+      const r = await take(ui, { maxWaitMs: 450_000 }, { policy });
+      expect(isHandle(r) && r.leased).toBe(true);
+      expect(competitors).toHaveLength(3);
+      for (const c of await Promise.all(competitors)) if (isHandle(c)) c.release();
+      expect(uiAcquires()).toEqual([(r as LeaseHandle).id]);
+      expect(lease.events.some((e) => e.type === "reap")).toBe(false);
+      (r as LeaseHandle).release();
+    });
+
+    it("refuses with slot-lost when a stall let another waiter reap it, and the new holder keeps the slot", async () => {
+      const blocker = blockerFor();
+      let taker: Promise<LeaseHandle | LeaseRefusal> | undefined;
+      lease.clock.onSleep = () => {
+        if (lease.clock.sleeps.length !== 2) return;
+        lease.clock.ms += 200_000; // the machine stalls: no heartbeat, no poll
+        taker = acquireLease(opts({ policy }), ui, { maxWaitMs: 0 });
+      };
+      const r = await take(ui, { maxWaitMs: 450_000 }, { policy });
+      expect(r).toMatchObject({ refused: "slot-lost", class: "ui-tests" });
+      await taker;
+      expect(lease.events.filter((e) => e.type === "reap" && e.class === "ui-tests")).toEqual([expect.objectContaining({ reason: "stale-heartbeat" })]);
+      expect(uiAcquires()).toHaveLength(2);
+      expect(names("holders")).toHaveLength(1); // the blocker only
+      blocker.release();
+    });
+
+    it("refuses with slot-lost when its file is gone at the heavy admission, and gives the heavy slot back", async () => {
+      const blocker = blockerFor();
+      lease.clock.onSleep = () => {
+        if (lease.clock.sleeps.length !== 1) return;
+        for (const f of names("ui-tests")) rmSync(join(lease.dir, "ui-tests", f));
+        blocker.release();
+      };
+      const r = await take(ui, { maxWaitMs: 450_000 }, { policy });
+      expect(r).toMatchObject({ refused: "slot-lost", class: "ui-tests" });
+      expect(names("holders")).toEqual([]);
+      expect(names("ui-tests")).toEqual([]);
+    });
+
+    it("does not recreate a reaped holder's file when it finds it gone", async () => {
+      const blocker = blockerFor();
+      lease.clock.onSleep = () => {
+        if (lease.clock.sleeps.length === 1) for (const f of names("ui-tests")) rmSync(join(lease.dir, "ui-tests", f));
+      };
+      await take({ ...ui, detached: { id: "hook-t9", sessionPid: process.pid, expiresAt: lease.clock.ms + 120_000 } }, { maxWaitMs: 450_000 }, { policy });
+      expect(names("ui-tests")).toEqual([]);
+      blocker.release();
+    });
+  });
+
+  // `lease status` shows who holds and who waits for the UI-test slot, as it does for the heavy class.
+  describe("lease status", () => {
+    it("lists the UI-test holders and waiters, and nothing when there are none", async () => {
+      expect(leaseStatus(opts())).not.toHaveProperty("uiTests");
+      const h = (await take(ui)) as LeaseHandle;
+      plantTicket(lease, "waiter-1", 1, { label: "xcodebuild test -scheme B" }, { sub: "ui-tests-waiting" });
+      const status = leaseStatus(opts());
+      expect(status.uiTests).toMatchObject({ capacity: 1, live: [expect.objectContaining({ id: h.id, command: ui.command })], waiting: [expect.objectContaining({ seq: 1, label: "xcodebuild test -scheme B" })] });
+      h.release();
+      expect(leaseStatus(opts()).uiTests).toMatchObject({ live: [], waiting: [expect.objectContaining({ seq: 1 })] });
     });
   });
 
