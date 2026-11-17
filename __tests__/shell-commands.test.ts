@@ -182,6 +182,33 @@ describe("shellCommands: which commands a & backgrounds", () => {
 // Issue #324 review: a `;` inside a compound command (`if`, `for`, `while`, `until`, `case`, `{ }`, a function body) ended the statement, so a lone `&`
 // after its closer marked only the last inner command. The closer now restores the statement to its opener, and a function whose call is backgrounded
 // takes its body with it.
+// Issue #324 review: a case arm's `)` closed a `$(` early, so the rest of a double-quoted substitution was text and a UI run inside it was lost.
+describe("shellCommands: a case inside a substitution", () => {
+  const words = (text: string): string[] => shellCommands(text)!.map((c) => c.words.join(" "));
+
+  it.each<[string, string, string[]]>([
+    ["a double-quoted substitution", `echo "$(case x in a) echo hi ;; esac)"; ls`, ["echo hi"]],
+    ["two arms", `echo "$(case x in a) echo A ;; b) echo B ;; esac)"; ls`, ["echo A", "echo B"]],
+    ["an arm with a leading parenthesis", `echo "$(case x in (a) echo A ;; esac)"; ls`, ["echo A"]],
+    ["an unquoted substitution", `echo $(case x in a) echo hi ;; esac); ls`, ["echo hi"]],
+    ["a nested substitution in an arm", `echo "$(case x in a) echo $(date) ;; b) echo B ;; esac)"; ls`, ["date", "echo B"]],
+    ["a case after a closed one", `echo "$(case x in a) : ;; esac; case y in b) echo B ;; esac)"; ls`, ["echo B"]],
+    ["an arm written over several lines", `echo "$(case x in
+ a)
+ echo A ;;
+esac)"; ls`, ["echo A"]],
+  ])("keeps %s open to its closing parenthesis: the commands in it are commands and the one after it is last", (_name, text, inside) => {
+    const all = words(text);
+    for (const c of inside) expect(all).toContain(c);
+    expect(all.at(-1)).toBe("ls");
+    expect(all.filter((w) => w === "ls")).toHaveLength(1);
+  });
+
+  it("closes an ordinary substitution at its first closing parenthesis, as before", () => {
+    expect(simpleCommands(`echo "$(echo a) b"; ls`)!.map((w) => w[0])).toEqual(["echo", "echo", "ls"]);
+  });
+});
+
 describe("shellCommands: compound commands, functions, coproc and process substitution", () => {
   const marked = (text: string): string[] => shellCommands(text)!.filter((c) => c.background).map((c) => c.words.join(" "));
 
