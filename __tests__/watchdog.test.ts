@@ -110,6 +110,22 @@ describe("watchdog", () => {
       expect(message()).toEqual([]);
     });
 
+    // Issue #324 review: only a process that is the build tool or simctl itself keeps a simulator from being idle; a claude session whose prompt names them
+    // does not.
+    it("reports an idle device although a claude session's prompt names the build tool and simctl", () => {
+      rows = [...booted(U1, 200), ...tool("claude -p run xcodebuild test -scheme App, then xcrun simctl list devices")];
+      checkAt(0);
+      checkAt(6);
+      expect(message().map((m: string) => m.split(" ")[1])).toEqual([U1]);
+    });
+
+    it("is kept from idle by a real simctl, also through a qualified xcrun", () => {
+      rows = [...booted(U1, 200), ...tool("/usr/bin/xcrun simctl list")];
+      checkAt(0);
+      checkAt(6);
+      expect(message()).toEqual([]);
+    });
+
     it("starts the clock again after a tool runs", () => {
       rows = booted(U1, 200);
       checkAt(0);
@@ -199,8 +215,14 @@ describe("watchdog", () => {
   // process scan) and simulator reaping stands down (its test-action guard). The watchdog says so and never touches the process.
   describe("a hung test action", () => {
     const TEST = "xcodebuild test -scheme App -destination 'platform=iOS Simulator,name=iPhone'";
+    const RUNNER = "/Users/x/Library/Developer/CoreSimulator/Devices/5E2F590B-1111-4222-8333-444455556666/data/Containers/Bundle/Application/ABC/AppUITests-Runner.app/AppUITests-Runner";
+    const XCTEST_SIM = "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/Library/Xcode/Agents/xctest -XCTestBundlePath x";
     const hung = () => JSON.parse(readFileSync(join(dir, "watchdog.json"), "utf-8")).findings.map((f: { message: string }) => f.message).filter((m: string) => m.includes("hung"));
-    const at = (etime: string, command = TEST, pid = 900): Row[] => [[pid, 50, pid, "S", command, etime]];
+    const at = (etime: string, command = TEST, pid = 900, ppid = 50): Row[] => [[pid, ppid, pid, "S", command, etime]];
+    /** A holder file of the UI-test class, its heartbeat `beatAgoMs` before the clock; `rec` over the defaults of a live detached holder. */
+    const holder = (rec: object = {}, beatAgoMs = 0): void =>
+      writeRecord("ui-tests", "h-1.json", { id: "h-1", pid: 700, command: "xcodebuild test", cwd: "/", startedAt: now - 3 * 3_600_000, level: "normal", expiresAt: now + 60_000, ...rec }, beatAgoMs);
+    const sessionRow: Row = [700, 1, 700, "S", "claude"];
 
     it.each([
       ["29 minutes", "29:00", false],
@@ -213,7 +235,7 @@ describe("watchdog", () => {
       expect(hung()).toHaveLength(reported ? 1 : 0);
     });
 
-    it("names its pid and age and says UI-test runs and simulator reaping are paused behind it, and that it is not killed", () => {
+    it("names its pid and age and says what is paused behind it, and that it is left running", () => {
       rows = [...SESSION, ...at("02:05:00")];
       checkAt(0);
       const [message] = hung();
@@ -224,11 +246,72 @@ describe("watchdog", () => {
       expect(message).toMatch(/not killed|left running/);
     });
 
-    it("is silent while a UI-test holder exists, whatever else is true", () => {
-      writeRecord("ui-tests", "1234-ab.json", { id: "1234-ab", pid: 1234, command: "xcodebuild test", cwd: "/", startedAt: now, level: "normal" });
-      rows = [...SESSION, ...at("02:05:00")];
+    // Issue #324 review: a leftover runner under a launchd_sim (no build tool process, no Xcode.app) is not counted by the lease's scan, so nothing says
+    // it is there; the watchdog does.
+    it("reports a 2-hour-old runner under a launchd_sim with no holder and no Xcode.app", () => {
+      const RT = "/Library/Developer/CoreSimulator/Volumes/iOS_23A/Library/Developer/CoreSimulator/Runtimes/iOS 27.2.simruntime/Contents/Resources/RuntimeRoot";
+      rows = [...SESSION, [200, 1, 200, "S", `${RT}/sbin/launchd_sim /Users/x/Library/Developer/CoreSimulator/Devices/5E2F590B-1111-4222-8333-444455556666/data/x`], ...at("02:00:00", RUNNER, 901, 200)];
       checkAt(0);
-      expect(hung()).toEqual([]);
+      expect(hung().map((m: string) => /pid (\d+)/.exec(m)![1])).toEqual(["901"]);
+    });
+
+    it("reports a simulator-path xctest and an xctest under Xcode.app, and not a bare xctest", () => {
+      rows = [
+        ...SESSION,
+        [800, 1, 800, "S", "/Applications/Xcode.app/Contents/MacOS/Xcode", "05:00:00"],
+        ...at("01:00:00", XCTEST_SIM, 901),
+        ...at("01:00:00", "xctest /x/T.xctest", 902, 800),
+        ...at("01:00:00", "xctest /x/T.xctest", 903),
+      ];
+      checkAt(0);
+      expect(hung().map((m: string) => /pid (\d+)/.exec(m)![1])).toEqual(["901", "902"]);
+    });
+
+    // Issue #324 review: only a live, unexpired holder that could own the process suppresses the report, never a file that merely exists.
+    describe("and the holders of the UI-test class", () => {
+      it("is silent while a live holder that started before the process exists", () => {
+        holder();
+        rows = [...SESSION, sessionRow, ...at("02:05:00")];
+        checkAt(0);
+        expect(hung()).toEqual([]);
+      });
+
+      it.each<[string, object, number]>([
+        ["an expired detached holder", { expiresAt: now - 1_000 }, 0],
+        ["a detached holder whose session is gone", { pid: 4999 }, 0],
+        ["a heartbeat holder that stopped beating", { expiresAt: undefined, pid: 701 }, 5 * 60_000],
+      ])("is reported despite %s", (_name, rec, beatAgoMs) => {
+        holder(rec, beatAgoMs);
+        rows = [...SESSION, sessionRow, ...at("02:05:00")];
+        checkAt(0);
+        expect(hung()).toHaveLength(1);
+      });
+
+      it("is silent for a heartbeat holder that is beating, and for one live only by its child", () => {
+        holder({ expiresAt: undefined, pid: 701 }, 10_000);
+        rows = [...SESSION, ...at("02:05:00")];
+        checkAt(0);
+        expect(hung()).toEqual([]);
+        rmSync(join(dir, "ui-tests"), { recursive: true });
+        holder({ expiresAt: undefined, pid: 701, childPid: 900 }, 5 * 60_000);
+        checkAt(1);
+        expect(hung()).toEqual([]);
+      });
+
+      it("is reported when the process is older than the live holder: it is not that holder's run", () => {
+        holder({ startedAt: now - 10 * 60_000 });
+        rows = [...SESSION, sessionRow, ...at("02:05:00")];
+        checkAt(0);
+        expect(hung()).toHaveLength(1);
+      });
+
+      it("is reported beside a live holder for a process that is not the holder's, and a junk file suppresses nothing", () => {
+        writeRecord("ui-tests", "junk.json", { nothing: true });
+        writeRecord("ui-tests", "notes.txt", { nothing: true });
+        rows = [...SESSION, ...at("02:05:00")];
+        checkAt(0);
+        expect(hung()).toHaveLength(1);
+      });
     });
 
     it("reports a test action under xcrun and by Xcode path, and not a shell, a grep or a build action that only mentions it", () => {

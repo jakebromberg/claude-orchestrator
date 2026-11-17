@@ -110,6 +110,22 @@ describe("hook mode and the UI-test class", () => {
     expect(await run(call("PreToolUse", "npm test &"))).not.toContain("foreground");
   });
 
+  // A UI call with run_in_background set is a refusal of the UI class too: the standard prefix, and the same advice.
+  it("denies a UI-test call with run_in_background with the no-slot prefix, and a heavy one with the plain text", async () => {
+    const ui = JSON.parse(await run(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "toolu_1", cwd: "/work", tool_input: { command: UI, run_in_background: true } })));
+    expect(ui.hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(ui.hookSpecificOutput.permissionDecisionReason).toMatch(/^lease: no slot after 0s: run a UI test in the foreground/);
+    expect(ui.hookSpecificOutput.permissionDecisionReason).toContain("rerunning the same command will not help");
+    const heavy = JSON.parse(await run(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "toolu_2", cwd: "/work", tool_input: { command: "npm test", run_in_background: true } })));
+    expect(heavy.hookSpecificOutput.permissionDecisionReason).toBe("lease: run heavy commands in the foreground so the lease can track them");
+    expect([names("ui-tests"), names("holders")]).toEqual([[], []]);
+  });
+
+  it("denies a backgrounded UI call with the advice that rerunning will not help", async () => {
+    const out = JSON.parse(await run(call("PreToolUse", `${UI} &`)));
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain("rerunning the same command will not help");
+  });
+
   it("takes only a heavy slot for an ordinary heavy command", async () => {
     await run(call("PreToolUse", "npm test"));
     expect(names("ui-tests")).toEqual([]);

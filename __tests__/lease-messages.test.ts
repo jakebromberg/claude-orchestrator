@@ -65,6 +65,8 @@ describe("UI-test refusals", () => {
   ])("$refused has its own line, exit code 75 and the no-slot prefix", ({ refused, has }) => {
     const text = formatRefusal(ui(refused), status);
     for (const part of has) expect(text).toContain(part);
+    // Static refusals say that rerunning cannot help; the others are lease waits the caller reruns.
+    if (refused === "nested-ui-test") expect(text).toContain("rerunning the same command will not help");
     // The standard prefix, so the "stop after the second no-slot denial" rule and a give-up rule that matches it count this refusal too.
     expect(text.startsWith("lease: no slot after 61s")).toBe(true);
     expect(refusalExitCode(ui(refused))).toBe(75);

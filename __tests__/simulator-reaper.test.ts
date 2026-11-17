@@ -595,6 +595,39 @@ describe("reapSimulators", () => {
     });
   });
 
+  // Issue #324 review: the "a test action is running" guard stands the reaper down for a process that is the build tool's test action or a UI-test runner,
+  // not for any process whose command line holds the words (a claude session whose prompt names the build tool must not pause reaping for as long as it lives).
+  describe("the test-action guard", () => {
+    const leftovers = [runtimeRow(300), runtimeRow(301)];
+    beforeEach(() => {
+      envOf = { 300: U1, 301: U1 };
+    });
+
+    it.each<[string, PsTextRow]>([
+      ["a claude session whose prompt names the build tool", { pid: 900, ppid: 50, pgid: 900, command: "claude -p run xcodebuild test -scheme App and report" }],
+      ["a shell that holds the words", { pid: 900, ppid: 50, pgid: 900, command: "/bin/zsh -c cd /w && xcodebuild test" }],
+      ["a grep for the words", { pid: 900, ppid: 50, pgid: 900, command: "grep -rn 'xcodebuild test' docs" }],
+    ])("does not stand the reaper down: %s", (_name, row) => {
+      reap([...leftovers, row]);
+      expect(signals).toHaveLength(2);
+    });
+
+    it.each<[string, PsTextRow]>([
+      ["a build tool test action", { pid: 900, ppid: 50, pgid: 900, command: "xcodebuild test -scheme App" }],
+      ["a build tool test action under xcrun", { pid: 900, ppid: 50, pgid: 900, command: "xcrun xcodebuild test-without-building -xctestrun x" }],
+      ["a UI-test runner app", { pid: 900, ppid: 50, pgid: 900, command: "/Users/x/Library/Developer/Xcode/DerivedData/App-abc/Build/Products/Debug-iphonesimulator/AppUITests-Runner.app/AppUITests-Runner" }],
+    ])("stands the reaper down: %s", (_name, row) => {
+      reap([...leftovers, row]);
+      expect(signals).toEqual([]);
+    });
+
+    it("applies the same guard to the rescan: a runner that started meanwhile stops the signals", () => {
+      freshRows = () => parsePsTable(psText([...leftovers, { pid: 900, ppid: 50, pgid: 900, command: "/x/AppUITests-Runner.app/AppUITests-Runner" }]));
+      reap(leftovers);
+      expect(signals).toEqual([]);
+    });
+  });
+
   describe("the device lists", () => {
     it("are not read when there are no simulator rows and no idle devices", () => {
       reap([{ pid: 50, ppid: 1, pgid: 50, command: "zsh" }]);

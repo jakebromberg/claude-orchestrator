@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { ancestry, groupAlive, signalGroup, isPid, pidAlive, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, isSimulatorCommand, runsTool, simulatorUdid, xcTestDeviceUdid, XCODE_TOOLS, isTestRunnerProcess, isXcodebuildTestProcess, isXctestProcess, hasXcodeAppAncestor, runningUiTestPids, XCODEBUILD_VALUED, type ProcRow } from "../src/ps.js";
+import { ancestry, groupAlive, signalGroup, isPid, pidAlive, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, isSimulatorCommand, runsTool, simulatorUdid, xcTestDeviceUdid, XCODE_TOOLS, isTestRunnerProcess, isXcodebuildTestProcess, isXctestProcess, hasXcodeAppAncestor, hungTestCandidates, isBuildToolProcess, xcodeAppRunning, runningUiTestPids, XCODEBUILD_VALUED, type ProcRow } from "../src/ps.js";
 import { psText } from "./helpers/ps-text.js";
 
 vi.mock("node:child_process", async (orig) => ({ ...(await orig<typeof import("node:child_process")>()), execFileSync: vi.fn() }));
@@ -361,9 +361,25 @@ describe("runningUiTestPids and a test runner", () => {
   const row = (pid: number, ppid: number, command: string, uid = 501) => ({ pid, ppid, pgid: pid, uid, stat: "S", elapsedMs: 0, rssBytes: 0, command });
   const XCODE = "/Applications/Xcode.app/Contents/MacOS/Xcode";
   const XCTEST = "/Applications/Xcode.app/Contents/Developer/usr/bin/xctest /x/T.xctest";
-  it("counts a runner app of this user as a test in progress, and not another user's, and not the asking process's ancestry", () => {
-    const rows = [row(10, 1, "/x/AppUITests-Runner.app/AppUITests-Runner"), row(12, 1, "/x/AppUITests-Runner.app/AppUITests-Runner", 0), row(20, 1, "/x/AppUITests-Runner.app/AppUITests-Runner"), row(99, 20, "wrapper")];
-    expect(runningUiTestPids(rows, 501, 99)).toEqual([10]);
+  const RUNNER = "/x/AppUITests-Runner.app/AppUITests-Runner";
+  const SIM_XCTEST = "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/Library/Xcode/Agents/xctest -XCTestBundlePath x";
+
+  // Issue #324 review: a runner or simulator-path xctest that the build tool drives is already covered by the build tool's own process, and one left
+  // behind by a killed run would otherwise wedge the UI class for good, so they count only while Xcode.app's main executable is running.
+  it("counts a runner app of this user only while Xcode.app is running, and not another user's, and not the asking process's ancestry", () => {
+    const runners = [row(10, 1, RUNNER), row(12, 1, RUNNER, 0), row(20, 1, RUNNER), row(99, 20, "wrapper")];
+    expect(runningUiTestPids([...runners, row(40, 1, XCODE)], 501, 99)).toEqual([10]);
+    expect(runningUiTestPids(runners, 501, 99)).toEqual([]);
+  });
+
+  it("does not count a leftover runner under a launchd_sim with no Xcode.app", () => {
+    const rows = [row(5, 1, "/Library/Developer/CoreSimulator/Volumes/iOS/RuntimeRoot/sbin/launchd_sim /Users/x/Library/Developer/CoreSimulator/Devices/U/data/x"), row(10, 5, RUNNER)];
+    expect(runningUiTestPids(rows, 501, 99)).toEqual([]);
+  });
+
+  it("does not count Xcode.app of another user, or a process that only names it", () => {
+    expect(runningUiTestPids([row(10, 1, RUNNER), row(40, 1, XCODE, 0)], 501, 99)).toEqual([]);
+    expect(runningUiTestPids([row(10, 1, RUNNER), row(40, 1, `/bin/zsh -c open ${XCODE}`)], 501, 99)).toEqual([]);
   });
 
   // Issue #324 review: `xcrun xctest <bundle>` is what a Swift gate runs, so a bare xctest says nothing about a UI run.
@@ -378,20 +394,77 @@ describe("runningUiTestPids and a test runner", () => {
   });
 
   it.each<[string, string]>([
-    ["an iPhone simulator platform agent", "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/Library/Xcode/Agents/xctest -XCTestBundlePath x"],
-    ["another simulator platform", "/Applications/Xcode.app/Contents/Developer/Platforms/AppleTVSimulator.platform/Developer/Library/Xcode/Agents/xctest -XCTestBundlePath x"],
+    ["an iPhone simulator platform agent", SIM_XCTEST],
+    ["another simulator platform", SIM_XCTEST.replace("iPhoneSimulator", "AppleTVSimulator")],
     ["a simulator runtime agent", "/Library/Developer/CoreSimulator/Volumes/iOS_23A/Library/Developer/CoreSimulator/Runtimes/iOS 27.2.simruntime/Contents/Resources/RuntimeRoot/Developer/Library/Xcode/Agents/xctest -XCTestBundlePath x"],
-  ])("counts an xctest that runs from %s, wherever its parent is", (_name, command) => {
-    expect(runningUiTestPids([row(30, 1, command)], 501, 99)).toEqual([30]);
+  ])("counts an xctest that runs from %s while Xcode.app is running, wherever its parent is, and not without it", (_name, command) => {
+    expect(runningUiTestPids([row(30, 1, command), row(40, 1, XCODE)], 501, 99)).toEqual([30]);
+    expect(runningUiTestPids([row(30, 1, command)], 501, 99)).toEqual([]);
   });
 
   it("does not count an xctest whose path only mentions a simulator in an argument", () => {
-    expect(runningUiTestPids([row(31, 1, "xctest /x/iPhoneSimulator.platform/T.xctest")], 501, 99)).toEqual([]);
+    expect(runningUiTestPids([row(31, 1, "xctest /x/iPhoneSimulator.platform/T.xctest"), row(40, 1, XCODE)], 501, 99)).toEqual([]);
   });
 
   it("leaves another user's xctest out, even under Xcode.app", () => {
     const rows = [row(20, 1, XCODE), row(21, 20, XCTEST, 0)];
     expect(runningUiTestPids(rows, 501, 99)).toEqual([]);
+  });
+
+  it("still counts a build tool test action with no Xcode.app", () => {
+    expect(runningUiTestPids([row(50, 1, "xcodebuild test -scheme App")], 501, 99)).toEqual([50]);
+  });
+});
+
+describe("xcodeAppRunning", () => {
+  const row = (pid: number, command: string, uid = 501) => ({ pid, ppid: 1, pgid: pid, uid, stat: "S", elapsedMs: 0, rssBytes: 0, command });
+  it("is true for this user's Xcode.app main executable and false for anything else", () => {
+    expect(xcodeAppRunning([row(1, "/Applications/Xcode.app/Contents/MacOS/Xcode")], 501)).toBe(true);
+    expect(xcodeAppRunning([row(1, "/Applications/Xcode Beta 2.app/Contents/MacOS/Xcode -x")], 501)).toBe(true);
+    expect(xcodeAppRunning([row(1, "/Applications/Xcode.app/Contents/MacOS/Xcode", 0)], 501)).toBe(false);
+    expect(xcodeAppRunning([row(1, "/bin/zsh -c open /Applications/Xcode.app/Contents/MacOS/Xcode")], 501)).toBe(false);
+    expect(xcodeAppRunning([], 501)).toBe(false);
+  });
+});
+
+// Issue #324 review: the watchdog's hung report covers every kind of test in progress, including a runner or xctest the scan would not count (no Xcode.app).
+describe("hungTestCandidates", () => {
+  const row = (pid: number, ppid: number, command: string) => ({ pid, ppid, pgid: pid, uid: 501, stat: "S", elapsedMs: 0, rssBytes: 0, command });
+  const RUNNER = "/x/AppUITests-Runner.app/AppUITests-Runner";
+  it("lists build tool test actions, runners, and xctest under Xcode.app or from a simulator path, with or without Xcode.app running", () => {
+    const rows = [
+      row(10, 1, "xcodebuild test -scheme A"),
+      row(11, 1, RUNNER),
+      row(12, 1, "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/Library/Xcode/Agents/xctest x"),
+      row(20, 1, "/Applications/Xcode.app/Contents/MacOS/Xcode"),
+      row(21, 20, "xctest /x/T.xctest"),
+      row(30, 1, "xcodebuild build -scheme A"),
+      row(31, 1, "xctest /x/T.xctest"),
+      row(32, 1, "/bin/zsh"),
+    ];
+    expect(hungTestCandidates(rows).map((r) => r.pid)).toEqual([10, 11, 12, 21]);
+  });
+});
+
+describe("isBuildToolProcess", () => {
+  it.each<[string, string]>([
+    ["the build tool by name", "xcodebuild -showBuildSettings"],
+    ["simctl through xcrun", "xcrun simctl list"],
+    ["simctl through a qualified xcrun", "/usr/bin/xcrun simctl shutdown U"],
+    ["simctl by path", "/Applications/Xcode.app/Contents/Developer/usr/bin/simctl list"],
+    ["the build tool in an Xcode path with spaces", "/Applications/Xcode Beta 2.app/Contents/Developer/usr/bin/xcodebuild test"],
+    ["the build tool alone", "xcodebuild"],
+  ])("is true for %s", (_name, command) => {
+    expect(isBuildToolProcess(command)).toBe(true);
+  });
+  it.each<[string, string]>([
+    ["a claude session whose prompt names the build tool", "claude -p run xcodebuild test -scheme App and then simctl list"],
+    ["a shell script that holds the words", "/bin/zsh -c xcodebuild test"],
+    ["a grep for the words", "grep -rn simctl docs"],
+    ["a similar name", "myxcodebuild test"],
+    ["an empty command", ""],
+  ])("is false for %s", (_name, command) => {
+    expect(isBuildToolProcess(command)).toBe(false);
   });
 });
 
