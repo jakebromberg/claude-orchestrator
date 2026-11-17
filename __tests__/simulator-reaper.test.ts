@@ -40,6 +40,9 @@ describe("reapSimulators", () => {
   let listCalls: DeviceSet[];
   let envLookups: number[][];
   let envOf: Record<number, EnvSpec>;
+  // What the environment lookup right before a signal sees, when a test changes it (a reused pid), and whether that lookup fails.
+  let envOfFresh: Record<number, EnvSpec> | undefined;
+  let envFailsAfterFirst = false;
   let list: () => string;
   let testList: () => string;
   let shutdownFails: Error | undefined;
@@ -49,7 +52,9 @@ describe("reapSimulators", () => {
     listDevices: (set) => (listCalls.push(set), set === "main" ? list() : testList()),
     processEnv: (pids) => {
       envLookups.push(pids);
-      return pids.flatMap((pid) => (pid in envOf ? [`${pid} ${runtimeRow(pid).command} ${envText(envOf[pid])}`] : [])).join("\n");
+      if (envFailsAfterFirst && envLookups.length > 1) throw new Error("ps timed out");
+      const table = envLookups.length > 1 && envOfFresh ? envOfFresh : envOf;
+      return pids.flatMap((pid) => (pid in table ? [`${pid} ${runtimeRow(pid).command} ${envText(table[pid])}`] : [])).join("\n");
     },
     shutdown: (udid, set) => {
       shutdowns.push(udid);
@@ -95,6 +100,8 @@ describe("reapSimulators", () => {
     shutdownSets = [];
     listCalls = [];
     freshRows = undefined;
+    envOfFresh = undefined;
+    envFailsAfterFirst = false;
     scans = 0;
     seenIn = undefined;
     envLookups = [];
@@ -187,7 +194,7 @@ describe("reapSimulators", () => {
 
     it("looks up the environment of simulator runtime rows only, in one call", () => {
       reap([...leftovers, { pid: 50, ppid: 1, pgid: 50, command: "zsh" }, runtimeRow(60, { command: "/Applications/Xcode.app/x" })]);
-      expect(envLookups).toEqual([[300, 301, 302]]);
+      expect(envLookups[0]).toEqual([300, 301, 302]);
     });
 
     it.each<[string, () => void, PsTextRow[]]>([
@@ -512,6 +519,62 @@ describe("reapSimulators", () => {
     it("reads no table at all when nothing is acted on", () => {
       reap([{ pid: 50, ppid: 1, pgid: 50, command: "zsh" }]);
       expect(scans).toBe(0);
+    });
+  });
+
+  // Issue #324 review: a Shutdown device with a live `launchd_sim` is not shut down (it is booting, or shutting down), and the rescan re-reads each
+  // pid's environment, so a pid that was reused by a process of another device, or that no longer names the device, is not signalled.
+  describe("a device that may still be alive", () => {
+    const leftovers = [runtimeRow(300), runtimeRow(301)];
+    const launchd = (udid: string, dir: string): PsTextRow => ({ pid: 200, ppid: 1, pgid: 200, command: `${RT}/sbin/launchd_sim /Users/x/Library/Developer/${dir}/${udid}/data/var/run/launchd_bootstrap.plist` });
+    beforeEach(() => {
+      envOf = { 300: U1, 301: U1 };
+    });
+
+    it.each<[string, PsTextRow]>([
+      ["a main-set launchd_sim for the device", launchd(U1, "CoreSimulator/Devices")],
+      ["a test-set launchd_sim for the device", launchd(U1, "XCTestDevices")],
+    ])("is left alone while %s is alive in the scan the decision was made on", (_name, row) => {
+      reap([...leftovers, row]);
+      expect(signals).toEqual([]);
+      expect(events).toEqual([]);
+    });
+
+    it("is left alone when the launchd_sim appears only in the rescan", () => {
+      freshRows = () => parsePsTable(psText([...leftovers, launchd(U1, "CoreSimulator/Devices")]));
+      reap(leftovers);
+      expect(signals).toEqual([]);
+    });
+
+    it("is not held back by another device's launchd_sim", () => {
+      reap([...leftovers, launchd(U2, "CoreSimulator/Devices")]);
+      expect(signals).toHaveLength(2);
+    });
+
+    it("reads each pid's environment again in the rescan, and signals only the pids that still name the device", () => {
+      envOfFresh = { 300: U1, 301: U2 };
+      reap(leftovers);
+      expect(envLookups).toEqual([[300, 301], [300, 301]]);
+      expect(signals).toEqual([[300, "SIGTERM"]]);
+    });
+
+    it("signals no pid whose environment cannot be read again, or names no device any more", () => {
+      envOfFresh = { 300: undefined };
+      reap(leftovers);
+      expect(signals).toEqual([]);
+    });
+
+    it("signals nothing when the second environment lookup fails, and keeps what it knew", () => {
+      envFailsAfterFirst = true;
+      reap(leftovers, [], { [U1]: 1 });
+      expect(signals).toEqual([]);
+      expect(lastResult.attempts).toEqual({ [U1]: 1 });
+    });
+
+    it("does not read the environment a second time for a device nothing is signalled for", () => {
+      list = () => devices({ [U1]: "Booted" });
+      reap(leftovers);
+      expect(envLookups).toHaveLength(1);
     });
   });
 

@@ -72,6 +72,20 @@ describe("UI-test refusals", () => {
     expect(formatPostCheckStop(ui(refused))).not.toContain("will not be retried");
   });
 
+  it("says an unmanaged UI-test run is in progress, with its pids, in the no-slot line and the refusal of a run that could not be ruled out", () => {
+    const busy: LeaseRefusal = { refused: "max-wait", waitedMs: 61_000, level: "normal", live: 0, class: "ui-tests", pids: [4242, 4243] };
+    expect(formatRefusal(busy, status)).toContain("UI-test run that holds no slot is in progress (pid 4242, 4243)");
+    expect(formatRefusal(busy, status)).toContain("lease: no slot after 61s");
+    const running: LeaseRefusal = { refused: "ui-test-running", waitedMs: 11_000, level: "normal", live: 0, class: "ui-tests", pids: [777] };
+    expect(formatRefusal(running, status)).toContain("UI-test run is in progress (pid 777)");
+    const unknown: LeaseRefusal = { refused: "ui-test-running", waitedMs: 400_000, level: "normal", live: 0, class: "ui-tests" };
+    expect(formatRefusal(unknown, status)).toContain("could not tell whether a UI-test run is in progress");
+    expect(refusalExitCode(running)).toBe(75);
+    expect(refusalStopReason(running)).toBe("lease-wait");
+    expect(refusalStopReason(unknown)).toBe("lease-wait");
+    expect(formatPostCheckStop(running)).toContain("UI-test slot");
+  });
+
   it.each(["io-error", "slot-lost", "nested-ui-test"] as const)("%s is a lease-wait stop, not memory-critical, so it is not recorded as memory pressure", (refused) => {
     expect(refusalStopReason(ui(refused))).toBe("lease-wait");
   });

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { ancestry, groupAlive, signalGroup, isPid, pidAlive, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, isSimulatorCommand, runsTool, simulatorUdid, xcTestDeviceUdid, XCODE_TOOLS, type ProcRow } from "../src/ps.js";
+import { ancestry, groupAlive, signalGroup, isPid, pidAlive, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, isSimulatorCommand, runsTool, simulatorUdid, xcTestDeviceUdid, XCODE_TOOLS, isXcodebuildTestProcess, runningUiTestPids, type ProcRow } from "../src/ps.js";
 import { psText } from "./helpers/ps-text.js";
 
 vi.mock("node:child_process", async (orig) => ({ ...(await orig<typeof import("node:child_process")>()), execFileSync: vi.fn() }));
@@ -218,5 +218,59 @@ describe("xcTestDeviceUdid and simulatorUdid name different device sets (issue #
   });
   it("is not read as a main-set device", () => {
     expect(simulatorUdid(`/launchd_sim /Users/x/Library/Developer/XCTestDevices/${U}/data/x`)).toBeUndefined();
+  });
+});
+
+// Issue #324 review: the UI-test slot is withheld while a test action of the build tool is running with no slot behind it. The process itself must be
+// the build tool, not a shell or tool whose command line only contains its name, or a Bash call's own shell would block the run it holds.
+describe("isXcodebuildTestProcess", () => {
+  const TOOL = "xcodebuild";
+  it.each<[string, string]>([
+    ["a test action by name", `${TOOL} test -scheme App`],
+    ["test-without-building", `${TOOL} test-without-building -xctestrun x.xctestrun`],
+    ["an Xcode path", `/Applications/Xcode.app/Contents/Developer/usr/bin/${TOOL} -scheme App test`],
+    ["a path with spaces and a dash", `/Applications/Xcode-beta 2.app/Contents/Developer/usr/bin/${TOOL} -scheme A -destination platform=iOS test`],
+    ["through xcrun", `xcrun ${TOOL} test -scheme App`],
+    ["through xcrun with options", `xcrun --sdk iphonesimulator ${TOOL} test`],
+    ["a preceding action", `${TOOL} clean test`],
+  ])("is true for %s", (_name, command) => {
+    expect(isXcodebuildTestProcess(command)).toBe(true);
+  });
+
+  it.each<[string, string]>([
+    ["a build action", `${TOOL} build -scheme App`],
+    ["a settings query", `/x/usr/bin/${TOOL} -showBuildSettings`],
+    ["a shell whose script holds the words", `zsh -c eval 'cd /w && ${TOOL} -scheme S test'`],
+    ["a bash -c with the words", `bash -c '${TOOL} test'`],
+    ["a grep for the words", `grep -rn "${TOOL} test" docs`],
+    ["the lease CLI naming its argv", `node /x/dist/src/cli-lease.js -- ${TOOL} -scheme S test`],
+    ["a similarly named tool", `my${TOOL} test`],
+    ["a longer action", `${TOOL} testing`],
+    ["no action", TOOL],
+    ["an empty command", ""],
+  ])("is false for %s", (_name, command) => {
+    expect(isXcodebuildTestProcess(command)).toBe(false);
+  });
+});
+
+describe("runningUiTestPids", () => {
+  const row = (pid: number, ppid: number, command: string, uid = 501) => ({ pid, ppid, pgid: pid, uid, stat: "S", elapsedMs: 0, rssBytes: 0, command });
+  const TEST = "xcodebuild test -scheme App";
+
+  it("lists this user's test actions", () => {
+    expect(runningUiTestPids([row(10, 1, TEST), row(11, 1, "zsh"), row(12, 1, "xcodebuild build")], 501, 99)).toEqual([10]);
+  });
+
+  it("leaves out other users' processes", () => {
+    expect(runningUiTestPids([row(10, 1, TEST, 0), row(11, 1, TEST, 502)], 501, 99)).toEqual([]);
+  });
+
+  it("leaves out the asking process and its ancestors, wherever they sit", () => {
+    const rows = [row(10, 1, TEST), row(20, 10, "zsh"), row(30, 20, TEST), row(99, 30, TEST), row(40, 1, TEST)];
+    expect(runningUiTestPids(rows, 501, 99)).toEqual([40]);
+  });
+
+  it("lists nothing for an empty table", () => {
+    expect(runningUiTestPids([], 501, 99)).toEqual([]);
   });
 });

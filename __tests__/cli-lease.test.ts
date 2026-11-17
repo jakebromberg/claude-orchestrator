@@ -658,6 +658,19 @@ describe("runLeased", () => {
   describe("UI-test class (issue #324)", () => {
     const meta = (): Record<string, unknown> => acquired[0]!.meta as Record<string, unknown>;
 
+    it("says in its progress line that a UI-test run with no slot is the reason it waits", async () => {
+      const acquire = (async (_o: LeaseOptions, _m: unknown, wait: { onWait?: (s: LeaseStatus & { waitedMs: number }) => void }) => {
+        const status = { level: "normal" as const, capacity: 1, step: 4, signals: null, live: [], waitedMs: 61_000, unmanagedUiTests: [4242] };
+        wait.onWait?.({ ...status, waitedMs: 0 });
+        wait.onWait?.(status);
+        return outcome;
+      }) as unknown as typeof acquireLease;
+      const done = run({ argv: ["xcodebuild", "test"] }, { acquire });
+      await finishWith(0);
+      await done;
+      expect(err.join("\n")).toContain("a UI-test run that holds no slot is in progress, pid 4242");
+    });
+
     it("prints the UI-test class's status for a refusal in the UI-test phase, and the heavy status otherwise", async () => {
       const asked: unknown[] = [];
       const statusFor = (_opts: LeaseOptions, holderClass?: string) => (asked.push(holderClass), { level: "warning" as const, capacity: holderClass ? 1 : 4, step: 1, signals: null, live: [] });

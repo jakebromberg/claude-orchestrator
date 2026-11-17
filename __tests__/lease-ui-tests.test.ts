@@ -453,6 +453,90 @@ describe("UI-test holder class (issue #324)", () => {
     }
   });
 
+  // Issue #324 review: defense in depth. A hook holder can expire by wall clock while the Mac sleeps, a run can be backgrounded mid-way (Ctrl+B),
+  // and a wrapper the classifier does not know starts a run the lease never saw. Whatever the reason, a test action of this user that is already
+  // running holds the machine's one UI slot in fact, so the slot is not granted while one runs. The process table is scanned (the injected
+  // `scanUiTests`) only when the slot would otherwise be granted, before the grant and again in the final check.
+  describe("an unmanaged UI-test run already in progress", () => {
+    const events = (type: string) => lease.events.filter((e) => e.type === type);
+
+    it("is not granted the slot while one runs, keeps waiting, and says so in the refusal and the event log", async () => {
+      const scan = vi.fn(() => [4242]);
+      const r = await take(ui, { maxWaitMs: 20_000 }, { scanUiTests: scan });
+      expect(r).toMatchObject({ refused: "max-wait", class: "ui-tests", pids: [4242] });
+      expect(names("ui-tests")).toEqual([]);
+      expect(names("holders")).toEqual([]);
+      expect(scan.mock.calls.length).toBeGreaterThan(1);
+      expect(events("ui-test-running")).toEqual([expect.objectContaining({ pids: [4242], class: "ui-tests" })]);
+    });
+
+    it("is granted once the run ends, after a ticket held its place", async () => {
+      let running = true;
+      lease.clock.onSleep = () => {
+        expect(names("ui-tests-waiting")).toHaveLength(1);
+        if (lease.clock.sleeps.length === 3) running = false;
+      };
+      const r = await take(ui, { maxWaitMs: 60_000 }, { scanUiTests: () => (running ? [4242] : []) });
+      expect(isHandle(r) && r.leased).toBe(true);
+      expect(lease.clock.sleeps.length).toBeGreaterThanOrEqual(3);
+      (r as LeaseHandle).release();
+    });
+
+    it("scans only when the slot would be granted: never while a holder has it", async () => {
+      plantHolder(lease, "other-ui", { pid: process.pid }, { sub: "ui-tests" });
+      const scan = vi.fn(() => []);
+      await take(ui, { maxWaitMs: 10_000 }, { scanUiTests: scan });
+      expect(scan).not.toHaveBeenCalled();
+    });
+
+    it("does not scan when no scanner is configured", async () => {
+      const r = (await take(ui)) as LeaseHandle;
+      expect(r.leased).toBe(true);
+      r.release();
+    });
+
+    it.each<[string, () => number[] | undefined]>([
+      ["a table that cannot be read", () => undefined],
+      ["a scan that throws", () => { throw new Error("ps timed out"); }],
+    ])("counts %s as busy: waits, then refuses after the UI wait budget", async (_name, scanUiTests) => {
+      const early = await take(ui, { maxWaitMs: 100_000 }, { scanUiTests });
+      expect(early).toMatchObject({ refused: "max-wait" });
+      expect(names("ui-tests")).toEqual([]);
+      const late = await take(ui, { maxWaitMs: 900_000 }, { scanUiTests });
+      expect(late).toMatchObject({ refused: "ui-test-running", class: "ui-tests" });
+      expect(late).not.toHaveProperty("pids");
+      expect(lease.clock.sleeps.reduce((a, b) => a + b, 0)).toBeLessThan(900_000);
+      expect(events("ui-scan-unreadable")).toHaveLength(2);
+    });
+
+    it("is read again in the final check: a run that started between the grant and the check refuses the run, holding no slot", async () => {
+      let calls = 0;
+      const scan = vi.fn(() => (calls++ === 0 ? [] : [777]));
+      const r = await take(ui, { maxWaitMs: 450_000 }, { scanUiTests: scan });
+      expect(r).toMatchObject({ refused: "ui-test-running", class: "ui-tests", pids: [777] });
+      expect(scan.mock.calls.length).toBeGreaterThan(2);
+      expect(lease.clock.sleeps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(11_000);
+      expect(names("ui-tests")).toEqual([]);
+      expect(names("holders")).toEqual([]);
+    });
+
+    it("retries the final check and admits when the run it saw has gone", async () => {
+      let calls = 0;
+      const r = await take(ui, { maxWaitMs: 450_000 }, { scanUiTests: () => (calls++ === 1 ? [777] : []) });
+      expect(isHandle(r) && r.leased).toBe(true);
+      expect(calls).toBeGreaterThanOrEqual(3);
+      (r as LeaseHandle).release();
+    });
+
+    it("treats an unreadable table in the final check as busy, then refuses", async () => {
+      let calls = 0;
+      const r = await take(ui, { maxWaitMs: 450_000 }, { scanUiTests: () => (calls++ === 0 ? [] : undefined) });
+      expect(r).toMatchObject({ refused: "ui-test-running", class: "ui-tests" });
+      expect(r).not.toHaveProperty("pids");
+      expect(names("holders")).toEqual([]);
+    });
+  });
+
   // `lease status` shows who holds and who waits for the UI-test slot, as it does for the heavy class.
   describe("lease status", () => {
     it("lists the UI-test holders and waiters, and nothing when there are none", async () => {
