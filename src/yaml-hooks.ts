@@ -14,7 +14,7 @@ import { shellQuote } from "./shell-quote.js";
 import { claudeExecOptions } from "./claude-env.js";
 import { acquireLease, defaultWarn, type LeaseHandle, type LeaseOptions, type LeaseRefusal } from "./lease.js";
 import { formatPostCheckStop, refusalStopReason, throttledProgress } from "./lease-messages.js";
-import { isUiTestCommand } from "./lease-hook.js";
+import { isUiTestCommand, uiRunBackgrounded } from "./lease-hook.js";
 import { weightForCommands } from "./lease-weights.js";
 import { SYNC_CALL_TIMEOUT_MS, describeBoundedFailure } from "./sync-budget.js";
 import { stopAtCritical } from "./memory-pressure.js";
@@ -479,7 +479,10 @@ export function deriveHooks(
           ? path.join(worktreePath, cmdConfig.cwd)
           : worktreePath;
         let slot: LeaseHandle | undefined;
-        if (ctx?.lease) {
+        if (ctx?.lease && cmdConfig.commands.some(uiRunBackgrounded)) {
+          // A command that backgrounds a UI-test run returns at once, so the check's slot would be released while the test still runs.
+          stopped = { refused: "backgrounded-ui-test", waitedMs: 0, level: ctx.lease.level(), live: 0, class: "ui-tests" };
+        } else if (ctx?.lease) {
           const got = await acquireCheckLease(ctx.lease, issue, execDir, cmdConfig.commands, ctx.runningSessions);
           if ("refused" in got) stopped = got;
           else slot = got;

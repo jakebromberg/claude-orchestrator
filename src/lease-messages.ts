@@ -44,6 +44,9 @@ export function formatDiskFull(refusal: LeaseRefusal): string {
   return `lease: the disk is full (${refusal.code ?? "ENOSPC"}); free space before running heavy commands — do not rerun`;
 }
 
+/** Why a UI-test run that would be backgrounded is refused, shared by the hook's denial, the CLI and the post-check. */
+export const BACKGROUNDED_UI_REASON = "run a UI test in the foreground (no & that backgrounds it) so the lease can hold its slots for as long as it runs; rerunning the same command will not help";
+
 /** The lines of the refusals only the UI-test class gives, without the `lease: ` prefix (the post-check's summary reuses them). */
 const uiTestReason = (refusal: LeaseRefusal): string | undefined =>
   refusal.refused === "io-error"
@@ -54,6 +57,8 @@ const uiTestReason = (refusal: LeaseRefusal): string | undefined =>
         ? refusal.pids?.length
           ? `the UI-test slot was not taken: a UI-test run is in progress (pid ${refusal.pids.join(", ")}) that holds no slot; wait for it to end and rerun the command`
           : `the UI-test slot was not taken: could not tell whether a UI-test run is in progress (the process table was unreadable for ${seconds(refusal.waitedMs)}s); rerun the command`
+      : refusal.refused === "backgrounded-ui-test"
+        ? `${BACKGROUNDED_UI_REASON}; it was not started`
       : refusal.refused === "nested-ui-test"
         ? "this UI test runs inside another call's lease slot (a hook call's, or a parent's heavy slot with no UI-test slot behind it), and waiting for the UI-test slot while that is held could deadlock; rerunning the same command will not help; run the UI test as its own Bash call so it takes both slots"
         : undefined;
