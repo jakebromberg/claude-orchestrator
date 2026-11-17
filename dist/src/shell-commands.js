@@ -2,8 +2,8 @@
  * A small shell tokenizer for classifying what a command line runs (the UI-test class's matcher, `isUiTestCommand` in `lease-hook.ts`). It
  * splits text into simple commands, each as its words with quotes and escapes resolved, and knows what the hook's raw split does not: quotes
  * (`'...'`, `"..."`, `$'...'`), backslash escapes and line continuations, `#` comments, heredocs (a quoted body is skipped; an unquoted one
- * is only searched for `$(...)` and backticks, which run), `$(...)`, backticks, subshells and brace groups. It is not a shell: no
- * expansion, aliases, functions, `eval`, arithmetic or `case`, and a word is never split after quoting.
+ * is only searched for `$(...)` and backticks, which run), `$(...)` (a `case` arm's `)` inside it does not close it), backticks, subshells, brace
+ * groups, compound commands and function definitions. It is not a shell: no expansion, aliases, `eval` or arithmetic, and a word is never split after quoting.
  *
  * Text it cannot parse (an unterminated quote, substitution or heredoc, or nesting deeper than `MAX_DEPTH`) returns `undefined`, so a caller keeps
  * its own fallback instead of guessing; this module never throws and does linear work.
@@ -13,6 +13,8 @@ const isSpace = (c) => c === " " || c === "\t" || c === "\r";
 /** Characters that end a heredoc delimiter word. */
 const DELIMITER_END = /[\s;|&()<>]/;
 const FUNCTIONS = new WeakMap();
+/** The ranges of the top-level text that run nothing: `#` comments and the bodies of heredocs that expand no substitution, by the `out` list of the parse that read them. */
+const INERT = new WeakMap();
 /** Words that open a compound command when they lead a command (after `then`, `do` or `else`), and the words that close one. */
 const OPENERS = new Set(["{", "if", "for", "while", "until", "case", "select"]);
 const CLOSERS = new Set(["}", "fi", "done", "esac"]);
@@ -40,6 +42,20 @@ export function shellCommands(text) {
     }
     return out;
 }
+/**
+ * `text` with its comments and its heredoc bodies that run nothing replaced by spaces (newlines kept), so a check that reads the raw text (a function
+ * definition, a lone `&`) does not read prose as code. A heredoc body is a script when the command that reads it is a shell; the caller reads that
+ * script as text of its own. Text that cannot be parsed comes back unchanged.
+ */
+export function blankInert(text) {
+    const out = [];
+    if (parse(text, 0, false, 0, out) === undefined)
+        return text;
+    let blanked = text;
+    for (const [from, to] of INERT.get(out) ?? [])
+        blanked = blanked.slice(0, from) + blanked.slice(from, to).replace(/[^\n]/g, " ") + blanked.slice(to);
+    return blanked;
+}
 /** `shellCommands`, as the words of each command only. */
 export function simpleCommands(text) {
     return shellCommands(text)?.map((c) => c.words);
@@ -65,6 +81,14 @@ function parse(text, from, closer, depth, out) {
     const groups = [];
     /** The open compound commands (`if`, `for`, `{` ...): where each started in `out`, the statement start it belongs to, and the function it is the body of. */
     const compounds = [];
+    /** Records a range of the top-level text (not of a slice a nested parse reads) that runs nothing. */
+    const markInert = (from, to) => {
+        if (depth !== 0 || to <= from)
+            return;
+        const ranges = INERT.get(out) ?? [];
+        ranges.push([from, to]);
+        INERT.set(out, ranges);
+    };
     /** A name followed by `()`: the next `{` command is its body. */
     let pendingFn;
     let parens = 0;
@@ -101,7 +125,7 @@ function parse(text, from, closer, depth, out) {
             const head = lead < 0 ? undefined : words[lead];
             const opens = head !== undefined && (OPENERS.has(head) || ((head === "function" || head === "coproc") && words.includes("{")));
             if (opens) {
-                compounds.push({ idx: out.length - 1, seg, ...(pendingFn !== undefined && head === "{" && { fn: pendingFn }), ...(head === "function" && words[lead + 1] !== undefined && { fn: words[lead + 1] }) });
+                compounds.push({ idx: out.length - 1, seg, head: head, ...(pendingFn !== undefined && head === "{" && { fn: pendingFn }), ...(head === "function" && words[lead + 1] !== undefined && { fn: words[lead + 1] }) });
             }
             else if (lead === 0 && head !== undefined && CLOSERS.has(head) && compounds.length > 0) {
                 const open = compounds.pop();
@@ -159,6 +183,7 @@ function parse(text, from, closer, depth, out) {
     const readHeredocs = (start) => {
         let i = start;
         for (const h of heredocs.splice(0)) {
+            const from = i;
             const body = [];
             for (;;) {
                 if (i > text.length)
@@ -174,6 +199,9 @@ function parse(text, from, closer, depth, out) {
                     return undefined;
             }
             const bodyText = (h.stripTabs ? body.map((l) => l.replace(/^\t+/, "")) : body).join("\n");
+            // A body that expands a substitution runs it, so only a body with none is prose.
+            if (!h.expands || !/\$\(|`/.test(bodyText))
+                markInert(from, Math.min(i, text.length));
             if (h.owner)
                 h.owner.stdin = bodyText;
             if (h.expands && !expandBody(body.join("\n")))
@@ -308,8 +336,10 @@ function parse(text, from, closer, depth, out) {
             i = end;
         }
         else if (c === "#" && !inWord) {
+            const from = i;
             while (i < text.length && text[i] !== "\n")
                 i++;
+            markInert(from, i);
         }
         else if (isSpace(c)) {
             endWord();
@@ -329,7 +359,13 @@ function parse(text, from, closer, depth, out) {
             }
         }
         else if (c === "<" && text.startsWith("<<<", i)) {
-            // A here-string is a redirect, not a heredoc.
+            // A here-string is a redirect, not a heredoc, and it ends the word before it (a bare number there is its file descriptor).
+            if (inWord && !quoted && /^\d+$/.test(word)) {
+                word = "";
+                inWord = false;
+            }
+            else
+                endWord();
             word += "<<<";
             inWord = true;
             i += 3;
@@ -391,8 +427,11 @@ function parse(text, from, closer, depth, out) {
                             out[k].background = true;
                 }
             }
-            else if (closer)
+            else if (closer && compounds.at(-1)?.head !== "case")
                 return heredocs.length === 0 ? i + 1 : undefined;
+            // The `)` of a case arm's pattern inside a substitution ends the pattern, not the substitution: what follows is the arm's body.
+            else if (closer)
+                segStart = out.length;
             i++;
         }
         else if (c === "&") {
