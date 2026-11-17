@@ -48,6 +48,9 @@ describe("isUiTestCommand", () => {
     ["with a destination that has parentheses", `${TOOL} -scheme PhaseMatrix -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' test`],
     ["with a scheme that has a semicolon", `${TOOL} -scheme "My;Scheme" test`],
     ["with a scheme named test and then the action", `${TOOL} -scheme test test`],
+    ["when the text cannot be tokenized and the raw rule sees xcrun --sdk", `echo 'unterminated; xcrun --sdk iphonesimulator ${TOOL} test -scheme App`],
+    ["when the text cannot be tokenized and the raw rule sees xcrun -sdk", `echo 'unterminated; xcrun -sdk iphonesimulator ${TOOL} test -scheme App`],
+    ["when the text cannot be tokenized and the raw rule sees bash -c --", `echo 'unterminated; bash -c -- "${TOOL} test -scheme App"`],
     ["when the text cannot be tokenized and the raw rule matches", `echo 'unterminated; ${TOOL} test -scheme App`],
   ])("matches %s", (_name, command) => {
     expect(isUiTestCommand(command)).toBe(true);
