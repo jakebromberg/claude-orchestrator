@@ -151,6 +151,7 @@ const UI_WRAPPERS = new Map([
     ["taskpolicy", /^-[dgcmjPStlp]$/],
     ["caffeinate", /^-[tw]$/],
     ["arch", /^-(?:arch|d|e)$/],
+    ["sudo", /^-[CDghpRTUu]$/],
 ]);
 const XCRUN_VALUED = /^-{1,2}(?:sdk|toolchain)$/;
 /**
@@ -174,17 +175,21 @@ export function runsUiTest(words, inScript, stdin) {
             continue;
         }
         if (/^(?:ba|z)?sh$/.test(name)) {
+            // A here-string (`<<< text`) is the shell's stdin like a heredoc; the words before it are the shell's own.
+            const k = words.findIndex((x, idx) => idx > i && x.startsWith("<<<"));
+            const end = k < 0 ? words.length : k;
+            const input = k < 0 ? stdin : words[k].length > 3 ? words[k].slice(3) : words[k + 1];
             let j = i + 1;
             let readsStdin = false;
-            while (words[j]?.startsWith("-") && !/^-[a-z]*c$/.test(words[j])) {
+            while (j < end && words[j].startsWith("-") && !/^-[a-z]*c$/.test(words[j])) {
                 if (/^-[a-z]*s[a-z]*$/.test(words[j]))
                     readsStdin = true;
                 j += /^-[a-z]*o$/.test(words[j]) ? 2 : 1;
             }
-            if (/^-[a-z]*c$/.test(words[j] ?? ""))
+            if (j < end && /^-[a-z]*c$/.test(words[j]))
                 return inScript(words[words[j + 1] === "--" ? j + 2 : j + 1] ?? "");
-            // No script operand (or `-s`): the shell reads its script from stdin, so a heredoc fed to it is run.
-            return (readsStdin || words[j] === undefined) && stdin !== undefined && inScript(stdin);
+            // No script operand (or `-s`): the shell reads its script from stdin, so a heredoc or here-string fed to it is run.
+            return (readsStdin || j >= end) && input !== undefined && inScript(input);
         }
         if (name === "xcrun") {
             while (words[i + 1]?.startsWith("-"))
