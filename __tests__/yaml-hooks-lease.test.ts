@@ -218,11 +218,12 @@ describe("leased postSessionCheck", () => {
     ["a trailing &", ["npm run lint", "xcodebuild test -scheme App &"]],
     ["a compound", ["if true; then xcodebuild test; fi &"]],
     ["a script", ["bash -c 'xcodebuild -scheme App test &'"]],
-  ])("stops a check whose command backgrounds a UI-test run (%s) as lease-wait, runs nothing and takes no slot", async (_name, commands) => {
+  ])("stops a check whose command backgrounds a UI-test run (%s) as a configuration error, runs nothing and takes no slot", async (_name, commands) => {
     const runCommand = vi.fn(async () => "");
     const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands } }), { runCommand });
     const result = await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions() });
-    expect(result).toMatchObject({ passed: false, stopped: "lease-wait" });
+    // A static fault of the configured command, not a lease wait the owner reruns: terminal, with its own reason.
+    expect(result).toMatchObject({ passed: false, stopped: "config-error" });
     expect(result.summary).toContain("run a UI test in the foreground");
     expect(runCommand).not.toHaveBeenCalled();
     expect(events).toEqual([]);

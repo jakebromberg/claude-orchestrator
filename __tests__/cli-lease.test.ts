@@ -683,7 +683,7 @@ describe("runLeased", () => {
     ])("refuses a backgrounded UI run in %s at once, holding no slot", async (_name, args) => {
       const code = await run(args);
       expect(code).toBe(75);
-      expect(err.join("\n")).toContain("run a UI test in the foreground");
+      expect(err.join("\n")).toMatch(/^lease: no slot after 0s: run a UI test in the foreground/);
       expect(acquired).toEqual([]);
       expect(spawned).toEqual([]);
     });

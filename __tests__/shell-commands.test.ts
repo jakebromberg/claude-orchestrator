@@ -243,6 +243,30 @@ describe("shellCommands: compound commands, functions, coproc and process substi
     expect(marked(text)).toEqual(expected);
   });
 
+  // Issue #324 review: a newline right after `|`, `&&`, `||` or `|&` continues the statement (the shell waits for the rest of it), so an `&` on the next
+  // line still backgrounds the command before the operator.
+  it.each<[string, string, string[]]>([
+    ["a pipe", "a x |\n  tee log &", ["a x", "tee log"]],
+    ["a pipe of both streams", "a x |&\n  tee log &", ["a x", "tee log"]],
+    ["&&", "a x &&\n  echo done &", ["a x", "echo done"]],
+    ["||", "a x ||\n  b y &", ["a x", "b y"]],
+    ["a redirect before the pipe", "a x 2>&1 |\n  b > out.log &", ["a x", "b"]],
+    ["blank lines and a comment between", "a x |\n\n  # note\n  tee log &", ["a x", "tee log"]],
+    ["several continued lines", "a x |\n  b |\n  c &", ["a x", "b", "c"]],
+  ])("a trailing & continues over a newline after %s", (_name, text, expected) => {
+    expect(marked(text)).toEqual(expected);
+  });
+
+  it.each<[string, string, string[]]>([
+    ["a continued pipeline, then a new statement", "a x |\n  tee log\nb &", ["b"]],
+    ["a continued and-or list, then a new statement", "a x &&\n  b y\nc &", ["c"]],
+    ["a newline with no operator before it", "a x\n  tee log &", ["tee log"]],
+    ["a newline before the operator", "a x\n| tee log &", ["tee log"]],
+    ["a continued pipeline that is not backgrounded", "a x |\n  tee log", []],
+  ])("a newline still ends the statement otherwise: %s", (_name, text, expected) => {
+    expect(marked(text)).toEqual(expected);
+  });
+
   it("still marks a statement's own & as before", () => {
     expect(marked("a x & b y")).toEqual(["a x"]);
     expect(marked("(a x; b) &")).toEqual(["a x", "b"]);

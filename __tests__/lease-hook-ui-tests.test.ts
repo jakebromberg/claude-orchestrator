@@ -146,6 +146,8 @@ describe("hook mode and the UI-test class", () => {
     ["a case", `case $x in a) ${UI} ;; esac &`],
     ["a function whose call is backgrounded", `f() { ${UI}; }; f &`],
     ["a coproc", `coproc ${UI}`],
+    ["a pipe and a newline", `${UI} |\n  tee out.log &`],
+    ["a function with a space before the parentheses", `f () { ${UI}; }; f &`],
     ["an output process substitution", `tee out.log >(${UI})`],
   ])("denies a UI-test call that backgrounds the run through %s", async (_name, command) => {
     const out = JSON.parse(await run(call("PreToolUse", command)));

@@ -75,6 +75,14 @@ describe("UI-test refusals", () => {
     expect(formatPostCheckStop(ui(refused))).not.toContain("will not be retried");
   });
 
+  it("a backgrounded UI run's refusal starts with the no-slot prefix, and is a configuration error, not a lease wait", () => {
+    const refusal: LeaseRefusal = { refused: "backgrounded-ui-test", waitedMs: 0, level: "normal", live: 0, class: "ui-tests" };
+    expect(formatRefusal(refusal, status)).toMatch(/^lease: no slot after 0s: run a UI test in the foreground/);
+    expect(refusalExitCode(refusal)).toBe(75);
+    expect(refusalStopReason(refusal)).toBe("config-error");
+    expect(formatPostCheckStop(refusal)).toContain("run a UI test in the foreground");
+  });
+
   it.each(["io-error", "slot-lost", "nested-ui-test", "ui-test-running"] as const)("%s, with or without pids, starts with `lease: no slot after <n>s`", (refused) => {
     for (const pids of [undefined, [4242]]) {
       const text = formatRefusal({ refused, waitedMs: 12_300, level: "normal", live: 0, class: "ui-tests", ...(pids && { pids }) }, status);

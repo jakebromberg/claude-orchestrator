@@ -102,6 +102,13 @@ const BACKGROUND_PLACEMENTS: ((t: string) => string)[] = [
   (t) => `f() { ${t}; }; f &`,
   (t) => `function f { ${t}; }; f | tee log &`,
   (t) => `${t} | tee out.log &`,
+  (t) => `${t} |\n  tee out.log &`,
+  (t) => `${t} 2>&1 |\n  xcbeautify > out.log &`,
+  (t) => `${t} &&\n  echo done &`,
+  (t) => `${t} ||\n  echo failed &`,
+  (t) => `f () { ${t}; }; f &`,
+  (t) => `function f() { ${t}; }; time f &`,
+  (t) => `f() { ${t}; }; { f; } &`,
   (t) => `coproc ${t}`,
   (t) => `tee out.log >(${t})`,
   (t) => `cat <(${t})`,
@@ -119,6 +126,10 @@ const FOREGROUND_PLACEMENTS: ((t: string) => string)[] = [
   (t) => `echo hi & ${t}`,
   (t) => `${t}; echo hi &`,
   (t) => `cd /w && ${t}`,
+  (t) => `${t} |\n  tee out.log`,
+  (t) => `${t} &&\n  echo done`,
+  (t) => `${t} |\n  tee out.log\necho hi &`,
+  (t) => `f () { ${t}; }; f`,
 ];
 
 const MENTIONS = [`${TOOL} test`, `${TOOL} test -scheme A`, `${TOOL} test-without-building -xctestrun x`, `run ${TOOL} test first`];
