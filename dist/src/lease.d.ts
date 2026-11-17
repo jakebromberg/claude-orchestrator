@@ -47,14 +47,14 @@ export type LeaseEvent = ({
 /** `level` is the confirmed level of a `stopped` refusal. */
  | {
     type: "timeout";
-    refused: "max-wait" | "stopped" | "disk-full";
+    refused: LeaseRefusal["refused"];
     waitedMs: number;
     level?: PressureLevel;
 }
-/** `code` and `message` describe the I/O error; a busy mutex has neither. */
+/** An I/O error let a command run unleased; `code` and `message` describe it. Events from older builds may carry `reason: "mutex-busy"`, which nothing emits any more. */
  | {
     type: "fail-open";
-    reason: "mutex-busy" | "io-error";
+    reason: "io-error";
     waitedMs: number;
     code?: string;
     message?: string;
@@ -65,9 +65,20 @@ export type LeaseEvent = ({
     id: string;
     pgid: number;
     reason: string;
+}
+/** The UI-test slot was not granted because a test action of this user is already running (`pids`); once per wait, again when the pids change. */
+ | {
+    type: "ui-test-running";
+    pids: number[];
+    waitedMs: number;
+}
+/** The UI-test slot was not granted because the process table could not be read; once per wait. */
+ | {
+    type: "ui-scan-unreadable";
+    waitedMs: number;
 }) & {
     /** The holder class the event is about; absent in a record an older writer wrote, which means `heavy`. */
-    class?: "heavy" | "sessions";
+    class?: "heavy" | "sessions" | "ui-tests";
 };
 /** Cumulative CPU tick counters over all cores. */
 export interface CpuTicks {
@@ -104,6 +115,13 @@ export interface LeaseOptions {
     inheritedHolderId?: string;
     /** The command line of a process group's leader (`ps -o command=` by default); throws when it cannot be read. `attempt()` compares it with a suspension record's `leader` before continuing a dead owner's group; absent, none is continued. */
     processCommand?(pgid: number): string;
+    /**
+     * The pids of this user's test actions of the build tool that are running right now, outside this process's own ancestry; `undefined` when the
+     * process table cannot be read. The UI-test class calls it only when its slot would otherwise be granted (before the grant and again in the final
+     * check): a run in progress holds the machine's one UI slot in fact, whatever the holders say (a hook holder can expire by wall clock while the Mac
+     * sleeps, a run can be backgrounded mid-way, a wrapper the classifier does not know can start one). Absent, nothing is scanned.
+     */
+    scanUiTests?(): number[] | undefined;
     /** A throw is warned about once per callback and never changes what the lease does. */
     onEvent?(e: LeaseEvent): void;
     warn?(msg: string): void;
@@ -133,6 +151,12 @@ export interface HolderMeta {
     suspendable?: boolean;
     /** Heavy class only: `"high"` puts a waiter's ticket (`acquireLease`) ahead of every normal ticket whatever their `seq`, and tickets of one priority keep `seq` order. It changes who goes next, never how much runs at once. `tryAcquireLease` writes no ticket, so the field does not order it, but a holder it admits still records `priority: "high"`. Set only by the heavy-queue front end; absent or `"normal"` is the first-come order. */
     priority?: LeasePriority;
+    /**
+     * The command runs a UI-test action (`isUiTestCommand`). Before it waits for a heavy slot it takes the one slot of the UI-test class, machine-wide
+     * (`acquireLease` only; every other field of the request goes to the heavy class as before), so a second run waits in its own line and holds up no
+     * unrelated command. That class never fails open: an I/O error is waited out, and the caller's `maxWaitMs` is spent across both waits.
+     */
+    uiTest?: true;
     /** Heavy class only: the bytes of memory the command is expected to use. Absent, or not a positive number, takes the unmatched weight (`usable / heavyCeiling`). Ignored while the machine's memory is unknown. */
     weight?: number;
 }
@@ -185,10 +209,24 @@ export interface LeaseStatus {
     live: HolderInfo[];
     /** Set only in weight mode (class with a `budget`, machine memory known); count mode leaves it out. */
     weights?: Weights;
+    /** Set on the status a UI-test wait reports while its slot is withheld for test actions that are running with no slot behind them. */
+    unmanagedUiTests?: number[];
     /** Set by `leaseStatus` only: the session class's capacity at the same reading, and its live holders. */
     sessions?: {
         capacity: number;
         live: HolderInfo[];
+    };
+    /** Set by `leaseStatus` only, and only while a UI-test run holds or awaits the one UI-test slot: its capacity, live holders and eligible tickets in arrival order. */
+    uiTests?: {
+        capacity: number;
+        live: HolderInfo[];
+        waiting?: {
+            seq: number;
+            label: string;
+            gated: boolean;
+            ready?: boolean;
+            priority?: "high";
+        }[];
     };
     /** Set by `leaseStatus` only, and only while a heavy ticket waits: the eligible tickets in admission order (high priority first, then `seq`). `ready` is absent on a ticket from a build that predates it, and `priority` on a normal one. */
     waiting?: {
@@ -227,6 +265,8 @@ export interface LeaseHandle {
      * not a positive integer, and once the holder has been reaped: a reaped holder's file is not recreated.
      */
     setChildPid(pid: number, pgid?: number): void;
+    /** Rewrites a detached holder's `expiresAt` from the request's getter (so a holder admitted before a long wait for another slot still lasts the call's whole time) or touches another holder's heartbeat, under the mutex. Returns false when the holder's file is gone (reaped or removed: the slot is lost), true when it was renewed, and `undefined` when that could not be told (the mutex was busy, or an I/O error): the caller retries, or treats it as fine only for a keep-alive. */
+    renew?(): boolean | undefined;
     /** Sets or clears the holder's `suspended` mark, and records `resumedAt` when given (a resume); throws when the mark cannot be written or the holder is gone. Present on a holder this process owns. */
     setSuspended?(on: boolean, resumedAt?: number): void;
     release(outcome?: {
@@ -234,7 +274,15 @@ export interface LeaseHandle {
     }): void;
 }
 export interface LeaseRefusal {
-    refused: "max-wait" | "stopped" | "disk-full";
+    /**
+     * `io-error`, `slot-lost` and `nested-ui-test` come from the UI-test class only: its I/O-error cap (`code` is the error's), a UI-test holder found
+     * gone while a heavy slot was awaited, and a nested acquire whose inherited holder is live in the heavy class but not the UI-test one.
+     */
+    refused: "max-wait" | "stopped" | "disk-full" | "io-error" | "slot-lost" | "nested-ui-test" | "ui-test-running";
+    /** The test actions found running with no slot behind them (`ui-test-running`, or a `max-wait` that ended while they ran). */
+    pids?: number[];
+    /** Set when the refusal came from the UI-test phase of a UI-test run, so the caller reports that class's status. */
+    class?: "ui-tests";
     waitedMs: number;
     level: PressureLevel;
     live: number;
@@ -306,17 +354,19 @@ type LeaseWait = {
         waitedMs: number;
     }): void;
     stopWhen?(s: LeaseStatus): boolean;
+    /** A UI-test run calls this once it holds the UI-test slot, with a function that gives it back, so a signal handler can release it before the process is killed while the heavy slot is still awaited. */
+    onHold?(release: () => void): void;
 };
 /**
  * Releases a detached holder by id from any process; idempotent. Returns whether a holder file was removed, and emits
- * one `release` event with `heldMs` only then. It removes only a valid detached record (one with `expiresAt`): a
+ * one `release` event with `heldMs` for each class (heavy, and the UI-test class for a UI-test run) that had one. It removes only a valid detached record (one with `expiresAt`): a
  * wrapper's own holder and a corrupt file are left to their owner and the reaper. An id that is not 1 to 160 of
  * `[A-Za-z0-9_-]` names no holder, and a holders or lease directory that breaks the directory rule (a symlink, or
  * another user's) is not read, so neither can reach a file outside `holders/`.
  */
 export declare function releaseHolder(opts: LeaseOptions, id: string): boolean;
-/** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. */
-export declare function leaseStatus(opts: LeaseOptions): LeaseStatus;
+/** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. With `"ui-tests"`, the UI-test class's capacity and live holders instead (what a refusal of its phase reports). */
+export declare function leaseStatus(opts: LeaseOptions, holderClass?: "ui-tests"): LeaseStatus;
 /**
  * Production wiring: the real lease directory, the engine's own sampler and policy, and the `events.jsonl` sink. Creates nothing on disk.
  * `overrides.level` replaces the sampler (none is built, so the lease sizes capacity from that level alone: warning gives `heavyWarning`, 1, not the default step table's 3 or 2; a test-only path, and every production caller passes no `level`), and `overrides.warn` is the one writer for the lease, the sink,

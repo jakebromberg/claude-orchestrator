@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -523,12 +523,187 @@ describe("runLeased", () => {
       expect(lease.events.map((e) => e.type)).toEqual(["acquire", "release"]);
     });
 
+    // Issue #324 review: the hook holder's pid is the Claude process, an ancestor of every Bash call of the session, so a sibling call's slot
+    // must never be borrowed by a UI-test run (it would run beside the sibling's UI test, or be refused as nested).
+    describe("a UI-test run", () => {
+      const uiArgv = ["xcodebuild", "-scheme", "S", "test"];
+      const runUi = (over: Partial<LeaseCliDeps>, opts: Partial<LeaseOptions> = {}, args: Partial<RunArgs> = {}) =>
+        run({ argv: uiArgv, ...args }, { leaseOptions: () => lease.opts(opts), acquire: acquireLease, leaseStatus, ...over });
+
+      // Issue #324 review: a UI run whose ancestry holds any live hook holder is refused at once, holding no slot. The holder may be the run's own
+      // parent call (taking the UI slot and then waiting for heavy behind it would hold the UI slot for minutes, perhaps in a cycle) or a sibling
+      // call's (a hook holder's pid is the Claude process, so the two cannot be told apart); the UI test is run as its own Bash call instead.
+      it.each<[string, Partial<RunArgs>]>([
+        ["a `cli-lease run` argv", {}],
+        ["a --shell string", { argv: undefined, shell: "cd /w && xcodebuild -scheme S test" }],
+        ["a heavy-queue front end run (its own holder, gated and background)", { gated: true, background: true, suspendable: true }],
+      ])("is refused at once as nested, holding no slot, when an ancestor's hook holder is live: %s", async (_name, args) => {
+        await plantHook(SESSION);
+        const ancestors = vi.fn(() => [77, SESSION]);
+        const code = await runUi({ ancestors }, { policy: { heavyCeiling: 2, heavyWarning: 2 } }, { maxWaitSec: 600, ...args });
+        expect(code).toBe(75);
+        expect(ancestors).toHaveBeenCalled();
+        expect(err.join("\n")).toContain("own Bash call");
+        expect(err.join("\n")).toMatch(/^lease: no slot after 0s: /);
+        expect(spawned).toEqual([]);
+        expect(lease.events).toEqual([]);
+        expect(existsSync(join(dir, "ui-tests")) ? readdirSync(join(dir, "ui-tests")) : []).toEqual([]);
+      });
+
+      it("is refused too when the ancestor's hook holder is a UI-test run's, which holds both classes", async () => {
+        await acquireLease(lease.opts({ policy: { heavyCeiling: 2, heavyWarning: 2 } }), { command: "xcodebuild test -scheme A", cwd: "/w", uiTest: true, detached: { id: "hook-A", sessionPid: SESSION, expiresAt: lease.clock.ms + 600_000 } });
+        lease.events.length = 0;
+        expect(await runUi({ ancestors: () => [SESSION] }, { policy: { heavyCeiling: 2, heavyWarning: 2 } }, { maxWaitSec: 0 })).toBe(75);
+        expect(err.join("\n")).toContain("own Bash call");
+        expect(spawned).toEqual([]);
+      });
+
+      it.each<[string, () => number[]]>([
+        ["a holder whose session PID is not an ancestor", () => [77, 1]],
+        ["an ancestor lookup that returns nothing", () => []],
+        ["an ancestor lookup that throws", () => { throw new Error("ps failed"); }],
+      ])("takes its own two slots when no hook holder's session is an ancestor: %s", async (_name, ancestors) => {
+        await plantHook(SESSION);
+        lease.alive.add(SESSION);
+        const done = runUi({ ancestors }, { policy: { heavyCeiling: 2, heavyWarning: 2 } });
+        await vi.waitFor(() => expect(spawned).toHaveLength(1));
+        child.emit("close", 0, null);
+        expect(await done).toBe(0);
+        expect(err[0]).toMatch(/^lease: admitted after /);
+        expect(lease.events.filter((e) => e.type === "acquire").map((e) => e.class)).toEqual(["ui-tests", "heavy"]);
+      });
+
+      it("does not look up ancestors when no hook holder is live", async () => {
+        const ancestors = vi.fn(() => [SESSION]);
+        const done = runUi({ ancestors }, { policy: { heavyCeiling: 2, heavyWarning: 2 } });
+        await vi.waitFor(() => expect(spawned).toHaveLength(1));
+        child.emit("close", 0, null);
+        expect(await done).toBe(0);
+        expect(ancestors).not.toHaveBeenCalled();
+      });
+
+      // Issue #324 review: a signal while the heavy slot is awaited used to re-raise with the UI-test slot still held, which a killed wrapper's
+      // heartbeat then kept for 90 s; the held slot is released first.
+      it.each(["SIGTERM", "SIGINT"] as const)("releases a UI-test slot it holds while awaiting the heavy slot, before re-raising %s", async (sig) => {
+        const heavy = await acquireLease(lease.opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), { command: "npm test", cwd: "/w", detached: { id: "hook-blocker", sessionPid: SESSION, expiresAt: lease.clock.ms + 700_000 } });
+        expect((heavy as LeaseHandle).leased).toBe(true);
+        let heldDuringSignal: string[] | undefined;
+        lease.clock.onSleep = () => {
+          if (lease.clock.sleeps.length !== 2) return;
+          expect(readdirSync(join(dir, "ui-tests"))).toHaveLength(1);
+          signals.emit(sig);
+          heldDuringSignal = existsSync(join(dir, "ui-tests")) ? readdirSync(join(dir, "ui-tests")) : [];
+          // The re-raise killed the wrapper in production; here the wait is ended so the test finishes.
+          (heavy as LeaseHandle).release();
+        };
+        void runUi({ ancestors: () => [] }, { policy: { heavyCeiling: 1, heavyWarning: 1 } }, { maxWaitSec: 600 }).catch(() => 0);
+        await vi.waitFor(() => expect(heldDuringSignal).toBeDefined());
+        expect(heldDuringSignal).toEqual([]);
+        expect(signals.kill).toHaveBeenCalledWith(999, sig);
+      });
+
+      // The window between the heavy admission and the final check holds both slots: the release handed over then covers both, replacing the first.
+      it("hands the signal handler a release of both holders once the heavy slot is granted", async () => {
+        const first = vi.fn();
+        const both = vi.fn();
+        let onHold: ((release: () => void) => void) | undefined;
+        const acquire = (async (_o: LeaseOptions, _m: unknown, wait: { onHold?: (r: () => void) => void }) => {
+          onHold = wait.onHold;
+          wait.onHold?.(first);
+          wait.onHold?.(both);
+          return new Promise(() => {});
+        }) as unknown as typeof acquireLease;
+        void runUi({ acquire });
+        await vi.waitFor(() => expect(onHold).toBeDefined());
+        signals.emit("SIGTERM");
+        expect(both).toHaveBeenCalledTimes(1);
+        expect(first).not.toHaveBeenCalled();
+      });
+
+      it("hands the release of a held first-phase slot to the signal handler through the wait's onHold", async () => {
+        const release = vi.fn();
+        let onHold: ((release: () => void) => void) | undefined;
+        const acquire = (async (_o: LeaseOptions, _m: unknown, wait: { onHold?: (r: () => void) => void }) => {
+          onHold = wait.onHold;
+          wait.onHold?.(release);
+          return new Promise(() => {});
+        }) as unknown as typeof acquireLease;
+        void runUi({ acquire });
+        await vi.waitFor(() => expect(onHold).toBeDefined());
+        signals.emit("SIGTERM");
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(signals.kill).toHaveBeenCalledWith(999, "SIGTERM");
+      });
+
+      // A sibling process's UI-test run that holds the slot but is not a hook call's ancestor: the run waits for it as before.
+      it("waits for another process's UI-test slot instead of running beside it", async () => {
+        await acquireLease(lease.opts({ policy: { heavyCeiling: 2, heavyWarning: 2 } }), { command: "xcodebuild test -scheme A", cwd: "/w", uiTest: true });
+        lease.events.length = 0;
+        const code = await runUi({ ancestors: () => [SESSION] }, { policy: { heavyCeiling: 2, heavyWarning: 2 } }, { maxWaitSec: 0 });
+        expect(code).toBe(75);
+        expect(err.join("\n")).toContain("lease: no slot after");
+        expect(spawned).toEqual([]);
+      });
+    });
+
     it("does not look up ancestors when CO_LEASE_HOLDER names a live holder", async () => {
       await plantHook(SESSION);
       const ancestors = vi.fn(() => [SESSION]);
       expect(await runWith({ ancestors }, { inheritedHolderId: "hook-toolu_1" })).toBe(0);
       expect(ancestors).not.toHaveBeenCalled();
       expect(lease.events).toEqual([]);
+    });
+  });
+
+  describe("UI-test class (issue #324)", () => {
+    const meta = (): Record<string, unknown> => acquired[0]!.meta as Record<string, unknown>;
+
+    it("says in its progress line that a UI-test run with no slot is the reason it waits", async () => {
+      const acquire = (async (_o: LeaseOptions, _m: unknown, wait: { onWait?: (s: LeaseStatus & { waitedMs: number }) => void }) => {
+        const status = { level: "normal" as const, capacity: 1, step: 4, signals: null, live: [], waitedMs: 61_000, unmanagedUiTests: [4242] };
+        wait.onWait?.({ ...status, waitedMs: 0 });
+        wait.onWait?.(status);
+        return outcome;
+      }) as unknown as typeof acquireLease;
+      const done = run({ argv: ["xcodebuild", "test"] }, { acquire });
+      await finishWith(0);
+      await done;
+      expect(err.join("\n")).toContain("a UI-test run that holds no slot is in progress, pid 4242");
+    });
+
+    it("prints the UI-test class's status for a refusal in the UI-test phase, and the heavy status otherwise", async () => {
+      const asked: unknown[] = [];
+      const statusFor = (_opts: LeaseOptions, holderClass?: string) => (asked.push(holderClass), { level: "warning" as const, capacity: holderClass ? 1 : 4, step: 1, signals: null, live: [] });
+      outcome = { refused: "max-wait", waitedMs: 5_000, level: "normal", live: 1, class: "ui-tests" };
+      expect(await run({ argv: ["xcodebuild", "test"] }, { leaseStatus: statusFor as never })).toBe(75);
+      expect(asked).toContain("ui-tests");
+      expect(err.join("\n")).toContain("capacity 1");
+      asked.length = 0;
+      err = [];
+      outcome = { refused: "max-wait", waitedMs: 5_000, level: "normal", live: 1 };
+      expect(await run({ argv: ["npm", "test"] }, { leaseStatus: statusFor as never })).toBe(75);
+      expect(asked).not.toContain("ui-tests");
+      expect(err.join("\n")).toContain("capacity 4");
+    });
+
+    it.each<[string, Partial<RunArgs>, boolean]>([
+      ["a test action in argv", { argv: ["xcodebuild", "test", "-scheme", "App"] }, true],
+      ["a test action under xcrun", { argv: ["xcrun", "xcodebuild", "test-without-building", "-xctestrun", "x"] }, true],
+      ["a test action in a --shell string", { argv: undefined, shell: "cd /w && xcodebuild test -scheme App 2>&1 | tail" }, true],
+      ["a destination with parentheses and spaces", { argv: ["xcodebuild", "-scheme", "PhaseMatrix", "-destination", "platform=iOS Simulator,name=iPad Pro 13-inch (M5)", "test"] }, true],
+      ["a bash -c script in argv", { argv: ["bash", "-c", "xcodebuild -scheme S test"] }, true],
+      ["a scheme with a semicolon", { argv: ["xcodebuild", "-scheme", "My;Scheme", "test"] }, true],
+      ["a scheme named test and a build action", { argv: ["xcodebuild", "-scheme", "test", "build"] }, false],
+      ["a build action", { argv: ["xcodebuild", "build", "-scheme", "App"] }, false],
+      ["a grep whose pattern names the words", { argv: ["grep", "-rn", "xcodebuild test", "docs"] }, false],
+      ["a --shell string that only echoes the words", { argv: undefined, shell: "echo 'xcodebuild test'" }, false],
+      ["an ordinary heavy command", { argv: ["npm", "test"] }, false],
+    ])("marks the holder uiTest for %s: %s", async (_name, args, expected) => {
+      const done = run(args);
+      await finishWith(0);
+      await done;
+      if (expected) expect(meta()).toMatchObject({ uiTest: true });
+      else expect(meta()).not.toHaveProperty("uiTest");
     });
   });
 
@@ -742,6 +917,16 @@ describe("runLeased", () => {
           { pid: 12, command: "tsc", ageSec: 3, override: true },
         ],
       });
+    });
+
+    it("prints the UI-test class's holders and waiting tickets under uiTests, and leaves it out when there are none", () => {
+      const waiting = [{ seq: 2, label: "xcodebuild test -scheme B", gated: false }];
+      const base = { level: "normal" as const, capacity: 3, step: 3, signals: null, live: [holder()] };
+      expect(runStatus(deps({ leaseStatus: () => ({ ...base, uiTests: { capacity: 1, live: [holder({ pid: 21, command: "xcodebuild test -scheme A", ageSec: 4 })], waiting } }) }))).toBe(0);
+      expect(JSON.parse(out.join("")).uiTests).toEqual({ capacity: 1, live: [{ pid: 21, command: "xcodebuild test -scheme A", ageSec: 4 }], waiting });
+      out.length = 0;
+      expect(runStatus(deps({ leaseStatus: () => base }))).toBe(0);
+      expect(JSON.parse(out.join(""))).not.toHaveProperty("uiTests");
     });
 
     it("prints priority high on a high holder and on a high waiting ticket, and leaves it out of a normal holder", () => {

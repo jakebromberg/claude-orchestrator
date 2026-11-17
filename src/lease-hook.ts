@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readRegularFile } from "./lease-dir.js";
+import { XCODEBUILD_VALUED } from "./ps.js";
 import { acquireLease, defaultLeaseOptions, DETACHED_TTL_MAX_MS, isPid, leaseStatus, releaseHolder, type LeaseOptions } from "./lease.js";
 import { formatAdmitted, formatRefusal } from "./lease-messages.js";
 import { weightFor } from "./lease-weights.js";
@@ -81,6 +82,9 @@ function isHeavyQueueShim(file: string): boolean {
     return false;
   }
 }
+/** Text that names this CLI, or `heavy-queue run` while the shim is installed: the command takes its own slot, so the hook takes none. */
+const leasesItself = (command: string, heavyQueueShim: () => boolean): boolean => CLI.test(command) || (HEAVY_QUEUE_RUN.test(command) && heavyQueueShim());
+
 /**
  * Every separator, captured so each segment knows the one before it; `&&` and `||` leave an empty segment between,
  * and the `&` of a redirect (`2>&1`) only adds a light one.
@@ -113,12 +117,72 @@ const isRegex = (source: string): boolean => {
  * ignored; every pattern is anchored at the command word and followed by an end boundary (not `\w`, `.`, `/` or `-`).
  */
 export function isHeavyCommand(command: string, extraPatterns: readonly string[] = [], heavyQueueShim: () => boolean = () => false): boolean {
-  if (CLI.test(command) || (HEAVY_QUEUE_RUN.test(command) && heavyQueueShim())) return false;
+  if (leasesItself(command, heavyQueueShim)) return false;
   const patterns = [...DEFAULT_PATTERNS.map(([, p]) => p), ...extraPatterns.filter(isRegex)];
   const heavy = new RegExp(`(?:${patterns.map((p) => `(?:${p})`).join("|")})(?![\\w./-])`, "y");
-  const parts = command.replace(/\\\n/g, " ").split(SEPARATOR);
-  return parts.some((segment, i) => i % 2 === 0 && isHeavySegment(segment, heavy, parts[i - 1]));
+  return anySegmentMatches(command, heavy);
 }
+
+/** Whether a segment of the command's raw split, after its leading words, begins with a match of the sticky `pattern`: the one command-position rule of the heavy matcher and the UI-test class. */
+function anySegmentMatches(command: string, pattern: RegExp): boolean {
+  const parts = command.replace(/\\\n/g, " ").split(SEPARATOR);
+  return parts.some((segment, i) => i % 2 === 0 && isHeavySegment(segment, pattern, parts[i - 1]));
+}
+
+/** A UI-test action of the build tool: its name (through `xcrun` or a path), any words, then the `test` or `test-without-building` action as a word of its own. */
+const UI_TEST = /(?:(?:xcrun (?:-{1,2}(?:sdk|toolchain)(?:=\S+| \S+) )*)?xcodebuild(?: \S+)* (?:test|test-without-building))(?![\w./-])/y;
+
+/**
+ * Whether `command` runs a UI-test action: the build tool, with the test action, as a command (the same segment rule as `isHeavyCommand`, so
+ * text that only mentions it, a `grep` pattern, an `echo` or a commit message, is not one). It decides the UI-test class only: a miss
+ * leaves the command in the heavy class, where it is still leased, and it never makes a command light. Quotes, heredocs and comments are not tracked.
+ */
+export function isUiTestCommand(command: string): boolean {
+  return anySegmentMatches(command, UI_TEST);
+}
+
+/** `xcodebuild` options that take a separate value, so a value that reads `test` (a scheme or project of that name) is not the action. */
+const XCRUN_VALUED = /^-{1,2}(?:sdk|toolchain)$/;
+
+/**
+ * Whether one simple command, given as its words, runs a UI-test action: past its leading words (assignments, `nohup`, `exec`, `command`,
+ * `time`, `env`, `nice`, `timeout`, `xcrun` and its sdk options), the command word's basename is `xcodebuild` and an argument that is not an
+ * option's value is `test` or `test-without-building`. A `sh -c` script goes to `inScript`. A caller that already has the words (the
+ * CLI's argv) uses it directly, so quoting is never lost to a join.
+ */
+export function runsUiTest(words: readonly string[], inScript: (script: string) => boolean): boolean {
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!;
+    if (/^[A-Za-z_]\w*=/.test(w) || PREFIX_WORDS.has(w) || w === "{" || w === "}") continue;
+    const wrapper = WRAPPERS.get(w);
+    if (wrapper) {
+      let j = i + 1;
+      while (words[j]?.startsWith("-")) j += wrapper.test(words[j]!) ? 2 : 1;
+      i = w === "timeout" ? j : j - 1; // `timeout` also takes a duration
+      continue;
+    }
+    const name = path.basename(w);
+    if (/^(?:ba|z)?sh$/.test(name)) {
+      let j = i + 1;
+      while (words[j]?.startsWith("-") && !/^-[a-z]*c$/.test(words[j]!)) j += /^-[a-z]*o$/.test(words[j]!) ? 2 : 1;
+      return /^-[a-z]*c$/.test(words[j] ?? "") && inScript(words[words[j + 1] === "--" ? j + 2 : j + 1] ?? "");
+    }
+    if (name === "xcrun") {
+      while (words[i + 1]?.startsWith("-")) i += XCRUN_VALUED.test(words[i + 1]!) ? 2 : 1;
+      continue;
+    }
+    if (name !== "xcodebuild") return false;
+    for (let k = i + 1; k < words.length; k++) {
+      if (XCODEBUILD_VALUED.test(words[k]!)) k++;
+      else if (words[k] === "test" || words[k] === "test-without-building") return true;
+    }
+    return false;
+  }
+  return false;
+}
+
+/** `isUiTestCommand` for a command whose words are already split (the CLI's `-- argv`). */
+export const isUiTestArgv = (argv: readonly string[]): boolean => runsUiTest(argv, isUiTestCommand);
 
 /**
  * Strips the segment's leading words one whitespace token at a time, then tests the command word and the rest. A
@@ -161,7 +225,7 @@ function isHeavySegment(segment: string, heavy: RegExp, after = ""): boolean {
       let j = i + 1;
       while (word(j).startsWith("-") && !/^-[a-z]*c$/.test(word(j))) j += /^-[a-z]*o$/.test(word(j)) ? 2 : 1;
       if (/^-[a-z]*c$/.test(word(j))) {
-        i = j;
+        i = word(j + 1) === "--" ? j + 1 : j;
         continue;
       }
     }
@@ -209,11 +273,18 @@ function extraPatterns(env: NodeJS.ProcessEnv): string[] {
 export function isHeavyHookCall(stdin: string, env: NodeJS.ProcessEnv, heavyQueuePath: string = defaultHeavyQueuePath()): boolean {
   if (env.CO_LEASE_HOOK !== "on") return false;
   try {
-    return isHeavyInput(JSON.parse(stdin) as HookInput, env, heavyQueuePath);
+    const input = JSON.parse(stdin) as HookInput;
+    return isHeavyInput(input, env, heavyQueuePath) || isUiTestInput(input, heavyQueuePath);
   } catch {
     return false;
   }
 }
+
+/** A `PreToolUse` `Bash` call whose command is a UI-test run that does not lease for itself; the gate (`CO_LEASE_HOOK`) is the caller's. */
+const isUiTestInput = (input: HookInput, heavyQueuePath: string): boolean => {
+  const command = input.tool_input?.command;
+  return input.hook_event_name === "PreToolUse" && input.tool_name === "Bash" && typeof command === "string" && !leasesItself(command, () => isHeavyQueueShim(heavyQueuePath)) && isUiTestCommand(command);
+};
 
 const isHeavyInput = (input: HookInput, env: NodeJS.ProcessEnv, heavyQueuePath: string): boolean => {
   const command = input.tool_input?.command;
@@ -231,12 +302,28 @@ export interface HookIo {
 }
 
 const WAIT_MS = 450_000;
+/**
+ * A UI-test call's whole wait (both slots), well inside the printed entry's 500 s timeout: a hook that overruns its timeout lets the call through
+ * unleased, so the UI-test class, whose point is that nothing runs beside it, answers (with a denial) with this margin to spare.
+ */
+const UI_WAIT_MS = 400_000;
 const GRACE_MS = 60_000;
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 /** 10 min: with the 60 s grace, the longest TTL the lease's cap (`DETACHED_TTL_MAX_MS`) lets a writer set. */
 const MAX_CALL_TIMEOUT_MS = DETACHED_TTL_MAX_MS - GRACE_MS;
 /** Shorter than the lease's holder id bound (160): the `hook-` prefix keeps `hook-<id>` inside it. */
 const TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const DENY_BACKGROUNDED_UI = "lease: no slot after 0s: run a UI test in the foreground (no & that backgrounds it) so the lease can hold its slots for as long as it runs; rerunning the same command will not help";
+/**
+ * Whether a UI-test command line may background work: an unquoted single `&` that is not part of `&&`, `>&`, `<&`, `&>` or `|&`, after quoted text and
+ * backslash-escaped characters are blanked. `PostToolUse` fires when the backgrounded shell returns, so its slots would be released while the test
+ * still runs; the line is denied instead. Conservative (it does not know which command the `&` follows): it can deny a line whose `&` backgrounds
+ * something else. Claude Code's own mid-run backgrounding (Ctrl+B) is not seen at all and can still release the slots early.
+ */
+export function uiRunBackgrounded(command: string): boolean {
+  const bare = command.replace(/\\./gs, "  ").replace(/'[^']*'/g, "''").replace(/"(?:\\.|[^"\\])*"/gs, '""');
+  return /(?<![&>|<])&(?![&>])/.test(bare);
+}
 const DENY_BACKGROUND = "lease: run heavy commands in the foreground so the lease can track them";
 
 interface HookInput {
@@ -273,12 +360,16 @@ async function handleEvent(stdin: string, io: HookIo): Promise<void> {
     releaseHolder(opts, id);
     return;
   }
-  if (!isHeavyInput(input, env, io.heavyQueuePath ?? defaultHeavyQueuePath())) return;
+  const heavyQueuePath = io.heavyQueuePath ?? defaultHeavyQueuePath();
+  // A UI-test run is leased whether or not the heavy matcher sees it (`xcrun --sdk iphonesimulator xcodebuild test` is not heavy by it).
+  const uiTest = isUiTestInput(input, heavyQueuePath);
+  if (!uiTest && !isHeavyInput(input, env, heavyQueuePath)) return;
   const sessionPid = Number(env.CO_LEASE_SESSION_PID);
   if (!isPid(sessionPid)) return;
   // A hook with no session PID or no usable options stays inert, background calls included. A lease directory that
   // fails only at acquire (unwritable, a symlink) still denies them, while a foreground call there fails open.
-  if (input.tool_input?.run_in_background === true) return io.out(decision({ permissionDecision: "deny", permissionDecisionReason: DENY_BACKGROUND }));
+  if (input.tool_input?.run_in_background === true) return io.out(decision({ permissionDecision: "deny", permissionDecisionReason: uiTest ? DENY_BACKGROUNDED_UI : DENY_BACKGROUND }));
+  if (uiTest && uiRunBackgrounded(String(input.tool_input!.command))) return io.out(decision({ permissionDecision: "deny", permissionDecisionReason: DENY_BACKGROUNDED_UI }));
   const now = opts.now ?? Date.now;
   const timeoutMs = callTimeoutMs(input, env);
   const cwd = typeof input.cwd === "string" ? input.cwd : process.cwd();
@@ -286,8 +377,8 @@ async function handleEvent(stdin: string, io: HookIo): Promise<void> {
   const detached = { id, sessionPid, get expiresAt() { return now() + timeoutMs + GRACE_MS; } };
   const command = String(input.tool_input!.command);
   const weight = weightFor(command, cwd, env, () => {});
-  const got = await acquireLease(opts, { command, cwd, detached, ...(weight !== undefined && { weight }) }, { maxWaitMs: WAIT_MS });
-  if (!("leased" in got)) io.out(decision({ permissionDecision: "deny", permissionDecisionReason: formatRefusal(got, leaseStatus(opts)) }));
+  const got = await acquireLease(opts, { command, cwd, detached, ...(weight !== undefined && { weight }), ...(uiTest && { uiTest: true as const }) }, { maxWaitMs: uiTest ? UI_WAIT_MS : WAIT_MS });
+  if (!("leased" in got)) io.out(decision({ permissionDecision: "deny", permissionDecisionReason: formatRefusal(got, leaseStatus(opts, got.class)) }));
   else if (got.leased) io.out(decision({ additionalContext: formatAdmitted(got.admission) }));
 }
 

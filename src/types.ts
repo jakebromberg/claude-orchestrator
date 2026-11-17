@@ -153,8 +153,8 @@ export interface PostCheckResult {
   summary?: string;
   /** Raw command output for machine consumption (injected into retry prompts). */
   output?: string;
-  /** The check did not run because memory pressure was critical or the disk was full; never retried. */
-  stopped?: "memory-critical" | "disk-full";
+  /** The check did not run because memory pressure was critical or the disk was full (never retried), or because the UI-test slot could not be taken or held (`lease-wait`, a lease problem the owner reruns). */
+  stopped?: "memory-critical" | "disk-full" | "lease-wait";
 }
 
 export interface RetryOnCheckFailureConfig {

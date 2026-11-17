@@ -9,8 +9,8 @@ import { join } from "node:path";
 import { describeBoundedFailure } from "./bounded-failure.js";
 import { REFRESH_MS } from "./engine-registry.js";
 import { isWithinWindow } from "./file-lock.js";
-import { appendOwnLine, isOwnDir, readLeaseRecord, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
-import { ancestry, isClaudeCommand, isPid, isSimulatorCommand, parsePsTable, ps, PS_TABLE_ARGS, runsTool, simulatorUdid, XCODE_TOOLS } from "./ps.js";
+import { appendOwnLine, isOwnDir, readLeaseRecord, readOwnFile, readRecordDir, writeLeaseRecord } from "./lease-dir.js";
+import { ancestry, hungTestCandidates, isBuildToolProcess, isClaudeCommand, isPid, isSimulatorCommand, parsePsTable, ps, PS_TABLE_ARGS, simulatorUdid, xcTestDeviceUdid } from "./ps.js";
 import { isLeaseRecord, readSuspensions } from "./suspensions.js";
 const EX_USAGE = 64;
 const USAGE = "usage: claude-orchestrator-watchdog check | brief | print-plist | print-status-line";
@@ -61,16 +61,31 @@ const oldLeaseSuspension = (c) => c.records
 const silentEngine = (c) => c.engines
     .filter((e) => e.fresh && e.stallTimeout > 0 && c.now - e.activityMs > e.stallTimeout * 1000 + STALLED_MARGIN_MS)
     .map((e) => ({ key: `silent:${e.runId}`, message: `engine ${e.runId} (pid ${e.pid}) wrote no session log for ${minutes(c.now - e.activityMs)}m` }));
-// Report only: the owner runs the suggested `simctl shutdown`, the watchdog never does.
+// Report only, for main-set devices: the owner runs the suggested `simctl shutdown` (a device may be in use by hand), the watchdog never does.
 const idleSimulator = (c) => [...c.idleSimulators]
-    .filter(([, d]) => c.now - d.since >= SIMULATOR_IDLE_AFTER_MS)
+    .filter(([, d]) => !d.xctest && c.now - d.since >= SIMULATOR_IDLE_AFTER_MS)
     .map(([udid, d]) => ({
     key: `sim-idle:${udid}`,
     message: `simulator ${udid} booted and idle ${minutes(c.now - d.since)}m${d.rssBytes === undefined ? "" : `, holding ${(d.rssBytes / 2 ** 30).toFixed(1)} GB`}; to reclaim it run: xcrun simctl shutdown ${udid}`,
     once: true,
 }));
+/** A test in progress with no live UI-test holder that could own it is reported once it has run this long. */
+export const HUNG_TEST_AFTER_MS = 30 * 60_000;
+/** Clock slack when asking whether a process started after a holder did. */
+const HOLDER_START_SLACK_MS = 5_000;
+// Report only: a test process that hangs, or a runner left behind by a killed run, holds the machine in fact with no holder to show for it: simulator reaping
+// stands down (its test-action guard), and UI-test runs wait behind it (the lease's process scan: always for a build tool test action, while Xcode.app runs
+// for a runner or simulator xctest). Only a live, unexpired holder that started no later than the process could own it; a file that merely exists, an expired
+// holder, a holder whose process is gone, or a process older than the holder suppresses nothing. The watchdog names it and never touches it.
+const hungTestAction = (c) => hungTestCandidates(c.procs)
+    .filter((p) => p.elapsedMs >= HUNG_TEST_AFTER_MS && !c.uiHolders.some((h) => h.startedAt <= c.now - p.elapsedMs + HOLDER_START_SLACK_MS))
+    .map((p) => ({
+    key: `hung-test:${p.pid}`,
+    message: `test process pid ${p.pid} has run ${age(p.elapsedMs)} with no UI-test lease holder that could own it (hung, or left behind by a killed run?): UI-test runs wait behind it (always for a build tool test action; for a runner or simulator xctest only while Xcode.app runs and its device has a launchd_sim), and simulator reaping is paused by a build tool test action or a runner that names no device (the reaper signals a runner whose device reads Shutdown); it is left running, not killed`,
+}));
+const age = (ms) => (ms >= 3_600_000 ? `${Math.floor(ms / 3_600_000)}h${String(minutes(ms % 3_600_000)).padStart(2, "0")}m` : `${minutes(ms)}m`);
 /** The rules, in report order. A rule reads the context and returns findings; the reporters never change. */
-export const RULES = [unrecordedStoppedGroup, dueReminder, oldLeaseSuspension, stalledEngine, silentEngine, deadEngine, idleSimulator];
+export const RULES = [unrecordedStoppedGroup, dueReminder, oldLeaseSuspension, stalledEngine, silentEngine, deadEngine, idleSimulator, hungTestAction];
 /** The scan's bound, 60 s because `ps` can be slow at background priority. */
 export const SCAN_TIMEOUT_MS = 60_000;
 /** The default scan: one bounded `ps`. A throw skips the cycle. */
@@ -121,33 +136,69 @@ function stoppedGroups(procs, engines) {
         groups.set(p.pgid, [...(groups.get(p.pgid) ?? []), p]);
     return [...groups].filter(([pgid, members]) => members.every((p) => p.stat.startsWith("T")) && (enginePgids.has(pgid) || members.some(underClaude))).map(([pgid]) => pgid);
 }
-/** Booted simulators by UDID (the `launchd_sim` row naming `Devices/<udid>/`) with the readable rss of every simulator process under it, one pid map for the scan. Idle ones only: none when an `xcodebuild` or `simctl` is running. */
+/** Booted simulators by UDID (the `launchd_sim` row naming `Devices/<udid>/`, or `XCTestDevices/<udid>/` for a test clone) with the readable rss of every simulator process under it, one pid map for the scan. Idle ones only: none when an `xcodebuild` or `simctl` is running. */
 function idleSimulatorRss(procs) {
-    const toolRunning = procs.some((p) => runsTool(p.command, XCODE_TOOLS));
+    // A process that is the build tool or simctl itself keeps a device from being idle; a command line that only holds their names does not.
+    const toolRunning = procs.some((p) => isBuildToolProcess(p.command));
     const byPid = new Map(procs.map((p) => [p.pid, p]));
-    const roots = new Map(procs.flatMap((p) => (p.command.includes("launchd_sim") && simulatorUdid(p.command) ? [[p.pid, simulatorUdid(p.command)]] : [])));
+    const roots = new Map(procs.flatMap((p) => {
+        if (!p.command.includes("launchd_sim"))
+            return [];
+        const udid = simulatorUdid(p.command) ?? xcTestDeviceUdid(p.command);
+        return udid ? [[p.pid, { udid, xctest: simulatorUdid(p.command) === undefined }]] : [];
+    }));
     const totals = new Map();
     if (toolRunning)
         return totals;
-    for (const udid of roots.values())
-        totals.set(udid, undefined);
+    for (const { udid, xctest } of roots.values())
+        totals.set(udid, { rssBytes: undefined, xctest });
     for (const p of procs.filter((p) => isSimulatorCommand(p.command))) {
         let up = p;
         for (let i = 0; up && i < 64 && !roots.has(up.pid); i++)
             up = byPid.get(up.ppid);
-        const udid = up && roots.get(up.pid);
-        if (udid && Number.isFinite(p.rssBytes))
-            totals.set(udid, (totals.get(udid) ?? 0) + p.rssBytes);
+        const root = up && roots.get(up.pid);
+        if (root && Number.isFinite(p.rssBytes))
+            totals.set(root.udid, { ...totals.get(root.udid), rssBytes: (totals.get(root.udid)?.rssBytes ?? 0) + p.rssBytes });
     }
     return totals;
+}
+/** A holder is live while its detached session is alive and `expiresAt` has not passed, or while its heartbeat is fresh (90 s, the lease's rule) or its child is alive. */
+const HOLDER_HEARTBEAT_MS = 90_000;
+/** The live UI-test holders, read without reaping (a missing, symlinked or foreign directory, an unreadable or malformed file has none). */
+function liveUiHolders(dir, procs, now) {
+    try {
+        const sub = join(dir, "ui-tests");
+        const st = lstatSync(sub, { throwIfNoEntry: false });
+        if (st === undefined || !isOwnDir(st))
+            return [];
+        const alive = (pid) => procs.some((p) => p.pid === pid);
+        return readdirSync(sub).flatMap((name) => {
+            if (!name.endsWith(".json"))
+                return [];
+            try {
+                const file = readOwnFile(join(sub, name));
+                const rec = file && JSON.parse(file.text);
+                if (!rec || !isPid(rec.pid) || typeof rec.startedAt !== "number")
+                    return [];
+                const live = typeof rec.expiresAt === "number" ? now < rec.expiresAt && alive(rec.pid) : isWithinWindow(file.mtimeMs, now, HOLDER_HEARTBEAT_MS) || (isPid(rec.childPid) && alive(rec.childPid));
+                return live ? [{ startedAt: rec.startedAt }] : [];
+            }
+            catch {
+                return [];
+            }
+        });
+    }
+    catch {
+        return [];
+    }
 }
 function readState(dir) {
     try {
         const s = JSON.parse(readLeaseRecord(dir, "watchdog.json")?.text ?? "{}");
-        return { stoppedSince: s.stoppedSince ?? {}, idleSimulators: s.idleSimulators ?? {}, reported: s.reported ?? [], findings: s.findings ?? [] };
+        return { stoppedSince: s.stoppedSince ?? {}, idleSimulators: s.idleSimulators ?? {}, simReaps: s.simReaps ?? {}, simSeen: s.simSeen ?? {}, reported: s.reported ?? [], findings: s.findings ?? [] };
     }
     catch {
-        return { stoppedSince: {}, idleSimulators: {}, reported: [], findings: [] };
+        return { stoppedSince: {}, idleSimulators: {}, simReaps: {}, simSeen: {}, reported: [], findings: [] };
     }
 }
 /** Appends one line to `watchdog.log` through `appendOwnLine`: only a regular file this user owns is appended to (a symlink is not followed, a FIFO not waited on), and a new one has mode 0600. A failure is swallowed: the log is a diagnostic. */
@@ -181,12 +232,23 @@ export function check(d) {
     }
     const engines = readEngines(d.dir, now, procs);
     const stoppedSince = new Map(stoppedGroups(procs, engines).map((pgid) => [pgid, prev.stoppedSince[pgid] ?? now]));
-    const idleSimulators = new Map([...idleSimulatorRss(procs)].map(([udid, rssBytes]) => [udid, { since: prev.idleSimulators[udid] ?? now, rssBytes }]));
+    const idleSimulators = new Map([...idleSimulatorRss(procs)].map(([udid, d]) => [udid, { since: prev.idleSimulators[udid] ?? now, ...d }]));
+    let simReaps = prev.simReaps;
+    let simSeen = prev.simSeen;
+    try {
+        const idleUdids = [...idleSimulators].filter(([, v]) => now - v.since >= SIMULATOR_IDLE_AFTER_MS).map(([udid]) => udid);
+        const reaped = d.reap?.({ procs, idleUdids, attempts: prev.simReaps, seen: prev.simSeen });
+        simReaps = reaped?.attempts ?? simReaps;
+        simSeen = reaped?.seen ?? simSeen;
+    }
+    catch (err) {
+        appendLog(d.dir, now, `simulator reaping failed: ${err.message}`);
+    }
     const records = readSuspensions(d.dir);
     const suspended = new Set(records.map((r) => r.pgid));
-    const found = RULES.flatMap((rule) => rule({ now, procs, engines, suspended, records, stoppedSince, idleSimulators }));
+    const found = RULES.flatMap((rule) => rule({ now, procs, engines, suspended, records, stoppedSince, idleSimulators, uiHolders: liveUiHolders(d.dir, procs, now) }));
     const findings = found.filter((f) => !(f.once && prev.reported.includes(f.key)));
-    const state = { stoppedSince: Object.fromEntries(stoppedSince), idleSimulators: Object.fromEntries([...idleSimulators].map(([udid, d]) => [udid, d.since])), reported: found.filter((f) => f.once).map((f) => f.key), findings };
+    const state = { stoppedSince: Object.fromEntries(stoppedSince), idleSimulators: Object.fromEntries([...idleSimulators].map(([udid, d]) => [udid, d.since])), simReaps, simSeen, reported: found.filter((f) => f.once).map((f) => f.key), findings };
     writeLeaseRecord(d.dir, "watchdog.json", JSON.stringify({ checkedAt: new Date(now).toISOString(), ...state }));
     writeLeaseRecord(d.dir, "watchdog.brief", findings.length ? `watchdog: ${findings.map((f) => f.message).join("; ")}` : "");
     for (const f of findings)

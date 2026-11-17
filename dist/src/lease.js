@@ -6,8 +6,8 @@
  * summed memory weights of the live holders and the request fit the byte budget (`heavyBudget`: free memory less the reserve, plus the weight of holders past the ramp window; the step's share of the usable bytes without a free reading). Liveness is a live
  * heartbeat (the holder file's mtime, refreshed every 30 s) or a live child PID,
  * so a crashed or killed holder cannot leak a slot. A detached holder (hook mode) is live while its session PID is
- * alive and its `expiresAt` has not passed. The lease fails open on I/O errors and a long-busy mutex,
- * except at `critical`, where nothing new starts. It never spins. A second holder class, `sessions/`, is the machine-wide pool of an
+ * alive and its `expiresAt` has not passed. The lease fails open on I/O errors (never on a busy mutex, which is only waited out),
+ * except at `critical`, where nothing new starts, and except in the UI-test class, which never fails open. It never spins. A second holder class, `sessions/`, is the machine-wide pool of an
  * engine's implementer sessions (`acquireSessionLease`), on the same tickets and holders with heartbeat-only liveness.
  */
 import { randomBytes } from "node:crypto";
@@ -22,7 +22,7 @@ import { ensureOwnSubdir, isOwnDir, readLeaseRecord, readOwnFile } from "./lease
 import { leaseEventSink } from "./lease-events.js";
 import { DEFAULT_RESERVE_PCT, DEFAULT_SESSION_SLOTS, freeBytes, leaseDirectory, pressurePolicyFromEnv, reservePctFromEnv, sessionSlotsFromEnv, usableBytes, } from "./memory-pressure.js";
 import { describeBoundedFailure } from "./bounded-failure.js";
-import { isPid, pidAlive, PS_TIMEOUT_MS, psField, signalGroup } from "./ps.js";
+import { isPid, parsePsTable, pidAlive, ps, PS_TABLE_ARGS, PS_TIMEOUT_MS, psEnvUdids, psField, runningUiTestPids, signalGroup } from "./ps.js";
 import { isLeaseRecord, leaseSuspension, readSuspensions, removeLeaseSuspension, removeSuspension, suspensionOf, writeSuspension } from "./suspensions.js";
 export { ensureOwnSubdir, isOwnDir, isPid, pidAlive };
 const MUTEX_STALE_MS = 10_000;
@@ -40,8 +40,13 @@ const ORPHAN_MAX_MS = 2 * 60 * 60_000;
 /** A holder's mtime heartbeat period, and how old a beat may be before the holder is reaped; a blocking stretch in an engine that holds a session slot must fit in the difference (`__tests__/sync-call-budget.test.ts`). */
 export const HEARTBEAT_MS = 30_000;
 export const HEARTBEAT_STALE_MS = 90_000;
-const FAIL_OPEN_MS = 30_000;
 const POLL_MS = 3_000;
+/** How long an unreadable process table withholds the UI-test slot before the wait is refused (the hook's whole UI wait budget). */
+const UI_SCAN_UNREADABLE_MS = 400_000;
+/** Bound on the default `LeaseOptions.scanUiTests` (one `ps` of the whole table). */
+const UI_SCAN_TIMEOUT_MS = 15_000;
+/** Consecutive polls that hit an I/O error after which a class that never fails open refuses (about a minute). */
+const MAX_ERROR_POLLS = 20;
 const COMMAND_MAX = 200;
 /** A waiter's ticket is eligible while its mtime is this close to the reader's clock; a waiter refreshes it on every poll. */
 const TICKET_FRESH_MS = 15_000;
@@ -84,6 +89,7 @@ const HEAVY = {
     capacity: headroomCapacity,
     budget: heavyBudget,
     heartbeatOnly: false,
+    failsOpen: true,
 };
 /** Engine implementer sessions: a stopped engine's `claude` children still answer `kill(pid, 0)`, so only the engine's heartbeat keeps a slot. */
 const SESSIONS = {
@@ -93,6 +99,17 @@ const SESSIONS = {
     ceiling: (opts) => opts.sessionSlots ?? DEFAULT_SESSION_SLOTS,
     capacity: sessionHeadroomCapacity,
     heartbeatOnly: true,
+    failsOpen: true,
+};
+/** Runs of a UI-test action: one at a time machine-wide, whatever the headroom step (the heavy class still gates each at its own weight), counted rather than weighed. */
+const UI_TESTS = {
+    name: "ui-tests",
+    holders: "ui-tests",
+    waiting: "ui-tests-waiting",
+    ceiling: () => 1,
+    capacity: () => 1,
+    heartbeatOnly: false,
+    failsOpen: false,
 };
 /** The machine step and its capacity for `cls`; with no `headroom` sampler, a step derived from the level (critical 0, warning `heavyWarning`, else 4). `fresh` bypasses every cache. */
 function snapshot(opts, cls, fresh = false) {
@@ -526,10 +543,10 @@ function recordedCommand({ command, label }) {
     const cut = CUT.exec(command);
     return (cut ? `${command.slice(0, cut.index + cut[0].length)}…` : command).slice(0, COMMAND_MAX);
 }
-function createHolder(opts, cls, meta, command, admission) {
+function createHolder(opts, cls, meta, command, admission, sharedId) {
     const now = opts.now ?? Date.now;
     const { detached } = meta;
-    const id = detached?.id ?? `${process.pid}-${randomBytes(4).toString("hex")}`;
+    const id = detached?.id ?? sharedId ?? `${process.pid}-${randomBytes(4).toString("hex")}`;
     const file = join(opts.dir, cls.holders, `${id}.json`);
     const rec = { id, pid: detached?.sessionPid ?? process.pid, command, cwd: meta.cwd, startedAt: now(), level: admission.level };
     if (detached)
@@ -578,6 +595,37 @@ function createHolder(opts, cls, meta, command, admission) {
             catch {
                 // The previous record still names this holder.
             }
+        },
+        renew() {
+            if (released)
+                return false;
+            // Under the mutex, the one place holders are reaped, so a file found there cannot be reaped between the check and the write and then
+            // recreated. A busy mutex or an I/O error is unknown, not lost: the next poll renews again.
+            let lock = null;
+            try {
+                lock = tryLockOnce(join(opts.dir, ".mutex"), { staleAfterMs: MUTEX_STALE_MS, now: opts.now });
+                if (!lock)
+                    return undefined;
+                if (!unlessGone(() => statSync(file)))
+                    return false;
+                if (detached) {
+                    rec.expiresAt = detached.expiresAt;
+                    write();
+                }
+                else {
+                    // A holder with no `expiresAt` lives by its heartbeat, which a stalled event loop stops: touching it here is the beat a stall missed.
+                    const at = now() / 1000;
+                    utimesSync(file, at, at);
+                }
+            }
+            catch {
+                // The previous record still names this holder, with the earlier expiry or beat.
+                return undefined;
+            }
+            finally {
+                lock?.release();
+            }
+            return true;
         },
         setSuspended(on, resumedAt) {
             if (released || !unlessGone(() => statSync(file)))
@@ -637,7 +685,7 @@ function weigh(opts, cls, { step, capacity = 0, signals }, live) {
  * only when it fits and no ticket counts as ahead, and writes none. Caller code (`warn`, `onEvent`) runs only after the mutex is released,
  * so a slow callback cannot outlive its staleness window.
  */
-function attempt(opts, cls, meta, waitedMs, ticketId) {
+function attempt(opts, cls, meta, waitedMs, ticketId, shareId, blocked = false) {
     const snap = snapshot(opts, cls);
     const { level, capacity } = snap;
     const overridden = (opts.headroom ?? opts.level).overridden?.() === true;
@@ -712,10 +760,10 @@ function attempt(opts, cls, meta, waitedMs, ticketId) {
                 const behindGated = gated && others.some((t) => t.gated);
                 // No-wedge: with nothing live, the oldest gated ticket is admitted past its gates, except at step 0 (capacity 0 already refuses there; the clause keeps the rule true if a policy ever gives step 0 a slot).
                 const ready = !gated || gatesPass(opts, live, nowMs) || (live.length === 0 && snap.step > 0);
-                if (ready && !behindGated && fits && (ticketId !== undefined || ahead.length === 0)) {
+                if (ready && !behindGated && fits && !blocked && (ticketId !== undefined || ahead.length === 0)) {
                     if (gated)
                         writeMark(opts.dir, "lastAdmit", nowMs);
-                    r = { kind: "admitted", handle: createHolder(opts, cls, meta, command, admission) };
+                    r = { kind: "admitted", handle: createHolder(opts, cls, meta, command, admission, shareId && ticketId) };
                     try {
                         if (mine)
                             removeTicket(opts, cls, mine.id);
@@ -814,9 +862,9 @@ function liveOf(opts, cls) {
     }
 }
 /** The heavy class's eligible tickets in admission order (high priority first, then `seq`), read without the mutex and without removing any (status deletes nothing); an I/O error reads as none. */
-function waitingOf(opts) {
+function waitingOf(opts, cls = HEAVY) {
     try {
-        const waiting = scanTickets(opts, HEAVY, false).filter((t) => t.eligible).sort(byAdmission).map(({ seq, label, gated, ready, priority }) => ({ seq, label, gated, ...(ready !== undefined && { ready }), ...(priority && { priority }) }));
+        const waiting = scanTickets(opts, cls, false).filter((t) => t.eligible).sort(byAdmission).map(({ seq, label, gated, ready, priority }) => ({ seq, label, gated, ...(ready !== undefined && { ready }), ...(priority && { priority }) }));
         return waiting.length > 0 ? { waiting } : {};
     }
     catch {
@@ -838,7 +886,130 @@ const statusOf = (opts, cls, snap) => {
  */
 export async function acquireLease(opts, meta, wait = {}) {
     checkDetached(meta);
-    return acquire(opts, HEAVY, meta, wait, meta.detached?.id);
+    return meta.uiTest ? acquireUiTest(opts, meta, wait) : acquire(opts, HEAVY, meta, wait, meta.detached?.id);
+}
+/**
+ * Whether `slot` is still held and no test action runs outside the lease, the check that decides whether the run proceeds: retried while the mutex is
+ * busy or a test action is running (or the process table unreadable), up to `MUTEX_STALE_MS`, and then `slot-lost`, `running` (with the pids) or
+ * `unreadable`. The scan runs only after the renewal found the slot held, and only when a scanner is configured.
+ */
+async function confirmed(opts, slot) {
+    if (!slot.renew)
+        return { ok: true };
+    const { now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = opts;
+    const start = now();
+    for (;;) {
+        const renewed = slot.renew();
+        if (renewed === false)
+            return { ok: false, why: "slot-lost" };
+        const found = renewed === true && opts.scanUiTests ? scanUiTests(opts) : [];
+        if (renewed === true && found !== undefined && found.length === 0)
+            return { ok: true };
+        if (now() - start >= MUTEX_STALE_MS) {
+            if (renewed === undefined)
+                return { ok: false, why: "slot-lost" };
+            return found === undefined ? { ok: false, why: "unreadable" } : { ok: false, why: "running", pids: found };
+        }
+        await sleep(100);
+    }
+}
+/** `LeaseOptions.scanUiTests`, with a throw read as an unreadable table. */
+function scanUiTests(opts) {
+    try {
+        return opts.scanUiTests?.();
+    }
+    catch {
+        return undefined;
+    }
+}
+/** Thrown out of the heavy wait's `onWait` when the UI-test holder is found gone, and caught by `acquireUiTest`. */
+const SLOT_LOST = new Error("the UI-test slot was lost");
+/**
+ * A UI-test run's two slots, in this order so it never holds up the heavy line while it waits for the other: the UI-test slot first (its own line,
+ * `ui-tests-waiting/`), then the heavy slot at its normal weight. The two holders share one id (the detached id, or one made up front that
+ * `childEnv()` exports), which `releaseHolder` removes from both classes and a nested acquire inherits to borrow both.
+ * Nothing waits on a UI-test slot while holding the heavy one, so the two lines cannot deadlock: a nested acquire whose inherited holder
+ * (`CO_LEASE_HOLDER`) is live in the heavy class but not the UI-test one is refused at once (`nested-ui-test`) instead of waiting for a slot its
+ * parent's run may be waiting on. The same refusal is made by the CLI (`lease-run.ts`) before it calls this when any live hook holder's session is
+ * an ancestor, because a UI run that took the UI slot and then waited for heavy behind its own ancestor would hold the UI slot across that wait;
+ * nothing is borrowed from an ancestor hook holder for a UI-test run, in either class. A hook's UI-test holder expires with the call's time, which a heavy wait can outlast, so it is renewed on every heavy poll and at
+ * the heavy admission; a holder found gone (reaped, removed) refuses the run (`slot-lost`) instead of letting it proceed beside another one.
+ * `maxWaitMs` is spent across both waits, a refusal or a throw of the second gives the first back, and the returned handle releases both.
+ */
+async function acquireUiTest(opts, meta, wait) {
+    const now = opts.now ?? Date.now;
+    const start = now();
+    const refusal = (refused, pids) => {
+        const waitedMs = now() - start;
+        emit(opts, UI_TESTS, { type: "timeout", refused, waitedMs });
+        return { refused, waitedMs, level: snapshot(opts, UI_TESTS).level, live: 0, class: "ui-tests", ...(pids && { pids }) };
+    };
+    const inherited = opts.inheritedHolderId;
+    if (inherited && liveOf(opts, HEAVY).some((h) => h.id === inherited) && !liveOf(opts, UI_TESTS).some((h) => h.id === inherited))
+        return refusal("nested-ui-test");
+    // One id for both holders of a run that has no detached id, because `childEnv()` exports one: a nested acquire that inherits it then borrows both.
+    const id = meta.detached?.id ?? `${process.pid}-${randomBytes(4).toString("hex")}`;
+    // Rebuilt field by field, so a weight, priority, gate or suspension never reaches the UI-test class.
+    // A detached UI-test holder expires `UI_WAIT_TTL_MS` ahead while the heavy slot is awaited, and at the call's full expiry once it is granted.
+    let waiting = true;
+    const detached = meta.detached;
+    const uiDetached = detached && { id: detached.id, sessionPid: detached.sessionPid, get expiresAt() { return waiting ? now() + UI_WAIT_TTL_MS : detached.expiresAt; } };
+    const slot = await acquire(opts, UI_TESTS, { command: meta.command, cwd: meta.cwd, ...(meta.label !== undefined && { label: meta.label }), ...(uiDetached && { detached: uiDetached }) }, wait, id, true);
+    if (!("leased" in slot))
+        return slot;
+    wait.onHold?.(() => slot.release());
+    const spent = now() - start;
+    const heavyWait = {
+        ...wait,
+        ...(wait.maxWaitMs !== undefined && { maxWaitMs: Math.max(0, wait.maxWaitMs - spent) }),
+        onWait(status) {
+            if (slot.renew?.() === false)
+                throw SLOT_LOST;
+            wait.onWait?.(status);
+        },
+    };
+    let heavy;
+    try {
+        heavy = await acquire(opts, HEAVY, meta, heavyWait, id, true);
+    }
+    catch (err) {
+        slot.release();
+        if (err === SLOT_LOST)
+            return refusal("slot-lost");
+        throw err;
+    }
+    if (!("leased" in heavy)) {
+        slot.release();
+        return { ...heavy, waitedMs: heavy.waitedMs + spent };
+    }
+    // The check that decides whether this run proceeds beside another: definitive, so a busy mutex is retried (up to its staleness bound) and a
+    // slot that cannot be confirmed is refused, where the keep-alive renewals above treat an unknown as fine.
+    waiting = false;
+    // From here a signal must give back both holders: the window below can last as long as the mutex's staleness bound.
+    wait.onHold?.(() => {
+        heavy.release();
+        slot.release();
+    });
+    const check = await confirmed(opts, slot);
+    if (!check.ok) {
+        heavy.release();
+        slot.release();
+        return check.why === "slot-lost" ? refusal("slot-lost") : refusal("ui-test-running", check.pids);
+    }
+    return {
+        ...heavy,
+        // A heavy phase that failed open has no id of its own; the UI-test holder's id (the same one) is what a nested acquire must inherit.
+        childEnv: () => (heavy.id === null ? slot.childEnv() : heavy.childEnv()),
+        admission: { ...heavy.admission, waitedMs: heavy.admission.waitedMs + spent },
+        setChildPid(pid, pgid) {
+            heavy.setChildPid(pid, pgid);
+            slot.setChildPid(pid, pgid);
+        },
+        release(outcome) {
+            heavy.release(outcome);
+            slot.release(outcome);
+        },
+    };
 }
 /**
  * `acquireLease` for one implementer session of an engine, from the machine-wide pool of the session row (`sessions/`,
@@ -851,10 +1022,10 @@ export function acquireSessionLease(opts, meta, wait = {}) {
     // Rebuilt field by field, so a caller's `detached`, `gated` or `weight` can never reach the session class.
     return acquire(opts, SESSIONS, { command: meta.command, cwd: meta.cwd, ...(meta.label !== undefined && { label: meta.label }) }, wait);
 }
-async function acquire(opts, cls, meta, wait, id) {
+async function acquire(opts, cls, meta, wait, id, shareId) {
     const ticketId = id ?? `${process.pid}-${randomBytes(4).toString("hex")}`;
     try {
-        return await pollForLease(opts, cls, meta, wait, ticketId);
+        return await pollForLease(opts, cls, meta, wait, ticketId, shareId);
     }
     finally {
         try {
@@ -865,32 +1036,65 @@ async function acquire(opts, cls, meta, wait, id) {
         }
     }
 }
-async function pollForLease(opts, cls, meta, wait, ticketId) {
+/** How far ahead a hook call's UI-test holder expires while its heavy slot is awaited: renewed on every poll, so a hook that dies mid-wait frees the slot in about this long, not at the call's full expiry. */
+const UI_WAIT_TTL_MS = 90_000;
+async function pollForLease(opts, cls, meta, wait, ticketId, shareId) {
     const { now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), pollMs = POLL_MS } = opts;
     const start = now();
-    let busySince;
+    let errorPolls = 0;
+    let unreadableSince;
+    let reportedPids = "";
+    let unmanaged;
     for (;;) {
         const waitedMs = now() - start;
-        const r = attempt(opts, cls, meta, waitedMs, ticketId);
+        // The UI-test slot is withheld while a test action is running with no slot behind it. Scanned only when the slot would otherwise be granted
+        // (nobody holds it), and an unreadable table counts as busy for at most `UI_SCAN_UNREADABLE_MS`.
+        let blocked = false;
+        unmanaged = undefined;
+        if (cls === UI_TESTS && opts.scanUiTests && liveOf(opts, UI_TESTS).length === 0) {
+            const found = scanUiTests(opts);
+            if (found === undefined) {
+                blocked = true;
+                if (unreadableSince === undefined) {
+                    unreadableSince = now();
+                    emit(opts, cls, { type: "ui-scan-unreadable", waitedMs });
+                }
+            }
+            else {
+                unreadableSince = undefined;
+                if (found.length > 0) {
+                    blocked = true;
+                    unmanaged = found;
+                    if (reportedPids !== found.join(",")) {
+                        reportedPids = found.join(",");
+                        emit(opts, cls, { type: "ui-test-running", pids: found, waitedMs });
+                    }
+                }
+            }
+        }
+        const r = attempt(opts, cls, meta, waitedMs, ticketId, shareId, blocked);
         if (r.kind === "admitted")
             return r.handle;
-        busySince = r.kind === "busy" ? (busySince ?? now()) : undefined;
+        errorPolls = r.kind === "error" ? errorPolls + 1 : 0;
         const code = r.kind === "error" ? diskFullCode(r.error) : undefined;
         if (code !== undefined) {
             emit(opts, cls, { type: "timeout", refused: "disk-full", waitedMs });
-            return { refused: "disk-full", waitedMs, level: r.level, live: 0, code };
+            return { refused: "disk-full", waitedMs, level: r.level, live: 0, code, ...(cls === UI_TESTS && { class: "ui-tests" }) };
         }
-        if (r.level !== "critical") {
-            if (r.kind === "error")
-                return failOpen(opts, cls, r.level, r.capacity, waitedMs, "io-error", r.error);
-            if (busySince !== undefined && now() - busySince >= FAIL_OPEN_MS)
-                return failOpen(opts, cls, r.level, r.capacity, waitedMs, "mutex-busy");
-        }
+        // A busy mutex is only waited out: a dead holder's lock is reaped after `MUTEX_STALE_MS` and a live one releases in milliseconds, so
+        // there is no state in which waiting never ends, and a wall-clock streak measures a stopped process, not a busy mutex.
+        if (r.kind === "error" && r.level !== "critical" && cls.failsOpen)
+            return failOpen(opts, cls, r.level, r.capacity, waitedMs, "io-error", r.error);
         const status = r.kind === "error" ? { level: r.level, capacity: r.capacity, step: r.step, signals: r.signals, live: [] } : statusOf(opts, cls, r);
-        const refuse = (refused, level, live) => {
+        const refuse = (refused, level, live, code) => {
             emit(opts, cls, { type: "timeout", refused, waitedMs, ...(refused === "stopped" && { level }) });
-            return { refused, waitedMs, level, live };
+            return { refused, waitedMs, level, live, ...(code !== undefined && { code }), ...(unmanaged && { pids: unmanaged }), ...(cls === UI_TESTS && { class: "ui-tests" }) };
         };
+        if (unreadableSince !== undefined && now() - unreadableSince >= UI_SCAN_UNREADABLE_MS)
+            return refuse("ui-test-running", r.level, 0);
+        // A class that never fails open waits out an I/O error, but not for ever when the caller set no `maxWaitMs`: it refuses once `MAX_ERROR_POLLS` polls in a row failed.
+        if (!cls.failsOpen && errorPolls >= MAX_ERROR_POLLS)
+            return refuse("io-error", r.level, 0, r.error?.code);
         if (wait.stopWhen?.(status)) {
             const confirmed = snapshot(opts, cls, true);
             if (wait.stopWhen({ ...status, ...confirmed }))
@@ -898,14 +1102,14 @@ async function pollForLease(opts, cls, meta, wait, ticketId) {
         }
         if (wait.maxWaitMs !== undefined && waitedMs >= wait.maxWaitMs)
             return refuse("max-wait", r.level, status.live.length);
-        wait.onWait?.({ ...status, waitedMs });
+        wait.onWait?.({ ...status, waitedMs, ...(unmanaged && { unmanagedUiTests: unmanaged }) });
         const jittered = Math.round(pollMs * (2 / 3 + Math.random() * (2 / 3)));
         await sleep(wait.maxWaitMs === undefined ? jittered : Math.min(jittered, wait.maxWaitMs - waitedMs));
     }
 }
 /**
  * Releases a detached holder by id from any process; idempotent. Returns whether a holder file was removed, and emits
- * one `release` event with `heldMs` only then. It removes only a valid detached record (one with `expiresAt`): a
+ * one `release` event with `heldMs` for each class (heavy, and the UI-test class for a UI-test run) that had one. It removes only a valid detached record (one with `expiresAt`): a
  * wrapper's own holder and a corrupt file are left to their owner and the reaper. An id that is not 1 to 160 of
  * `[A-Za-z0-9_-]` names no holder, and a holders or lease directory that breaks the directory rule (a symlink, or
  * another user's) is not read, so neither can reach a file outside `holders/`.
@@ -913,25 +1117,36 @@ async function pollForLease(opts, cls, meta, wait, ticketId) {
 export function releaseHolder(opts, id) {
     if (!HOLDER_ID.test(id))
         return false;
-    const dir = join(opts.dir, HEAVY.holders);
     const ownDir = (d) => {
         const st = unlessGone(() => lstatSync(d));
         return st !== undefined && isOwnDir(st);
     };
-    if (!ownDir(opts.dir) || !ownDir(dir))
+    if (!ownDir(opts.dir))
         return false;
-    const file = join(dir, `${id}.json`);
-    const text = unlessGone(() => readOwnFile(file))?.text;
-    const rec = text === undefined ? null : parseHolder(text);
-    if (rec?.expiresAt === undefined || unlessGone(() => (unlinkSync(file), true)) === undefined)
-        return false;
-    emit(opts, HEAVY, { type: "release", id, heldMs: (opts.now ?? Date.now)() - rec.startedAt });
-    return true;
+    // A UI-test run's hook call holds a detached holder of the same id in the UI-test class too.
+    const released = [HEAVY, UI_TESTS].map((cls) => {
+        const dir = join(opts.dir, cls.holders);
+        if (!ownDir(dir))
+            return false;
+        const file = join(dir, `${id}.json`);
+        const text = unlessGone(() => readOwnFile(file))?.text;
+        const rec = text === undefined ? null : parseHolder(text);
+        if (rec?.expiresAt === undefined || unlessGone(() => (unlinkSync(file), true)) === undefined)
+            return false;
+        emit(opts, cls, { type: "release", id, heldMs: (opts.now ?? Date.now)() - rec.startedAt });
+        return true;
+    });
+    return released.some(Boolean);
 }
-/** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. */
-export function leaseStatus(opts) {
+/** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. With `"ui-tests"`, the UI-test class's capacity and live holders instead (what a refusal of its phase reports). */
+export function leaseStatus(opts, holderClass) {
+    if (holderClass === "ui-tests")
+        return statusOf(opts, UI_TESTS, snapshot(opts, UI_TESTS));
     const snap = snapshot(opts, HEAVY);
-    return { ...statusOf(opts, HEAVY, snap), ...waitingOf(opts), sessions: { capacity: SESSIONS.capacity(snap.step, SESSIONS.ceiling(opts)), live: liveOf(opts, SESSIONS) } };
+    const uiLive = liveOf(opts, UI_TESTS);
+    const uiWaiting = waitingOf(opts, UI_TESTS).waiting;
+    const uiTests = uiLive.length > 0 || uiWaiting ? { uiTests: { capacity: UI_TESTS.capacity(snap.step, 1), live: uiLive, ...(uiWaiting && { waiting: uiWaiting }) } } : {};
+    return { ...statusOf(opts, HEAVY, snap), ...waitingOf(opts), ...uiTests, sessions: { capacity: SESSIONS.capacity(snap.step, SESSIONS.ceiling(opts)), live: liveOf(opts, SESSIONS) } };
 }
 /**
  * Production wiring: the real lease directory, the engine's own sampler and policy, and the `events.jsonl` sink. Creates nothing on disk.
@@ -974,6 +1189,15 @@ export function defaultLeaseOptions(env = process.env, overrides = {}) {
         inheritedHolderId: env.CO_LEASE_HOLDER || undefined,
         cpuTimes: osCpuTicks,
         processCommand: (pgid) => psField(pgid, "command", { timeoutMs: PROCESS_COMMAND_TIMEOUT_MS }),
+        scanUiTests: () => {
+            try {
+                const rows = parsePsTable(ps(PS_TABLE_ARGS, { timeoutMs: UI_SCAN_TIMEOUT_MS }));
+                return runningUiTestPids(rows, process.getuid?.() ?? -1, process.pid, (pids) => psEnvUdids(pids, { timeoutMs: UI_SCAN_TIMEOUT_MS }));
+            }
+            catch {
+                return undefined;
+            }
+        },
         onEvent: leaseEventSink(dir, { warn }),
         warn,
     });

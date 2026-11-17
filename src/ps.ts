@@ -3,10 +3,15 @@ import { execFileSync } from "node:child_process";
 
 /** The default bound of one `ps` call. */
 export const PS_TIMEOUT_MS = 2_000;
+/**
+ * The most stdout one `ps` call may return. Node's default is 1 MiB, which the whole table passes (`swift-frontend` rows of 13 to 69 KB among
+ * thousands): a read past the cap throws, and every reader of the table (the UI-test scan, the watchdog, the reaper) would then see nothing.
+ */
+export const PS_MAX_BUFFER = 64 * 1024 * 1024;
 
-/** Runs `ps` and returns trimmed stdout; throws on failure. Bounded (`PS_TIMEOUT_MS` unless `timeoutMs`) and stderr is discarded, so a hung `ps` cannot stall a caller and nothing writes past a `warn` seam. */
+/** Runs `ps` and returns trimmed stdout; throws on failure. Bounded (`PS_TIMEOUT_MS` unless `timeoutMs`; `PS_MAX_BUFFER` of output) and stderr is discarded, so a hung `ps` cannot stall a caller and nothing writes past a `warn` seam. */
 export function ps(args: string[], { timeoutMs = PS_TIMEOUT_MS }: { timeoutMs?: number } = {}): string {
-  return execFileSync("ps", args, { encoding: "utf8", timeout: timeoutMs, stdio: ["ignore", "pipe", "ignore"] }).trim();
+  return execFileSync("ps", args, { encoding: "utf8", timeout: timeoutMs, maxBuffer: PS_MAX_BUFFER, stdio: ["ignore", "pipe", "ignore"] }).trim();
 }
 
 /** One `ps -o <field>= -p <pid>` value; throws on failure. */
@@ -105,8 +110,154 @@ export const XCODE_TOOLS = ["xcodebuild", "simctl"];
 /** True when `command` runs one of `names`: the name preceded by the start, whitespace, `/` or a shell separator and followed by whitespace or the end, so a tool path with spaces still counts and `mysimctl` does not. */
 export const runsTool = (command: string, names: string[]): boolean => new RegExp(`(^|[\\s/;&|(])(${names.join("|")})(\\s|$)`).test(command);
 
+/**
+ * The build tool's options that take a value, from `man xcodebuild` (each entry is written there with an argument), so a value that reads `test` (a scheme or
+ * project of that name) is not the action. Flags (`-retry-tests-on-failure`, `-quiet`, ...) are not here. One table for the hook's classifier and the
+ * process classifier.
+ */
+export const XCODEBUILD_VALUED = new RegExp(`^-(?:${[
+  "project", "target", "workspace",
+  "scheme", "destination", "destination-timeout",
+  "configuration", "arch", "sdk",
+  "enableAddressSanitizer", "enableThreadSanitizer", "enableUndefinedBehaviorSanitizer",
+  "enableCodeCoverage", "testLanguage", "testRegion",
+  "derivedDataPath", "resultBundlePath", "authenticationKeyPath",
+  "authenticationKeyID", "authenticationKeyIssuerID", "archivePath",
+  "exportPath", "exportOptionsPlist", "localizationPath",
+  "exportLanguage", "xcconfig", "testProductsPath",
+  "xctestrun", "testPlan", "skip-testing",
+  "only-testing", "skip-test-configuration", "only-test-configuration",
+  "maximum-concurrent-test-device-destinations", "maximum-concurrent-test-simulator-destinations", "parallel-testing-enabled",
+  "parallel-testing-worker-count", "maximum-parallel-testing-workers", "test-timeouts-enabled",
+  "default-test-execution-time-allowance", "maximum-test-execution-time-allowance", "test-iterations",
+  "test-repetition-relaunch-enabled", "collect-test-diagnostics", "test-enumeration-style",
+  "test-enumeration-format", "test-enumeration-output-path", "toolchain"
+].join("|")})$`);
+
+/**
+ * A path prefix of a process's command line: `/` separated segments with no whitespace, except a segment that ends in `.app` or `.simruntime` (Xcode Beta
+ * 2.app, iOS 27.2.simruntime), so the match cannot run across the arguments of a shell whose script contains a path.
+ */
+const PATH_PREFIX = String.raw`(?:\/(?:[^\s/]+|[^/]*\s[^/]*\.(?:app|simruntime)))*\/`;
+const XCRUN_PREFIX = String.raw`(?:(?:${PATH_PREFIX})?xcrun\s+(?:-{1,2}(?:sdk|toolchain)\s+\S+\s+|-\S+\s+)*)?`;
+const XCODEBUILD_PROCESS = new RegExp(String.raw`^${XCRUN_PREFIX}(?:${PATH_PREFIX})?xcodebuild\s(.*)$`, "s");
+const BUILD_TOOL_PROCESS = new RegExp(String.raw`^${XCRUN_PREFIX}(?:${PATH_PREFIX})?(?:xcodebuild|simctl)(?:\s|$)`);
+const RUNNER_PROCESS = new RegExp(String.raw`^${PATH_PREFIX}[^\s/]*-Runner\.app\/(?:[^\s/]+\/)*[^\s/]+(?:\s|$)`);
+const XCTEST_PROCESS = new RegExp(String.raw`^((?:${PATH_PREFIX})?)xctest(?:\s|$)`);
+const XCODE_APP_PROCESS = new RegExp(String.raw`^(?:\/(?:[^\s/]+|[^/]*\s[^/]*\.(?:app|simruntime)))*\/Contents\/MacOS\/Xcode(?:\s|$)`);
+/** A simulator platform or runtime in the path of an executable (`iPhoneSimulator.platform`, `iOS 27.2.simruntime`). */
+const SIMULATOR_EXECUTABLE = /(?:Simulator\.platform|\.simruntime)\//;
+
+/**
+ * Whether a process is itself a build tool test action: its executable is `xcodebuild` (by path, or through `xcrun`, which execs it) and a `test` or
+ * `test-without-building` word follows. A shell or `grep` whose command line only contains that text is not one, so a wrapper's own command line
+ * (the Bash call's shell, the lease CLI naming its argv) never counts: the build tool it spawns is the process that does.
+ */
+export const isXcodebuildTestProcess = (command: string): boolean => {
+  const m = XCODEBUILD_PROCESS.exec(command.trim());
+  if (m === null) return false;
+  // `ps` shows the arguments without their quotes, so a value is skipped by its option: `-scheme test build` is a build.
+  const args = m[1]!.split(/\s+/);
+  for (let i = 0; i < args.length; i++) {
+    if (XCODEBUILD_VALUED.test(args[i]!)) i++;
+    else if (args[i] === "test" || args[i] === "test-without-building") return true;
+  }
+  return false;
+};
+
+/**
+ * Whether a process is the build tool or `simctl` itself, by executable (by path or through `xcrun`), whatever its action: a process whose command line only
+ * holds the names (a claude session whose prompt names them, a shell script) is not.
+ */
+export const isBuildToolProcess = (command: string): boolean => BUILD_TOOL_PROCESS.test(command.trim());
+
+/**
+ * Whether a process is a UI-test runner: an executable under a `*-Runner.app/` bundle (in a simulator's container or in DerivedData). Xcode.app (Cmd-U)
+ * spawns no build-tool process, so a run it drives shows as this. The match is on the executable's path, not on text anywhere in the command line.
+ */
+export const isTestRunnerProcess = (command: string): boolean => RUNNER_PROCESS.test(command.trim());
+
+/** Whether a process is `xctest` (by path or name). On its own it says little: a Swift gate runs `xcrun xctest <bundle>` for every XCTest bundle, all day. */
+export const isXctestProcess = (command: string): boolean => XCTEST_PROCESS.test(command.trim());
+
+/** Whether `xctest` runs from a simulator platform or runtime path (`iPhoneSimulator.platform`, `.simruntime`): a test run inside a simulator. */
+const xctestInSimulator = (command: string): boolean => SIMULATOR_EXECUTABLE.test(XCTEST_PROCESS.exec(command.trim())?.[1] ?? "");
+
+/** Whether an ancestor of `pid` in `rows` is Xcode.app's main executable (`.../Xcode*.app/Contents/MacOS/Xcode`), not a shell or helper that only names it. */
+export const hasXcodeAppAncestor = (rows: ProcRow[], pid: number): boolean =>
+  ancestry(rows, pid, 64).chain.some((r) => r.pid !== pid && XCODE_APP_PROCESS.test(r.command.trim()) && /\/Xcode[^/]*\.app\/Contents\/MacOS\/Xcode/.test(r.command));
+
+/** Whether `uid` is running Xcode.app's main executable (`.../Xcode*.app/Contents/MacOS/Xcode`) in `rows`. */
+export const xcodeAppRunning = (rows: ProcRow[], uid: number): boolean => rows.some((r) => r.uid === uid && isXcodeAppMain(r.command));
+
+const isXcodeAppMain = (command: string): boolean => XCODE_APP_PROCESS.test(command.trim()) && /\/Xcode[^/]*\.app\/Contents\/MacOS\/Xcode/.test(command);
+
+/** The processes in `rows` that are a test in progress of any kind, whether or not the lease's scan counts them (no Xcode.app needed): the watchdog's hung report reads these. */
+export const hungTestCandidates = (rows: ProcRow[]): ProcRow[] =>
+  rows.filter((r) => isXcodebuildTestProcess(r.command) || isTestRunnerProcess(r.command) || (isXctestProcess(r.command) && (xctestInSimulator(r.command) || hasXcodeAppAncestor(rows, r.pid))));
+
+/**
+ * The pids of `uid`'s tests in progress in `rows`, leaving out `ownPid` and its ancestors. A build tool test action always counts. A UI-test runner or an
+ * `xctest` that runs from a simulator path counts only while Xcode.app's main executable is running: a run the build tool drives is covered by its own
+ * process, and one left behind by a killed run would otherwise wedge the UI class for good (the watchdog reports it instead). An `xctest` with Xcode.app among
+ * its ancestors counts; a bare `xctest` does not (gates run it all day), leaving out `ownPid` and its ancestors (the wrapper that is asking, and the shell that holds its command line). */
+export function runningUiTestPids(rows: ProcRow[], uid: number, ownPid: number, envUdids?: (pids: number[]) => Map<number, string>): number[] {
+  const own = new Set([ownPid, ...ancestry(rows, ownPid, 64).chain.map((r) => r.pid)]);
+  const xcodeUp = xcodeAppRunning(rows, uid);
+  const mine = rows.filter((r) => r.uid === uid && !own.has(r.pid));
+  // A runner or simulator `xctest` on a device that no `launchd_sim` of this table runs is a leftover of a killed run, not a test in progress. The device
+  // comes from the process's path, else (`envUdids`, one `ps -E` for those with none) from `SIMULATOR_UDID`; one that cannot be placed keeps counting.
+  const simCandidates = xcodeUp ? mine.filter((r) => isTestRunnerProcess(r.command) || (isXctestProcess(r.command) && xctestInSimulator(r.command))) : [];
+  const unplaced = simCandidates.filter((r) => deviceOfPath(r.command) === undefined).map((r) => r.pid);
+  let fromEnv = new Map<number, string>();
+  if (unplaced.length > 0 && envUdids) {
+    try {
+      fromEnv = envUdids(unplaced);
+    } catch {
+      // Unreadable: they keep counting.
+    }
+  }
+  const leftover = (r: ProcRow): boolean => {
+    const udid = deviceOfPath(r.command) ?? fromEnv.get(r.pid);
+    return udid !== undefined && !launchdSimAlive(rows, udid);
+  };
+  const sim = new Set(simCandidates.filter((r) => !leftover(r)).map((r) => r.pid));
+  return mine.filter((r) => isXcodebuildTestProcess(r.command) || sim.has(r.pid) || (isXctestProcess(r.command) && hasXcodeAppAncestor(rows, r.pid))).map((r) => r.pid);
+}
+
+const deviceOfPath = (command: string): string | undefined => simulatorUdid(command) ?? xcTestDeviceUdid(command);
+
+/** Whether a `launchd_sim` of the device (either set) is in `rows`, by executable (a `/launchd_sim` path segment, so a command that only names it does not count): a device without one is not running. */
+export const launchdSimAlive = (rows: ProcRow[], udid: string): boolean => rows.some((r) => /\/launchd_sim(?:\s|$)/.test(r.command) && r.command.toUpperCase().includes(`/${udid.toUpperCase()}/`));
+
+const ENV_UDID = /^\s*(\d+)\s.*?\bSIMULATOR_UDID=([0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12})\b/;
+
+/**
+ * The `SIMULATOR_UDID` of each of `pids` that has one, from one bounded `ps -E` (a status-1 exit with output is the answer: a listed pid was gone by the time it
+ * ran); throws on any other failure.
+ */
+export function psEnvUdids(pids: number[], { timeoutMs = PS_TIMEOUT_MS }: { timeoutMs?: number } = {}): Map<number, string> {
+  let text: string;
+  try {
+    text = execFileSync("ps", ["-Eww", "-p", pids.join(","), "-o", "pid=,command="], { encoding: "utf8", timeout: timeoutMs, maxBuffer: PS_MAX_BUFFER, stdio: ["ignore", "pipe", "ignore"] });
+  } catch (err) {
+    const { status, stdout } = err as { status?: unknown; stdout?: unknown };
+    if (status !== 1 || typeof stdout !== "string" || stdout.length === 0) throw err;
+    text = stdout;
+  }
+  const out = new Map<number, string>();
+  for (const line of text.split("\n")) {
+    const m = ENV_UDID.exec(line);
+    if (m) out.set(Number(m[1]), m[2]!.toUpperCase());
+  }
+  return out;
+}
+
 /** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */
 export const simulatorUdid = (command: string): string | undefined => /\/CoreSimulator\/Devices\/([0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12})\//i.exec(command)?.[1]?.toUpperCase();
+
+/** The test clone's UDID in a command's `XCTestDevices/<udid>/` path (the device set only the build tool creates), else `undefined`. */
+export const xcTestDeviceUdid = (command: string): string | undefined => /\/XCTestDevices\/([0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12})\//i.exec(command)?.[1]?.toUpperCase();
 
 /** `pid` and its parents through `rows`, nearest first, without pid 1. `complete` is false when a link is missing from the scan or the chain is not finished within `max` rows (a loop), so a caller that guards on the chain can fail closed. */
 export function ancestry<R extends Pick<ProcRow, "pid" | "ppid">>(rows: R[], pid: number, max: number): { chain: R[]; complete: boolean } {

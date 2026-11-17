@@ -42,7 +42,7 @@ export interface LeaseCliDeps {
     /** Throws on a configuration error (a relative `CO_LEASE_DIR`). */
     leaseOptions(): LeaseOptions;
     acquire: typeof acquireLease;
-    leaseStatus(opts: LeaseOptions): LeaseStatus;
+    leaseStatus(opts: LeaseOptions, holderClass?: "ui-tests"): LeaseStatus;
     /** The memory the lease does not own, given the live session holders' pids and the heavy holders' owned roots (child pid, or a hook holder's session pid); absent or `undefined`, `status` omits it. */
     unowned?(opts: LeaseOptions, sessionPids: number[], leasedRoots: number[]): UnownedMemory | undefined;
     /** PIDs of this process's ancestors, nearest first; `[]` when they cannot be read. */

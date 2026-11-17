@@ -1,6 +1,11 @@
 /** The default bound of one `ps` call. */
 export declare const PS_TIMEOUT_MS = 2000;
-/** Runs `ps` and returns trimmed stdout; throws on failure. Bounded (`PS_TIMEOUT_MS` unless `timeoutMs`) and stderr is discarded, so a hung `ps` cannot stall a caller and nothing writes past a `warn` seam. */
+/**
+ * The most stdout one `ps` call may return. Node's default is 1 MiB, which the whole table passes (`swift-frontend` rows of 13 to 69 KB among
+ * thousands): a read past the cap throws, and every reader of the table (the UI-test scan, the watchdog, the reaper) would then see nothing.
+ */
+export declare const PS_MAX_BUFFER: number;
+/** Runs `ps` and returns trimmed stdout; throws on failure. Bounded (`PS_TIMEOUT_MS` unless `timeoutMs`; `PS_MAX_BUFFER` of output) and stderr is discarded, so a hung `ps` cannot stall a caller and nothing writes past a `warn` seam. */
 export declare function ps(args: string[], { timeoutMs }?: {
     timeoutMs?: number;
 }): string;
@@ -46,8 +51,55 @@ export declare const isSimulatorCommand: (command: string) => boolean;
 export declare const XCODE_TOOLS: string[];
 /** True when `command` runs one of `names`: the name preceded by the start, whitespace, `/` or a shell separator and followed by whitespace or the end, so a tool path with spaces still counts and `mysimctl` does not. */
 export declare const runsTool: (command: string, names: string[]) => boolean;
+/**
+ * The build tool's options that take a value, from `man xcodebuild` (each entry is written there with an argument), so a value that reads `test` (a scheme or
+ * project of that name) is not the action. Flags (`-retry-tests-on-failure`, `-quiet`, ...) are not here. One table for the hook's classifier and the
+ * process classifier.
+ */
+export declare const XCODEBUILD_VALUED: RegExp;
+/**
+ * Whether a process is itself a build tool test action: its executable is `xcodebuild` (by path, or through `xcrun`, which execs it) and a `test` or
+ * `test-without-building` word follows. A shell or `grep` whose command line only contains that text is not one, so a wrapper's own command line
+ * (the Bash call's shell, the lease CLI naming its argv) never counts: the build tool it spawns is the process that does.
+ */
+export declare const isXcodebuildTestProcess: (command: string) => boolean;
+/**
+ * Whether a process is the build tool or `simctl` itself, by executable (by path or through `xcrun`), whatever its action: a process whose command line only
+ * holds the names (a claude session whose prompt names them, a shell script) is not.
+ */
+export declare const isBuildToolProcess: (command: string) => boolean;
+/**
+ * Whether a process is a UI-test runner: an executable under a `*-Runner.app/` bundle (in a simulator's container or in DerivedData). Xcode.app (Cmd-U)
+ * spawns no build-tool process, so a run it drives shows as this. The match is on the executable's path, not on text anywhere in the command line.
+ */
+export declare const isTestRunnerProcess: (command: string) => boolean;
+/** Whether a process is `xctest` (by path or name). On its own it says little: a Swift gate runs `xcrun xctest <bundle>` for every XCTest bundle, all day. */
+export declare const isXctestProcess: (command: string) => boolean;
+/** Whether an ancestor of `pid` in `rows` is Xcode.app's main executable (`.../Xcode*.app/Contents/MacOS/Xcode`), not a shell or helper that only names it. */
+export declare const hasXcodeAppAncestor: (rows: ProcRow[], pid: number) => boolean;
+/** Whether `uid` is running Xcode.app's main executable (`.../Xcode*.app/Contents/MacOS/Xcode`) in `rows`. */
+export declare const xcodeAppRunning: (rows: ProcRow[], uid: number) => boolean;
+/** The processes in `rows` that are a test in progress of any kind, whether or not the lease's scan counts them (no Xcode.app needed): the watchdog's hung report reads these. */
+export declare const hungTestCandidates: (rows: ProcRow[]) => ProcRow[];
+/**
+ * The pids of `uid`'s tests in progress in `rows`, leaving out `ownPid` and its ancestors. A build tool test action always counts. A UI-test runner or an
+ * `xctest` that runs from a simulator path counts only while Xcode.app's main executable is running: a run the build tool drives is covered by its own
+ * process, and one left behind by a killed run would otherwise wedge the UI class for good (the watchdog reports it instead). An `xctest` with Xcode.app among
+ * its ancestors counts; a bare `xctest` does not (gates run it all day), leaving out `ownPid` and its ancestors (the wrapper that is asking, and the shell that holds its command line). */
+export declare function runningUiTestPids(rows: ProcRow[], uid: number, ownPid: number, envUdids?: (pids: number[]) => Map<number, string>): number[];
+/** Whether a `launchd_sim` of the device (either set) is in `rows`, by executable (a `/launchd_sim` path segment, so a command that only names it does not count): a device without one is not running. */
+export declare const launchdSimAlive: (rows: ProcRow[], udid: string) => boolean;
+/**
+ * The `SIMULATOR_UDID` of each of `pids` that has one, from one bounded `ps -E` (a status-1 exit with output is the answer: a listed pid was gone by the time it
+ * ran); throws on any other failure.
+ */
+export declare function psEnvUdids(pids: number[], { timeoutMs }?: {
+    timeoutMs?: number;
+}): Map<number, string>;
 /** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */
 export declare const simulatorUdid: (command: string) => string | undefined;
+/** The test clone's UDID in a command's `XCTestDevices/<udid>/` path (the device set only the build tool creates), else `undefined`. */
+export declare const xcTestDeviceUdid: (command: string) => string | undefined;
 /** `pid` and its parents through `rows`, nearest first, without pid 1. `complete` is false when a link is missing from the scan or the chain is not finished within `max` rows (a loop), so a caller that guards on the chain can fail closed. */
 export declare function ancestry<R extends Pick<ProcRow, "pid" | "ppid">>(rows: R[], pid: number, max: number): {
     chain: R[];

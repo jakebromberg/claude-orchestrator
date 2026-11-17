@@ -1,4 +1,5 @@
 import { type ProcRow } from "./ps.js";
+import type { ReapInput, ReapResult } from "./simulator-reaper.js";
 import { type SuspensionRecord } from "./suspensions.js";
 /** A stopped group with no suspension record is reported this long after it was first seen stopped. */
 export declare const STOPPED_AFTER_MS: number;
@@ -46,13 +47,20 @@ export interface Context {
     records: SuspensionRecord[];
     /** In-scope stopped groups, with the time each was first seen stopped. */
     stoppedSince: Map<number, number>;
-    /** Booted simulators with no `xcodebuild` or `simctl` anywhere in the scan, by UDID: when each was first seen idle and its readable rss total (`undefined` when no row's rss is readable). */
+    /** Booted simulators with no `xcodebuild` or `simctl` anywhere in the scan, by UDID: when each was first seen idle and its readable rss total (`undefined` when no row's rss is readable). `xctest` marks a clone of the XCTestDevices set, which only the reaper acts on; the report is for main-set devices. */
     idleSimulators: Map<string, {
         since: number;
         rssBytes: number | undefined;
+        xctest: boolean;
     }>;
+    /** The live, unexpired holders of the UI-test class (`ui-tests/`) with the time each started: a test process that started after one could be its run. */
+    uiHolders: {
+        startedAt: number;
+    }[];
 }
 export type Rule = (c: Context) => Finding[];
+/** A test in progress with no live UI-test holder that could own it is reported once it has run this long. */
+export declare const HUNG_TEST_AFTER_MS: number;
 /** The rules, in report order. A rule reads the context and returns findings; the reporters never change. */
 export declare const RULES: Rule[];
 /** The scan's bound, 60 s because `ps` can be slow at background priority. */
@@ -71,6 +79,8 @@ export interface WatchdogDeps {
         bavail: number;
         blocks: number;
     };
+    /** Reaps leftover simulator processes and shuts down idle booted devices once per cycle, after the scan: given the devices idle for `SIMULATOR_IDLE_AFTER_MS` and the last cycle's attempts, it returns the attempts to carry on. Absent, nothing is reaped. */
+    reap?: (input: ReapInput) => ReapResult;
 }
 /**
  * One cycle: scan, run every rule, then write `watchdog.json`, `watchdog.brief` (the one-line summary, empty when all

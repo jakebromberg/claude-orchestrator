@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -63,6 +63,23 @@ describe("leased postSessionCheck", () => {
     expect(seen.map((s) => s.env)).toEqual([{ CO_LEASE_HOLDER: id }, { CO_LEASE_HOLDER: id }]);
     expect(events.map((e) => e.type)).toEqual(["acquire", "release"]);
     expect(leaseStatus(leaseOptions()).live).toEqual([]);
+  });
+
+  // Issue #324: a check command that runs a UI-test action takes the machine's one UI-test slot for the whole check.
+  it.each([
+    { name: "a test action", commands: ["npm run lint", "xcodebuild test -scheme App"], expected: 1 },
+    { name: "only a build action", commands: ["xcodebuild build -scheme App"], expected: 0 },
+    { name: "text that only mentions the words", commands: ["grep -c 'xcodebuild test' docs/ci.md"], expected: 0 },
+  ])("holds $expected UI-test slot(s) while the check runs $name", async ({ commands, expected }) => {
+    let held = -1;
+    const runCommand = vi.fn(async () => {
+      held = existsSync(join(tmp, "ui-tests")) ? readdirSync(join(tmp, "ui-tests")).length : 0;
+      return "";
+    });
+    const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands } }), { runCommand });
+    await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions() });
+    expect(held).toBe(expected);
+    expect(existsSync(join(tmp, "ui-tests")) ? readdirSync(join(tmp, "ui-tests")) : []).toEqual([]);
   });
 
   // The slot covers the whole command loop, so it weighs the largest rule any command matches.
@@ -193,6 +210,22 @@ describe("leased postSessionCheck", () => {
 
     expect(events[0]).toMatchObject({ type: "acquire", ...(overridden ? { override: true } : {}) });
     expect("override" in events[0]).toBe(overridden);
+  });
+
+  // Issue #324 review: a lease problem of the UI-test slot is not memory pressure, which would be recorded as the reason the issue failed.
+  it("stops a UI-test check whose slot cannot be taken as lease-wait, not memory-critical, and runs no command", async () => {
+    const restore = failFsCall("openSync", (p) => p.endsWith(".mutex"), "EACCES");
+    try {
+      const runCommand = vi.fn(async () => "");
+      const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands: ["xcodebuild test -scheme App"] } }), { runCommand });
+      const result = await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions() });
+      expect(result).toMatchObject({ passed: false, stopped: "lease-wait" });
+      expect(result.summary).toContain("UI-test slot");
+      expect(result.summary).not.toContain("memory pressure");
+      expect(runCommand).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
   });
 
   it("a full disk stops the check as disk-full: no command runs and the summary names the disk", async () => {

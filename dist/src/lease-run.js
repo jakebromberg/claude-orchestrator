@@ -9,6 +9,7 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { describeBoundedFailure } from "./bounded-failure.js";
+import { isUiTestArgv, isUiTestCommand } from "./lease-hook.js";
 import { weightFor } from "./lease-weights.js";
 import { acquireLease, defaultLeaseOptions, leaseStatus, PROCESS_COMMAND_TIMEOUT_MS, resumeOldest, SUSPEND_MIN_RUN_MS, suspendNewest } from "./lease.js";
 import { formatAdmitted, formatRefusal, refusalExitCode, seconds, throttledProgress } from "./lease-messages.js";
@@ -102,10 +103,11 @@ export function runStatus(d) {
     const opts = optionsOrReport(d);
     if (!opts)
         return EX_CONFIG;
-    const { level, capacity, live, weights, sessions, waiting } = d.leaseStatus(opts);
+    const { level, capacity, live, weights, sessions, waiting, uiTests } = d.leaseStatus(opts);
     const unowned = d.unowned?.(opts, (sessions?.live ?? []).map((h) => h.pid), live.flatMap((h) => h.childPid ?? (h.expiresAt !== undefined ? h.pid : [])));
     const holders = live.map((h) => ({ pid: h.pid, command: h.command, ageSec: h.ageSec, ...(h.override && { override: true }), ...(h.suspended && { suspended: true }), ...(h.priority && { priority: h.priority }) }));
-    d.out(`${JSON.stringify({ level, capacity, live: holders, ...(waiting?.length && { waiting }), ...(weights && { weights }), ...(unowned && { unowned }) }, null, 2)}\n`);
+    const uiHolders = uiTests?.live.map((h) => ({ pid: h.pid, command: h.command, ageSec: h.ageSec }));
+    d.out(`${JSON.stringify({ level, capacity, live: holders, ...(waiting?.length && { waiting }), ...(uiTests && { uiTests: { capacity: uiTests.capacity, live: uiHolders, ...(uiTests.waiting?.length && { waiting: uiTests.waiting }) } }), ...(weights && { weights }), ...(unowned && { unowned }) }, null, 2)}\n`);
     return 0;
 }
 /** Waits for a slot, runs the command with it held, and returns the exit code to pass through. */
@@ -142,8 +144,10 @@ export async function runLeased(args, d) {
         }
     };
     // Installed before acquiring: a signal's default action would otherwise kill the wrapper between the holder file's
-    // write and the spawn, leaving a slot that no child holds. A handler can only run while waiting (nothing is held, so
-    // the signal is re-raised to kill the wrapper as before) or once the child exists, never in between.
+    // write and the spawn, leaving a slot that no child holds. A handler can only run while waiting (no heavy slot is held, so
+    // the signal is re-raised to kill the wrapper as before, after giving back the UI-test slot a UI-test run may already hold
+    // while it awaits the heavy one, which the killed wrapper's heartbeat would otherwise keep for 90 s) or once the child exists, never in between.
+    let releaseHeld;
     let child;
     let signalled;
     let grace;
@@ -152,6 +156,7 @@ export async function runLeased(args, d) {
     const handlers = FORWARDED.map((sig) => {
         const forward = () => {
             if (child === undefined) {
+                releaseHeld?.();
                 unhook();
                 d.signals.kill(d.signals.pid, sig);
                 return;
@@ -167,16 +172,31 @@ export async function runLeased(args, d) {
         return [sig, forward];
     });
     const unhook = () => handlers.forEach(([sig, forward]) => d.signals.off(sig, forward));
+    const uiTest = args.shell !== undefined ? isUiTestCommand(args.shell) : isUiTestArgv(args.argv);
+    // A UI-test run under any live hook holder whose session is an ancestor is refused at once, holding no slot. The holder may be the run's own
+    // parent call (taking the UI slot and then waiting for heavy behind it would hold the UI slot for minutes, perhaps in a cycle) or a sibling's
+    // (a hook holder's pid is the Claude process, an ancestor of every Bash call of the session, so the two cannot be told apart, and borrowing a
+    // sibling's slot would run the two UI tests together): the UI test is run as its own Bash call instead.
+    if (uiTest && !opts.inheritedHolderId && ancestorHookSlot(opts, d)) {
+        unhook();
+        const refusal = { refused: "nested-ui-test", waitedMs: 0, level: d.leaseStatus(opts).level, live: 0, class: "ui-tests" };
+        d.err(formatRefusal(refusal, d.leaseStatus(opts, "ui-tests")));
+        return refusalExitCode(refusal);
+    }
     // A hook slot the session already holds is borrowed through `inheritedHolderId`, never waited for a second time.
     const hookSlot = opts.inheritedHolderId || ownHolder ? undefined : ancestorHookSlot(opts, d);
     const weight = weightFor(command, d.cwd, d.env, d.err);
-    const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command, label: args.label, cwd: d.cwd, gated: args.gated, suspendable: suspendable || undefined, ...(high && { priority: "high" }), ...(weight !== undefined && { weight }) }, {
+    const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command, label: args.label, cwd: d.cwd, gated: args.gated, suspendable: suspendable || undefined, ...(uiTest && { uiTest: true }), ...(high && { priority: "high" }), ...(weight !== undefined && { weight }) }, {
         maxWaitMs,
-        onWait: throttledProgress((s) => d.err(`lease: waiting ${seconds(s.waitedMs)}s for a slot (pressure=${s.level}, ${s.live.length}/${s.capacity} live)`), { skipFirst: true }),
+        onHold: (release) => {
+            releaseHeld = release;
+        },
+        onWait: throttledProgress((s) => d.err(`lease: waiting ${seconds(s.waitedMs)}s for a slot (pressure=${s.level}, ${s.live.length}/${s.capacity} live${s.unmanagedUiTests?.length ? `; a UI-test run that holds no slot is in progress, pid ${s.unmanagedUiTests.join(", ")}` : ""})`), { skipFirst: true }),
     });
+    releaseHeld = undefined;
     if (!("leased" in got)) {
         unhook();
-        d.err(formatRefusal(got, d.leaseStatus(opts)));
+        d.err(formatRefusal(got, d.leaseStatus(opts, got.class)));
         return refusalExitCode(got);
     }
     if (hookSlot && got.leased && got.id === hookSlot)
