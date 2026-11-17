@@ -47,7 +47,7 @@ export type LeaseEvent = ({
 /** `level` is the confirmed level of a `stopped` refusal. */
  | {
     type: "timeout";
-    refused: "max-wait" | "stopped" | "disk-full";
+    refused: LeaseRefusal["refused"];
     waitedMs: number;
     level?: PressureLevel;
 }
@@ -233,8 +233,8 @@ export interface LeaseHandle {
      * not a positive integer, and once the holder has been reaped: a reaped holder's file is not recreated.
      */
     setChildPid(pid: number, pgid?: number): void;
-    /** Detached holders only: rewrites `expiresAt` from the request's getter, so a holder admitted before a long wait for another slot still lasts the call's whole time. */
-    renew?(): void;
+    /** Detached holders only: rewrites `expiresAt` from the request's getter, so a holder admitted before a long wait for another slot still lasts the call's whole time. Returns false when the holder's file is gone (reaped or removed): the slot is lost. */
+    renew?(): boolean;
     /** Sets or clears the holder's `suspended` mark, and records `resumedAt` when given (a resume); throws when the mark cannot be written or the holder is gone. Present on a holder this process owns. */
     setSuspended?(on: boolean, resumedAt?: number): void;
     release(outcome?: {
@@ -242,7 +242,13 @@ export interface LeaseHandle {
     }): void;
 }
 export interface LeaseRefusal {
-    refused: "max-wait" | "stopped" | "disk-full";
+    /**
+     * `io-error`, `slot-lost` and `nested-ui-test` come from the UI-test class only: its I/O-error cap (`code` is the error's), a UI-test holder found
+     * gone while a heavy slot was awaited, and a nested acquire whose inherited holder is live in the heavy class but not the UI-test one.
+     */
+    refused: "max-wait" | "stopped" | "disk-full" | "io-error" | "slot-lost" | "nested-ui-test";
+    /** Set when the refusal came from the UI-test phase of a UI-test run, so the caller reports that class's status. */
+    class?: "ui-tests";
     waitedMs: number;
     level: PressureLevel;
     live: number;
@@ -323,8 +329,8 @@ type LeaseWait = {
  * another user's) is not read, so neither can reach a file outside `holders/`.
  */
 export declare function releaseHolder(opts: LeaseOptions, id: string): boolean;
-/** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. */
-export declare function leaseStatus(opts: LeaseOptions): LeaseStatus;
+/** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. With `"ui-tests"`, the UI-test class's capacity and live holders instead (what a refusal of its phase reports). */
+export declare function leaseStatus(opts: LeaseOptions, holderClass?: "ui-tests"): LeaseStatus;
 /**
  * Production wiring: the real lease directory, the engine's own sampler and policy, and the `events.jsonl` sink. Creates nothing on disk.
  * `overrides.level` replaces the sampler (none is built, so the lease sizes capacity from that level alone: warning gives `heavyWarning`, 1, not the default step table's 3 or 2; a test-only path, and every production caller passes no `level`), and `overrides.warn` is the one writer for the lease, the sink,

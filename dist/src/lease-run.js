@@ -177,7 +177,7 @@ export async function runLeased(args, d) {
     });
     if (!("leased" in got)) {
         unhook();
-        d.err(formatRefusal(got, d.leaseStatus(opts)));
+        d.err(formatRefusal(got, d.leaseStatus(opts, got.class)));
         return refusalExitCode(got);
     }
     if (hookSlot && got.leased && got.id === hookSlot)

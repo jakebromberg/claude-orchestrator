@@ -33,12 +33,22 @@ export function formatNoSlot(refusal, status) {
 export function formatDiskFull(refusal) {
     return `lease: the disk is full (${refusal.code ?? "ENOSPC"}); free space before running heavy commands — do not rerun`;
 }
-/** The one text of any refusal: the disk-full line for `disk-full`, else the no-slot line. */
-export const formatRefusal = (refusal, status) => refusal.refused === "disk-full" ? formatDiskFull(refusal) : formatNoSlot(refusal, status);
+/** The lines of the refusals only the UI-test class gives, without the `lease: ` prefix (the post-check's summary reuses them). */
+const uiTestReason = (refusal) => refusal.refused === "io-error"
+    ? `the lease directory could not be used for ${seconds(refusal.waitedMs)}s (${refusal.code ?? "I/O error"}), so the UI-test slot was not taken; check the lease directory and rerun the command`
+    : refusal.refused === "slot-lost"
+        ? "the UI-test slot was lost while waiting for a heavy slot (it expired or was removed); rerun the command"
+        : refusal.refused === "nested-ui-test"
+            ? "this UI test runs inside a heavy slot that holds no UI-test slot, and waiting for one could deadlock; run it as its own call so it takes both slots"
+            : undefined;
+/** The one text of any refusal: the disk-full line for `disk-full`, the UI-test class's own line for `io-error`, `slot-lost` and `nested-ui-test`, else the no-slot line. */
+export const formatRefusal = (refusal, status) => refusal.refused === "disk-full" ? formatDiskFull(refusal) : (uiTestReason(refusal) ? `lease: ${uiTestReason(refusal)}` : formatNoSlot(refusal, status));
 /** The post-check's summary for a refusal. Its memory-critical stop is terminal, so unlike `formatNoSlot` it has no `lease: no slot after` prefix and does not say to rerun. */
 export const formatPostCheckStop = (refusal) => refusal.refused === "disk-full"
     ? `Post-session check not run: ${formatDiskFull(refusal)}`
-    : `post-check: skipped because memory pressure is critical (${refusal.level}, ${refusal.live} live); the check did not run and will not be retried`;
+    : uiTestReason(refusal)
+        ? `post-check: skipped because the UI-test slot could not be taken (${uiTestReason(refusal)}); the check did not run and will not be retried`
+        : `post-check: skipped because memory pressure is critical (${refusal.level}, ${refusal.live} live); the check did not run and will not be retried`;
 /** Why a refusal stops work: `disk-full` for a full disk, else `memory-critical`. */
 export const refusalStopReason = (refusal) => (refusal.refused === "disk-full" ? "disk-full" : "memory-critical");
 /** The CLI's exit code for a refusal: 74 for a full disk, else 75 (no slot). */
