@@ -108,7 +108,19 @@ describe("runHeavyQueue", () => {
       expect(await done).toBe(code);
     });
 
-    it("exits 74 on disk full and 78 on a misconfigured lease, and never 75", async () => {
+    // Issue #324 review: the front end goes through the same path, so a backgrounded UI run is refused with the foreground message, exit 75.
+    it.each([
+      [["run", "--shell", "xcodebuild -scheme S test > x.log 2>&1 &"]],
+      [["run", "--", "bash", "-c", "xcodebuild test &"]],
+      [["run", "--label", "ui", "--shell", "if true; then xcodebuild test; fi &"]],
+    ])("exits 75 for a backgrounded UI run, %j, and takes no slot", async (argv) => {
+      expect(await runHeavyQueue(argv, deps())).toBe(75);
+      expect(err.join("\n")).toContain("run a UI test in the foreground");
+      expect(spawned).toEqual([]);
+      expect(existsSync(join(lease.dir, "ui-tests"))).toBe(false);
+    });
+
+    it("exits 74 on disk full and 78 on a misconfigured lease, and never 75 for a lease refusal", async () => {
       const refuse = (r: LeaseRefusal) => deps({ acquire: (async () => r) as unknown as typeof acquireLease });
       const full: LeaseRefusal = { refused: "disk-full", waitedMs: 0, level: "normal", live: 0, code: "ENOSPC" };
       expect(await runHeavyQueue(["run", "--", "make"], refuse(full))).toBe(74);

@@ -21,6 +21,8 @@ export declare function formatAdmitted(a: LeaseHandle["admission"]): string;
 export declare function formatNoSlot(refusal: LeaseRefusal, status: LeaseStatus): string;
 /** The disk-full line; the hook denies with it and the CLI prints it. Unlike `formatNoSlot` it says not to rerun. */
 export declare function formatDiskFull(refusal: LeaseRefusal): string;
+/** Why a UI-test run that would be backgrounded is refused, shared by the hook's denial, the CLI and the post-check. */
+export declare const BACKGROUNDED_UI_REASON = "run a UI test in the foreground (no & that backgrounds it) so the lease can hold its slots for as long as it runs; rerunning the same command will not help";
 /**
  * The one text of any refusal: the disk-full line for `disk-full`, the UI-test class's own reason for `io-error`, `slot-lost`, `nested-ui-test` and
  * `ui-test-running`, else the no-slot line. Every one but the disk's starts with `lease: no slot after <n>s`, so the rule that stops a session after its
@@ -29,7 +31,7 @@ export declare function formatDiskFull(refusal: LeaseRefusal): string;
 export declare const formatRefusal: (refusal: LeaseRefusal, status: LeaseStatus) => string;
 /** The post-check's summary for a refusal. Its memory-critical stop is terminal, so unlike `formatNoSlot` it has no `lease: no slot after` prefix and does not say to rerun. */
 export declare const formatPostCheckStop: (refusal: LeaseRefusal) => string;
-/** Why a refusal stops work: `disk-full` for a full disk, `lease-wait` for a UI-test slot that could not be taken or held (a lease problem the owner reruns, not memory pressure), else `memory-critical`. */
-export declare const refusalStopReason: (refusal: LeaseRefusal) => "memory-critical" | "disk-full" | "lease-wait";
+/** Why a refusal stops work (`config-error` for a UI-test command that backgrounds its run, a static fault of the configured command): `disk-full` for a full disk, `lease-wait` for a UI-test slot that could not be taken or held (a lease problem the owner reruns, not memory pressure), else `memory-critical`. */
+export declare const refusalStopReason: (refusal: LeaseRefusal) => "memory-critical" | "disk-full" | "lease-wait" | "config-error";
 /** The CLI's exit code for a refusal: 74 for a full disk, else 75 (no slot). */
 export declare const refusalExitCode: (refusal: LeaseRefusal) => number;

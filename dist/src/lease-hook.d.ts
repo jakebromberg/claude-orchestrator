@@ -22,19 +22,33 @@ import { type LeaseOptions } from "./lease.js";
  * ignored; every pattern is anchored at the command word and followed by an end boundary (not `\w`, `.`, `/` or `-`).
  */
 export declare function isHeavyCommand(command: string, extraPatterns?: readonly string[], heavyQueueShim?: () => boolean): boolean;
+/** The raw-split rule alone: no quote, heredoc or comment tracking, so text that only mentions the action after a separator still matches. `isUiTestCommand` falls back to it for text it cannot tokenize. */
+export declare const isUiTestCommandUntokenized: (command: string) => boolean;
 /**
- * Whether `command` runs a UI-test action: the build tool, with the test action, as a command (the same segment rule as `isHeavyCommand`, so
- * text that only mentions it, a `grep` pattern, an `echo` or a commit message, is not one). It decides the UI-test class only: a miss
- * leaves the command in the heavy class, where it is still leased, and it never makes a command light. Quotes, heredocs and comments are not tracked.
+ * Whether `command` runs a UI-test action: the build tool, with the `test` or `test-without-building` word, as a command. The text is
+ * tokenized (`simpleCommands`: quotes, escapes, comments, heredocs, `$(...)` and backticks, so a heredoc body, a quoted argument or a
+ * comment that mentions it is text, and a substitution that runs it is not), and each simple command is read past its leading words
+ * (assignments, `nohup`, `time`, `env`, `nice`, `timeout`, `xcrun`, and `sh -c` scripts, recursively). Text it cannot tokenize falls
+ * back to `isUiTestCommandUntokenized`, an approximation that over-matches text after a separator and may miss forms the tokenizer reads. It decides the UI-test
+ * class only: a miss leaves the command in the heavy class, where it is still leased, and it never makes a command light.
  */
-export declare function isUiTestCommand(command: string): boolean;
+export declare const isUiTestCommand: (command: string) => boolean;
+/**
+ * Whether `command` runs a UI-test action that is backgrounded: the shell then returns at once, so `PostToolUse` would release the run's slots
+ * while it still runs. Decided from the tokenizer: the simple command that runs it, or a pipeline, and-or list, group or subshell holding it, is
+ * followed by an `&` separator (a script it runs through `sh -c` or a heredoc is read the same way); an `&` that backgrounds some other command
+ * does not count. Text it cannot tokenize falls back to the conservative raw check. Claude Code's own mid-run backgrounding (Ctrl+B) is not seen.
+ */
+export declare const uiRunBackgrounded: (command: string) => boolean;
+/** `uiRunBackgrounded` for a command whose words are already split (the CLI's `-- argv`): a UI test run by a script it passes to a shell that backgrounds it. */
+export declare function uiArgvBackgrounded(argv: readonly string[]): boolean;
 /**
  * Whether one simple command, given as its words, runs a UI-test action: past its leading words (assignments, `nohup`, `exec`, `command`,
  * `time`, `env`, `nice`, `timeout`, `xcrun` and its sdk options), the command word's basename is `xcodebuild` and an argument that is not an
  * option's value is `test` or `test-without-building`. A `sh -c` script goes to `inScript`. A caller that already has the words (the
  * CLI's argv) uses it directly, so quoting is never lost to a join.
  */
-export declare function runsUiTest(words: readonly string[], inScript: (script: string) => boolean): boolean;
+export declare function runsUiTest(words: readonly string[], inScript: (script: string) => boolean, stdin?: string): boolean;
 /** `isUiTestCommand` for a command whose words are already split (the CLI's `-- argv`). */
 export declare const isUiTestArgv: (argv: readonly string[]) => boolean;
 /**
@@ -51,13 +65,6 @@ export interface HookIo {
     /** Test seam: where heavy-queue lives (default `~/.local/share/heavy-queue/heavy-queue`). */
     heavyQueuePath?: string;
 }
-/**
- * Whether a UI-test command line may background work: an unquoted single `&` that is not part of `&&`, `>&`, `<&`, `&>` or `|&`, after quoted text and
- * backslash-escaped characters are blanked. `PostToolUse` fires when the backgrounded shell returns, so its slots would be released while the test
- * still runs; the line is denied instead. Conservative (it does not know which command the `&` follows): it can deny a line whose `&` backgrounds
- * something else. Claude Code's own mid-run backgrounding (Ctrl+B) is not seen at all and can still release the slots early.
- */
-export declare function uiRunBackgrounded(command: string): boolean;
 /** The `hook` subcommand's arguments after `hook`. Always returns 0: hook mode never fails a call. */
 export declare function runHook(args: string[], io: HookIo): Promise<number>;
 export interface HookEntry {

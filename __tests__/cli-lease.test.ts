@@ -671,6 +671,35 @@ describe("runLeased", () => {
       expect(err.join("\n")).toContain("a UI-test run that holds no slot is in progress, pid 4242");
     });
 
+    // Issue #324 review: a UI run backgrounded inside the string or script the CLI runs would return at once, so the slots would be released while
+    // the test still runs. It is refused with the foreground message, holding no slot, whichever front end asks.
+    it.each<[string, Partial<RunArgs>]>([
+      ["a --shell string with a trailing &", { argv: undefined, shell: "cd /w && xcodebuild -scheme S test > x.log 2>&1 &" }],
+      ["a --shell string with an & before another command", { argv: undefined, shell: "xcodebuild test & echo $!" }],
+      ["a --shell string with a compound", { argv: undefined, shell: "if true; then xcodebuild test; fi &" }],
+      ["a bash -c script in argv", { argv: ["bash", "-c", "xcodebuild -scheme S test &"] }],
+      ["a heavy-queue front end with a --shell string", { argv: undefined, shell: "xcodebuild test &", gated: true, background: true, suspendable: true, uncapped: true }],
+      ["a heavy-queue front end with a script in argv", { argv: ["sh", "-c", "xcodebuild test &"], gated: true, background: true, suspendable: true, uncapped: true }],
+    ])("refuses a backgrounded UI run in %s at once, holding no slot", async (_name, args) => {
+      const code = await run(args);
+      expect(code).toBe(75);
+      expect(err.join("\n")).toMatch(/^lease: no slot after 0s: run a UI test in the foreground/);
+      expect(acquired).toEqual([]);
+      expect(spawned).toEqual([]);
+    });
+
+    it.each<[string, Partial<RunArgs>]>([
+      ["a foreground --shell string", { argv: undefined, shell: "cd /w && xcodebuild -scheme S test 2>&1 | tail" }],
+      ["a foreground argv script", { argv: ["bash", "-c", "xcodebuild test"] }],
+      ["an & that backgrounds another command", { argv: undefined, shell: "echo hi & xcodebuild test" }],
+      ["a backgrounded command that is not a UI run", { argv: undefined, shell: "npm test &" }],
+    ])("does not refuse %s", async (_name, args) => {
+      const done = run(args);
+      await finishWith(0);
+      expect(await done).toBe(0);
+      expect(err.join("\n")).not.toContain("foreground");
+    });
+
     it("prints the UI-test class's status for a refusal in the UI-test phase, and the heavy status otherwise", async () => {
       const asked: unknown[] = [];
       const statusFor = (_opts: LeaseOptions, holderClass?: string) => (asked.push(holderClass), { level: "warning" as const, capacity: holderClass ? 1 : 4, step: 1, signals: null, live: [] });

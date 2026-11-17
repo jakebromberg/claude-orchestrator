@@ -44,6 +44,9 @@ export function formatDiskFull(refusal: LeaseRefusal): string {
   return `lease: the disk is full (${refusal.code ?? "ENOSPC"}); free space before running heavy commands — do not rerun`;
 }
 
+/** Why a UI-test run that would be backgrounded is refused, shared by the hook's denial, the CLI and the post-check. */
+export const BACKGROUNDED_UI_REASON = "run a UI test in the foreground (no & that backgrounds it) so the lease can hold its slots for as long as it runs; rerunning the same command will not help";
+
 /** The lines of the refusals only the UI-test class gives, without the `lease: ` prefix (the post-check's summary reuses them). */
 const uiTestReason = (refusal: LeaseRefusal): string | undefined =>
   refusal.refused === "io-error"
@@ -54,6 +57,8 @@ const uiTestReason = (refusal: LeaseRefusal): string | undefined =>
         ? refusal.pids?.length
           ? `the UI-test slot was not taken: a UI-test run is in progress (pid ${refusal.pids.join(", ")}) that holds no slot; wait for it to end and rerun the command`
           : `the UI-test slot was not taken: could not tell whether a UI-test run is in progress (the process table was unreadable for ${seconds(refusal.waitedMs)}s); rerun the command`
+      : refusal.refused === "backgrounded-ui-test"
+        ? `${BACKGROUNDED_UI_REASON}; it was not started`
       : refusal.refused === "nested-ui-test"
         ? "this UI test runs inside another call's lease slot (a hook call's, or a parent's heavy slot with no UI-test slot behind it), and waiting for the UI-test slot while that is held could deadlock; rerunning the same command will not help; run the UI test as its own Bash call so it takes both slots"
         : undefined;
@@ -70,13 +75,15 @@ export const formatRefusal = (refusal: LeaseRefusal, status: LeaseStatus): strin
 export const formatPostCheckStop = (refusal: LeaseRefusal): string =>
   refusal.refused === "disk-full"
     ? `Post-session check not run: ${formatDiskFull(refusal)}`
+    : refusal.refused === "backgrounded-ui-test"
+      ? `post-check: skipped because a configured command backgrounds a UI-test run (${BACKGROUNDED_UI_REASON}); fix the command, the check did not run and will not be retried`
     : uiTestReason(refusal)
       ? `post-check: skipped because the UI-test slot could not be taken (${uiTestReason(refusal)}); the check did not run, and the issue stopped as lease-wait`
       : `post-check: skipped because memory pressure is critical (${refusal.level}, ${refusal.live} live); the check did not run and will not be retried`;
 
-/** Why a refusal stops work: `disk-full` for a full disk, `lease-wait` for a UI-test slot that could not be taken or held (a lease problem the owner reruns, not memory pressure), else `memory-critical`. */
-export const refusalStopReason = (refusal: LeaseRefusal): "memory-critical" | "disk-full" | "lease-wait" =>
-  refusal.refused === "disk-full" ? "disk-full" : uiTestReason(refusal) ? "lease-wait" : "memory-critical";
+/** Why a refusal stops work (`config-error` for a UI-test command that backgrounds its run, a static fault of the configured command): `disk-full` for a full disk, `lease-wait` for a UI-test slot that could not be taken or held (a lease problem the owner reruns, not memory pressure), else `memory-critical`. */
+export const refusalStopReason = (refusal: LeaseRefusal): "memory-critical" | "disk-full" | "lease-wait" | "config-error" =>
+  refusal.refused === "disk-full" ? "disk-full" : refusal.refused === "backgrounded-ui-test" ? "config-error" : uiTestReason(refusal) ? "lease-wait" : "memory-critical";
 
 /** The CLI's exit code for a refusal: 74 for a full disk, else 75 (no slot). */
 export const refusalExitCode = (refusal: LeaseRefusal): number => (refusal.refused === "disk-full" ? 74 : 75);

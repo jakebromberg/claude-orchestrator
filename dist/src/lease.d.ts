@@ -278,7 +278,7 @@ export interface LeaseRefusal {
      * `io-error`, `slot-lost` and `nested-ui-test` come from the UI-test class only: its I/O-error cap (`code` is the error's), a UI-test holder found
      * gone while a heavy slot was awaited, and a nested acquire whose inherited holder is live in the heavy class but not the UI-test one.
      */
-    refused: "max-wait" | "stopped" | "disk-full" | "io-error" | "slot-lost" | "nested-ui-test" | "ui-test-running";
+    refused: "max-wait" | "stopped" | "disk-full" | "io-error" | "slot-lost" | "nested-ui-test" | "ui-test-running" | "backgrounded-ui-test";
     /** The test actions found running with no slot behind them (`ui-test-running`, or a `max-wait` that ended while they ran). */
     pids?: number[];
     /** Set when the refusal came from the UI-test phase of a UI-test run, so the caller reports that class's status. */

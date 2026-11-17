@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isUiTestArgv, isUiTestCommand } from "../src/lease-hook.js";
+import { isUiTestArgv, isUiTestCommand, uiRunBackgrounded } from "../src/lease-hook.js";
 
 // Issue #324, defects 2 and 4. The UI-test class takes a real invocation of the build tool with a test action, in command
 // position, and nothing else. The stopgap weight rule matched the words anywhere in the text, so a `grep` whose pattern said
@@ -33,6 +33,116 @@ describe("isUiTestCommand", () => {
     ["with a tab between words", `${TOOL}\ttest\t-scheme\tApp`],
     ["across a line continuation", `${TOOL} \\\n  -scheme App \\\n  test`],
     ["in an if", `if ${TOOL} test -scheme App; then echo ok; fi`],
+    ["inside a command substitution", `echo "result: $(${TOOL} test -scheme App)"`],
+    ["inside backticks", `out=\`${TOOL} test -scheme App\``],
+    ["inside an unquoted heredoc's substitution", `cat <<EOF\nlog: $(${TOOL} test -scheme App)\nEOF`],
+    ["after a heredoc ends", `cat <<'EOF' > notes.txt\n${TOOL} test is slow\nEOF\n${TOOL} test -scheme App`],
+    ["on the line after a comment", `# run the suite\n${TOOL} test -scheme App`],
+    ["in a bash -c script with a quoted separator", `bash -c 'echo "a;b"; ${TOOL} test -scheme App'`],
+    ["through env with options and assignments", `env -i PATH=/usr/bin FOO='a b' ${TOOL} test -scheme App`],
+    ["through xcrun with an sdk option", `xcrun --sdk iphonesimulator ${TOOL} test -scheme App`],
+    ["from a path with spaces in quotes", `"/Applications/Xcode Beta 2.app/Contents/Developer/usr/bin/${TOOL}" test -scheme App`],
+    ["when the tool name is quoted in pieces", `"xcode"'build' test -scheme App`],
+    ["when a quoted argument holds the words and a real action follows", `${TOOL} -destination 'platform=iOS Simulator,name=iPhone 16' -scheme "My Test App" test`],
+    ["when the text before it holds an unbalanced quote in a comment", `# it's fine\n${TOOL} test -scheme App`],
+    ["with a destination that has parentheses", `${TOOL} -scheme PhaseMatrix -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' test`],
+    ["with a scheme that has a semicolon", `${TOOL} -scheme "My;Scheme" test`],
+    ["with a scheme named test and then the action", `${TOOL} -scheme test test`],
+    // Issue #324 review (wrappers the owner uses): matched by basename, for the UI classifier only.
+    ["under taskpolicy -b", `taskpolicy -b ${TOOL} -scheme App test`],
+    ["under taskpolicy with valued options", `taskpolicy -c utility -d throttle -t 2 -l 3 ${TOOL} test`],
+    ["under taskpolicy by path and xcrun", `/usr/sbin/taskpolicy -b xcrun ${TOOL} test`],
+    ["under caffeinate with flags", `caffeinate -i ${TOOL} test`],
+    ["under caffeinate with -t and -w values", `caffeinate -dims -t 3600 -w 123 ${TOOL} test`],
+    ["under arch -arm64", `arch -arm64 ${TOOL} test`],
+    ["under arch with -e and -arch", `arch -x86_64 -e FOO=1 -d BAR -arch arm64 ${TOOL} test`],
+    ["under /usr/bin/time -l", `/usr/bin/time -l ${TOOL} test`],
+    ["under time -p", `time -p ${TOOL} test`],
+    ["under /usr/bin/time -o file", `/usr/bin/time -al -o out.txt ${TOOL} test`],
+    ["under a chain of wrappers", `taskpolicy -b caffeinate -i arch -arm64 /usr/bin/time -l xcrun ${TOOL} test`],
+    ["after an option that is a flag, not a valued one", `${TOOL} -retry-tests-on-failure test`],
+    ["after -run-tests-until-failure", `${TOOL} -run-tests-until-failure -scheme App test`],
+    ["after -quiet and -allowProvisioningUpdates", `${TOOL} -quiet -allowProvisioningUpdates -scheme App test`],
+    ["after -parallelize-tests-among-destinations", `${TOOL} -parallelize-tests-among-destinations test`],
+    ["after -disable-concurrent-destination-testing", `${TOOL} -disable-concurrent-destination-testing test`],
+    // A shell that reads its script from a heredoc runs the body.
+    ["a quoted heredoc fed to bash", `bash <<'EOF'\n${TOOL} test -scheme App\nEOF`],
+    ["a heredoc fed to sh -s", `sh -s -- arg <<'EOF'\ncd /w\n${TOOL} test\nEOF`],
+    ["an unquoted heredoc fed to zsh", `zsh <<EOF\n${TOOL} test -scheme App\nEOF`],
+    ["a heredoc fed to /bin/bash behind env", `env FOO=1 /bin/bash <<'EOF'\n${TOOL} test\nEOF`],
+    ["a here-string fed to bash", `bash <<< '${TOOL} test -scheme App'`],
+    // Issue #324 review: a case arm's `)` inside a substitution does not close it.
+    ["a run inside a case arm of a double-quoted substitution", `echo "$(case x in a) ${TOOL} test ;; esac)"`],
+    ["a run inside a case arm of a substitution after other arms", `v=$(case $y in a) echo hi ;; b) ${TOOL} test ;; esac)`],
+    ["a run inside a case arm with a leading parenthesis", `echo "$(case $y in (a) ${TOOL} test ;; esac)"`],
+    ["a run inside a case arm written over several lines", `echo "$(case $y in\n  a)\n    ${TOOL} test ;;\nesac)"`],
+    ["a run inside a case arm inside backticks", "echo `case x in a) " + TOOL + " test ;; esac`"],
+    ["a run after a case inside a substitution that is closed", `echo "$(case x in a) echo hi ;; esac)"; ${TOOL} test`],
+    ["a run inside a nested substitution inside a case arm", `echo "$(case x in a) echo $(date) ;; b) ${TOOL} test ;; esac)"`],
+    ["a here-string fed to sh -s", `sh -s <<< "${TOOL} test"`],
+    ["a here-string glued to its operator", `bash <<<'${TOOL} test -scheme App'`],
+    // Issue #324 review: no space before the operator either.
+    ["a here-string glued to the shell word", `bash<<<'${TOOL} test -scheme App'`],
+    ["a double-quoted here-string glued to the shell word", `bash<<<"${TOOL} test"`],
+    ["a here-string behind a descriptor number", `bash 0<<<'${TOOL} test'`],
+    ["a here-string glued to a path to the shell", `/bin/bash<<<'${TOOL} test'`],
+    ["a here-string fed to /bin/zsh behind env", `env A=1 /bin/zsh <<< '${TOOL} test'`],
+    ["under sudo", `sudo ${TOOL} test`],
+    ["under sudo with valued options", `sudo -u jake -g staff -D /w ${TOOL} test`],
+    ["under sudo with flags and an assignment", `sudo -n -E FOO=1 ${TOOL} test`],
+    ["under /usr/bin/sudo, with -p and -h values", `/usr/bin/sudo -p 'pw: ' -h host ${TOOL} test`],
+    ["under sudo around taskpolicy", `sudo taskpolicy -b ${TOOL} test`],
+    ["a heredoc fed to bash -e", `bash -e <<-'EOF'\n\t${TOOL} test\nEOF`],
+    // Issue #324 review: redirects glued to the action word ended it inside the word, which hid it.
+    ["a glued > redirect", `${TOOL} -scheme App test>build.log`],
+    ["a glued &> redirect", `${TOOL} -scheme App test&>build.log`],
+    ["a glued >> redirect", `${TOOL} test>>build.log 2>&1`],
+    ["a glued < redirect", `${TOOL} test<in.txt`],
+    ["a glued pipe", `${TOOL} test|tee out.log`],
+    ["a spaced redirect and the action after it", `${TOOL} > build.log -scheme App test`],
+    ["a numeric redirect before the action", `${TOOL} 2>err.log test`],
+    ["a redirect on the wrapper", `taskpolicy -b ${TOOL} test >out.log 2>&1`],
+    // timeout and stdbuf, matched by basename.
+    ["under script", `script -q /dev/null ${TOOL} test`],
+    ["under script with flags and -t", `script -aFkq -t 0 out.log ${TOOL} -scheme App test`],
+    ["under script by path", `/usr/bin/script -q typescript ${TOOL} test`],
+    ["under script -r with a file", `script -r /tmp/x ${TOOL} test`],
+    ["under noglob", `noglob ${TOOL} -destination 'name=A' test`],
+    ["under noglob and time", `noglob time ${TOOL} test`],
+    ["under script around taskpolicy", `script -q /dev/null taskpolicy -b ${TOOL} test`],
+    ["under timeout", `timeout 600 ${TOOL} test`],
+    ["under timeout with -k and -s", `timeout -k 5 -s KILL 1h ${TOOL} test`],
+    ["under gtimeout", `gtimeout 30m ${TOOL} test`],
+    // Issue #324 review: the long forms of the wrappers' valued options.
+    ["under timeout with --kill-after and its value", `timeout --kill-after 5 10 ${TOOL} test`],
+    ["under timeout with --signal and its value", `timeout --signal TERM 10 ${TOOL} test`],
+    ["under timeout with both long forms", `timeout --kill-after 5s --signal KILL 1h ${TOOL} test`],
+    ["under timeout with --kill-after glued to its value", `timeout --kill-after=5 10 ${TOOL} test`],
+    ["under timeout with --foreground and --preserve-status", `timeout --foreground --preserve-status 10 ${TOOL} test`],
+    ["under gtimeout with --kill-after", `gtimeout --kill-after 5 1h ${TOOL} test`],
+    ["under sudo with --user and its value", `sudo --user build ${TOOL} test`],
+    ["under nice with --adjustment and its value", `nice --adjustment 5 ${TOOL} test`],
+    ["under env with --unset and its value", `env --unset FOO ${TOOL} test`],
+    ["under env with --chdir and its value", `env --chdir /w ${TOOL} test`],
+    ["under stdbuf with --output and its value", `stdbuf --output L ${TOOL} test`],
+    ["under time with --output and its value", `time --output /tmp/t ${TOOL} test`],
+    ["under time with -f and its value", `time -f %e ${TOOL} test`],
+    ["under time with --format and its value", `time --format %e ${TOOL} test`],
+    ["under sudo with -r and its value", `sudo -r role ${TOOL} test`],
+    ["under sudo with -t and its value", `sudo -t type ${TOOL} test`],
+    ...["close-from 4", "chdir /w", "group staff", "host h", "prompt p", "role r", "chroot /r", "type t", "command-timeout 5", "other-user bob", "user bob"].map(
+      (opt): [string, string] => [`under sudo with --${opt.split(" ")[0]}`, `sudo --${opt} ${TOOL} test`],
+    ),
+    ...["input 0", "output L", "error 0"].map((opt): [string, string] => [`under stdbuf with --${opt.split(" ")[0]}`, `stdbuf --${opt} ${TOOL} test`]),
+    ["under env with --split-string glued", `env --split-string=-i ${TOOL} test`],
+    ["under gtimeout by path with options", `/opt/homebrew/bin/gtimeout -k 10s -s TERM 1h ${TOOL} test`],
+    ["under stdbuf", `stdbuf -oL -eL ${TOOL} test`],
+    ["under stdbuf with valued options", `stdbuf -i 0 -o L -e 0 ${TOOL} test`],
+    ["under stdbuf by path", `/usr/local/bin/stdbuf -o0 ${TOOL} test`],
+    ["when the text cannot be tokenized and the raw rule sees xcrun --sdk", `echo 'unterminated; xcrun --sdk iphonesimulator ${TOOL} test -scheme App`],
+    ["when the text cannot be tokenized and the raw rule sees xcrun -sdk", `echo 'unterminated; xcrun -sdk iphonesimulator ${TOOL} test -scheme App`],
+    ["when the text cannot be tokenized and the raw rule sees bash -c --", `echo 'unterminated; bash -c -- "${TOOL} test -scheme App"`],
+    ["when the text cannot be tokenized and the raw rule matches", `echo 'unterminated; ${TOOL} test -scheme App`],
   ])("matches %s", (_name, command) => {
     expect(isUiTestCommand(command)).toBe(true);
   });
@@ -58,8 +168,74 @@ describe("isUiTestCommand", () => {
     ["a pipeline that greps its output", `cat build.log | grep '${TOOL} test'`],
     ["a path component", `ls /var/${TOOL}/test`],
     ["an empty command", ""],
+    ["a quoted commit message with a separator before the words", `git commit -m "fix; ${TOOL} test hung"`],
+    ["a quoted gh body with && before the words", `gh issue create --title t --body "a && ${TOOL} test -scheme App"`],
+    ["a single-quoted argument with a newline before the words", `gh issue create --body 'first line\n${TOOL} test -scheme App\nlast'`],
+    ["a quoted heredoc body line that starts with the words", `gh issue create --title t --body-file - <<'EOF'\nSteps:\n${TOOL} test -scheme App\nEOF`],
+    ["a quoted heredoc body in the commit-message form", `git commit -m "$(cat <<'EOF'\nDon't (yet) run\n${TOOL} test -scheme App\nEOF\n)"`],
+    ["an unquoted heredoc body with plain text", `cat <<EOF\n${TOOL} test -scheme App\nEOF`],
+    ["a comment line", `# ${TOOL} test -scheme App`],
+    ["a trailing comment", `ls # ${TOOL} test`],
+    ["a comment line after a command", `ls\n# ${TOOL} test -scheme App`],
+    ["an escaped separator", `echo a\\; ${TOOL} test`],
+    ["an echo of a substitution-free string after a real build", `${TOOL} build -scheme App && echo "now ${TOOL} test"`],
+    ["a single-quoted substitution", `echo '$(${TOOL} test -scheme App)'`],
+    ["a bash -c script that only echoes it", `bash -c 'echo "${TOOL} test"'`],
+    ["an argument that is the words", `printf '%s\n' ${TOOL} test`],
+    ["a scheme named test and a build action", `${TOOL} -scheme test build`],
+    ["a project named test and a build action", `${TOOL} -project test -scheme App build`],
+    ["a scheme named test inside a bash -c script", `bash -c '${TOOL} -scheme test build'`],
+    ["taskpolicy with no program to run", `taskpolicy -p 123`],
+    ["taskpolicy around another tool that is given the words", `taskpolicy -b grep -rn '${TOOL} test' docs`],
+    ["caffeinate around an echo", `caffeinate -i echo ${TOOL} test`],
+    ["arch around a grep", `arch -arm64 grep '${TOOL} test' notes.md`],
+    ["time around a different tool", `/usr/bin/time -l ls ${TOOL} test`],
+    ["a wrapper around a scheme named test and a build action", `taskpolicy -b ${TOOL} -scheme test build`],
+    ["a build whose output is redirected to a file named test", `${TOOL} -scheme App build > test`],
+    ["a build whose stderr is redirected to a file named test", `${TOOL} -scheme App build 2> test`],
+    ["a build with &> to a file named test", `${TOOL} build &> test`],
+    ["a build with >> to a file named test", `${TOOL} build >> test`],
+    ["a build with a glued redirect to a file named test", `${TOOL} build >test`],
+    ["a build that reads a file named test", `${TOOL} build < test`],
+    ["a build whose duplicated fd is test", `${TOOL} build 2>&test`],
+    ["script around a grep", `script -q /dev/null grep '${TOOL} test' f`],
+    ["script with only a file operand", `script -q out.log`],
+    ["noglob around an echo", `noglob echo ${TOOL} test`],
+    ["timeout around a grep", `timeout 5 grep '${TOOL} test' f`],
+    ["gtimeout around an echo", `gtimeout 5 echo ${TOOL} test`],
+    ["stdbuf around an echo", `stdbuf -oL echo ${TOOL} test`],
+    ["stdbuf with a valued option and a command that is not the build tool", `stdbuf -o L cat ${TOOL}.log test`],
+    ["a here-string fed to cat", `cat <<< '${TOOL} test'`],
+    ["a here-string behind a quoted number, which is an argument of the shell", `bash "0"<<<'${TOOL} test'`],
+    ["a here-string glued to a command that is not a shell", `cat<<<'${TOOL} test'`],
+    ["a here-string fed to a script file", `bash run.sh <<< '${TOOL} test'`],
+    ["a here-string to a shell whose text only mentions it", `bash <<< "echo ${TOOL} test"`],
+    ["sudo with a user named test and a build action", `sudo -u test ${TOOL} -scheme App build`],
+    ["sudo -l, which lists and runs nothing", `sudo -l`],
+    ["sudo around a grep", `sudo grep -rn '${TOOL} test' /var/log`],
+    ["a heredoc fed to cat", `cat <<'EOF'\n${TOOL} test -scheme App\nEOF`],
+    ["a heredoc fed to a script file", `bash run.sh <<'EOF'\n${TOOL} test\nEOF`],
+    ["a heredoc fed to bash -c, whose stdin the script ignores", `bash -c 'echo hi' <<'EOF'\n${TOOL} test\nEOF`],
+    ["a heredoc to a shell whose body only mentions it", `bash <<'EOF'\necho "${TOOL} test"\nEOF`],
+    ["a here-string", `cat <<< '${TOOL} test -scheme App'`],
   ])("does not match %s", (_name, command) => {
     expect(isUiTestCommand(command)).toBe(false);
+  });
+
+  // `bash -c "..."` scripts are read recursively to a fixed depth, beyond which the raw rule answers; a deeper nest must neither throw nor hang.
+  const nest = (command: string, levels: number): string => {
+    let text = command;
+    for (let i = 0; i < levels; i++) text = `bash -c "${text.replace(/(["\\$`])/g, "\\$1")}"`;
+    return text;
+  };
+
+  it.each([1, 3, 6])("reads a test action nested %i bash -c scripts deep", (levels) => {
+    expect(isUiTestCommand(nest(`${TOOL} test -scheme App`, levels))).toBe(true);
+    expect(isUiTestCommand(nest(`echo "${TOOL} test"`, levels))).toBe(false);
+  });
+
+  it("answers, without throwing, for a nest past the depth bound", () => {
+    expect(typeof isUiTestCommand(nest(`${TOOL} test -scheme App`, 14))).toBe("boolean");
   });
 
   it("stays linear on a long command with many words and no test action", () => {
@@ -96,5 +272,150 @@ describe("isUiTestArgv", () => {
     ["no words", [], false],
   ])("%s", (_name, argv, expected) => {
     expect(isUiTestArgv(argv)).toBe(expected);
+  });
+});
+
+// Issue #324 review: `XCODEBUILD_VALUED` is the option list of the build tool's manual (`man xcodebuild`), each entry one that takes a value; the flags
+// below take none, so the word after them is an argument or the action.
+describe("xcodebuild options and the action word", () => {
+  const VALUED = [
+    "project", "target", "workspace", "scheme", "destination", "destination-timeout", "configuration", "arch", "sdk", "enableAddressSanitizer",
+    "enableThreadSanitizer", "enableUndefinedBehaviorSanitizer", "enableCodeCoverage", "testLanguage", "testRegion", "derivedDataPath",
+    "resultBundlePath", "authenticationKeyPath", "authenticationKeyID", "authenticationKeyIssuerID", "archivePath", "exportPath", "exportOptionsPlist",
+    "localizationPath", "exportLanguage", "xcconfig", "testProductsPath", "xctestrun", "testPlan", "skip-testing", "only-testing", "skip-test-configuration",
+    "only-test-configuration", "maximum-concurrent-test-device-destinations", "maximum-concurrent-test-simulator-destinations", "parallel-testing-enabled",
+    "parallel-testing-worker-count", "maximum-parallel-testing-workers", "test-timeouts-enabled", "default-test-execution-time-allowance",
+    "maximum-test-execution-time-allowance", "test-iterations", "test-repetition-relaunch-enabled", "collect-test-diagnostics", "test-enumeration-style",
+    "test-enumeration-format", "test-enumeration-output-path", "toolchain",
+  ];
+  const FLAGS = [
+    "retry-tests-on-failure", "run-tests-until-failure", "disable-concurrent-destination-testing", "parallelize-tests-among-destinations", "enumerate-tests",
+    "quiet", "verbose", "allowProvisioningUpdates", "allowProvisioningDeviceRegistration", "skipUnavailableActions", "alltargets", "showBuildSettings",
+  ];
+
+  it.each(VALUED)("-%s takes a value, so a value that reads test is not the action", (option) => {
+    expect(isUiTestArgv([TOOL, `-${option}`, "test", "build"])).toBe(false);
+    expect(isUiTestArgv([TOOL, `-${option}`, "x", "test"])).toBe(true);
+    expect(isUiTestCommand(`${TOOL} -${option} test build`)).toBe(false);
+  });
+
+  it.each(FLAGS)("-%s takes no value, so the word after it is the action", (option) => {
+    expect(isUiTestArgv([TOOL, `-${option}`, "test"])).toBe(true);
+    expect(isUiTestCommand(`${TOOL} -${option} test`)).toBe(true);
+  });
+});
+
+// Issue #324 review: the tokenizer decides whether a UI-test run is backgrounded (and so would lose its slots when the shell returns): the
+// simple command that runs it, or a pipeline, group or subshell holding it, is followed by an `&` separator.
+describe("uiRunBackgrounded", () => {
+  it.each<[string, string]>([
+    ["a trailing &", `${TOOL} test &`],
+    ["a & after redirects, then another command", `${TOOL} -scheme App test > x.log 2>&1 & echo $!`],
+    ["a subshell that backgrounds it", `(${TOOL} test &)`],
+    ["a & then sleep", `${TOOL} test & sleep 5`],
+    ["a backgrounded subshell", `(${TOOL} test) &`],
+    ["a backgrounded group", `{ ${TOOL} test; } &`],
+    ["a pipeline element that is backgrounded", `${TOOL} test | tee out.log &`],
+    ["an and-or list that is backgrounded", `cd /w && ${TOOL} test &`],
+    ["a wrapper around it", `taskpolicy -b ${TOOL} test &`],
+    ["a glued redirect before the &", `${TOOL} test>x.log &`],
+    ["a bash -c script that is backgrounded", `bash -c '${TOOL} test' &`],
+    ["a bash -c script that backgrounds it itself", `bash -c '${TOOL} test &'`],
+    ["a heredoc script that backgrounds it", `bash <<'EOF'\n${TOOL} test &\nEOF`],
+    ["a & on the following line", `${TOOL} test &\nwait`],
+    // Issue #324 review: a newline after `|`, `&&`, `||` or `|&` continues the statement.
+    ["a pipe then a newline", `${TOOL} test |\n  tee log &`],
+    ["a redirect, a pipe then a newline", `${TOOL} -scheme A test 2>&1 |\n  xcbeautify > out.log &`],
+    ["&& then a newline", `${TOOL} test &&\n  echo done &`],
+    ["|| then a newline", `${TOOL} test ||\n  echo failed &`],
+    ["|& then a newline", `${TOOL} test |&\n  tee log &`],
+    // Issue #324 review: text that defines a function and has a lone & is decided by the conservative raw check, whatever the body.
+    ["a space before the parentheses", `f () { ${TOOL} test; }; f &`],
+    ["the function keyword without parentheses", `function f { ${TOOL} test; }; f &`],
+    ["the function keyword without parentheses, called through time", `function f { ${TOOL} test; }; time f &`],
+    ["the function keyword with parentheses", `function f() { ${TOOL} test; }; f &`],
+    ["a subshell body", `f() ( ${TOOL} test ); f &`],
+    ["a zsh body with no semicolon", `f() { ${TOOL} test }; f &`],
+    ["time in front of the call", `f() { ${TOOL} test; }; time f &`],
+    ["a group around the call", `f() { ${TOOL} test; }; { f; } &`],
+    ["a call through another function", `f() { ${TOOL} test; }; g() { f; }; g &`],
+    ["a different function's call in the background (conservative)", `f() { ${TOOL} test; }; g &`],
+    ["a function and a & elsewhere on the line", `f() { ${TOOL} test; }; f; echo hi &`],
+    ["text that cannot be tokenized and holds a lone &", `echo 'unterminated; ${TOOL} test &`],
+    // Compound commands: the & after the closer backgrounds the whole statement.
+    ["an if", `if true; then ${TOOL} test; fi &`],
+    ["an if with else", `if c; then echo x; else ${TOOL} -scheme A test; fi &`],
+    ["a for loop with redirects", `for s in A B; do ${TOOL} -scheme $s test; done > log 2>&1 &`],
+    ["a while loop", `while true; do ${TOOL} test; done &`],
+    ["an until loop", `until false; do ${TOOL} test; done &`],
+    ["a case", `case $x in a) ${TOOL} test ;; esac &`],
+    ["a nested compound", `if c; then for s in A; do ${TOOL} test; done; fi &`],
+    ["a compound after cd", `cd /w && if c; then ${TOOL} test; fi &`],
+    ["a function whose call is backgrounded", `f() { ${TOOL} test; }; f &`],
+    ["a function keyword whose call is backgrounded", `function f { ${TOOL} test; }; f &`],
+    ["a function called in a backgrounded pipeline", `f() { ${TOOL} test; }; f | tee log &`],
+    ["a coproc", `coproc ${TOOL} test`],
+    // Issue #324 review: a real function and a real & still count beside a comment or a heredoc body that has neither.
+    ["a function after a leading comment line", `# helper() & friends\nf() { ${TOOL} test; }; f &`],
+    ["a function in a script fed to a shell by a heredoc", `bash <<'EOF'\nf() { ${TOOL} test; }\nf &\nEOF`],
+    ["a function beside a heredoc that holds a different one", `cat <<'EOF'\nsetUp() & tearDown()\nEOF\nf() { ${TOOL} test; }; f &`],
+    // A heredoc body that expands a substitution runs it, so its function definition and & still count.
+    ["a function and a & in a substitution of an unquoted heredoc body", `cat <<EOF\n$(f() ( ${TOOL} test ); f &)\nEOF`],
+    // A comment inside a backtick substitution is read from a slice of the text, so it must not blank the real text before it.
+    ["a function and a & before a backtick substitution that holds a comment", `f() ( ${TOOL} test ); f & echo \`# xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n\``],
+    ["a case run in a substitution that is backgrounded", `echo "$(case x in a) ${TOOL} test ;; esac)" &`],
+    ["a run that backgrounds itself inside a case arm of a substitution", `echo "$(case x in a) ${TOOL} test & ;; esac)"`],
+    ["a named coproc", `coproc BUILD ${TOOL} -scheme A test`],
+    ["a coproc group", `coproc { ${TOOL} test; }`],
+    ["an output process substitution", `tee out.log >(${TOOL} test)`],
+    ["an input process substitution", `cat <(${TOOL} test)`],
+    ["text that cannot be tokenized and holds a coproc", `echo 'unterminated; coproc ${TOOL} test`],
+    ["text that cannot be tokenized and holds a process substitution", `echo 'unterminated; cat <(${TOOL} test)`],
+  ])("is true for %s", (_name, command) => {
+    expect(isUiTestCommand(command)).toBe(true);
+    expect(uiRunBackgrounded(command)).toBe(true);
+  });
+
+  it.each<[string, string]>([
+    ["a foreground run", `${TOOL} test`],
+    // Issue #324 review: text in a comment or a heredoc body that looks like a function definition and a & is not one.
+    ["a trailing comment with a function and a &", `${TOOL} test -scheme P # setUp() & tearDown()`],
+    ["a leading comment line with a function and a &", `# run helper() & friends\n${TOOL} test`],
+    ["a heredoc body with a function and a &, then a run", `git commit -F - <<'EOF'\nsetUp() & tearDown()\nEOF\n${TOOL} test`],
+    ["an unquoted heredoc body with a function and a &", `cat <<EOF\nsetUp() & tearDown()\nEOF\n${TOOL} test`],
+    ["a tab-stripped heredoc body with a function and a &", `cat <<-EOF\n\tsetUp() & tearDown()\n\tEOF\n${TOOL} test`],
+    // Each raw check reads blanked text on its own: a definition only in prose beside a real &, and a real definition beside a & only in prose.
+    ["a function only in a comment, beside a & that backgrounds another command", `# setUp()\necho hi & ${TOOL} test`],
+    ["a function only in a heredoc body, beside a & that backgrounds another command", `cat <<'EOF'\nsetUp()\nEOF\necho hi & ${TOOL} test`],
+    ["a real function, and a & only in a trailing comment", `f() { echo hi; }; ${TOOL} test # fix & retry`],
+    ["a real function, and a & only in a heredoc body", `f() { echo hi; }\ncat <<'EOF'\nfix & retry\nEOF\n${TOOL} test`],
+    ["a comment after the run on a later line", `${TOOL} test\n# f() & g`],
+    ["a case run in a substitution in the foreground", `echo "$(case x in a) ${TOOL} test ;; esac)"`],
+    ["a & inside a case arm of a substitution after a foreground run", `echo "$(${TOOL} test && case y in a) echo hi & ;; esac)"`],
+    ["a case with a & after another arm", `echo "$(case x in a) echo hi & ;; b) ${TOOL} test ;; esac)"`],
+    ["redirects and a pipe", `${TOOL} test 2>&1 | tail`],
+    ["&&", `cd /w && ${TOOL} test`],
+    ["&> as a redirect", `${TOOL} test &>build.log`],
+    ["|& as a pipe", `${TOOL} test |& tail`],
+    ["a quoted &", `${TOOL} -destination 'name=A & B' test`],
+    ["a & that backgrounds a command before it, not the run", `echo hi & ${TOOL} test`],
+    ["a & on an earlier line", `echo hi &\n${TOOL} test`],
+    ["a & after a ; that ends the run's statement", `${TOOL} test; echo hi &`],
+    ["a backgrounded subshell that does not hold the run", `(sleep 5) & ${TOOL} test`],
+    ["a backgrounded command that is not a UI run", "npm test &"],
+    ["text that only mentions the build tool", `echo '${TOOL} test' &`],
+    ["a compound in the foreground", `if true; then ${TOOL} test; fi`],
+    ["a for loop in the foreground", `for s in A B; do ${TOOL} -scheme $s test; done`],
+    ["a function called in the foreground", `f() { ${TOOL} test; }; f`],
+    ["a continued pipeline and then a backgrounded other command", `${TOOL} test |\n  tee log\necho hi &`],
+    ["a continued and-or list in the foreground", `${TOOL} test &&\n  echo done`],
+    ["a function defined and called in the foreground", `f () { ${TOOL} test; }; f`],
+    ["a function that runs no UI test, called in the background", `f() { echo hi; }; f &`],
+    ["a compound followed by a backgrounded other command", `if true; then ${TOOL} test; fi; echo hi &`],
+    ["a here-string, not a process substitution", `cat <<< '${TOOL} test'`],
+    ["a build in a process substitution", `cat <(${TOOL} build)`],
+    ["a coproc of another command", `coproc cat ${TOOL}`],
+  ])("is false for %s", (_name, command) => {
+    expect(uiRunBackgrounded(command)).toBe(false);
   });
 });

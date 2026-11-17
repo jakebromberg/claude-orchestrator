@@ -9,7 +9,7 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { describeBoundedFailure } from "./bounded-failure.js";
-import { isUiTestArgv, isUiTestCommand } from "./lease-hook.js";
+import { isUiTestArgv, isUiTestCommand, uiArgvBackgrounded, uiRunBackgrounded } from "./lease-hook.js";
 import { weightFor } from "./lease-weights.js";
 import { acquireLease, defaultLeaseOptions, leaseStatus, PROCESS_COMMAND_TIMEOUT_MS, resumeOldest, SUSPEND_MIN_RUN_MS, suspendNewest } from "./lease.js";
 import { formatAdmitted, formatRefusal, refusalExitCode, seconds, throttledProgress } from "./lease-messages.js";
@@ -177,9 +177,12 @@ export async function runLeased(args, d) {
     // parent call (taking the UI slot and then waiting for heavy behind it would hold the UI slot for minutes, perhaps in a cycle) or a sibling's
     // (a hook holder's pid is the Claude process, an ancestor of every Bash call of the session, so the two cannot be told apart, and borrowing a
     // sibling's slot would run the two UI tests together): the UI test is run as its own Bash call instead.
-    if (uiTest && !opts.inheritedHolderId && ancestorHookSlot(opts, d)) {
+    // A UI run backgrounded inside the string or script it runs returns at once, so its slots would be released while the test still runs: refused, as the hook does.
+    const backgrounded = uiTest && (args.shell !== undefined ? uiRunBackgrounded(args.shell) : uiArgvBackgrounded(args.argv));
+    const nested = !backgrounded && uiTest && !opts.inheritedHolderId && ancestorHookSlot(opts, d);
+    if (backgrounded || nested) {
         unhook();
-        const refusal = { refused: "nested-ui-test", waitedMs: 0, level: d.leaseStatus(opts).level, live: 0, class: "ui-tests" };
+        const refusal = { refused: backgrounded ? "backgrounded-ui-test" : "nested-ui-test", waitedMs: 0, level: d.leaseStatus(opts).level, live: 0, class: "ui-tests" };
         d.err(formatRefusal(refusal, d.leaseStatus(opts, "ui-tests")));
         return refusalExitCode(refusal);
     }
