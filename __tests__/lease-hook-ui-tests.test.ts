@@ -98,7 +98,11 @@ describe("hook mode and the UI-test class", () => {
     expect(JSON.parse(out).hookSpecificOutput.permissionDecisionReason).not.toContain("capacity 4");
     expect(names("ui-tests")).toEqual(["hook-toolu_1.json"]);
     expect(names("holders")).toEqual(["hook-toolu_1.json"]);
-    expect(scripted.clock.sleeps.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(450_000 - 4_000);
+    // A UI-test call's wait budget is 400 s, so the hook answers well inside its 500 s timeout (past which Claude Code lets the call through unleased).
+    const waited = scripted.clock.sleeps.reduce((a, b) => a + b, 0);
+    expect(waited).toBeGreaterThanOrEqual(400_000 - 4_000);
+    expect(waited).toBeLessThanOrEqual(400_000);
+    expect(JSON.parse(out).hookSpecificOutput.permissionDecisionReason).toContain("no slot after 400s");
   });
 
   it("does not make an unrelated heavy command wait behind a queued UI-test run", async () => {

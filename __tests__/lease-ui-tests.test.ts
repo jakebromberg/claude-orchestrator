@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -344,6 +344,93 @@ describe("UI-test holder class (issue #324)", () => {
       expect(names("ui-tests")).toEqual([]);
       blocker.release();
     });
+  });
+
+  // Issue #324 review: the check after the heavy admission is the one that decides whether the run proceeds beside another, so a busy mutex
+  // must not read as "fine": it is retried until taken (bounded by the mutex's own staleness) and the run is refused when it cannot be.
+  describe("the final check after the heavy admission", () => {
+    const mutexFile = (): string => join(lease.dir, ".mutex");
+    const hold = (): void => {
+      writeFileSync(mutexFile(), "");
+      utimesSync(mutexFile(), lease.clock.ms / 1000, lease.clock.ms / 1000);
+    };
+    /** `act` runs when the heavy slot is granted: its `acquire` event is emitted after the mutex is released and before the final check. */
+    const onHeavyAdmitted = (act: () => void): Partial<LeaseOptions> => ({
+      onEvent: (e) => {
+        lease.events.push(e);
+        if (e.type === "acquire" && e.class === "heavy") act();
+      },
+    });
+    const dropUiHolder = (): void => {
+      for (const f of names("ui-tests")) rmSync(join(lease.dir, "ui-tests", f));
+    };
+
+    it("refuses a run whose UI-test holder was reaped, even when the mutex is busy at that moment, once the mutex frees", async () => {
+      lease.clock.onSleep = () => {
+        if (lease.clock.sleeps.length === 2) rmSync(mutexFile(), { force: true });
+        else if (existsSync(mutexFile())) utimesSync(mutexFile(), lease.clock.ms / 1000, lease.clock.ms / 1000);
+      };
+      const r = await take(ui, { maxWaitMs: 450_000 }, onHeavyAdmitted(() => (dropUiHolder(), hold())));
+      expect(r).toMatchObject({ refused: "slot-lost", class: "ui-tests" });
+      expect(lease.clock.sleeps.length).toBeGreaterThanOrEqual(2);
+      expect(names("holders")).toEqual([]);
+    });
+
+    it("refuses when the mutex cannot be taken within its staleness bound, and holds no slot", async () => {
+      lease.clock.onSleep = () => utimesSync(mutexFile(), lease.clock.ms / 1000, lease.clock.ms / 1000);
+      const r = await take(ui, { maxWaitMs: 450_000 }, onHeavyAdmitted(hold));
+      expect(r).toMatchObject({ refused: "slot-lost", class: "ui-tests" });
+      expect(lease.clock.sleeps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(11_000);
+      expect(names("holders")).toEqual([]);
+      expect(names("ui-tests")).toEqual([]);
+    });
+
+    it("admits a run whose holder is still there once a busy mutex frees", async () => {
+      lease.clock.onSleep = () => {
+        if (lease.clock.sleeps.length === 2) rmSync(mutexFile(), { force: true });
+        else if (existsSync(mutexFile())) utimesSync(mutexFile(), lease.clock.ms / 1000, lease.clock.ms / 1000);
+      };
+      const r = await take(ui, { maxWaitMs: 450_000 }, onHeavyAdmitted(hold));
+      expect(isHandle(r) && r.leased).toBe(true);
+      expect(names("ui-tests")).toHaveLength(1);
+      (r as LeaseHandle).release();
+    });
+  });
+
+  // A hook that dies mid-wait leaves its UI-test holder until `expiresAt`: it is held only 90 s ahead while the heavy slot is awaited (renewed on
+  // every poll) and the call's full time from the admission, so the slot frees in about 90 s instead of 11 minutes.
+  it("holds a hook call's UI-test holder only 90 s ahead while it waits for a heavy slot, and the full call time from the admission", async () => {
+    const policy = { heavyCeiling: 1, heavyWarning: 1 };
+    const blocker = tryAcquireLease(opts({ policy }), { ...plain, detached: { id: "hook-blocker", sessionPid: process.pid, expiresAt: lease.clock.ms + 700_000 } })!;
+    const ahead: number[] = [];
+    lease.clock.onSleep = () => {
+      ahead.push((holder("ui-tests", "hook-t1").expiresAt as number) - lease.clock.ms);
+      if (lease.clock.sleeps.length === 4) blocker.release();
+    };
+    const detached = { id: "hook-t1", sessionPid: process.pid, get expiresAt() { return lease.clock.ms + 600_000 + 60_000; } };
+    const r = await take({ ...ui, detached }, { maxWaitMs: 450_000 }, { policy });
+    expect(isHandle(r) && r.leased).toBe(true);
+    expect(ahead).toHaveLength(4);
+    for (const a of ahead) {
+      expect(a).toBeGreaterThan(0);
+      expect(a).toBeLessThanOrEqual(90_000);
+    }
+    expect(holder("ui-tests", "hook-t1").expiresAt).toBe(lease.clock.ms + 660_000);
+    (r as LeaseHandle).release();
+  });
+
+  it("still exports the UI-test holder's id when the heavy slot failed open, so a nested acquire borrows it", async () => {
+    const restore = failFsCall("writeFileSync", (p) => p.includes("/holders/"), "EACCES");
+    try {
+      const r = (await take(ui)) as LeaseHandle;
+      expect(r.leased).toBe(false);
+      const [uiHolderFile] = names("ui-tests");
+      expect(r.childEnv()).toEqual({ CO_LEASE_HOLDER: uiHolderFile!.replace(/\.json$/, "") });
+      r.release();
+      expect(names("ui-tests")).toEqual([]);
+    } finally {
+      restore();
+    }
   });
 
   // `lease status` shows who holds and who waits for the UI-test slot, as it does for the heavy class.

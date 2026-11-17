@@ -212,6 +212,22 @@ describe("leased postSessionCheck", () => {
     expect("override" in events[0]).toBe(overridden);
   });
 
+  // Issue #324 review: a lease problem of the UI-test slot is not memory pressure, which would be recorded as the reason the issue failed.
+  it("stops a UI-test check whose slot cannot be taken as lease-wait, not memory-critical, and runs no command", async () => {
+    const restore = failFsCall("openSync", (p) => p.endsWith(".mutex"), "EACCES");
+    try {
+      const runCommand = vi.fn(async () => "");
+      const hooks = deriveHooks(makeYaml({ postSessionCheck: { commands: ["xcodebuild test -scheme App"] } }), { runCommand });
+      const result = await hooks.postSessionCheck!(issue, "/tmp/worktrees/foo", { lease: leaseOptions() });
+      expect(result).toMatchObject({ passed: false, stopped: "lease-wait" });
+      expect(result.summary).toContain("UI-test slot");
+      expect(result.summary).not.toContain("memory pressure");
+      expect(runCommand).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
   it("a full disk stops the check as disk-full: no command runs and the summary names the disk", async () => {
     const restore = failFsCall("openSync", (p) => p.endsWith(".mutex"), "ENOSPC");
     try {

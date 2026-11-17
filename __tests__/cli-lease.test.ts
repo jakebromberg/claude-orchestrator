@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -541,6 +541,41 @@ describe("runLeased", () => {
         expect(err[0]).toMatch(/^lease: admitted after /);
         expect(spawned[0]!.env.CO_LEASE_HOLDER).not.toBe("hook-toolu_1");
         expect(lease.events.filter((e) => e.type === "acquire").map((e) => e.class)).toEqual(["ui-tests", "heavy"]);
+      });
+
+      // Issue #324 review: a signal while the heavy slot is awaited used to re-raise with the UI-test slot still held, which a killed wrapper's
+      // heartbeat then kept for 90 s; the held slot is released first.
+      it.each(["SIGTERM", "SIGINT"] as const)("releases a UI-test slot it holds while awaiting the heavy slot, before re-raising %s", async (sig) => {
+        const heavy = await acquireLease(lease.opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), { command: "npm test", cwd: "/w", detached: { id: "hook-blocker", sessionPid: SESSION, expiresAt: lease.clock.ms + 700_000 } });
+        expect((heavy as LeaseHandle).leased).toBe(true);
+        let heldDuringSignal: string[] | undefined;
+        lease.clock.onSleep = () => {
+          if (lease.clock.sleeps.length !== 2) return;
+          expect(readdirSync(join(dir, "ui-tests"))).toHaveLength(1);
+          signals.emit(sig);
+          heldDuringSignal = existsSync(join(dir, "ui-tests")) ? readdirSync(join(dir, "ui-tests")) : [];
+          // The re-raise killed the wrapper in production; here the wait is ended so the test finishes.
+          (heavy as LeaseHandle).release();
+        };
+        void runUi({ ancestors: () => [] }, { policy: { heavyCeiling: 1, heavyWarning: 1 } }, { maxWaitSec: 600 }).catch(() => 0);
+        await vi.waitFor(() => expect(heldDuringSignal).toBeDefined());
+        expect(heldDuringSignal).toEqual([]);
+        expect(signals.kill).toHaveBeenCalledWith(999, sig);
+      });
+
+      it("hands the release of a held first-phase slot to the signal handler through the wait's onHold", async () => {
+        const release = vi.fn();
+        let onHold: ((release: () => void) => void) | undefined;
+        const acquire = (async (_o: LeaseOptions, _m: unknown, wait: { onHold?: (r: () => void) => void }) => {
+          onHold = wait.onHold;
+          wait.onHold?.(release);
+          return new Promise(() => {});
+        }) as unknown as typeof acquireLease;
+        void runUi({ acquire });
+        await vi.waitFor(() => expect(onHold).toBeDefined());
+        signals.emit("SIGTERM");
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(signals.kill).toHaveBeenCalledWith(999, "SIGTERM");
       });
 
       it("waits for a sibling call's UI-test slot instead of running beside it or refusing as nested", async () => {

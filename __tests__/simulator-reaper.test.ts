@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { reapSimulators, realReaperDeps, SIMCTL_TIMEOUT_MS, type DeviceSet, type ReaperDeps, type SimulatorReapEvent } from "../src/simulator-reaper.js";
+import { reapSimulators, realReaperDeps, SIMCTL_TIMEOUT_MS, type DeviceSet, type ReapResult, type ReaperDeps, type SimulatorReapEvent } from "../src/simulator-reaper.js";
 import { parsePsTable } from "../src/ps.js";
 import { psText, type PsTextRow } from "./helpers/ps-text.js";
 
@@ -64,8 +64,23 @@ describe("reapSimulators", () => {
     uid: MINE,
     ...over,
   });
-  const reap = (rows: PsTextRow[], idleUdids: string[] = [], attempts: Record<string, number> = {}, over: Partial<ReaperDeps> = {}) =>
-    reapSimulators({ procs: parsePsTable(psText(rows)), idleUdids, attempts }, deps(over));
+  // A device is acted on only after it read Shutdown with the same pids on the previous cycle, so by default a call is the second cycle:
+  // `seenIn` is every runtime row's pid grouped by the UDID its environment names; a first-cycle test sets it to `{}`.
+  let seenIn: Record<string, number[]> | undefined;
+  let lastResult: ReapResult;
+  const sightings = (rows: PsTextRow[]): Record<string, number[]> => {
+    const out: Record<string, number[]> = {};
+    for (const r of rows) {
+      const spec = envOf[r.pid];
+      const udid = typeof spec === "string" ? spec : spec?.udid;
+      if (udid) out[udid] = [...(out[udid] ?? []), r.pid];
+    }
+    return out;
+  };
+  const reap = (rows: PsTextRow[], idleUdids: string[] = [], attempts: Record<string, number> = {}, over: Partial<ReaperDeps> = {}) => {
+    lastResult = reapSimulators({ procs: parsePsTable(psText(rows)), idleUdids, attempts, seen: seenIn ?? sightings(rows) }, deps(over));
+    return lastResult.attempts;
+  };
 
   beforeEach(() => {
     events = [];
@@ -73,6 +88,7 @@ describe("reapSimulators", () => {
     shutdowns = [];
     shutdownSets = [];
     listCalls = [];
+    seenIn = undefined;
     envLookups = [];
     envOf = {};
     list = () => devices({ [U1]: "Shutdown" });
@@ -219,6 +235,66 @@ describe("reapSimulators", () => {
       envOf = { 300: U1, 301: U2 };
       reap([runtimeRow(300), runtimeRow(301)]);
       expect(signals).toEqual([[300, "SIGTERM"]]);
+    });
+  });
+
+  // Issue #324 review: one reading of Shutdown with processes still present is not enough (a device mid-boot or mid-shutdown can read so);
+  // the same device must read Shutdown with the same pid and UDID on two consecutive cycles before anything is signalled.
+  describe("confirming over two cycles", () => {
+    const rows = [runtimeRow(300), runtimeRow(301), runtimeRow(302)];
+    beforeEach(() => {
+      envOf = { 300: U1, 301: U1, 302: U1 };
+    });
+
+    it("signals nothing the first cycle and records what it saw", () => {
+      seenIn = {};
+      expect(reap(rows)).toEqual({});
+      expect(signals).toEqual([]);
+      expect(events).toEqual([]);
+      expect(lastResult.seen).toEqual({ [U1]: [300, 301, 302] });
+    });
+
+    it("signals the second cycle, and only the pids seen both times", () => {
+      seenIn = { [U1]: [300, 302, 999] };
+      reap(rows);
+      expect(signals).toEqual([[300, "SIGTERM"], [302, "SIGTERM"]]);
+      expect(events[0]).toMatchObject({ pids: [300, 302] });
+    });
+
+    it("does not signal a pid that now belongs to another device's environment", () => {
+      seenIn = { [U1]: [300] };
+      envOf = { 300: U2 };
+      list = () => devices({ [U1]: "Shutdown", [U2]: "Shutdown" });
+      reap([runtimeRow(300)]);
+      expect(signals).toEqual([]);
+    });
+
+    it("forgets a device that no longer reads Shutdown, so the count starts over", () => {
+      seenIn = { [U1]: [300, 301, 302] };
+      list = () => devices({ [U1]: "Booted" });
+      reap(rows);
+      expect(signals).toEqual([]);
+      expect(lastResult.seen).toEqual({});
+    });
+
+    it("keeps the earlier sightings when the device's list cannot be read, and signals nothing", () => {
+      seenIn = { [U1]: [300, 301, 302] };
+      list = () => {
+        throw new Error("simctl timed out");
+      };
+      reap(rows);
+      expect(signals).toEqual([]);
+      expect(lastResult.seen).toEqual({ [U1]: [300, 301, 302] });
+    });
+
+    it("signals again on every later cycle once confirmed, SIGKILL from the second attempt", () => {
+      seenIn = { [U1]: [300, 301, 302] };
+      reap(rows);
+      expect(signals.map(([, s]) => s)).toEqual(["SIGTERM", "SIGTERM", "SIGTERM"]);
+      signals.length = 0;
+      seenIn = lastResult.seen;
+      reap(rows, [], lastResult.attempts);
+      expect(signals.map(([, s]) => s)).toEqual(["SIGKILL", "SIGKILL", "SIGKILL"]);
     });
   });
 

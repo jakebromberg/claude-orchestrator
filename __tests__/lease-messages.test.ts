@@ -69,5 +69,10 @@ describe("UI-test refusals", () => {
     expect(refusalExitCode(ui(refused))).toBe(75);
     expect(formatPostCheckStop(ui(refused))).toContain("UI-test");
     expect(formatPostCheckStop(ui(refused))).not.toContain("memory pressure");
+    expect(formatPostCheckStop(ui(refused))).not.toContain("will not be retried");
+  });
+
+  it.each(["io-error", "slot-lost", "nested-ui-test"] as const)("%s is a lease-wait stop, not memory-critical, so it is not recorded as memory pressure", (refused) => {
+    expect(refusalStopReason(ui(refused))).toBe("lease-wait");
   });
 });

@@ -134,7 +134,7 @@ describe("watchdog", () => {
     const launchd = (udid: string, pid: number): Row => [pid, 1, pid, "S", `${RT}/sbin/launchd_sim ${DEV}/${udid}/data/x`];
     type Input = Parameters<NonNullable<WatchdogDeps["reap"]>>[0];
     let inputs: Input[];
-    const reapInto = (next: Record<string, number> = {}): NonNullable<WatchdogDeps["reap"]> => (input) => (inputs.push(input), next);
+    const reapInto = (next: Record<string, number> = {}, seen: Record<string, number[]> = {}): NonNullable<WatchdogDeps["reap"]> => (input) => (inputs.push(input), { attempts: next, seen });
     const state = () => JSON.parse(readFileSync(join(dir, "watchdog.json"), "utf-8"));
     beforeEach(() => {
       inputs = [];
@@ -165,11 +165,19 @@ describe("watchdog", () => {
       expect(inputs.map((i) => i.attempts)).toEqual([{}, { [U1]: 1 }]);
     });
 
+    it("keeps the sightings the dependency returns and passes them back next cycle", () => {
+      checkAt(0, { reap: reapInto({}, { [U1]: [300, 301] }) });
+      expect(state().simSeen).toEqual({ [U1]: [300, 301] });
+      checkAt(2, { reap: reapInto({}, { [U1]: [300] }) });
+      expect(inputs.map((i) => i.seen)).toEqual([{}, { [U1]: [300, 301] }]);
+    });
+
     it("runs without the dependency, and writes no attempts", () => {
       rows = [...SESSION, launchd(U1, 200)];
       checkAt(0);
       checkAt(6);
       expect(state().simReaps).toEqual({});
+      expect(state().simSeen).toEqual({});
     });
 
     it("survives a dependency that throws: the cycle still reports and keeps the earlier attempts", () => {
