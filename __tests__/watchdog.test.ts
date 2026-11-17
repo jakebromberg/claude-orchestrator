@@ -124,6 +124,60 @@ describe("watchdog", () => {
     });
   });
 
+  // Issue #324, defect 3: the cycle hands the booted devices idle past the threshold, the scan and the attempts so far to the injected
+  // `reap` dependency, and keeps what it returns in watchdog.json; the watchdog itself still sends no signal.
+  describe("simulator reaping", () => {
+    const U1 = "0A1B2C3D-1111-4222-8333-444455556666";
+    const U2 = "9F8E7D6C-1111-4222-8333-444455556666";
+    const RT = "/Library/Developer/CoreSimulator/Volumes/iOS_23A/Library/Developer/CoreSimulator/Runtimes/iOS 26.0.simruntime/Contents/Resources/RuntimeRoot";
+    const DEV = "/Users/x/Library/Developer/CoreSimulator/Devices";
+    const launchd = (udid: string, pid: number): Row => [pid, 1, pid, "S", `${RT}/sbin/launchd_sim ${DEV}/${udid}/data/x`];
+    type Input = Parameters<NonNullable<WatchdogDeps["reap"]>>[0];
+    let inputs: Input[];
+    const reapInto = (next: Record<string, number> = {}): NonNullable<WatchdogDeps["reap"]> => (input) => (inputs.push(input), next);
+    const state = () => JSON.parse(readFileSync(join(dir, "watchdog.json"), "utf-8"));
+    beforeEach(() => {
+      inputs = [];
+    });
+
+    it("passes only devices idle for 5 minutes or more, with the scan", () => {
+      rows = [...SESSION, launchd(U1, 200)];
+      checkAt(0, { reap: reapInto() });
+      rows = [...SESSION, launchd(U1, 200), launchd(U2, 300)];
+      checkAt(6, { reap: reapInto() });
+      expect(inputs.map((i) => i.idleUdids)).toEqual([[], [U1]]);
+      expect(inputs[1]!.procs.some((p) => p.pid === 300)).toBe(true);
+    });
+
+    it("keeps the attempts the dependency returns and passes them back next cycle", () => {
+      checkAt(0, { reap: reapInto({ [U1]: 1 }) });
+      expect(state().simReaps).toEqual({ [U1]: 1 });
+      checkAt(2, { reap: reapInto({ [U1]: 2 }) });
+      expect(inputs.map((i) => i.attempts)).toEqual([{}, { [U1]: 1 }]);
+    });
+
+    it("runs without the dependency, and writes no attempts", () => {
+      rows = [...SESSION, launchd(U1, 200)];
+      checkAt(0);
+      checkAt(6);
+      expect(state().simReaps).toEqual({});
+    });
+
+    it("survives a dependency that throws: the cycle still reports and keeps the earlier attempts", () => {
+      checkAt(0, { reap: reapInto({ [U1]: 1 }) });
+      rows = SESSION;
+      checkAt(1, { reap: () => { throw new Error("boom"); } });
+      expect(state().simReaps).toEqual({ [U1]: 1 });
+      expect(log()).toContain("simulator reaping failed: boom");
+    });
+
+    it("does not call it when the scan is skipped", () => {
+      scanError = new Error("ps timed out");
+      checkAt(0, { reap: reapInto() });
+      expect(inputs).toEqual([]);
+    });
+  });
+
   describe("unrecorded stopped groups", () => {
     it("is quiet at 4 minutes after first seen and reports at 6", () => {
       expect(checkAt(0)).toBe(0);
