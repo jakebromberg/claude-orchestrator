@@ -58,9 +58,13 @@ const uiTestReason = (refusal: LeaseRefusal): string | undefined =>
         ? "this UI test runs inside another call's lease slot (a hook call's, or a parent's heavy slot with no UI-test slot behind it), and waiting for the UI-test slot while that is held could deadlock; run the UI test as its own Bash call so it takes both slots"
         : undefined;
 
-/** The one text of any refusal: the disk-full line for `disk-full`, the UI-test class's own line for `io-error`, `slot-lost` and `nested-ui-test`, else the no-slot line. */
+/**
+ * The one text of any refusal: the disk-full line for `disk-full`, the UI-test class's own reason for `io-error`, `slot-lost`, `nested-ui-test` and
+ * `ui-test-running`, else the no-slot line. Every one but the disk's starts with `lease: no slot after <n>s`, so the rule that stops a session after its
+ * second no-slot denial, and a give-up rule that matches the prefix, count a UI-class refusal too.
+ */
 export const formatRefusal = (refusal: LeaseRefusal, status: LeaseStatus): string =>
-  refusal.refused === "disk-full" ? formatDiskFull(refusal) : (uiTestReason(refusal) ? `lease: ${uiTestReason(refusal)}` : formatNoSlot(refusal, status));
+  refusal.refused === "disk-full" ? formatDiskFull(refusal) : (uiTestReason(refusal) ? `lease: no slot after ${seconds(refusal.waitedMs)}s: ${uiTestReason(refusal)}` : formatNoSlot(refusal, status));
 
 /** The post-check's summary for a refusal. Its memory-critical stop is terminal, so unlike `formatNoSlot` it has no `lease: no slot after` prefix and does not say to rerun. */
 export const formatPostCheckStop = (refusal: LeaseRefusal): string =>
