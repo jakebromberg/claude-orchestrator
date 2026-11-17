@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { reapSimulators, realReaperDeps, SIMCTL_TIMEOUT_MS, type ReaperDeps, type SimulatorReapEvent } from "../src/simulator-reaper.js";
+import { reapSimulators, realReaperDeps, SIMCTL_TIMEOUT_MS, type DeviceSet, type ReaperDeps, type SimulatorReapEvent } from "../src/simulator-reaper.js";
 import { parsePsTable } from "../src/ps.js";
 import { psText, type PsTextRow } from "./helpers/ps-text.js";
 
@@ -21,20 +21,23 @@ describe("reapSimulators", () => {
   let events: SimulatorReapEvent[];
   let signals: [number, string][];
   let shutdowns: string[];
+  let shutdownSets: DeviceSet[];
   let envLookups: number[][];
   let envOf: Record<number, string | undefined>;
   let list: () => string;
+  let testList: () => string;
   let shutdownFails: Error | undefined;
   let signalFails: Set<number>;
 
   const deps = (over: Partial<ReaperDeps> = {}): ReaperDeps => ({
-    listDevices: () => list(),
+    listDevices: (set) => (set === "main" ? list() : testList()),
     processEnv: (pids) => {
       envLookups.push(pids);
       return pids.flatMap((pid) => (pid in envOf ? [`${pid} ${runtimeRow(pid).command} ${envOf[pid] === undefined ? "HOME=/x" : `SIMULATOR_UDID=${envOf[pid]} HOME=/x`}`] : [])).join("\n");
     },
-    shutdown: (udid) => {
+    shutdown: (udid, set) => {
       shutdowns.push(udid);
+      shutdownSets.push(set);
       if (shutdownFails) throw shutdownFails;
     },
     signal: (pid, sig) => {
@@ -52,9 +55,11 @@ describe("reapSimulators", () => {
     events = [];
     signals = [];
     shutdowns = [];
+    shutdownSets = [];
     envLookups = [];
     envOf = {};
     list = () => devices({ [U1]: "Shutdown" });
+    testList = () => devices({});
     shutdownFails = undefined;
     signalFails = new Set();
   });
@@ -138,6 +143,21 @@ describe("reapSimulators", () => {
       expect(events).toEqual([]);
     });
 
+    it("touches nothing when the test set's device list cannot be read either", () => {
+      testList = () => {
+        throw new Error("simctl timed out");
+      };
+      reap(leftovers, [], { [U1]: 1 });
+      expect(signals).toEqual([]);
+    });
+
+    it("sees a device the test set lists as Booted, so its processes are left alone", () => {
+      list = () => devices({});
+      testList = () => devices({ [U1]: "Booted" });
+      reap(leftovers);
+      expect(signals).toEqual([]);
+    });
+
     it("touches nothing when the device list is not JSON", () => {
       list = () => "not json";
       reap(leftovers);
@@ -152,44 +172,71 @@ describe("reapSimulators", () => {
     });
   });
 
+  // The owner uses simulators by hand in Simulator.app, so a booted device in the main set (~/Library/Developer/CoreSimulator/Devices)
+  // is never shut down for being idle: no `xcodebuild` or `simctl` running says nothing about someone using it. Only a test clone in the
+  // XCTestDevices set, which only `xcodebuild` creates, is.
   describe("a booted device idle past the threshold", () => {
-    beforeEach(() => {
-      list = () => devices({ [U1]: "Booted" });
-    });
-    const launchd = (udid: string): PsTextRow => ({ pid: 200, ppid: 1, pgid: 200, command: `${RT}/sbin/launchd_sim ${DEV}/${udid}/data/var/run/launchd_bootstrap.plist` });
+    const launchd = (udid: string, set: "CoreSimulator/Devices" | "XCTestDevices"): PsTextRow => ({ pid: 200, ppid: 1, pgid: 200, command: `${RT}/sbin/launchd_sim /Users/x/Library/Developer/${set}/${udid}/data/var/run/launchd_bootstrap.plist` });
 
-    it("is shut down with simctl, and the action is logged", () => {
-      reap([launchd(U1)], [U1]);
-      expect(shutdowns).toEqual([U1]);
-      expect(events).toEqual([{ type: "simulator-reap", udid: U1, reason: "booted-idle", action: "shutdown", ok: true }]);
-      expect(signals).toEqual([]);
+    describe("in the XCTestDevices set", () => {
+      beforeEach(() => {
+        testList = () => devices({ [U1]: "Booted" });
+      });
+
+      it("is shut down with simctl in that set, and the action is logged", () => {
+        reap([launchd(U1, "XCTestDevices")], [U1]);
+        expect(shutdowns).toEqual([U1]);
+        expect(shutdownSets).toEqual(["xctest"]);
+        expect(events).toEqual([{ type: "simulator-reap", udid: U1, reason: "booted-idle", action: "shutdown", ok: true }]);
+        expect(signals).toEqual([]);
+      });
+
+      it("logs a shutdown that fails with its message, and kills nothing", () => {
+        shutdownFails = new Error("timed out after 30000ms");
+        reap([launchd(U1, "XCTestDevices")], [U1]);
+        expect(events).toEqual([{ type: "simulator-reap", udid: U1, reason: "booted-idle", action: "shutdown", ok: false, message: "timed out after 30000ms" }]);
+        expect(signals).toEqual([]);
+      });
+
+      it("is left alone when the list says it is not Booted", () => {
+        testList = () => devices({ [U1]: "Shutdown" });
+        reap([launchd(U1, "XCTestDevices")], [U1]);
+        expect(shutdowns).toEqual([]);
+      });
+
+      it("is not shut down when it is not in the idle list", () => {
+        reap([launchd(U1, "XCTestDevices")], []);
+        expect(shutdowns).toEqual([]);
+      });
     });
 
-    it("logs a shutdown that fails with its message, and kills nothing", () => {
-      shutdownFails = new Error("timed out after 30000ms");
-      reap([launchd(U1)], [U1]);
-      expect(events).toEqual([{ type: "simulator-reap", udid: U1, reason: "booted-idle", action: "shutdown", ok: false, message: "timed out after 30000ms" }]);
-      expect(signals).toEqual([]);
-    });
+    describe("in the main set", () => {
+      beforeEach(() => {
+        list = () => devices({ [U1]: "Booted" });
+      });
 
-    it("is left alone when the list says it is not Booted", () => {
-      list = () => devices({ [U1]: "Shutdown" });
-      reap([launchd(U1)], [U1]);
-      expect(shutdowns).toEqual([]);
-    });
+      it("is never shut down, however long it has been idle", () => {
+        reap([launchd(U1, "CoreSimulator/Devices")], [U1]);
+        expect(shutdowns).toEqual([]);
+        expect(events).toEqual([]);
+        expect(signals).toEqual([]);
+      });
 
-    it("is not shut down when it is not in the idle list", () => {
-      reap([launchd(U1)], []);
-      expect(shutdowns).toEqual([]);
+      it("is never shut down even when it is also named in the idle list of a clone-free machine, and a clone beside it still is", () => {
+        testList = () => devices({ [U2]: "Booted" });
+        reap([launchd(U1, "CoreSimulator/Devices"), { ...launchd(U2, "XCTestDevices"), pid: 201 }], [U1, U2]);
+        expect(shutdowns).toEqual([U2]);
+      });
     });
   });
 
   describe("never touches a device that is in use", () => {
     beforeEach(() => {
-      list = () => devices({ [U1]: "Shutdown", [U2]: "Booted" });
+      list = () => devices({ [U1]: "Shutdown" });
+      testList = () => devices({ [U2]: "Booted" });
       envOf = { 300: U1 };
     });
-    const idleLaunchd: PsTextRow = { pid: 200, ppid: 1, pgid: 200, command: `${RT}/sbin/launchd_sim ${DEV}/${U2}/data/x` };
+    const idleLaunchd: PsTextRow = { pid: 200, ppid: 1, pgid: 200, command: `${RT}/sbin/launchd_sim /Users/x/Library/Developer/XCTestDevices/${U2}/data/x` };
 
     it.each<[string, string]>([
       ["an xcodebuild test action", "xcodebuild test -scheme App -destination 'platform=iOS Simulator,name=iPhone'"],
@@ -231,26 +278,43 @@ describe("reapSimulators", () => {
 
 describe("realReaperDeps", () => {
   const calls: { file: string; args: string[]; timeoutMs: number }[] = [];
+  const TEST_DIR = "/Users/x/Library/Developer/XCTestDevices";
   const fake = (out = "") => (file: string, args: string[], timeoutMs: number): string => (calls.push({ file, args, timeoutMs }), out);
+  const build = (over: Partial<Parameters<typeof realReaperDeps>[0]> = {}) => realReaperDeps({ exec: fake("{}"), uid: MINE, log: () => {}, testSetDir: TEST_DIR, exists: () => true, ...over });
   beforeEach(() => void (calls.length = 0));
 
-  it("lists devices as JSON through xcrun simctl, bounded", () => {
-    expect(realReaperDeps({ exec: fake("{}"), uid: MINE, log: () => {} }).listDevices()).toBe("{}");
+  it("lists the main set as JSON through xcrun simctl, bounded", () => {
+    expect(build().listDevices("main")).toBe("{}");
     expect(calls).toEqual([{ file: "xcrun", args: ["simctl", "list", "devices", "-j"], timeoutMs: SIMCTL_TIMEOUT_MS }]);
   });
 
-  it("shuts a device down through xcrun simctl, bounded, naming only the UDID", () => {
-    realReaperDeps({ exec: fake(), uid: MINE, log: () => {} }).shutdown(U1);
+  it("lists the XCTestDevices set with --set, bounded", () => {
+    build().listDevices("xctest");
+    expect(calls).toEqual([{ file: "xcrun", args: ["simctl", "--set", TEST_DIR, "list", "devices", "-j"], timeoutMs: SIMCTL_TIMEOUT_MS }]);
+  });
+
+  it("lists no devices, and runs nothing, when the XCTestDevices directory does not exist", () => {
+    expect(JSON.parse(build({ exists: () => false }).listDevices("xctest"))).toEqual({ devices: {} });
+    expect(calls).toEqual([]);
+  });
+
+  it("shuts a main-set device down through xcrun simctl, naming only the UDID", () => {
+    build().shutdown(U1, "main");
     expect(calls).toEqual([{ file: "xcrun", args: ["simctl", "shutdown", U1], timeoutMs: SIMCTL_TIMEOUT_MS }]);
   });
 
+  it("shuts a test clone down in its own set", () => {
+    build().shutdown(U1, "xctest");
+    expect(calls).toEqual([{ file: "xcrun", args: ["simctl", "--set", TEST_DIR, "shutdown", U1], timeoutMs: SIMCTL_TIMEOUT_MS }]);
+  });
+
   it("reads the environment of exactly the named pids with ps -E", () => {
-    realReaperDeps({ exec: fake("300 cmd SIMULATOR_UDID=x"), uid: MINE, log: () => {} }).processEnv([300, 301]);
+    build({ exec: fake("300 cmd SIMULATOR_UDID=x") }).processEnv([300, 301]);
     expect(calls).toEqual([{ file: "ps", args: ["-Eww", "-p", "300,301", "-o", "pid=,command="], timeoutMs: SIMCTL_TIMEOUT_MS }]);
   });
 
   it("does not run ps for no pids", () => {
-    expect(realReaperDeps({ exec: fake("x"), uid: MINE, log: () => {} }).processEnv([])).toBe("");
+    expect(build({ exec: fake("x") }).processEnv([])).toBe("");
     expect(calls).toEqual([]);
   });
 });

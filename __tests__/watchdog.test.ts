@@ -149,6 +149,15 @@ describe("watchdog", () => {
       expect(inputs[1]!.procs.some((p) => p.pid === 300)).toBe(true);
     });
 
+    it("passes a test clone idle past the threshold too, and does not report it to the owner", () => {
+      const clone: Row = [400, 1, 400, "S", `${RT}/sbin/launchd_sim /Users/x/Library/Developer/XCTestDevices/${U2}/data/x`];
+      rows = [...SESSION, clone];
+      checkAt(0, { reap: reapInto() });
+      checkAt(6, { reap: reapInto() });
+      expect(inputs.map((i) => i.idleUdids)).toEqual([[], [U2]]);
+      expect(state().findings.map((f: { message: string }) => f.message).filter((m: string) => m.startsWith("simulator "))).toEqual([]);
+    });
+
     it("keeps the attempts the dependency returns and passes them back next cycle", () => {
       checkAt(0, { reap: reapInto({ [U1]: 1 }) });
       expect(state().simReaps).toEqual({ [U1]: 1 });
