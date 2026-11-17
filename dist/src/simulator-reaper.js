@@ -78,12 +78,12 @@ function runtimeDevices(procs, deps) {
  * only when the list of its own set explicitly reports it `Shutdown` (or, for the idle shutdown, an XCTestDevices clone `Booted`): `simctl
  * list` covers one set, so a device it does not name, an empty list and an unreadable one all mean unknown, and nothing is done.
  */
-export function reapSimulators({ procs, idleUdids, attempts }, deps) {
+export function reapSimulators({ procs, idleUdids, attempts, seen }, deps) {
     if (procs.some((p) => isTestAction(p.command)))
-        return attempts;
+        return { attempts, seen };
     // Nothing of this user's is running in a simulator and no device is idle: there is nothing to decide, so no `simctl` is spawned.
     if (idleUdids.length === 0 && !procs.some((p) => p.uid === deps.uid && isSimulatorCommand(p.command)))
-        return {};
+        return { attempts: {}, seen: {} };
     const states = {};
     for (const set of ["main", "xctest"]) {
         try {
@@ -98,14 +98,28 @@ export function reapSimulators({ procs, idleUdids, attempts }, deps) {
         leftovers = runtimeDevices(procs, deps);
     }
     catch {
-        return attempts;
+        return { attempts, seen };
     }
     const inUse = (udid) => procs.some((p) => runsTool(p.command, XCODE_TOOLS) && p.command.toUpperCase().includes(udid));
     const next = {};
+    const nextSeen = {};
     for (const { udid, set, pids } of leftovers.values()) {
         const state = states[set]?.get(udid);
         if (state !== "Shutdown" || inUse(udid)) {
-            if (attempts[udid] !== undefined && (states[set] === undefined || inUse(udid)))
+            // Unknown this cycle (its list unreadable, or a tool is using it): what was known stays; a device that reads otherwise starts over.
+            if (states[set] === undefined || inUse(udid)) {
+                if (attempts[udid] !== undefined)
+                    next[udid] = attempts[udid];
+                if (seen[udid] !== undefined)
+                    nextSeen[udid] = seen[udid];
+            }
+            continue;
+        }
+        // One reading of Shutdown is not enough: only the pids the previous cycle saw for this device are signalled, and the rest are recorded.
+        nextSeen[udid] = pids;
+        const confirmedPids = pids.filter((pid) => seen[udid]?.includes(pid));
+        if (confirmedPids.length === 0) {
+            if (attempts[udid] !== undefined)
                 next[udid] = attempts[udid];
             continue;
         }
@@ -114,7 +128,7 @@ export function reapSimulators({ procs, idleUdids, attempts }, deps) {
         const [signal, action] = attempt >= 2 ? ["SIGKILL", "kill"] : ["SIGTERM", "terminate"];
         const done = [];
         const failed = [];
-        for (const pid of pids) {
+        for (const pid of confirmedPids) {
             try {
                 deps.signal(pid, signal);
                 done.push(pid);
@@ -139,7 +153,7 @@ export function reapSimulators({ procs, idleUdids, attempts }, deps) {
             deps.log({ type: "simulator-reap", udid, reason: "booted-idle", action: "shutdown", ok: false, message: err.message });
         }
     }
-    return next;
+    return { attempts: next, seen: nextSeen };
 }
 /** `ps -p` exits 1 when a listed pid is gone by the time it runs but prints the rest, so the rows of a status-1 exit with output are the answer; any other failure throws. */
 function psRows(exec, args) {

@@ -292,6 +292,11 @@ const isHeavyInput = (input, env, heavyQueuePath) => {
     return input.hook_event_name === "PreToolUse" && input.tool_name === "Bash" && typeof command === "string" && isHeavyCommand(command, extraPatterns(env), () => isHeavyQueueShim(heavyQueuePath));
 };
 const WAIT_MS = 450_000;
+/**
+ * A UI-test call's whole wait (both slots), well inside the printed entry's 500 s timeout: a hook that overruns its timeout lets the call through
+ * unleased, so the UI-test class, whose point is that nothing runs beside it, answers (with a denial) with this margin to spare.
+ */
+const UI_WAIT_MS = 400_000;
 const GRACE_MS = 60_000;
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 /** 10 min: with the 60 s grace, the longest TTL the lease's cap (`DETACHED_TTL_MAX_MS`) lets a writer set. */
@@ -344,7 +349,7 @@ async function handleEvent(stdin, io) {
     const detached = { id, sessionPid, get expiresAt() { return now() + timeoutMs + GRACE_MS; } };
     const command = String(input.tool_input.command);
     const weight = weightFor(command, cwd, env, () => { });
-    const got = await acquireLease(opts, { command, cwd, detached, ...(weight !== undefined && { weight }), ...(uiTest && { uiTest: true }) }, { maxWaitMs: WAIT_MS });
+    const got = await acquireLease(opts, { command, cwd, detached, ...(weight !== undefined && { weight }), ...(uiTest && { uiTest: true }) }, { maxWaitMs: uiTest ? UI_WAIT_MS : WAIT_MS });
     if (!("leased" in got))
         io.out(decision({ permissionDecision: "deny", permissionDecisionReason: formatRefusal(got, leaseStatus(opts, got.class)) }));
     else if (got.leased)

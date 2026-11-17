@@ -47,10 +47,10 @@ export const formatRefusal = (refusal, status) => refusal.refused === "disk-full
 export const formatPostCheckStop = (refusal) => refusal.refused === "disk-full"
     ? `Post-session check not run: ${formatDiskFull(refusal)}`
     : uiTestReason(refusal)
-        ? `post-check: skipped because the UI-test slot could not be taken (${uiTestReason(refusal)}); the check did not run and will not be retried`
+        ? `post-check: skipped because the UI-test slot could not be taken (${uiTestReason(refusal)}); the check did not run, and the issue stopped as lease-wait`
         : `post-check: skipped because memory pressure is critical (${refusal.level}, ${refusal.live} live); the check did not run and will not be retried`;
-/** Why a refusal stops work: `disk-full` for a full disk, else `memory-critical`. */
-export const refusalStopReason = (refusal) => (refusal.refused === "disk-full" ? "disk-full" : "memory-critical");
+/** Why a refusal stops work: `disk-full` for a full disk, `lease-wait` for a UI-test slot that could not be taken or held (a lease problem the owner reruns, not memory pressure), else `memory-critical`. */
+export const refusalStopReason = (refusal) => refusal.refused === "disk-full" ? "disk-full" : uiTestReason(refusal) ? "lease-wait" : "memory-critical";
 /** The CLI's exit code for a refusal: 74 for a full disk, else 75 (no slot). */
 export const refusalExitCode = (refusal) => (refusal.refused === "disk-full" ? 74 : 75);
 //# sourceMappingURL=lease-messages.js.map

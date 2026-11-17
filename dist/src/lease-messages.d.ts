@@ -25,7 +25,7 @@ export declare function formatDiskFull(refusal: LeaseRefusal): string;
 export declare const formatRefusal: (refusal: LeaseRefusal, status: LeaseStatus) => string;
 /** The post-check's summary for a refusal. Its memory-critical stop is terminal, so unlike `formatNoSlot` it has no `lease: no slot after` prefix and does not say to rerun. */
 export declare const formatPostCheckStop: (refusal: LeaseRefusal) => string;
-/** Why a refusal stops work: `disk-full` for a full disk, else `memory-critical`. */
-export declare const refusalStopReason: (refusal: LeaseRefusal) => "memory-critical" | "disk-full";
+/** Why a refusal stops work: `disk-full` for a full disk, `lease-wait` for a UI-test slot that could not be taken or held (a lease problem the owner reruns, not memory pressure), else `memory-critical`. */
+export declare const refusalStopReason: (refusal: LeaseRefusal) => "memory-critical" | "disk-full" | "lease-wait";
 /** The CLI's exit code for a refusal: 74 for a full disk, else 75 (no slot). */
 export declare const refusalExitCode: (refusal: LeaseRefusal) => number;

@@ -149,10 +149,10 @@ function idleSimulatorRss(procs) {
 function readState(dir) {
     try {
         const s = JSON.parse(readLeaseRecord(dir, "watchdog.json")?.text ?? "{}");
-        return { stoppedSince: s.stoppedSince ?? {}, idleSimulators: s.idleSimulators ?? {}, simReaps: s.simReaps ?? {}, reported: s.reported ?? [], findings: s.findings ?? [] };
+        return { stoppedSince: s.stoppedSince ?? {}, idleSimulators: s.idleSimulators ?? {}, simReaps: s.simReaps ?? {}, simSeen: s.simSeen ?? {}, reported: s.reported ?? [], findings: s.findings ?? [] };
     }
     catch {
-        return { stoppedSince: {}, idleSimulators: {}, simReaps: {}, reported: [], findings: [] };
+        return { stoppedSince: {}, idleSimulators: {}, simReaps: {}, simSeen: {}, reported: [], findings: [] };
     }
 }
 /** Appends one line to `watchdog.log` through `appendOwnLine`: only a regular file this user owns is appended to (a symlink is not followed, a FIFO not waited on), and a new one has mode 0600. A failure is swallowed: the log is a diagnostic. */
@@ -188,9 +188,12 @@ export function check(d) {
     const stoppedSince = new Map(stoppedGroups(procs, engines).map((pgid) => [pgid, prev.stoppedSince[pgid] ?? now]));
     const idleSimulators = new Map([...idleSimulatorRss(procs)].map(([udid, d]) => [udid, { since: prev.idleSimulators[udid] ?? now, ...d }]));
     let simReaps = prev.simReaps;
+    let simSeen = prev.simSeen;
     try {
         const idleUdids = [...idleSimulators].filter(([, v]) => now - v.since >= SIMULATOR_IDLE_AFTER_MS).map(([udid]) => udid);
-        simReaps = d.reap?.({ procs, idleUdids, attempts: prev.simReaps }) ?? simReaps;
+        const reaped = d.reap?.({ procs, idleUdids, attempts: prev.simReaps, seen: prev.simSeen });
+        simReaps = reaped?.attempts ?? simReaps;
+        simSeen = reaped?.seen ?? simSeen;
     }
     catch (err) {
         appendLog(d.dir, now, `simulator reaping failed: ${err.message}`);
@@ -199,7 +202,7 @@ export function check(d) {
     const suspended = new Set(records.map((r) => r.pgid));
     const found = RULES.flatMap((rule) => rule({ now, procs, engines, suspended, records, stoppedSince, idleSimulators }));
     const findings = found.filter((f) => !(f.once && prev.reported.includes(f.key)));
-    const state = { stoppedSince: Object.fromEntries(stoppedSince), idleSimulators: Object.fromEntries([...idleSimulators].map(([udid, d]) => [udid, d.since])), simReaps, reported: found.filter((f) => f.once).map((f) => f.key), findings };
+    const state = { stoppedSince: Object.fromEntries(stoppedSince), idleSimulators: Object.fromEntries([...idleSimulators].map(([udid, d]) => [udid, d.since])), simReaps, simSeen, reported: found.filter((f) => f.once).map((f) => f.key), findings };
     writeLeaseRecord(d.dir, "watchdog.json", JSON.stringify({ checkedAt: new Date(now).toISOString(), ...state }));
     writeLeaseRecord(d.dir, "watchdog.brief", findings.length ? `watchdog: ${findings.map((f) => f.message).join("; ")}` : "");
     for (const f of findings)

@@ -6,8 +6,8 @@
  * summed memory weights of the live holders and the request fit the byte budget (`heavyBudget`: free memory less the reserve, plus the weight of holders past the ramp window; the step's share of the usable bytes without a free reading). Liveness is a live
  * heartbeat (the holder file's mtime, refreshed every 30 s) or a live child PID,
  * so a crashed or killed holder cannot leak a slot. A detached holder (hook mode) is live while its session PID is
- * alive and its `expiresAt` has not passed. The lease fails open on I/O errors and a long-busy mutex,
- * except at `critical`, where nothing new starts. It never spins. A second holder class, `sessions/`, is the machine-wide pool of an
+ * alive and its `expiresAt` has not passed. The lease fails open on I/O errors (never on a busy mutex, which is only waited out),
+ * except at `critical`, where nothing new starts, and except in the UI-test class, which never fails open. It never spins. A second holder class, `sessions/`, is the machine-wide pool of an
  * engine's implementer sessions (`acquireSessionLease`), on the same tickets and holders with heartbeat-only liveness.
  */
 import { randomBytes } from "node:crypto";
@@ -601,7 +601,7 @@ function createHolder(opts, cls, meta, command, admission, sharedId) {
             try {
                 lock = tryLockOnce(join(opts.dir, ".mutex"), { staleAfterMs: MUTEX_STALE_MS, now: opts.now });
                 if (!lock)
-                    return true;
+                    return undefined;
                 if (!unlessGone(() => statSync(file)))
                     return false;
                 if (detached) {
@@ -616,6 +616,7 @@ function createHolder(opts, cls, meta, command, admission, sharedId) {
             }
             catch {
                 // The previous record still names this holder, with the earlier expiry or beat.
+                return undefined;
             }
             finally {
                 lock?.release();
@@ -883,6 +884,21 @@ export async function acquireLease(opts, meta, wait = {}) {
     checkDetached(meta);
     return meta.uiTest ? acquireUiTest(opts, meta, wait) : acquire(opts, HEAVY, meta, wait, meta.detached?.id);
 }
+/** Renews `slot` and returns whether it still holds: retried while the mutex is busy, up to `MUTEX_STALE_MS` (a stale one is reaped by then), and false when it was lost or could not be confirmed. */
+async function confirmed(opts, slot) {
+    if (!slot.renew)
+        return true;
+    const { now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = opts;
+    const start = now();
+    for (;;) {
+        const renewed = slot.renew();
+        if (renewed !== undefined)
+            return renewed;
+        if (now() - start >= MUTEX_STALE_MS)
+            return false;
+        await sleep(100);
+    }
+}
 /** Thrown out of the heavy wait's `onWait` when the UI-test holder is found gone, and caught by `acquireUiTest`. */
 const SLOT_LOST = new Error("the UI-test slot was lost");
 /**
@@ -909,9 +925,14 @@ async function acquireUiTest(opts, meta, wait) {
     // One id for both holders of a run that has no detached id, because `childEnv()` exports one: a nested acquire that inherits it then borrows both.
     const id = meta.detached?.id ?? `${process.pid}-${randomBytes(4).toString("hex")}`;
     // Rebuilt field by field, so a weight, priority, gate or suspension never reaches the UI-test class.
-    const slot = await acquire(opts, UI_TESTS, { command: meta.command, cwd: meta.cwd, ...(meta.label !== undefined && { label: meta.label }), ...(meta.detached && { detached: meta.detached }) }, wait, id, true);
+    // A detached UI-test holder expires `UI_WAIT_TTL_MS` ahead while the heavy slot is awaited, and at the call's full expiry once it is granted.
+    let waiting = true;
+    const detached = meta.detached;
+    const uiDetached = detached && { id: detached.id, sessionPid: detached.sessionPid, get expiresAt() { return waiting ? now() + UI_WAIT_TTL_MS : detached.expiresAt; } };
+    const slot = await acquire(opts, UI_TESTS, { command: meta.command, cwd: meta.cwd, ...(meta.label !== undefined && { label: meta.label }), ...(uiDetached && { detached: uiDetached }) }, wait, id, true);
     if (!("leased" in slot))
         return slot;
+    wait.onHold?.(() => slot.release());
     const spent = now() - start;
     const heavyWait = {
         ...wait,
@@ -936,13 +957,18 @@ async function acquireUiTest(opts, meta, wait) {
         slot.release();
         return { ...heavy, waitedMs: heavy.waitedMs + spent };
     }
-    if (slot.renew?.() === false) {
+    // The check that decides whether this run proceeds beside another: definitive, so a busy mutex is retried (up to its staleness bound) and a
+    // slot that cannot be confirmed is refused, where the keep-alive renewals above treat an unknown as fine.
+    waiting = false;
+    if (!(await confirmed(opts, slot))) {
         heavy.release();
         slot.release();
         return refusal("slot-lost");
     }
     return {
         ...heavy,
+        // A heavy phase that failed open has no id of its own; the UI-test holder's id (the same one) is what a nested acquire must inherit.
+        childEnv: () => (heavy.id === null ? slot.childEnv() : heavy.childEnv()),
         admission: { ...heavy.admission, waitedMs: heavy.admission.waitedMs + spent },
         setChildPid(pid, pgid) {
             heavy.setChildPid(pid, pgid);
@@ -979,6 +1005,8 @@ async function acquire(opts, cls, meta, wait, id, shareId) {
         }
     }
 }
+/** How far ahead a hook call's UI-test holder expires while its heavy slot is awaited: renewed on every poll, so a hook that dies mid-wait frees the slot in about this long, not at the call's full expiry. */
+const UI_WAIT_TTL_MS = 90_000;
 async function pollForLease(opts, cls, meta, wait, ticketId, shareId) {
     const { now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), pollMs = POLL_MS } = opts;
     const start = now();

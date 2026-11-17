@@ -1,5 +1,5 @@
 import { type ProcRow } from "./ps.js";
-import type { ReapInput } from "./simulator-reaper.js";
+import type { ReapInput, ReapResult } from "./simulator-reaper.js";
 import { type SuspensionRecord } from "./suspensions.js";
 /** A stopped group with no suspension record is reported this long after it was first seen stopped. */
 export declare const STOPPED_AFTER_MS: number;
@@ -74,7 +74,7 @@ export interface WatchdogDeps {
         blocks: number;
     };
     /** Reaps leftover simulator processes and shuts down idle booted devices once per cycle, after the scan: given the devices idle for `SIMULATOR_IDLE_AFTER_MS` and the last cycle's attempts, it returns the attempts to carry on. Absent, nothing is reaped. */
-    reap?: (input: ReapInput) => Record<string, number>;
+    reap?: (input: ReapInput) => ReapResult;
 }
 /**
  * One cycle: scan, run every rule, then write `watchdog.json`, `watchdog.brief` (the one-line summary, empty when all

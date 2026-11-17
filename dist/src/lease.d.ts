@@ -245,8 +245,8 @@ export interface LeaseHandle {
      * not a positive integer, and once the holder has been reaped: a reaped holder's file is not recreated.
      */
     setChildPid(pid: number, pgid?: number): void;
-    /** Rewrites a detached holder's `expiresAt` from the request's getter (so a holder admitted before a long wait for another slot still lasts the call's whole time) or touches another holder's heartbeat, under the mutex. Returns false when the holder's file is gone (reaped or removed): the slot is lost. */
-    renew?(): boolean;
+    /** Rewrites a detached holder's `expiresAt` from the request's getter (so a holder admitted before a long wait for another slot still lasts the call's whole time) or touches another holder's heartbeat, under the mutex. Returns false when the holder's file is gone (reaped or removed: the slot is lost), true when it was renewed, and `undefined` when that could not be told (the mutex was busy, or an I/O error): the caller retries, or treats it as fine only for a keep-alive. */
+    renew?(): boolean | undefined;
     /** Sets or clears the holder's `suspended` mark, and records `resumedAt` when given (a resume); throws when the mark cannot be written or the holder is gone. Present on a holder this process owns. */
     setSuspended?(on: boolean, resumedAt?: number): void;
     release(outcome?: {
@@ -332,6 +332,8 @@ type LeaseWait = {
         waitedMs: number;
     }): void;
     stopWhen?(s: LeaseStatus): boolean;
+    /** A UI-test run calls this once it holds the UI-test slot, with a function that gives it back, so a signal handler can release it before the process is killed while the heavy slot is still awaited. */
+    onHold?(release: () => void): void;
 };
 /**
  * Releases a detached holder by id from any process; idempotent. Returns whether a holder file was removed, and emits

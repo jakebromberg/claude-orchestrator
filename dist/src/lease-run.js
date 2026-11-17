@@ -144,8 +144,10 @@ export async function runLeased(args, d) {
         }
     };
     // Installed before acquiring: a signal's default action would otherwise kill the wrapper between the holder file's
-    // write and the spawn, leaving a slot that no child holds. A handler can only run while waiting (nothing is held, so
-    // the signal is re-raised to kill the wrapper as before) or once the child exists, never in between.
+    // write and the spawn, leaving a slot that no child holds. A handler can only run while waiting (no heavy slot is held, so
+    // the signal is re-raised to kill the wrapper as before, after giving back the UI-test slot a UI-test run may already hold
+    // while it awaits the heavy one, which the killed wrapper's heartbeat would otherwise keep for 90 s) or once the child exists, never in between.
+    let releaseHeld;
     let child;
     let signalled;
     let grace;
@@ -154,6 +156,7 @@ export async function runLeased(args, d) {
     const handlers = FORWARDED.map((sig) => {
         const forward = () => {
             if (child === undefined) {
+                releaseHeld?.();
                 unhook();
                 d.signals.kill(d.signals.pid, sig);
                 return;
@@ -177,8 +180,12 @@ export async function runLeased(args, d) {
     const weight = weightFor(command, d.cwd, d.env, d.err);
     const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command, label: args.label, cwd: d.cwd, gated: args.gated, suspendable: suspendable || undefined, ...(uiTest && { uiTest: true }), ...(high && { priority: "high" }), ...(weight !== undefined && { weight }) }, {
         maxWaitMs,
+        onHold: (release) => {
+            releaseHeld = release;
+        },
         onWait: throttledProgress((s) => d.err(`lease: waiting ${seconds(s.waitedMs)}s for a slot (pressure=${s.level}, ${s.live.length}/${s.capacity} live)`), { skipFirst: true }),
     });
+    releaseHeld = undefined;
     if (!("leased" in got)) {
         unhook();
         d.err(formatRefusal(got, d.leaseStatus(opts, got.class)));

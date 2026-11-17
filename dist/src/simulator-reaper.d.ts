@@ -32,13 +32,20 @@ export interface ReapInput {
     idleUdids: string[];
     /** Cycles each device's leftovers have been signalled so far, from the last cycle. */
     attempts: Record<string, number>;
+    /** The pids each device read `Shutdown` with on the last cycle: nothing is signalled until the same device reads `Shutdown` with the same pid on the next. */
+    seen: Record<string, number[]>;
+}
+/** What to carry to the next cycle. */
+export interface ReapResult {
+    attempts: Record<string, number>;
+    seen: Record<string, number[]>;
 }
 /**
  * Runs one cycle and returns the attempts to carry to the next: only devices that still have leftovers. Never throws. A device is acted on
  * only when the list of its own set explicitly reports it `Shutdown` (or, for the idle shutdown, an XCTestDevices clone `Booted`): `simctl
  * list` covers one set, so a device it does not name, an empty list and an unreadable one all mean unknown, and nothing is done.
  */
-export declare function reapSimulators({ procs, idleUdids, attempts }: ReapInput, deps: ReaperDeps): Record<string, number>;
+export declare function reapSimulators({ procs, idleUdids, attempts, seen }: ReapInput, deps: ReaperDeps): ReapResult;
 /** The real seams: `xcrun simctl`, `ps -E` and `process.kill`, each external call bounded by `SIMCTL_TIMEOUT_MS`; `exec`, `uid`, `testSetDir` and `exists` are test seams. A test set that does not exist lists no devices. */
 export declare function realReaperDeps({ log, exec, uid, testSetDir, exists, }: {
     log: ReaperDeps["log"];
