@@ -8,12 +8,15 @@
  *   claude-orchestrator-watchdog print-status-line   print the status-line shell fragment (no node)
  *   claude-orchestrator-watchdog print-claude-md-line   print the global CLAUDE.md line on suspend/resume (refuses from a git worktree)
  *
- * State lives in the lease directory. The logic is in `watchdog.ts`; this file wires the real `ps` and clock.
+ * State lives in the lease directory. The logic is in `watchdog.ts`; this file wires the real `ps`, the clock and the simulator reaper
+ * (`simulator-reaper.ts`: a Shutdown device's leftover processes are signalled and an idle booted device is shut down, each logged to `events.jsonl`).
  * Exit 78 means the lease directory is misconfigured (a relative `CO_LEASE_DIR`).
  */
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { jsonlSink } from "./lease-events.js";
 import { leaseDirectory } from "./memory-pressure.js";
+import { reapSimulators, realReaperDeps } from "./simulator-reaper.js";
 import { checkoutOf, isGitWorktree, runPrint, stableNode } from "./watchdog-install.js";
 import { runWatchdog, scanProcessTable } from "./watchdog.js";
 import { isEntryPoint } from "./entry-point.js";
@@ -33,7 +36,8 @@ function main(argv) {
     const printed = runPrint(argv, { dir, node: () => stableNode(process.execPath, process.env.PATH, realpathSync), checkout, isWorktree: isGitWorktree, out, err });
     if (printed !== undefined)
         return printed;
-    return runWatchdog(argv, { dir, scan: scanProcessTable, now: Date.now, out, err });
+    const log = jsonlSink(dir, "events.jsonl");
+    return runWatchdog(argv, { dir, scan: scanProcessTable, now: Date.now, out, err, reap: (input) => reapSimulators(input, realReaperDeps({ log })) });
 }
 if (isEntryPoint(import.meta.url, import.meta.main))
     process.exitCode = main(process.argv.slice(2));

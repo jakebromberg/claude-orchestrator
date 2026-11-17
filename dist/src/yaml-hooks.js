@@ -12,6 +12,7 @@ import { shellQuote } from "./shell-quote.js";
 import { claudeExecOptions } from "./claude-env.js";
 import { acquireLease, defaultWarn } from "./lease.js";
 import { formatPostCheckStop, refusalStopReason, throttledProgress } from "./lease-messages.js";
+import { isUiTestCommand } from "./lease-hook.js";
 import { weightForCommands } from "./lease-weights.js";
 import { SYNC_CALL_TIMEOUT_MS, describeBoundedFailure } from "./sync-budget.js";
 import { stopAtCritical } from "./memory-pressure.js";
@@ -174,7 +175,7 @@ function acquireCheckLease(lease, issue, cwd, commands, runningSessions = () => 
     const warn = lease.warn ?? defaultWarn;
     // The table comes from the handed lease's own directory, so holders and weight rules can never disagree about where the lease lives.
     const weight = weightForCommands(commands, cwd, { ...process.env, CO_LEASE_DIR: lease.dir }, warn) ?? 0;
-    return acquireLease({ ...lease, inheritedHolderId: undefined }, { command: commands[0] ?? "", label: `post-check ${issue.ref}`, cwd, ...(weight > 0 && { weight }) }, {
+    return acquireLease({ ...lease, inheritedHolderId: undefined }, { command: commands[0] ?? "", label: `post-check ${issue.ref}`, cwd, ...(weight > 0 && { weight }), ...(commands.some(isUiTestCommand) && { uiTest: true }) }, {
         onWait: throttledProgress((s) => (lease.warn ?? defaultWarn)(`Issue #${issue.number} post-check waiting for a lease slot (${s.level}, ${s.live.length}/${s.capacity} slots held)`)),
         stopWhen: (s) => stopAtCritical(s.level, s.live.length + runningSessions()),
     });

@@ -51,10 +51,10 @@ export type LeaseEvent = ({
     waitedMs: number;
     level?: PressureLevel;
 }
-/** `code` and `message` describe the I/O error; a busy mutex has neither. */
+/** An I/O error let a command run unleased; `code` and `message` describe it. Events from older builds may carry `reason: "mutex-busy"`, which nothing emits any more. */
  | {
     type: "fail-open";
-    reason: "mutex-busy" | "io-error";
+    reason: "io-error";
     waitedMs: number;
     code?: string;
     message?: string;
@@ -67,7 +67,7 @@ export type LeaseEvent = ({
     reason: string;
 }) & {
     /** The holder class the event is about; absent in a record an older writer wrote, which means `heavy`. */
-    class?: "heavy" | "sessions";
+    class?: "heavy" | "sessions" | "ui-tests";
 };
 /** Cumulative CPU tick counters over all cores. */
 export interface CpuTicks {
@@ -133,6 +133,12 @@ export interface HolderMeta {
     suspendable?: boolean;
     /** Heavy class only: `"high"` puts a waiter's ticket (`acquireLease`) ahead of every normal ticket whatever their `seq`, and tickets of one priority keep `seq` order. It changes who goes next, never how much runs at once. `tryAcquireLease` writes no ticket, so the field does not order it, but a holder it admits still records `priority: "high"`. Set only by the heavy-queue front end; absent or `"normal"` is the first-come order. */
     priority?: LeasePriority;
+    /**
+     * The command runs a UI-test action (`isUiTestCommand`). Before it waits for a heavy slot it takes the one slot of the UI-test class, machine-wide
+     * (`acquireLease` only; every other field of the request goes to the heavy class as before), so a second run waits in its own line and holds up no
+     * unrelated command. That class never fails open: an I/O error is waited out, and the caller's `maxWaitMs` is spent across both waits.
+     */
+    uiTest?: true;
     /** Heavy class only: the bytes of memory the command is expected to use. Absent, or not a positive number, takes the unmatched weight (`usable / heavyCeiling`). Ignored while the machine's memory is unknown. */
     weight?: number;
 }
@@ -227,6 +233,8 @@ export interface LeaseHandle {
      * not a positive integer, and once the holder has been reaped: a reaped holder's file is not recreated.
      */
     setChildPid(pid: number, pgid?: number): void;
+    /** Detached holders only: rewrites `expiresAt` from the request's getter, so a holder admitted before a long wait for another slot still lasts the call's whole time. */
+    renew?(): void;
     /** Sets or clears the holder's `suspended` mark, and records `resumedAt` when given (a resume); throws when the mark cannot be written or the holder is gone. Present on a holder this process owns. */
     setSuspended?(on: boolean, resumedAt?: number): void;
     release(outcome?: {
@@ -309,7 +317,7 @@ type LeaseWait = {
 };
 /**
  * Releases a detached holder by id from any process; idempotent. Returns whether a holder file was removed, and emits
- * one `release` event with `heldMs` only then. It removes only a valid detached record (one with `expiresAt`): a
+ * one `release` event with `heldMs` for each class (heavy, and the UI-test class for a UI-test run) that had one. It removes only a valid detached record (one with `expiresAt`): a
  * wrapper's own holder and a corrupt file are left to their owner and the reaper. An id that is not 1 to 160 of
  * `[A-Za-z0-9_-]` names no holder, and a holders or lease directory that breaks the directory rule (a symlink, or
  * another user's) is not read, so neither can reach a file outside `holders/`.

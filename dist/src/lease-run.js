@@ -9,6 +9,7 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { describeBoundedFailure } from "./bounded-failure.js";
+import { isUiTestCommand } from "./lease-hook.js";
 import { weightFor } from "./lease-weights.js";
 import { acquireLease, defaultLeaseOptions, leaseStatus, PROCESS_COMMAND_TIMEOUT_MS, resumeOldest, SUSPEND_MIN_RUN_MS, suspendNewest } from "./lease.js";
 import { formatAdmitted, formatRefusal, refusalExitCode, seconds, throttledProgress } from "./lease-messages.js";
@@ -170,7 +171,7 @@ export async function runLeased(args, d) {
     // A hook slot the session already holds is borrowed through `inheritedHolderId`, never waited for a second time.
     const hookSlot = opts.inheritedHolderId || ownHolder ? undefined : ancestorHookSlot(opts, d);
     const weight = weightFor(command, d.cwd, d.env, d.err);
-    const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command, label: args.label, cwd: d.cwd, gated: args.gated, suspendable: suspendable || undefined, ...(high && { priority: "high" }), ...(weight !== undefined && { weight }) }, {
+    const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command, label: args.label, cwd: d.cwd, gated: args.gated, suspendable: suspendable || undefined, ...(isUiTestCommand(command) && { uiTest: true }), ...(high && { priority: "high" }), ...(weight !== undefined && { weight }) }, {
         maxWaitMs,
         onWait: throttledProgress((s) => d.err(`lease: waiting ${seconds(s.waitedMs)}s for a slot (pressure=${s.level}, ${s.live.length}/${s.capacity} live)`), { skipFirst: true }),
     });
