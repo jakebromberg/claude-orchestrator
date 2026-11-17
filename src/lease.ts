@@ -56,7 +56,6 @@ const ORPHAN_MAX_MS = 2 * 60 * 60_000;
 /** A holder's mtime heartbeat period, and how old a beat may be before the holder is reaped; a blocking stretch in an engine that holds a session slot must fit in the difference (`__tests__/sync-call-budget.test.ts`). */
 export const HEARTBEAT_MS = 30_000;
 export const HEARTBEAT_STALE_MS = 90_000;
-const FAIL_OPEN_MS = 30_000;
 const POLL_MS = 3_000;
 const COMMAND_MAX = 200;
 /** A waiter's ticket is eligible while its mtime is this close to the reader's clock; a waiter refreshes it on every poll. */
@@ -91,8 +90,8 @@ export type LeaseEvent = (
   | { type: "reap"; id: string; reason: ReapReason }
   /** `level` is the confirmed level of a `stopped` refusal. */
   | { type: "timeout"; refused: "max-wait" | "stopped" | "disk-full"; waitedMs: number; level?: PressureLevel }
-  /** `code` and `message` describe the I/O error; a busy mutex has neither. */
-  | { type: "fail-open"; reason: "mutex-busy" | "io-error"; waitedMs: number; code?: string; message?: string }
+  /** An I/O error let a command run unleased; `code` and `message` describe it. Events from older builds may carry `reason: "mutex-busy"`, which nothing emits any more. */
+  | { type: "fail-open"; reason: "io-error"; waitedMs: number; code?: string; message?: string }
   /** A SIGSTOP or SIGCONT the lease sent to a holder's group; `reason` is the trigger, or `dead-owner` for the continue of a group whose front end is gone. */
   | { type: "suspend" | "resume"; id: string; pgid: number; reason: string }
 ) & {
@@ -974,7 +973,7 @@ const diskFullCode = (error: unknown): string | undefined => {
   return code === "ENOSPC" || code === "EDQUOT" ? code : undefined;
 };
 
-function failOpen(opts: LeaseOptions, cls: LeaseClass, level: PressureLevel, capacity: number, waitedMs: number, reason: "mutex-busy" | "io-error", error?: unknown): LeaseHandle {
+function failOpen(opts: LeaseOptions, cls: LeaseClass, level: PressureLevel, capacity: number, waitedMs: number, reason: "io-error", error?: unknown): LeaseHandle {
   warn(opts, `lease: unavailable (${reason}); running unleased`);
   const { code, message } = (error ?? {}) as { code?: string; message?: string };
   emit(opts, cls, { type: "fail-open", reason, waitedMs, ...(code !== undefined && { code }), ...(message !== undefined && { message }) });
@@ -1074,21 +1073,18 @@ type LeaseWait = { maxWaitMs?: number; onWait?(s: LeaseStatus & { waitedMs: numb
 async function pollForLease(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, wait: LeaseWait, ticketId: string): Promise<LeaseHandle | LeaseRefusal> {
   const { now = Date.now, sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)), pollMs = POLL_MS } = opts;
   const start = now();
-  let busySince: number | undefined;
   for (;;) {
     const waitedMs = now() - start;
     const r = attempt(opts, cls, meta, waitedMs, ticketId);
     if (r.kind === "admitted") return r.handle;
-    busySince = r.kind === "busy" ? (busySince ?? now()) : undefined;
     const code = r.kind === "error" ? diskFullCode(r.error) : undefined;
     if (code !== undefined) {
       emit(opts, cls, { type: "timeout", refused: "disk-full", waitedMs });
       return { refused: "disk-full", waitedMs, level: r.level, live: 0, code };
     }
-    if (r.level !== "critical") {
-      if (r.kind === "error") return failOpen(opts, cls, r.level, r.capacity, waitedMs, "io-error", r.error);
-      if (busySince !== undefined && now() - busySince >= FAIL_OPEN_MS) return failOpen(opts, cls, r.level, r.capacity, waitedMs, "mutex-busy");
-    }
+    // A busy mutex is only waited out: a dead holder's lock is reaped after `MUTEX_STALE_MS` and a live one releases in milliseconds, so
+    // there is no state in which waiting never ends, and a wall-clock streak measures a stopped process, not a busy mutex.
+    if (r.kind === "error" && r.level !== "critical") return failOpen(opts, cls, r.level, r.capacity, waitedMs, "io-error", r.error);
     const status = r.kind === "error" ? { level: r.level, capacity: r.capacity, step: r.step, signals: r.signals, live: [] } : statusOf(opts, cls, r);
     const refuse = (refused: LeaseRefusal["refused"], level: PressureLevel, live: number): LeaseRefusal => {
       emit(opts, cls, { type: "timeout", refused, waitedMs, ...(refused === "stopped" && { level }) });
