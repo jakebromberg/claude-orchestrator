@@ -86,7 +86,16 @@ export declare const hungTestCandidates: (rows: ProcRow[]) => ProcRow[];
  * `xctest` that runs from a simulator path counts only while Xcode.app's main executable is running: a run the build tool drives is covered by its own
  * process, and one left behind by a killed run would otherwise wedge the UI class for good (the watchdog reports it instead). An `xctest` with Xcode.app among
  * its ancestors counts; a bare `xctest` does not (gates run it all day), leaving out `ownPid` and its ancestors (the wrapper that is asking, and the shell that holds its command line). */
-export declare function runningUiTestPids(rows: ProcRow[], uid: number, ownPid: number): number[];
+export declare function runningUiTestPids(rows: ProcRow[], uid: number, ownPid: number, envUdids?: (pids: number[]) => Map<number, string>): number[];
+/** Whether a `launchd_sim` of the device (either set) is in `rows`, by executable (a `/launchd_sim` path segment, so a command that only names it does not count): a device without one is not running. */
+export declare const launchdSimAlive: (rows: ProcRow[], udid: string) => boolean;
+/**
+ * The `SIMULATOR_UDID` of each of `pids` that has one, from one bounded `ps -E` (a status-1 exit with output is the answer: a listed pid was gone by the time it
+ * ran); throws on any other failure.
+ */
+export declare function psEnvUdids(pids: number[], { timeoutMs }?: {
+    timeoutMs?: number;
+}): Map<number, string>;
 /** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */
 export declare const simulatorUdid: (command: string) => string | undefined;
 /** The test clone's UDID in a command's `XCTestDevices/<udid>/` path (the device set only the build tool creates), else `undefined`. */

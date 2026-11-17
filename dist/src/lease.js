@@ -22,7 +22,7 @@ import { ensureOwnSubdir, isOwnDir, readLeaseRecord, readOwnFile } from "./lease
 import { leaseEventSink } from "./lease-events.js";
 import { DEFAULT_RESERVE_PCT, DEFAULT_SESSION_SLOTS, freeBytes, leaseDirectory, pressurePolicyFromEnv, reservePctFromEnv, sessionSlotsFromEnv, usableBytes, } from "./memory-pressure.js";
 import { describeBoundedFailure } from "./bounded-failure.js";
-import { isPid, parsePsTable, pidAlive, ps, PS_TABLE_ARGS, PS_TIMEOUT_MS, psField, runningUiTestPids, signalGroup } from "./ps.js";
+import { isPid, parsePsTable, pidAlive, ps, PS_TABLE_ARGS, PS_TIMEOUT_MS, psEnvUdids, psField, runningUiTestPids, signalGroup } from "./ps.js";
 import { isLeaseRecord, leaseSuspension, readSuspensions, removeLeaseSuspension, removeSuspension, suspensionOf, writeSuspension } from "./suspensions.js";
 export { ensureOwnSubdir, isOwnDir, isPid, pidAlive };
 const MUTEX_STALE_MS = 10_000;
@@ -1192,7 +1192,7 @@ export function defaultLeaseOptions(env = process.env, overrides = {}) {
         scanUiTests: () => {
             try {
                 const rows = parsePsTable(ps(PS_TABLE_ARGS, { timeoutMs: UI_SCAN_TIMEOUT_MS }));
-                return runningUiTestPids(rows, process.getuid?.() ?? -1, process.pid);
+                return runningUiTestPids(rows, process.getuid?.() ?? -1, process.pid, (pids) => psEnvUdids(pids, { timeoutMs: UI_SCAN_TIMEOUT_MS }));
             }
             catch {
                 return undefined;
