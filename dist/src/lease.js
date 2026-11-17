@@ -22,7 +22,7 @@ import { ensureOwnSubdir, isOwnDir, readLeaseRecord, readOwnFile } from "./lease
 import { leaseEventSink } from "./lease-events.js";
 import { DEFAULT_RESERVE_PCT, DEFAULT_SESSION_SLOTS, freeBytes, leaseDirectory, pressurePolicyFromEnv, reservePctFromEnv, sessionSlotsFromEnv, usableBytes, } from "./memory-pressure.js";
 import { describeBoundedFailure } from "./bounded-failure.js";
-import { isPid, pidAlive, PS_TIMEOUT_MS, psField, signalGroup } from "./ps.js";
+import { isPid, parsePsTable, pidAlive, ps, PS_TABLE_ARGS, PS_TIMEOUT_MS, psField, runningUiTestPids, signalGroup } from "./ps.js";
 import { isLeaseRecord, leaseSuspension, readSuspensions, removeLeaseSuspension, removeSuspension, suspensionOf, writeSuspension } from "./suspensions.js";
 export { ensureOwnSubdir, isOwnDir, isPid, pidAlive };
 const MUTEX_STALE_MS = 10_000;
@@ -41,6 +41,10 @@ const ORPHAN_MAX_MS = 2 * 60 * 60_000;
 export const HEARTBEAT_MS = 30_000;
 export const HEARTBEAT_STALE_MS = 90_000;
 const POLL_MS = 3_000;
+/** How long an unreadable process table withholds the UI-test slot before the wait is refused (the hook's whole UI wait budget). */
+const UI_SCAN_UNREADABLE_MS = 400_000;
+/** Bound on the default `LeaseOptions.scanUiTests` (one `ps` of the whole table). */
+const UI_SCAN_TIMEOUT_MS = 15_000;
 /** Consecutive polls that hit an I/O error after which a class that never fails open refuses (about a minute). */
 const MAX_ERROR_POLLS = 20;
 const COMMAND_MAX = 200;
@@ -681,7 +685,7 @@ function weigh(opts, cls, { step, capacity = 0, signals }, live) {
  * only when it fits and no ticket counts as ahead, and writes none. Caller code (`warn`, `onEvent`) runs only after the mutex is released,
  * so a slow callback cannot outlive its staleness window.
  */
-function attempt(opts, cls, meta, waitedMs, ticketId, shareId) {
+function attempt(opts, cls, meta, waitedMs, ticketId, shareId, blocked = false) {
     const snap = snapshot(opts, cls);
     const { level, capacity } = snap;
     const overridden = (opts.headroom ?? opts.level).overridden?.() === true;
@@ -756,7 +760,7 @@ function attempt(opts, cls, meta, waitedMs, ticketId, shareId) {
                 const behindGated = gated && others.some((t) => t.gated);
                 // No-wedge: with nothing live, the oldest gated ticket is admitted past its gates, except at step 0 (capacity 0 already refuses there; the clause keeps the rule true if a policy ever gives step 0 a slot).
                 const ready = !gated || gatesPass(opts, live, nowMs) || (live.length === 0 && snap.step > 0);
-                if (ready && !behindGated && fits && (ticketId !== undefined || ahead.length === 0)) {
+                if (ready && !behindGated && fits && !blocked && (ticketId !== undefined || ahead.length === 0)) {
                     if (gated)
                         writeMark(opts.dir, "lastAdmit", nowMs);
                     r = { kind: "admitted", handle: createHolder(opts, cls, meta, command, admission, shareId && ticketId) };
@@ -884,19 +888,38 @@ export async function acquireLease(opts, meta, wait = {}) {
     checkDetached(meta);
     return meta.uiTest ? acquireUiTest(opts, meta, wait) : acquire(opts, HEAVY, meta, wait, meta.detached?.id);
 }
-/** Renews `slot` and returns whether it still holds: retried while the mutex is busy, up to `MUTEX_STALE_MS` (a stale one is reaped by then), and false when it was lost or could not be confirmed. */
+/**
+ * Whether `slot` is still held and no test action runs outside the lease, the check that decides whether the run proceeds: retried while the mutex is
+ * busy or a test action is running (or the process table unreadable), up to `MUTEX_STALE_MS`, and then `slot-lost`, `running` (with the pids) or
+ * `unreadable`. The scan runs only after the renewal found the slot held, and only when a scanner is configured.
+ */
 async function confirmed(opts, slot) {
     if (!slot.renew)
-        return true;
+        return { ok: true };
     const { now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = opts;
     const start = now();
     for (;;) {
         const renewed = slot.renew();
-        if (renewed !== undefined)
-            return renewed;
-        if (now() - start >= MUTEX_STALE_MS)
-            return false;
+        if (renewed === false)
+            return { ok: false, why: "slot-lost" };
+        const found = renewed === true && opts.scanUiTests ? scanUiTests(opts) : [];
+        if (renewed === true && found !== undefined && found.length === 0)
+            return { ok: true };
+        if (now() - start >= MUTEX_STALE_MS) {
+            if (renewed === undefined)
+                return { ok: false, why: "slot-lost" };
+            return found === undefined ? { ok: false, why: "unreadable" } : { ok: false, why: "running", pids: found };
+        }
         await sleep(100);
+    }
+}
+/** `LeaseOptions.scanUiTests`, with a throw read as an unreadable table. */
+function scanUiTests(opts) {
+    try {
+        return opts.scanUiTests?.();
+    }
+    catch {
+        return undefined;
     }
 }
 /** Thrown out of the heavy wait's `onWait` when the UI-test holder is found gone, and caught by `acquireUiTest`. */
@@ -916,10 +939,10 @@ const SLOT_LOST = new Error("the UI-test slot was lost");
 async function acquireUiTest(opts, meta, wait) {
     const now = opts.now ?? Date.now;
     const start = now();
-    const refusal = (refused) => {
+    const refusal = (refused, pids) => {
         const waitedMs = now() - start;
         emit(opts, UI_TESTS, { type: "timeout", refused, waitedMs });
-        return { refused, waitedMs, level: snapshot(opts, UI_TESTS).level, live: 0, class: "ui-tests" };
+        return { refused, waitedMs, level: snapshot(opts, UI_TESTS).level, live: 0, class: "ui-tests", ...(pids && { pids }) };
     };
     const inherited = opts.inheritedHolderId;
     if (inherited && liveOf(opts, HEAVY).some((h) => h.id === inherited) && !liveOf(opts, UI_TESTS).some((h) => h.id === inherited))
@@ -967,10 +990,11 @@ async function acquireUiTest(opts, meta, wait) {
         heavy.release();
         slot.release();
     });
-    if (!(await confirmed(opts, slot))) {
+    const check = await confirmed(opts, slot);
+    if (!check.ok) {
         heavy.release();
         slot.release();
-        return refusal("slot-lost");
+        return check.why === "slot-lost" ? refusal("slot-lost") : refusal("ui-test-running", check.pids);
     }
     return {
         ...heavy,
@@ -1018,9 +1042,37 @@ async function pollForLease(opts, cls, meta, wait, ticketId, shareId) {
     const { now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), pollMs = POLL_MS } = opts;
     const start = now();
     let errorPolls = 0;
+    let unreadableSince;
+    let reportedPids = "";
+    let unmanaged;
     for (;;) {
         const waitedMs = now() - start;
-        const r = attempt(opts, cls, meta, waitedMs, ticketId, shareId);
+        // The UI-test slot is withheld while a test action is running with no slot behind it. Scanned only when the slot would otherwise be granted
+        // (nobody holds it), and an unreadable table counts as busy for at most `UI_SCAN_UNREADABLE_MS`.
+        let blocked = false;
+        unmanaged = undefined;
+        if (cls === UI_TESTS && opts.scanUiTests && liveOf(opts, UI_TESTS).length === 0) {
+            const found = scanUiTests(opts);
+            if (found === undefined) {
+                blocked = true;
+                if (unreadableSince === undefined) {
+                    unreadableSince = now();
+                    emit(opts, cls, { type: "ui-scan-unreadable", waitedMs });
+                }
+            }
+            else {
+                unreadableSince = undefined;
+                if (found.length > 0) {
+                    blocked = true;
+                    unmanaged = found;
+                    if (reportedPids !== found.join(",")) {
+                        reportedPids = found.join(",");
+                        emit(opts, cls, { type: "ui-test-running", pids: found, waitedMs });
+                    }
+                }
+            }
+        }
+        const r = attempt(opts, cls, meta, waitedMs, ticketId, shareId, blocked);
         if (r.kind === "admitted")
             return r.handle;
         errorPolls = r.kind === "error" ? errorPolls + 1 : 0;
@@ -1036,8 +1088,10 @@ async function pollForLease(opts, cls, meta, wait, ticketId, shareId) {
         const status = r.kind === "error" ? { level: r.level, capacity: r.capacity, step: r.step, signals: r.signals, live: [] } : statusOf(opts, cls, r);
         const refuse = (refused, level, live, code) => {
             emit(opts, cls, { type: "timeout", refused, waitedMs, ...(refused === "stopped" && { level }) });
-            return { refused, waitedMs, level, live, ...(code !== undefined && { code }), ...(cls === UI_TESTS && { class: "ui-tests" }) };
+            return { refused, waitedMs, level, live, ...(code !== undefined && { code }), ...(unmanaged && { pids: unmanaged }), ...(cls === UI_TESTS && { class: "ui-tests" }) };
         };
+        if (unreadableSince !== undefined && now() - unreadableSince >= UI_SCAN_UNREADABLE_MS)
+            return refuse("ui-test-running", r.level, 0);
         // A class that never fails open waits out an I/O error, but not for ever when the caller set no `maxWaitMs`: it refuses once `MAX_ERROR_POLLS` polls in a row failed.
         if (!cls.failsOpen && errorPolls >= MAX_ERROR_POLLS)
             return refuse("io-error", r.level, 0, r.error?.code);
@@ -1048,7 +1102,7 @@ async function pollForLease(opts, cls, meta, wait, ticketId, shareId) {
         }
         if (wait.maxWaitMs !== undefined && waitedMs >= wait.maxWaitMs)
             return refuse("max-wait", r.level, status.live.length);
-        wait.onWait?.({ ...status, waitedMs });
+        wait.onWait?.({ ...status, waitedMs, ...(unmanaged && { unmanagedUiTests: unmanaged }) });
         const jittered = Math.round(pollMs * (2 / 3 + Math.random() * (2 / 3)));
         await sleep(wait.maxWaitMs === undefined ? jittered : Math.min(jittered, wait.maxWaitMs - waitedMs));
     }
@@ -1135,6 +1189,15 @@ export function defaultLeaseOptions(env = process.env, overrides = {}) {
         inheritedHolderId: env.CO_LEASE_HOLDER || undefined,
         cpuTimes: osCpuTicks,
         processCommand: (pgid) => psField(pgid, "command", { timeoutMs: PROCESS_COMMAND_TIMEOUT_MS }),
+        scanUiTests: () => {
+            try {
+                const rows = parsePsTable(ps(PS_TABLE_ARGS, { timeoutMs: UI_SCAN_TIMEOUT_MS }));
+                return runningUiTestPids(rows, process.getuid?.() ?? -1, process.pid);
+            }
+            catch {
+                return undefined;
+            }
+        },
         onEvent: leaseEventSink(dir, { warn }),
         warn,
     });

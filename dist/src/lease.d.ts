@@ -65,6 +65,17 @@ export type LeaseEvent = ({
     id: string;
     pgid: number;
     reason: string;
+}
+/** The UI-test slot was not granted because a test action of this user is already running (`pids`); once per wait, again when the pids change. */
+ | {
+    type: "ui-test-running";
+    pids: number[];
+    waitedMs: number;
+}
+/** The UI-test slot was not granted because the process table could not be read; once per wait. */
+ | {
+    type: "ui-scan-unreadable";
+    waitedMs: number;
 }) & {
     /** The holder class the event is about; absent in a record an older writer wrote, which means `heavy`. */
     class?: "heavy" | "sessions" | "ui-tests";
@@ -104,6 +115,13 @@ export interface LeaseOptions {
     inheritedHolderId?: string;
     /** The command line of a process group's leader (`ps -o command=` by default); throws when it cannot be read. `attempt()` compares it with a suspension record's `leader` before continuing a dead owner's group; absent, none is continued. */
     processCommand?(pgid: number): string;
+    /**
+     * The pids of this user's test actions of the build tool that are running right now, outside this process's own ancestry; `undefined` when the
+     * process table cannot be read. The UI-test class calls it only when its slot would otherwise be granted (before the grant and again in the final
+     * check): a run in progress holds the machine's one UI slot in fact, whatever the holders say (a hook holder can expire by wall clock while the Mac
+     * sleeps, a run can be backgrounded mid-way, a wrapper the classifier does not know can start one). Absent, nothing is scanned.
+     */
+    scanUiTests?(): number[] | undefined;
     /** A throw is warned about once per callback and never changes what the lease does. */
     onEvent?(e: LeaseEvent): void;
     warn?(msg: string): void;
@@ -191,6 +209,8 @@ export interface LeaseStatus {
     live: HolderInfo[];
     /** Set only in weight mode (class with a `budget`, machine memory known); count mode leaves it out. */
     weights?: Weights;
+    /** Set on the status a UI-test wait reports while its slot is withheld for test actions that are running with no slot behind them. */
+    unmanagedUiTests?: number[];
     /** Set by `leaseStatus` only: the session class's capacity at the same reading, and its live holders. */
     sessions?: {
         capacity: number;
@@ -258,7 +278,9 @@ export interface LeaseRefusal {
      * `io-error`, `slot-lost` and `nested-ui-test` come from the UI-test class only: its I/O-error cap (`code` is the error's), a UI-test holder found
      * gone while a heavy slot was awaited, and a nested acquire whose inherited holder is live in the heavy class but not the UI-test one.
      */
-    refused: "max-wait" | "stopped" | "disk-full" | "io-error" | "slot-lost" | "nested-ui-test";
+    refused: "max-wait" | "stopped" | "disk-full" | "io-error" | "slot-lost" | "nested-ui-test" | "ui-test-running";
+    /** The test actions found running with no slot behind them (`ui-test-running`, or a `max-wait` that ended while they ran). */
+    pids?: number[];
     /** Set when the refusal came from the UI-test phase of a UI-test run, so the caller reports that class's status. */
     class?: "ui-tests";
     waitedMs: number;

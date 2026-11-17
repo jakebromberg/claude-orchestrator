@@ -46,6 +46,14 @@ export declare const isSimulatorCommand: (command: string) => boolean;
 export declare const XCODE_TOOLS: string[];
 /** True when `command` runs one of `names`: the name preceded by the start, whitespace, `/` or a shell separator and followed by whitespace or the end, so a tool path with spaces still counts and `mysimctl` does not. */
 export declare const runsTool: (command: string, names: string[]) => boolean;
+/**
+ * Whether a process is itself a build tool test action: its executable is `xcodebuild` (by path, or through `xcrun`, which execs it) and a `test` or
+ * `test-without-building` word follows. A shell or `grep` whose command line only contains that text is not one, so a wrapper's own command line
+ * (the Bash call's shell, the lease CLI naming its argv) never counts: the build tool it spawns is the process that does.
+ */
+export declare const isXcodebuildTestProcess: (command: string) => boolean;
+/** The pids of `uid`'s test actions in `rows`, leaving out `ownPid` and its ancestors (the wrapper that is asking, and the shell that holds its command line). */
+export declare function runningUiTestPids(rows: ProcRow[], uid: number, ownPid: number): number[];
 /** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */
 export declare const simulatorUdid: (command: string) => string | undefined;
 /** The test clone's UDID in a command's `XCTestDevices/<udid>/` path (the device set only the build tool creates), else `undefined`. */

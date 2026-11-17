@@ -81,6 +81,20 @@ export const isSimulatorCommand = (command) => /\/CoreSimulator\/(Devices|Volume
 export const XCODE_TOOLS = ["xcodebuild", "simctl"];
 /** True when `command` runs one of `names`: the name preceded by the start, whitespace, `/` or a shell separator and followed by whitespace or the end, so a tool path with spaces still counts and `mysimctl` does not. */
 export const runsTool = (command, names) => new RegExp(`(^|[\\s/;&|(])(${names.join("|")})(\\s|$)`).test(command);
+/**
+ * Whether a process is itself a build tool test action: its executable is `xcodebuild` (by path, or through `xcrun`, which execs it) and a `test` or
+ * `test-without-building` word follows. A shell or `grep` whose command line only contains that text is not one, so a wrapper's own command line
+ * (the Bash call's shell, the lease CLI naming its argv) never counts: the build tool it spawns is the process that does.
+ */
+export const isXcodebuildTestProcess = (command) => {
+    const m = /^(?:xcrun\s+(?:-{1,2}(?:sdk|toolchain)\s+\S+\s+|-\S+\s+)*)?(?:\/.*?\/)?xcodebuild\s(.*)$/s.exec(command.trim());
+    return m !== null && /(?:^|\s)(?:test|test-without-building)(?=\s|$)/.test(m[1]);
+};
+/** The pids of `uid`'s test actions in `rows`, leaving out `ownPid` and its ancestors (the wrapper that is asking, and the shell that holds its command line). */
+export function runningUiTestPids(rows, uid, ownPid) {
+    const own = new Set([ownPid, ...ancestry(rows, ownPid, 64).chain.map((r) => r.pid)]);
+    return rows.filter((r) => r.uid === uid && !own.has(r.pid) && isXcodebuildTestProcess(r.command)).map((r) => r.pid);
+}
 /** The device UDID in a command's `CoreSimulator/Devices/<udid>/` path, else `undefined`. */
 export const simulatorUdid = (command) => /\/CoreSimulator\/Devices\/([0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12})\//i.exec(command)?.[1]?.toUpperCase();
 /** The test clone's UDID in a command's `XCTestDevices/<udid>/` path (the device set only the build tool creates), else `undefined`. */
