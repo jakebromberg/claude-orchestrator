@@ -34,6 +34,13 @@ export declare const isUiTestCommandUntokenized: (command: string) => boolean;
  */
 export declare const isUiTestCommand: (command: string) => boolean;
 /**
+ * Whether `command` runs a UI-test action that is backgrounded: the shell then returns at once, so `PostToolUse` would release the run's slots
+ * while it still runs. Decided from the tokenizer: the simple command that runs it, or a pipeline, and-or list, group or subshell holding it, is
+ * followed by an `&` separator (a script it runs through `sh -c` or a heredoc is read the same way); an `&` that backgrounds some other command
+ * does not count. Text it cannot tokenize falls back to the conservative raw check. Claude Code's own mid-run backgrounding (Ctrl+B) is not seen.
+ */
+export declare const uiRunBackgrounded: (command: string) => boolean;
+/**
  * Whether one simple command, given as its words, runs a UI-test action: past its leading words (assignments, `nohup`, `exec`, `command`,
  * `time`, `env`, `nice`, `timeout`, `xcrun` and its sdk options), the command word's basename is `xcodebuild` and an argument that is not an
  * option's value is `test` or `test-without-building`. A `sh -c` script goes to `inScript`. A caller that already has the words (the
@@ -56,13 +63,6 @@ export interface HookIo {
     /** Test seam: where heavy-queue lives (default `~/.local/share/heavy-queue/heavy-queue`). */
     heavyQueuePath?: string;
 }
-/**
- * Whether a UI-test command line may background work: an unquoted single `&` that is not part of `&&`, `>&`, `<&`, `&>` or `|&`, after quoted text and
- * backslash-escaped characters are blanked. `PostToolUse` fires when the backgrounded shell returns, so its slots would be released while the test
- * still runs; the line is denied instead. Conservative (it does not know which command the `&` follows): it can deny a line whose `&` backgrounds
- * something else. Claude Code's own mid-run backgrounding (Ctrl+B) is not seen at all and can still release the slots early.
- */
-export declare function uiRunBackgrounded(command: string): boolean;
 /** The `hook` subcommand's arguments after `hook`. Always returns 0: hook mode never fails a call. */
 export declare function runHook(args: string[], io: HookIo): Promise<number>;
 export interface HookEntry {

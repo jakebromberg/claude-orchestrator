@@ -31,15 +31,32 @@ function parse(text, from, closer, depth, out) {
     let words = [];
     let word = "";
     let inWord = false;
+    /** The current word held a quote or an escape, so it is not a bare file descriptor number. */
+    let quoted = false;
+    /** A redirect operator was read: the next word is its target, not a word of the command. */
+    let pendingTarget = false;
+    /** Where the current statement (since the last `;`, newline or `&`) starts in `out`, and where each open `(` group did. */
+    let segStart = out.length;
+    const groups = [];
+    /** Where each `{` group (a command whose first word is `{`) started in `out`. */
+    const braces = [];
     let parens = 0;
     const heredocs = [];
     /** The heredocs opened by the command being read; its end gives them an owner, which a later body read fills. */
     let opened = [];
     const endWord = () => {
-        if (inWord)
+        if (inWord && pendingTarget)
+            pendingTarget = false;
+        else if (inWord)
             words.push(word);
         word = "";
         inWord = false;
+        quoted = false;
+    };
+    /** Ends the statement: what follows starts a new one. */
+    const endStatement = () => {
+        endCommand();
+        segStart = out.length;
     };
     const endCommand = () => {
         endWord();
@@ -48,9 +65,14 @@ function parse(text, from, closer, depth, out) {
             out.push(command);
             for (const h of opened)
                 h.owner = command;
+            if (words[0] === "{")
+                braces.push(out.length - 1);
+            else if (words[0] === "}" && braces.length > 0)
+                segStart = braces.pop(); // what follows `}` (an `&`) reaches the whole group
         }
         opened = [];
         words = [];
+        pendingTarget = false;
     };
     /** A substitution inside a word contributes an empty piece: the word exists, its value is unknown. */
     const substituted = () => {
@@ -159,6 +181,7 @@ function parse(text, from, closer, depth, out) {
             else {
                 word += text[i + 1] ?? "";
                 inWord = true;
+                quoted = true;
                 i += 2;
             }
         }
@@ -168,10 +191,12 @@ function parse(text, from, closer, depth, out) {
                 return undefined;
             word += text.slice(i + 1, close);
             inWord = true;
+            quoted = true;
             i = close + 1;
         }
         else if (c === '"') {
             inWord = true;
+            quoted = true;
             i++;
             for (;;) {
                 if (i >= text.length)
@@ -205,6 +230,7 @@ function parse(text, from, closer, depth, out) {
         }
         else if (c === "$" && text[i + 1] === "'") {
             inWord = true;
+            quoted = true;
             i += 2;
             for (;;) {
                 if (i >= text.length)
@@ -243,7 +269,7 @@ function parse(text, from, closer, depth, out) {
             i++;
         }
         else if (c === "\n") {
-            endCommand();
+            endStatement();
             i++;
             if (heredocs.length > 0) {
                 const after = readHeredocs(i);
@@ -266,29 +292,66 @@ function parse(text, from, closer, depth, out) {
                 return undefined;
             i = end;
         }
-        else if (c === ";" || c === "|" || c === "(") {
+        else if ((c === "<" || c === ">") && text[i + 1] !== "(") {
+            // A redirect operator ends the word before it (a bare number there is its file descriptor, kept with it) and the word after it is its target.
+            if (inWord && !quoted && /^\d+$/.test(word)) {
+                word = "";
+                inWord = false;
+            }
+            else
+                endWord();
+            i++;
+            if (c === ">" && (text[i] === ">" || text[i] === "|"))
+                i++;
+            else if (c === "<" && text[i] === ">")
+                i++;
+            else if (text[i] === "&")
+                i++; // `>&` and `<&` duplicate or close a descriptor
+            pendingTarget = true;
+        }
+        else if (c === ";") {
+            endStatement();
+            i++;
+        }
+        else if (c === "|") {
             endCommand();
-            if (c === "(")
-                parens++;
+            i += text[i + 1] === "&" ? 2 : 1; // `|&` is a pipe
+        }
+        else if (c === "(") {
+            endCommand();
+            groups.push(out.length);
+            parens++;
             i++;
         }
         else if (c === ")") {
             endCommand();
-            if (parens > 0)
+            if (parens > 0) {
                 parens--;
+                segStart = groups.pop() ?? segStart; // what follows `)` (an `&`) reaches the whole group
+            }
             else if (closer)
                 return heredocs.length === 0 ? i + 1 : undefined;
             i++;
         }
         else if (c === "&") {
-            // The & of a redirect (`2>&1`, `>&2`, `&>`) belongs to its word; any other starts a new command.
-            if (text[i + 1] === ">" || (inWord && /[<>]$/.test(word))) {
-                word += c;
-                inWord = true;
+            if (text[i + 1] === ">") {
+                // `&>` and `&>>` redirect both streams.
+                endWord();
+                i += text[i + 2] === ">" ? 3 : 2;
+                pendingTarget = true;
             }
-            else
+            else if (text[i + 1] === "&") {
+                endCommand(); // `&&` continues the and-or list: no new statement
+                i += 2;
+            }
+            else {
+                // A lone `&` backgrounds the statement so far: every command since its start.
                 endCommand();
-            i++;
+                for (let k = segStart; k < out.length; k++)
+                    out[k].background = true;
+                segStart = out.length;
+                i++;
+            }
         }
         else {
             word += c;

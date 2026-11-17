@@ -12,6 +12,8 @@
 export interface ShellCommand {
     words: string[];
     stdin?: string;
+    /** An `&` separator follows it, or a pipeline, and-or list, group or subshell that holds it does (back to the last `;` or newline), so the shell returns before it ends. */
+    background?: true;
 }
 /** The simple commands of `text`, in order of completion (a command inside a substitution is listed before the command that holds it), or `undefined` when it cannot be parsed. */
 export declare function shellCommands(text: string): ShellCommand[] | undefined;
