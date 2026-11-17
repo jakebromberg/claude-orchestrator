@@ -416,6 +416,94 @@ describe("runningUiTestPids and a test runner", () => {
   });
 });
 
+// Issue #324 review: a runner left behind by a killed run, on a device that is gone, is a leftover and not a test in progress; with Xcode.app open it would
+// otherwise withhold the UI slot for good. The scan cannot call `simctl` cheaply, so a device is gone when no `launchd_sim` of its UDID is in the same table.
+describe("runningUiTestPids and a leftover runner", () => {
+  const row = (pid: number, ppid: number, command: string, uid = 501) => ({ pid, ppid, pgid: pid, uid, stat: "S", elapsedMs: 0, rssBytes: 0, command });
+  const XCODE = "/Applications/Xcode.app/Contents/MacOS/Xcode";
+  const U1 = "5E2F590B-1111-4222-8333-444455556666";
+  const U2 = "9F8E7D6C-1111-4222-8333-444455556666";
+  const runnerOn = (udid: string, dir = "CoreSimulator/Devices") => `/Users/x/Library/Developer/${dir}/${udid}/data/Containers/Bundle/Application/ABC/AppUITests-Runner.app/AppUITests-Runner`;
+  const launchd = (pid: number, udid: string, dir = "CoreSimulator/Devices") => row(pid, 1, `/Library/Developer/CoreSimulator/Volumes/iOS/RuntimeRoot/sbin/launchd_sim /Users/x/Library/Developer/${dir}/${udid}/data/x`);
+  const SIM_XCTEST = "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/Library/Xcode/Agents/xctest -XCTestBundlePath x";
+
+  it("does not count a runner whose device has no launchd_sim in the table, with Xcode.app running", () => {
+    expect(runningUiTestPids([row(40, 1, XCODE), row(10, 1, runnerOn(U1))], 501, 99)).toEqual([]);
+  });
+
+  it("does not count a runner on a test clone whose device has no launchd_sim", () => {
+    expect(runningUiTestPids([row(40, 1, XCODE), row(10, 1, runnerOn(U1, "XCTestDevices"))], 501, 99)).toEqual([]);
+  });
+
+  it.each<[string, string]>([
+    ["its device's launchd_sim", "CoreSimulator/Devices"],
+    ["its test clone's launchd_sim", "XCTestDevices"],
+  ])("counts a runner while %s is alive", (_name, dir) => {
+    expect(runningUiTestPids([row(40, 1, XCODE), launchd(5, U1, dir), row(10, 5, runnerOn(U1, dir))], 501, 99)).toEqual([10]);
+  });
+
+  it("counts a runner whose device has a launchd_sim written in another case", () => {
+    const lower = row(5, 1, `/x/sbin/launchd_sim /Users/x/Library/Developer/CoreSimulator/Devices/${U1.toLowerCase()}/data/x`);
+    expect(runningUiTestPids([row(40, 1, XCODE), lower, row(10, 5, runnerOn(U1))], 501, 99)).toEqual([10]);
+  });
+
+  it("does not take another device's launchd_sim for its device's", () => {
+    expect(runningUiTestPids([row(40, 1, XCODE), launchd(5, U2), row(10, 1, runnerOn(U1))], 501, 99)).toEqual([]);
+  });
+
+  it("does not take a process that only names launchd_sim for one", () => {
+    expect(runningUiTestPids([row(40, 1, XCODE), row(5, 1, `grep launchd_sim /Users/x/Library/Developer/CoreSimulator/Devices/${U1}/data/x`), row(10, 1, runnerOn(U1))], 501, 99)).toEqual([10]);
+  });
+
+  it("keeps counting a runner whose command names no device", () => {
+    expect(runningUiTestPids([row(40, 1, XCODE), row(10, 1, "/x/Build/Products/Debug/AppUITests-Runner.app/AppUITests-Runner")], 501, 99)).toEqual([10]);
+  });
+
+  it("counts a leftover runner that a build tool test action stands beside as that action, not as the runner", () => {
+    expect(runningUiTestPids([row(40, 1, XCODE), row(10, 1, runnerOn(U1)), row(11, 1, "xcodebuild test -scheme App")], 501, 99)).toEqual([11]);
+  });
+
+  describe("and a simulator xctest with no device in its path, by its environment", () => {
+    const udids = (map: Record<number, string>) => (pids: number[]) => new Map(pids.flatMap((p) => (p in map ? [[p, map[p]!] as [number, string]] : [])));
+
+    it("does not count one whose environment names a device with no launchd_sim", () => {
+      expect(runningUiTestPids([row(40, 1, XCODE), row(30, 1, SIM_XCTEST)], 501, 99, udids({ 30: U1 }))).toEqual([]);
+    });
+
+    it("counts one whose environment names a device that has a launchd_sim", () => {
+      expect(runningUiTestPids([row(40, 1, XCODE), launchd(5, U1), row(30, 5, SIM_XCTEST)], 501, 99, udids({ 30: U1 }))).toEqual([30]);
+    });
+
+    it.each<[string, ((pids: number[]) => Map<number, string>) | undefined]>([
+      ["names no device", udids({})],
+      ["cannot be read (the lookup throws)", () => { throw new Error("ps timed out"); }],
+      ["is not looked up (no reader)", undefined],
+    ])("keeps counting one whose environment %s", (_name, reader) => {
+      expect(runningUiTestPids([row(40, 1, XCODE), row(30, 1, SIM_XCTEST)], 501, 99, reader)).toEqual([30]);
+    });
+
+    it("asks for the environment of the candidates with no device in their path, once, and of nobody else", () => {
+      const asked: number[][] = [];
+      const reader = (pids: number[]) => (asked.push(pids), new Map<number, string>());
+      runningUiTestPids([row(40, 1, XCODE), row(30, 1, SIM_XCTEST), row(10, 1, runnerOn(U1)), row(11, 1, "/x/Build/AppUITests-Runner.app/AppUITests-Runner"), row(12, 1, "xcodebuild test -scheme A")], 501, 99, reader);
+      expect(asked).toEqual([[30, 11]]);
+      asked.length = 0;
+      runningUiTestPids([row(40, 1, XCODE), row(10, 1, runnerOn(U1))], 501, 99, reader);
+      expect(asked).toEqual([]);
+    });
+
+    it("does not ask without Xcode.app: nothing but a build tool test action counts then", () => {
+      const asked: number[][] = [];
+      runningUiTestPids([row(30, 1, SIM_XCTEST)], 501, 99, (pids) => (asked.push(pids), new Map()));
+      expect(asked).toEqual([]);
+    });
+
+    it("counts an xctest that has Xcode.app among its ancestors whatever its device", () => {
+      expect(runningUiTestPids([row(40, 1, XCODE), row(31, 40, "/Applications/Xcode.app/Contents/Developer/usr/bin/xctest /x/T.xctest")], 501, 99, udids({ 31: U1 }))).toEqual([31]);
+    });
+  });
+});
+
 describe("xcodeAppRunning", () => {
   const row = (pid: number, command: string, uid = 501) => ({ pid, ppid: 1, pgid: pid, uid, stat: "S", elapsedMs: 0, rssBytes: 0, command });
   it("is true for this user's Xcode.app main executable and false for anything else", () => {

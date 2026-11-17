@@ -59,3 +59,55 @@ describe("every reader of the process table takes more than 1 MiB", () => {
     expect(rows.map((r) => r.pid)).toEqual([100, 200, 300]);
   });
 });
+
+// Issue #324 review: the default UI-test scan reads the environment of a simulator xctest it cannot place from its path, to tell a leftover from a test in
+// progress; the reader bounds its `ps -E` call the same way and any failure leaves the process counted.
+describe("the default UI-test scan and a simulator xctest", () => {
+  const U = "5E2F590B-1111-4222-8333-444455556666";
+  const XCODE = "/Applications/Xcode.app/Contents/MacOS/Xcode";
+  const XCTEST = "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/Library/Xcode/Agents/xctest -XCTestBundlePath x";
+  let tmp: string;
+  const table = (): string =>
+    psText([
+      { pid: 100, ppid: 1, pgid: 100, uid, command: XCODE },
+      { pid: 200, ppid: 1, pgid: 200, uid, command: XCTEST },
+    ]);
+  const scan = () => defaultLeaseOptions({ CO_LEASE_DIR: join(tmp, "lease") }, { level: scriptedPressureSampler("normal") }).scanUiTests!();
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "ps-env-"));
+    exec.mockReset();
+  });
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  it("reads the environment of the xctest with one bounded ps call and does not count it when its device has no launchd_sim", () => {
+    exec.mockImplementation(((_file: string, args: string[]) => (args.includes("-Eww") ? `200 ${XCTEST} SIMULATOR_UDID=${U} HOME=/x\n` : table())) as never);
+    expect(scan()).toEqual([]);
+    const envCalls = exec.mock.calls.filter((c) => (c[1] as string[]).includes("-Eww"));
+    expect(envCalls).toHaveLength(1);
+    expect(envCalls[0]![1]).toEqual(["-Eww", "-p", "200", "-o", "pid=,command="]);
+    expect((envCalls[0]![2] as { maxBuffer: number; timeout: number }).maxBuffer).toBeGreaterThanOrEqual(64 * MIB);
+    expect((envCalls[0]![2] as { timeout: number }).timeout).toBeGreaterThan(0);
+  });
+
+  it("keeps counting it when the environment read fails, times out or names no device", () => {
+    for (const env of [() => { throw Object.assign(new Error("spawnSync ps ETIMEDOUT"), { code: "ETIMEDOUT" }); }, () => `200 ${XCTEST} HOME=/x\n`, () => ""]) {
+      exec.mockReset();
+      exec.mockImplementation(((_file: string, args: string[]) => (args.includes("-Eww") ? env() : table())) as never);
+      expect(scan()).toEqual([200]);
+    }
+  });
+
+  it("uses the rows of a ps that exits 1 because a listed pid is gone", () => {
+    exec.mockImplementation(((_file: string, args: string[]) => {
+      if (!args.includes("-Eww")) return table();
+      throw Object.assign(new Error("exit 1"), { status: 1, stdout: `200 ${XCTEST} SIMULATOR_UDID=${U} HOME=/x\n` });
+    }) as never);
+    expect(scan()).toEqual([]);
+  });
+
+  it("asks for nothing when no candidate needs it", () => {
+    exec.mockImplementation((() => psText([{ pid: 200, ppid: 1, pgid: 200, uid, command: "xcodebuild test -scheme A" }])) as never);
+    expect(scan()).toEqual([200]);
+    expect(exec.mock.calls.filter((c) => (c[1] as string[]).includes("-Eww"))).toEqual([]);
+  });
+});

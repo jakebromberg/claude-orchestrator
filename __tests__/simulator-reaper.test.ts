@@ -595,6 +595,172 @@ describe("reapSimulators", () => {
     });
   });
 
+  // Issue #324 review: a runner left behind by a killed run is itself one of the leftovers of its device; counting it as a test in progress stood the reaper
+  // down for every device for ever. A test action names the devices it runs on: it stands down its own devices, and a build tool test action that names none,
+  // or a runner that names none, still stands down everything.
+  describe("a leftover runner and the scope of a test action", () => {
+    const runnerOn = (udid: string, dir = "CoreSimulator/Devices") => `/Users/x/Library/Developer/${dir}/${udid}/data/Containers/Bundle/Application/ABC/AppUITests-Runner.app/AppUITests-Runner`;
+    const runnerRow = (pid: number, udid: string, dir = "CoreSimulator/Devices"): PsTextRow => ({ pid, ppid: 1, pgid: pid, command: runnerOn(udid, dir) });
+    const launchdRow = (pid: number, udid: string): PsTextRow => ({ pid, ppid: 1, pgid: pid, command: `${RT}/sbin/launchd_sim ${DEV}/${udid}/data/x` });
+    const xcb = (pid: number, command: string): PsTextRow => ({ pid, ppid: 50, pgid: pid, command });
+
+    beforeEach(() => {
+      envOf = { 300: U1, 301: U1, 400: U1, 310: U2, 311: U2 };
+      list = () => devices({ [U1]: "Shutdown", [U2]: "Shutdown" });
+    });
+
+    it("signals the leftover runner with the device's other leftovers (the reviewer's scenario: Shutdown, no launchd_sim, daemons plus the runner)", () => {
+      reap([runtimeRow(300), runtimeRow(301), runnerRow(400, U1)]);
+      expect(signals).toEqual([[300, "SIGTERM"], [301, "SIGTERM"], [400, "SIGTERM"]]);
+      expect(events).toEqual([{ type: "simulator-reap", udid: U1, reason: "shutdown-leftovers", action: "terminate", pids: [300, 301, 400], ok: true }]);
+    });
+
+    it("signals the daemons alone, as before", () => {
+      reap([runtimeRow(300), runtimeRow(301)]);
+      expect(signals).toEqual([[300, "SIGTERM"], [301, "SIGTERM"]]);
+    });
+
+    it("kills the runner on the second attempt, with the rest", () => {
+      reap([runtimeRow(300), runnerRow(400, U1)], [], { [U1]: 1 });
+      expect(signals).toEqual([[300, "SIGKILL"], [400, "SIGKILL"]]);
+    });
+
+    it("does not signal the runner on the first cycle: the two-cycle rule applies to it", () => {
+      seenIn = {};
+      reap([runtimeRow(300), runnerRow(400, U1)]);
+      expect(signals).toEqual([]);
+      expect(lastResult.seen[U1]).toEqual([300, 400]);
+    });
+
+    it("signals only a runner that was there on the previous cycle too", () => {
+      seenIn = { [U1]: [300] };
+      reap([runtimeRow(300), runnerRow(400, U1)]);
+      expect(signals).toEqual([[300, "SIGTERM"]]);
+    });
+
+    it("leaves a runner on a device that is Booted alone", () => {
+      list = () => devices({ [U1]: "Booted" });
+      reap([runtimeRow(300), runnerRow(400, U1)]);
+      expect(signals).toEqual([]);
+    });
+
+    it("leaves a runner whose device still has a launchd_sim alone", () => {
+      reap([runtimeRow(300), runnerRow(400, U1), launchdRow(5, U1)]);
+      expect(signals).toEqual([]);
+    });
+
+    it("leaves a runner on a device its list does not name alone", () => {
+      list = () => devices({});
+      reap([runtimeRow(300), runnerRow(400, U1)]);
+      expect(signals).toEqual([]);
+    });
+
+    it("leaves a runner whose set's list cannot be read alone", () => {
+      list = () => {
+        throw new Error("simctl timed out");
+      };
+      reap([runtimeRow(300), runnerRow(400, U1)]);
+      expect(signals).toEqual([]);
+    });
+
+    it("reaps a leftover runner on a test clone of the XCTestDevices set", () => {
+      envOf = { 300: { udid: U1, set: "xctest" }, 400: { udid: U1, set: "xctest" } };
+      list = () => devices({});
+      testList = () => devices({ [U1]: "Shutdown" });
+      reap([runtimeRow(300), runnerRow(400, U1, "XCTestDevices")]);
+      expect(signals).toEqual([[300, "SIGTERM"], [400, "SIGTERM"]]);
+    });
+
+    it("does not let a test action on device A stop the reaping of device B", () => {
+      reap([runtimeRow(310), runtimeRow(311), runnerRow(400, U1), launchdRow(5, U1), xcb(900, `xcodebuild test -scheme App -destination 'platform=iOS Simulator,id=${U1}'`)]);
+      expect(signals).toEqual([[310, "SIGTERM"], [311, "SIGTERM"]]);
+    });
+
+    it("does not let a live runner on device A stop the reaping of device B", () => {
+      list = () => devices({ [U1]: "Booted", [U2]: "Shutdown" });
+      reap([runtimeRow(310), runtimeRow(311), runnerRow(400, U1), launchdRow(5, U1)]);
+      expect(signals).toEqual([[310, "SIGTERM"], [311, "SIGTERM"]]);
+    });
+
+    it("leaves device A's leftovers alone while a build tool test action names A", () => {
+      reap([runtimeRow(300), runtimeRow(310), xcb(900, `xcodebuild test -destination id=${U1}`)]);
+      expect(signals.map(([pid]) => pid)).toEqual([310]);
+    });
+
+    it("still stands down for everything while a build tool test action names no device", () => {
+      reap([runtimeRow(300), runtimeRow(310), xcb(900, "xcodebuild test -scheme App -destination 'platform=iOS Simulator,name=iPhone 16'")]);
+      expect(signals).toEqual([]);
+      expect(listCalls).toEqual([]);
+    });
+
+    it("still stands down for everything while a runner names no device", () => {
+      reap([runtimeRow(300), runtimeRow(310), xcb(900, "/x/Build/Products/Debug-iphonesimulator/AppUITests-Runner.app/AppUITests-Runner")]);
+      expect(signals).toEqual([]);
+    });
+
+    it("stands down for everything while a runner that names no device runs beside one that does", () => {
+      reap([runtimeRow(300), runnerRow(400, U1), xcb(901, "/x/AppUITests-Runner.app/AppUITests-Runner")]);
+      expect(signals).toEqual([]);
+    });
+
+    describe("and the rescan right before an action", () => {
+      it("proceeds when the rescan holds only a test action on another device", () => {
+        const rows = [runtimeRow(310), runtimeRow(311), xcb(900, `xcodebuild test -destination id=${U1}`)];
+        freshRows = () => parsePsTable(psText(rows));
+        reap([runtimeRow(310), runtimeRow(311)]);
+        expect(signals).toEqual([[310, "SIGTERM"], [311, "SIGTERM"]]);
+      });
+
+      it("does nothing when the rescan holds a build tool test action that names no device", () => {
+        freshRows = () => parsePsTable(psText([runtimeRow(310), runtimeRow(311), xcb(900, "xcodebuild test -scheme App")]));
+        reap([runtimeRow(310), runtimeRow(311)]);
+        expect(signals).toEqual([]);
+      });
+
+      it("does nothing when the rescan holds a test action that names this device", () => {
+        freshRows = () => parsePsTable(psText([runtimeRow(310), runtimeRow(311), xcb(900, `xcodebuild test -destination id=${U2}`)]));
+        reap([runtimeRow(310), runtimeRow(311)]);
+        expect(signals).toEqual([]);
+      });
+
+      it("does not let the leftover runner itself stop the batch", () => {
+        const rows = [runtimeRow(300), runnerRow(400, U1)];
+        freshRows = () => parsePsTable(psText(rows));
+        reap(rows);
+        expect(signals).toEqual([[300, "SIGTERM"], [400, "SIGTERM"]]);
+      });
+    });
+
+    describe("and the idle clone shutdown", () => {
+      const C = "AAAAAAAA-1111-4222-8333-444455556666";
+      const cloneTree = [{ pid: 7, ppid: 1, pgid: 7, command: `${RT}/sbin/launchd_sim /Users/x/Library/Developer/XCTestDevices/${C}/data/x` }];
+      beforeEach(() => {
+        testList = () => devices({ [C]: "Booted" });
+      });
+
+      it("shuts an idle clone down although a leftover runner is on another device", () => {
+        reap([...cloneTree, runtimeRow(300), runnerRow(400, U1)], [C]);
+        expect(shutdowns).toEqual([C]);
+      });
+
+      it("shuts nothing down while any build tool test action runs, whatever it names", () => {
+        reap([...cloneTree, runtimeRow(300), xcb(900, `xcodebuild test -destination id=${U1}`)], [C]);
+        expect(shutdowns).toEqual([]);
+      });
+
+      it("shuts nothing down while a runner that names no device runs", () => {
+        reap([...cloneTree, xcb(900, "/x/AppUITests-Runner.app/AppUITests-Runner")], [C]);
+        expect(shutdowns).toEqual([]);
+      });
+
+      it("does not shut a clone down when a build tool test action starts before the shutdown (rescan)", () => {
+        freshRows = () => parsePsTable(psText([...cloneTree, xcb(900, `xcodebuild test -destination id=${U1}`)]));
+        reap(cloneTree, [C]);
+        expect(shutdowns).toEqual([]);
+      });
+    });
+  });
+
   // Issue #324 review: the "a test action is running" guard stands the reaper down for a process that is the build tool's test action or a UI-test runner,
   // not for any process whose command line holds the words (a claude session whose prompt names the build tool must not pause reaping for as long as it lives).
   describe("the test-action guard", () => {
