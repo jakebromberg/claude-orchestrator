@@ -535,6 +535,17 @@ describe("runLeased", () => {
   describe("UI-test class (issue #324)", () => {
     const meta = (): Record<string, unknown> => acquired[0]!.meta as Record<string, unknown>;
 
+    it("prints the UI-test class's status for a refusal in the UI-test phase, and the heavy status otherwise", async () => {
+      const asked: unknown[] = [];
+      const statusFor = (opts: LeaseOptions, holderClass?: string) => (asked.push(holderClass), { level: "warning" as const, capacity: holderClass ? 1 : 4, step: 1, signals: null, live: [] });
+      outcome = { refused: "max-wait", waitedMs: 5_000, level: "normal", live: 1, class: "ui-tests" };
+      expect(await run({ argv: ["xcodebuild", "test"] }, { leaseStatus: statusFor as never })).toBe(75);
+      expect(err.join("\n")).toContain("capacity 1");
+      outcome = { refused: "max-wait", waitedMs: 5_000, level: "normal", live: 1 };
+      expect(await run({ argv: ["npm", "test"] }, { leaseStatus: statusFor as never })).toBe(75);
+      expect(asked).toEqual(["ui-tests", undefined]);
+    });
+
     it.each<[string, Partial<RunArgs>, boolean]>([
       ["a test action in argv", { argv: ["xcodebuild", "test", "-scheme", "App"] }, true],
       ["a test action under xcrun", { argv: ["xcrun", "xcodebuild", "test-without-building", "-xctestrun", "x"] }, true],

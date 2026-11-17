@@ -50,6 +50,23 @@ describe("hook mode and the UI-test class", () => {
     expect([names("ui-tests"), names("holders")]).toEqual([[], []]);
   });
 
+  // Issue #324 review: these are UI runs the heavy matcher does not see (`xcrun` followed by an option), so the UI-test check is its own gate.
+  it.each([
+    ["xcrun --sdk iphonesimulator", "xcrun --sdk iphonesimulator xcodebuild test -scheme App"],
+    ["xcrun -sdk iphonesimulator", "xcrun -sdk iphonesimulator xcodebuild test -scheme App"],
+    ["xcrun --toolchain swift", "cd /w && xcrun --toolchain swift xcodebuild test-without-building -xctestrun x"],
+  ])("leases both slots for %s", async (_name, command) => {
+    expect(await run(call("PreToolUse", command))).toContain("lease: admitted");
+    expect([names("ui-tests"), names("holders")]).toEqual([["hook-toolu_1.json"], ["hook-toolu_1.json"]]);
+    await run(call("PostToolUse", command));
+    expect([names("ui-tests"), names("holders")]).toEqual([[], []]);
+  });
+
+  it("still leases nothing for a command that mentions the CLI, which leases for itself", async () => {
+    expect(await run(call("PreToolUse", "claude-orchestrator-lease -- xcrun --sdk iphonesimulator xcodebuild test"))).toBe("");
+    expect([names("ui-tests"), names("holders")]).toEqual([[], []]);
+  });
+
   it("takes only a heavy slot for an ordinary heavy command", async () => {
     await run(call("PreToolUse", "npm test"));
     expect(names("ui-tests")).toEqual([]);
@@ -73,6 +90,8 @@ describe("hook mode and the UI-test class", () => {
     scripted.alive.add(SESSION);
     const out = await run(call("PreToolUse", UI, "toolu_2"));
     expect(JSON.parse(out).hookSpecificOutput).toMatchObject({ permissionDecision: "deny" });
+    // The UI-test line's own status (capacity 1), not the heavy class's (capacity 4).
+    expect(JSON.parse(out).hookSpecificOutput.permissionDecisionReason).toMatch(/capacity 1[,)]/);
     expect(names("ui-tests")).toEqual(["hook-toolu_1.json"]);
     expect(names("holders")).toEqual(["hook-toolu_1.json"]);
     expect(scripted.clock.sleeps.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(450_000 - 4_000);

@@ -53,3 +53,21 @@ describe("throttledProgress", () => {
     expect(write).toHaveBeenCalledTimes(2);
   });
 });
+
+// Issue #324 review: refusals the UI-test class gives that are not a full line, each with its own text instead of the no-slot line.
+describe("UI-test refusals", () => {
+  const ui = (refused: LeaseRefusal["refused"]): LeaseRefusal => ({ refused, waitedMs: 61_000, level: "normal", live: 1, code: "EACCES", class: "ui-tests" });
+
+  it.each([
+    { refused: "io-error" as const, has: ["lease directory", "61s", "EACCES", "rerun"] },
+    { refused: "slot-lost" as const, has: ["UI-test slot was lost", "rerun"] },
+    { refused: "nested-ui-test" as const, has: ["inside a heavy slot", "deadlock", "own call"] },
+  ])("$refused has its own line, exit code 75 and no no-slot prefix", ({ refused, has }) => {
+    const text = formatRefusal(ui(refused), status);
+    for (const part of has) expect(text).toContain(part);
+    expect(text).not.toContain("lease: no slot after");
+    expect(refusalExitCode(ui(refused))).toBe(75);
+    expect(formatPostCheckStop(ui(refused))).toContain("UI-test");
+    expect(formatPostCheckStop(ui(refused))).not.toContain("memory pressure");
+  });
+});

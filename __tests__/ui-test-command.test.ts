@@ -15,6 +15,10 @@ describe("isUiTestCommand", () => {
     ["test-without-building", `${TOOL} test-without-building -xctestrun /x/App.xctestrun ${SIM}`],
     ["a preceding action", `${TOOL} clean test -scheme App`],
     ["through xcrun", `xcrun ${TOOL} test -scheme App`],
+    ["through xcrun with --sdk", `xcrun --sdk iphonesimulator ${TOOL} test -scheme App`],
+    ["through xcrun with -sdk", `xcrun -sdk iphonesimulator ${TOOL} test -scheme App`],
+    ["under bash -c --", `bash -c -- '${TOOL} test -scheme App'`],
+    ["under sh -e -c -- with a double-quoted script", `sh -e -c -- "${TOOL} -scheme App test"`],
     ["by path", `/Applications/Xcode.app/Contents/Developer/usr/bin/${TOOL} test -scheme App`],
     ["a quoted path", `"/Applications/Xcode.app/Contents/Developer/usr/bin/${TOOL}" test -scheme App`],
     ["after cd and &&", `cd /work && ${TOOL} test -scheme App`],
@@ -87,6 +91,8 @@ describe("isUiTestArgv", () => {
     ["another tool given the words", ["grep", "-rn", `${TOOL} test`, "docs"], false],
     ["echo of the words", ["echo", TOOL, "test"], false],
     ["a bash -c script that only echoes it", ["bash", "-c", `echo "${TOOL} test"`], false],
+    ["bash -c --", ["bash", "-c", "--", `${TOOL} -scheme S test`], true],
+    ["xcrun -sdk", ["xcrun", "-sdk", "iphonesimulator", TOOL, "test"], true],
     ["no words", [], false],
   ])("%s", (_name, argv, expected) => {
     expect(isUiTestArgv(argv)).toBe(expected);

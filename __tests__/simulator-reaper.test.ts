@@ -37,6 +37,7 @@ describe("reapSimulators", () => {
   let signals: [number, string][];
   let shutdowns: string[];
   let shutdownSets: DeviceSet[];
+  let listCalls: DeviceSet[];
   let envLookups: number[][];
   let envOf: Record<number, EnvSpec>;
   let list: () => string;
@@ -45,7 +46,7 @@ describe("reapSimulators", () => {
   let signalFails: Set<number>;
 
   const deps = (over: Partial<ReaperDeps> = {}): ReaperDeps => ({
-    listDevices: (set) => (set === "main" ? list() : testList()),
+    listDevices: (set) => (listCalls.push(set), set === "main" ? list() : testList()),
     processEnv: (pids) => {
       envLookups.push(pids);
       return pids.flatMap((pid) => (pid in envOf ? [`${pid} ${runtimeRow(pid).command} ${envText(envOf[pid])}`] : [])).join("\n");
@@ -71,6 +72,7 @@ describe("reapSimulators", () => {
     signals = [];
     shutdowns = [];
     shutdownSets = [];
+    listCalls = [];
     envLookups = [];
     envOf = {};
     list = () => devices({ [U1]: "Shutdown" });
@@ -275,6 +277,79 @@ describe("reapSimulators", () => {
         reap([launchd(U1, "CoreSimulator/Devices"), { ...launchd(U2, "XCTestDevices"), pid: 201 }], [U1, U2]);
         expect(shutdowns).toEqual([U2]);
       });
+    });
+  });
+
+  // Issue #324 review: Xcode.app drives CoreSimulator itself, with no `xcodebuild` or `simctl` process, so a clone its parallel test run
+  // is using looks idle to the watchdog. A clone is idle-shut only when Xcode.app is not running and nothing in the clone's tree but the
+  // system runtime itself (the daemons under RuntimeRoot, outside RuntimeRoot/Developer) is running: no test runner, no app.
+  describe("an idle test clone that something may be using", () => {
+    const CLONE = `/Users/x/Library/Developer/XCTestDevices/${U1}`;
+    const launchdRow: PsTextRow = { pid: 200, ppid: 1, pgid: 200, command: `${RT}/sbin/launchd_sim ${CLONE}/data/var/run/launchd_bootstrap.plist` };
+    const daemon: PsTextRow = { pid: 201, ppid: 200, pgid: 200, command: `${RT}/usr/libexec/backboardd` };
+    beforeEach(() => {
+      testList = () => devices({ [U1]: "Booted" });
+    });
+    const idleReap = (extra: PsTextRow[]) => reap([launchdRow, daemon, ...extra], [U1]);
+
+    it("is shut down when only the system runtime is running", () => {
+      idleReap([]);
+      expect(shutdowns).toEqual([U1]);
+    });
+
+    it.each<[string, PsTextRow]>([
+      ["Xcode.app", { pid: 900, ppid: 1, pgid: 900, command: "/Applications/Xcode.app/Contents/MacOS/Xcode" }],
+      ["a beta Xcode.app", { pid: 900, ppid: 1, pgid: 900, command: "/Applications/Xcode-beta.app/Contents/MacOS/Xcode" }],
+      ["an Xcode.app in a path with spaces", { pid: 900, ppid: 1, pgid: 900, command: "/Applications/Xcode 27 Beta.app/Contents/MacOS/Xcode" }],
+    ])("is left alone while %s runs, wherever its windows are", (_name, row) => {
+      idleReap([row]);
+      expect(shutdowns).toEqual([]);
+      expect(events).toEqual([]);
+    });
+
+    it.each<[string, PsTextRow]>([
+      ["an app under the clone's containers", { pid: 300, ppid: 200, pgid: 300, command: `${CLONE}/data/Containers/Bundle/Application/ABC/App.app/App` }],
+      ["a UI test runner app under the clone's containers", { pid: 300, ppid: 200, pgid: 300, command: `${CLONE}/data/Containers/Bundle/Application/ABC/AppUITests-Runner.app/AppUITests-Runner` }],
+      ["the test agent the runtime ships under RuntimeRoot/Developer", { pid: 300, ppid: 200, pgid: 300, command: `${RT}/Developer/Library/Xcode/Agents/xctest` }],
+      ["any other process of the clone's tree", { pid: 300, ppid: 201, pgid: 300, command: "/private/var/runner --serve" }],
+      ["a process that names the clone's UDID outside its tree", { pid: 300, ppid: 1, pgid: 300, command: `/usr/bin/some-tool --device ${U1.toLowerCase()}` }],
+    ])("is left alone while %s runs", (_name, row) => {
+      idleReap([row]);
+      expect(shutdowns).toEqual([]);
+      expect(events).toEqual([]);
+    });
+
+    it("is not held back by a process that only names another device", () => {
+      idleReap([{ pid: 300, ppid: 1, pgid: 300, command: `/usr/bin/some-tool --device ${U2}` }]);
+      expect(shutdowns).toEqual([U1]);
+    });
+
+    it("is not held back by an unrelated process of the same user", () => {
+      idleReap([{ pid: 300, ppid: 50, pgid: 300, command: "node server.js" }]);
+      expect(shutdowns).toEqual([U1]);
+    });
+  });
+
+  describe("the device lists", () => {
+    it("are not read when there are no simulator rows and no idle devices", () => {
+      reap([{ pid: 50, ppid: 1, pgid: 50, command: "zsh" }]);
+      expect(listCalls).toEqual([]);
+    });
+
+    it("are read when there are runtime rows", () => {
+      envOf = { 300: U1 };
+      reap([runtimeRow(300)]);
+      expect(listCalls.sort()).toEqual(["main", "xctest"]);
+    });
+
+    it("are read when there is an idle device and no runtime row of this user", () => {
+      reap([{ pid: 50, ppid: 1, pgid: 50, command: "zsh" }], [U1]);
+      expect(listCalls.sort()).toEqual(["main", "xctest"]);
+    });
+
+    it("are not read for another user's simulator rows alone", () => {
+      reap([runtimeRow(300, { uid: 0 })]);
+      expect(listCalls).toEqual([]);
     });
   });
 

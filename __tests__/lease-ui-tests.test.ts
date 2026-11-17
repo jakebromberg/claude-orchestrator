@@ -87,9 +87,16 @@ describe("UI-test holder class (issue #324)", () => {
     const blocker = tryAcquireLease(opts({ policy: { heavyCeiling: 1, heavyWarning: 1 } }), plain)!;
     const refused = await take(ui, { maxWaitMs: 10_000 }, { policy: { heavyCeiling: 1, heavyWarning: 1 } });
     expect(refused).toMatchObject({ refused: "max-wait" });
+    expect(refused).not.toHaveProperty("class");
     expect(names("ui-tests")).toEqual([]);
     expect(names("ui-tests-waiting")).toEqual([]);
     blocker.release();
+  });
+
+  it("labels a refusal in the UI-test phase with its class, so the caller prints that class's status", async () => {
+    const first = (await take(ui)) as LeaseHandle;
+    expect(await take(ui, { maxWaitMs: 0 })).toMatchObject({ refused: "max-wait", class: "ui-tests" });
+    first.release();
   });
 
   it("spends one maxWaitMs across both waits", async () => {
@@ -188,10 +195,10 @@ describe("UI-test holder class (issue #324)", () => {
     it("is refused after a bounded number of consecutive polls even when the caller sets no maxWaitMs", async () => {
       restore = failFsCall("openSync", (p) => p.endsWith(".mutex"), "EACCES");
       const r = await take(ui, {});
-      expect(r).toMatchObject({ refused: "max-wait" });
+      expect(r).toMatchObject({ refused: "io-error", class: "ui-tests", code: "EACCES" });
       expect(lease.clock.sleeps).toHaveLength(19);
       expect(lease.events.some((e) => e.type === "fail-open")).toBe(false);
-      expect(lease.events.filter((e) => e.type === "timeout")).toEqual([expect.objectContaining({ refused: "max-wait", class: "ui-tests" })]);
+      expect(lease.events.filter((e) => e.type === "timeout")).toEqual([expect.objectContaining({ refused: "io-error", class: "ui-tests" })]);
       expect(names("ui-tests")).toEqual([]);
     });
 
@@ -215,5 +222,77 @@ describe("UI-test holder class (issue #324)", () => {
     expect(names("ui-tests")).toEqual([]);
     expect(names("ui-tests-waiting")).toEqual([]);
     blocker.release();
+  });
+
+  // Issue #324 review: the UI-test holder of a hook call is created before the heavy wait, which can outlast the call's own time, so it is
+  // renewed on every heavy poll; a holder that is gone fails the acquire instead of letting a second UI run proceed beside it.
+  describe("a hook's UI-test holder during a long heavy wait", () => {
+    const policy = { heavyCeiling: 1, heavyWarning: 1 };
+    const detachedFor = (id: string): NonNullable<HolderMeta["detached"]> => ({ id, sessionPid: process.pid, get expiresAt() { return lease.clock.ms + 120_000; } });
+
+    it("stays live past its original expiry, so a competing UI-test waiter never takes the slot", async () => {
+      const blocker = tryAcquireLease(opts({ policy }), plain)!;
+      const start = lease.clock.ms;
+      const competitors: Promise<LeaseHandle | LeaseRefusal>[] = [];
+      lease.clock.onSleep = () => {
+        const waited = lease.clock.ms - start;
+        if (waited >= 200_000 && competitors.length < 3) competitors.push(acquireLease(opts({ policy }), { ...ui, detached: detachedFor(`hook-c${competitors.length}`) }, { maxWaitMs: 0 }));
+        if (waited >= 400_000) blocker.release();
+      };
+      const r = await take({ ...ui, detached: detachedFor("hook-t1") }, { maxWaitMs: 450_000 }, { policy });
+      expect(isHandle(r) && r.leased).toBe(true);
+      expect(lease.clock.ms - start).toBeGreaterThan(200_000);
+      expect(competitors).toHaveLength(3);
+      for (const c of await Promise.all(competitors)) if (isHandle(c)) c.release();
+      expect(lease.events.filter((e) => e.type === "acquire" && e.class === "ui-tests").map((e) => (e as { id: string }).id)).toEqual(["hook-t1"]);
+      expect(lease.events.some((e) => e.type === "reap" && e.id === "hook-t1")).toBe(false);
+      expect(holder("ui-tests", "hook-t1").expiresAt).toBe(lease.clock.ms + 120_000);
+      (r as LeaseHandle).release();
+    });
+
+    it("refuses with slot-lost when the holder disappears during the wait, holding no slot of either class", async () => {
+      const blocker = tryAcquireLease(opts({ policy }), plain)!;
+      lease.clock.onSleep = () => {
+        if (lease.clock.sleeps.length === 2) rmSync(join(lease.dir, "ui-tests", "hook-t1.json"));
+      };
+      const r = await take({ ...ui, detached: detachedFor("hook-t1") }, { maxWaitMs: 450_000 }, { policy });
+      expect(r).toMatchObject({ refused: "slot-lost", class: "ui-tests" });
+      expect(names("ui-tests")).toEqual([]);
+      expect(names("holders")).toHaveLength(1); // the unrelated blocker only
+      expect(names("holders")).not.toContain("hook-t1.json");
+      expect(names("waiting")).toEqual([]);
+      blocker.release();
+    });
+
+    it("refuses with slot-lost when the holder is gone at the heavy admission, and gives the heavy slot back", async () => {
+      const blocker = tryAcquireLease(opts({ policy }), plain)!;
+      lease.clock.onSleep = () => {
+        if (lease.clock.sleeps.length === 1) {
+          rmSync(join(lease.dir, "ui-tests", "hook-t1.json"));
+          blocker.release();
+        }
+      };
+      const r = await take({ ...ui, detached: detachedFor("hook-t1") }, { maxWaitMs: 450_000 }, { policy });
+      expect(r).toMatchObject({ refused: "slot-lost", class: "ui-tests" });
+      expect(names("holders")).toEqual([]);
+      expect(names("ui-tests")).toEqual([]);
+    });
+  });
+
+  // A nested acquire that inherits a heavy slot with no UI-test slot behind it would wait for the UI-test slot while holding the heavy one,
+  // which can deadlock against the run that holds the UI-test slot and waits for heavy capacity, so it is refused at once.
+  it("refuses at once a nested UI-test acquire whose inherited holder is live in the heavy class only", async () => {
+    plantHolder(lease, "parent-1", { pid: process.pid });
+    const r = await take(ui, { maxWaitMs: 600_000 }, { inheritedHolderId: "parent-1" });
+    expect(r).toMatchObject({ refused: "nested-ui-test", waitedMs: 0 });
+    expect(lease.clock.sleeps).toEqual([]);
+    expect(names("ui-tests")).toEqual([]);
+    expect(names("ui-tests-waiting")).toEqual([]);
+  });
+
+  it("does not refuse a nested acquire whose inherited holder is gone: it acquires normally", async () => {
+    const r = await take(ui, { maxWaitMs: 0 }, { inheritedHolderId: "no-such-holder" });
+    expect(isHandle(r) && r.leased).toBe(true);
+    (r as LeaseHandle).release();
   });
 });
