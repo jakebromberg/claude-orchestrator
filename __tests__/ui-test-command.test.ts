@@ -45,6 +45,9 @@ describe("isUiTestCommand", () => {
     ["when the tool name is quoted in pieces", `"xcode"'build' test -scheme App`],
     ["when a quoted argument holds the words and a real action follows", `${TOOL} -destination 'platform=iOS Simulator,name=iPhone 16' -scheme "My Test App" test`],
     ["when the text before it holds an unbalanced quote in a comment", `# it's fine\n${TOOL} test -scheme App`],
+    ["with a destination that has parentheses", `${TOOL} -scheme PhaseMatrix -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' test`],
+    ["with a scheme that has a semicolon", `${TOOL} -scheme "My;Scheme" test`],
+    ["with a scheme named test and then the action", `${TOOL} -scheme test test`],
     ["when the text cannot be tokenized and the raw rule matches", `echo 'unterminated; ${TOOL} test -scheme App`],
   ])("matches %s", (_name, command) => {
     expect(isUiTestCommand(command)).toBe(true);
@@ -85,6 +88,9 @@ describe("isUiTestCommand", () => {
     ["a single-quoted substitution", `echo '$(${TOOL} test -scheme App)'`],
     ["a bash -c script that only echoes it", `bash -c 'echo "${TOOL} test"'`],
     ["an argument that is the words", `printf '%s\n' ${TOOL} test`],
+    ["a scheme named test and a build action", `${TOOL} -scheme test build`],
+    ["a project named test and a build action", `${TOOL} -project test -scheme App build`],
+    ["a scheme named test inside a bash -c script", `bash -c '${TOOL} -scheme test build'`],
     ["a here-string", `cat <<< '${TOOL} test -scheme App'`],
   ])("does not match %s", (_name, command) => {
     expect(isUiTestCommand(command)).toBe(false);
