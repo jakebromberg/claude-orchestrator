@@ -173,10 +173,18 @@ export async function runLeased(args, d) {
     });
     const unhook = () => handlers.forEach(([sig, forward]) => d.signals.off(sig, forward));
     const uiTest = args.shell !== undefined ? isUiTestCommand(args.shell) : isUiTestArgv(args.argv);
-    // A hook slot the session already holds is borrowed through `inheritedHolderId`, never waited for a second time. Never for a UI-test run: a
-    // hook holder's pid is the Claude process, an ancestor of every Bash call of the session, so the slot may be a sibling call's, and borrowing it
-    // would run the two UI tests together (or refuse the run as nested).
-    const hookSlot = opts.inheritedHolderId || ownHolder || uiTest ? undefined : ancestorHookSlot(opts, d);
+    // A UI-test run under any live hook holder whose session is an ancestor is refused at once, holding no slot. The holder may be the run's own
+    // parent call (taking the UI slot and then waiting for heavy behind it would hold the UI slot for minutes, perhaps in a cycle) or a sibling's
+    // (a hook holder's pid is the Claude process, an ancestor of every Bash call of the session, so the two cannot be told apart, and borrowing a
+    // sibling's slot would run the two UI tests together): the UI test is run as its own Bash call instead.
+    if (uiTest && !opts.inheritedHolderId && ancestorHookSlot(opts, d)) {
+        unhook();
+        const refusal = { refused: "nested-ui-test", waitedMs: 0, level: d.leaseStatus(opts).level, live: 0, class: "ui-tests" };
+        d.err(formatRefusal(refusal, d.leaseStatus(opts, "ui-tests")));
+        return refusalExitCode(refusal);
+    }
+    // A hook slot the session already holds is borrowed through `inheritedHolderId`, never waited for a second time.
+    const hookSlot = opts.inheritedHolderId || ownHolder ? undefined : ancestorHookSlot(opts, d);
     const weight = weightFor(command, d.cwd, d.env, d.err);
     const got = await d.acquire(hookSlot ? { ...opts, inheritedHolderId: hookSlot } : opts, { command, label: args.label, cwd: d.cwd, gated: args.gated, suspendable: suspendable || undefined, ...(uiTest && { uiTest: true }), ...(high && { priority: "high" }), ...(weight !== undefined && { weight }) }, {
         maxWaitMs,

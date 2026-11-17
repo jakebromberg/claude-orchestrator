@@ -51,6 +51,13 @@ export interface HookIo {
     /** Test seam: where heavy-queue lives (default `~/.local/share/heavy-queue/heavy-queue`). */
     heavyQueuePath?: string;
 }
+/**
+ * Whether a UI-test command line may background work: an unquoted single `&` that is not part of `&&`, `>&`, `<&`, `&>` or `|&`, after quoted text and
+ * backslash-escaped characters are blanked. `PostToolUse` fires when the backgrounded shell returns, so its slots would be released while the test
+ * still runs; the line is denied instead. Conservative (it does not know which command the `&` follows): it can deny a line whose `&` backgrounds
+ * something else. Claude Code's own mid-run backgrounding (Ctrl+B) is not seen at all and can still release the slots early.
+ */
+export declare function uiRunBackgrounded(command: string): boolean;
 /** The `hook` subcommand's arguments after `hook`. Always returns 0: hook mode never fails a call. */
 export declare function runHook(args: string[], io: HookIo): Promise<number>;
 export interface HookEntry {

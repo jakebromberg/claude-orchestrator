@@ -21,6 +21,8 @@ export interface ReaperDeps {
     processEnv(pids: number[]): string;
     /** `simctl shutdown <udid>` in the device's set; throws when it fails or times out. */
     shutdown(udid: string, set: DeviceSet): void;
+    /** The process table again, read right before an action (the decision was made on a scan that is older by the time a `simctl` list returns); throws when it cannot be read. */
+    scan(): ProcRow[];
     signal(pid: number, signal: "SIGTERM" | "SIGKILL"): void;
     log(event: SimulatorReapEvent): void;
     /** Only processes of this user are signalled. */

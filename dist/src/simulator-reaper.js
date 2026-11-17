@@ -20,7 +20,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { ancestry, isSimulatorCommand, runsTool, XCODE_TOOLS } from "./ps.js";
+import { ancestry, isSimulatorCommand, parsePsTable, PS_TABLE_ARGS, runsTool, XCODE_TOOLS } from "./ps.js";
 /** The bound on every `simctl` and `ps` call here: `simctl` can hang. */
 export const SIMCTL_TIMEOUT_MS = 30_000;
 const UDID = "[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}";
@@ -35,11 +35,12 @@ const isSystemRuntime = (command) => command.includes("/RuntimeRoot/") && !comma
  * process besides the clone's system runtime is in the clone's tree (a descendant of its `launchd_sim`: a test runner, an app) or names its UDID in
  * its command line (an app under `XCTestDevices/<udid>/data/Containers`, a tool given the device).
  */
+const cloneRoot = (procs, udid) => procs.find((p) => p.command.includes("launchd_sim") && p.command.toUpperCase().includes(`/XCTESTDEVICES/${udid.toUpperCase()}/`));
 function cloneMayBeInUse(procs, udid) {
     if (procs.some((p) => XCODE_APP.test(p.command)))
         return true;
     const key = udid.toUpperCase();
-    const root = procs.find((p) => p.command.includes("launchd_sim") && p.command.toUpperCase().includes(`/XCTESTDEVICES/${key}/`));
+    const root = cloneRoot(procs, udid);
     return procs.some((p) => p !== root && !isSystemRuntime(p.command) && (p.command.toUpperCase().includes(key) || (root !== undefined && ancestry(procs, p.pid, 64).chain.some((r) => r.pid === root.pid))));
 }
 /** Device UDID → state from `simctl list devices -j` for one set. Throws on text that is not that shape. */
@@ -100,7 +101,18 @@ export function reapSimulators({ procs, idleUdids, attempts, seen }, deps) {
     catch {
         return { attempts, seen };
     }
-    const inUse = (udid) => procs.some((p) => runsTool(p.command, XCODE_TOOLS) && p.command.toUpperCase().includes(udid));
+    const inUseIn = (table, udid) => table.some((p) => runsTool(p.command, XCODE_TOOLS) && p.command.toUpperCase().includes(udid));
+    const inUse = (udid) => inUseIn(procs, udid);
+    /** The table right before an action, once per action; `undefined` when it cannot be read or a test action runs in it, so nothing is done. */
+    const freshTable = () => {
+        try {
+            const table = deps.scan();
+            return table.some((p) => isTestAction(p.command)) ? undefined : table;
+        }
+        catch {
+            return undefined;
+        }
+    };
     const next = {};
     const nextSeen = {};
     for (const { udid, set, pids } of leftovers.values()) {
@@ -123,12 +135,22 @@ export function reapSimulators({ procs, idleUdids, attempts, seen }, deps) {
                 next[udid] = attempts[udid];
             continue;
         }
+        // The decision was made on an older scan: read the table again for this device's batch and apply the guards to it, signalling only the pids
+        // still there as a simulator process of this user. Nothing is done, and what was known stays, when it cannot be read or a guard now holds.
+        const fresh = freshTable();
+        const present = fresh && !inUseIn(fresh, udid) ? confirmedPids.filter((pid) => fresh.some((p) => p.pid === pid && p.uid === deps.uid && isSimulatorCommand(p.command))) : [];
+        if (present.length === 0) {
+            if (attempts[udid] !== undefined)
+                next[udid] = attempts[udid];
+            nextSeen[udid] = pids;
+            continue;
+        }
         const attempt = (attempts[udid] ?? 0) + 1;
         next[udid] = attempt;
         const [signal, action] = attempt >= 2 ? ["SIGKILL", "kill"] : ["SIGTERM", "terminate"];
         const done = [];
         const failed = [];
-        for (const pid of confirmedPids) {
+        for (const pid of present) {
             try {
                 deps.signal(pid, signal);
                 done.push(pid);
@@ -144,6 +166,10 @@ export function reapSimulators({ procs, idleUdids, attempts, seen }, deps) {
     }
     for (const udid of idleUdids) {
         if (states.xctest?.get(udid.toUpperCase()) !== "Booted" || inUse(udid) || cloneMayBeInUse(procs, udid))
+            continue;
+        // Read the table again for this clone: Xcode.app, a test run or a runner may have started since the decision, and the clone may be gone.
+        const fresh = freshTable();
+        if (!fresh || !cloneRoot(fresh, udid) || inUseIn(fresh, udid) || cloneMayBeInUse(fresh, udid))
             continue;
         try {
             deps.shutdown(udid, "xctest");
@@ -173,6 +199,7 @@ export function realReaperDeps({ log, exec = execBounded, uid = process.getuid()
     const setArgs = (set) => (set === "main" ? [] : ["--set", testSetDir]);
     return {
         listDevices: (set) => (set === "xctest" && !exists(testSetDir) ? '{"devices":{}}' : exec("xcrun", ["simctl", ...setArgs(set), "list", "devices", "-j"], SIMCTL_TIMEOUT_MS)),
+        scan: () => parsePsTable(exec("ps", PS_TABLE_ARGS, SIMCTL_TIMEOUT_MS)),
         processEnv: (pids) => (pids.length === 0 ? "" : psRows(exec, ["-Eww", "-p", pids.join(","), "-o", "pid=,command="])),
         shutdown: (udid, set) => void exec("xcrun", ["simctl", ...setArgs(set), "shutdown", udid], SIMCTL_TIMEOUT_MS),
         signal: (pid, signal) => void process.kill(pid, signal),
