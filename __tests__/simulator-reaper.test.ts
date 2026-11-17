@@ -638,6 +638,14 @@ describe("reapSimulators", () => {
       expect(signals).toEqual([[300, "SIGTERM"]]);
     });
 
+    it("signals nothing for a process that only has XCTestDevices in its path, not a device's data directory", () => {
+      envOf = { 500: { udid: U1, set: "xctest" } };
+      list = () => devices({});
+      testList = () => devices({ [U1]: "Shutdown" });
+      reap([{ pid: 500, ppid: 1, pgid: 500, command: "/usr/bin/tool /Users/x/Library/Developer/XCTestDevices/DeviceSetCache" }]);
+      expect(signals).toEqual([]);
+    });
+
     it("leaves a runner on a device that is Booted alone", () => {
       list = () => devices({ [U1]: "Booted" });
       reap([runtimeRow(300), runnerRow(400, U1)]);
@@ -743,9 +751,10 @@ describe("reapSimulators", () => {
         expect(shutdowns).toEqual([C]);
       });
 
-      it("shuts nothing down while any build tool test action runs, whatever it names", () => {
+      it("shuts nothing down while any build tool test action runs, whatever it names, and does not rescan for it", () => {
         reap([...cloneTree, runtimeRow(300), xcb(900, `xcodebuild test -destination id=${U1}`)], [C]);
         expect(shutdowns).toEqual([]);
+        expect(scans).toBe(0);
       });
 
       it("shuts nothing down while a runner that names no device runs", () => {

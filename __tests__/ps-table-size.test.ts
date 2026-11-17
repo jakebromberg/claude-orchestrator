@@ -86,7 +86,9 @@ describe("the default UI-test scan and a simulator xctest", () => {
     expect(envCalls).toHaveLength(1);
     expect(envCalls[0]![1]).toEqual(["-Eww", "-p", "200", "-o", "pid=,command="]);
     expect((envCalls[0]![2] as { maxBuffer: number; timeout: number }).maxBuffer).toBeGreaterThanOrEqual(64 * MIB);
-    expect((envCalls[0]![2] as { timeout: number }).timeout).toBeGreaterThan(0);
+    // The same bound as the table read of the scan it is part of, not the default of `ps()`.
+    const tableCall = exec.mock.calls.find((c) => !(c[1] as string[]).includes("-Eww"))!;
+    expect((envCalls[0]![2] as { timeout: number }).timeout).toBe((tableCall[2] as { timeout: number }).timeout);
   });
 
   it("keeps counting it when the environment read fails, times out or names no device", () => {
