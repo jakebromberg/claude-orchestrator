@@ -90,6 +90,22 @@ describe("isUiTestCommand", () => {
     expect(isUiTestCommand(command)).toBe(false);
   });
 
+  // `bash -c "..."` scripts are read recursively to a fixed depth, beyond which the raw rule answers; a deeper nest must neither throw nor hang.
+  const nest = (command: string, levels: number): string => {
+    let text = command;
+    for (let i = 0; i < levels; i++) text = `bash -c "${text.replace(/(["\\$`])/g, "\\$1")}"`;
+    return text;
+  };
+
+  it.each([1, 3, 6])("reads a test action nested %i bash -c scripts deep", (levels) => {
+    expect(isUiTestCommand(nest(`${TOOL} test -scheme App`, levels))).toBe(true);
+    expect(isUiTestCommand(nest(`echo "${TOOL} test"`, levels))).toBe(false);
+  });
+
+  it("answers, without throwing, for a nest past the depth bound", () => {
+    expect(typeof isUiTestCommand(nest(`${TOOL} test -scheme App`, 14))).toBe("boolean");
+  });
+
   it("stays linear on a long command with many words and no test action", () => {
     const long = `${TOOL} ${"-flag value ".repeat(5_000)}build`;
     const start = performance.now();
