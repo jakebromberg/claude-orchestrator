@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { readRegularFile } from "./lease-dir.js";
 import { XCODEBUILD_VALUED } from "./ps.js";
 import { acquireLease, defaultLeaseOptions, DETACHED_TTL_MAX_MS, isPid, leaseStatus, releaseHolder } from "./lease.js";
-import { formatAdmitted, formatRefusal } from "./lease-messages.js";
+import { BACKGROUNDED_UI_REASON, formatAdmitted, formatRefusal } from "./lease-messages.js";
 import { weightFor } from "./lease-weights.js";
 import { shellCommands } from "./shell-commands.js";
 import { shellQuote } from "./shell-quote.js";
@@ -122,7 +122,7 @@ function anySegmentMatches(command, pattern) {
     return parts.some((segment, i) => i % 2 === 0 && isHeavySegment(segment, pattern, parts[i - 1]));
 }
 /** A UI-test action of the build tool: its name (through `xcrun` or a path), any words, then the `test` or `test-without-building` action as a word of its own. */
-const UI_TEST = /(?:(?:xcrun (?:-{1,2}(?:sdk|toolchain)(?:=\S+| \S+) )*)?xcodebuild(?: \S+)* (?:test|test-without-building))(?![\w./-])/y;
+const UI_TEST = /(?:(?:coproc (?:\w+ )?)?(?:xcrun (?:-{1,2}(?:sdk|toolchain)(?:=\S+| \S+) )*)?xcodebuild(?: \S+)* (?:test|test-without-building))(?![\w./-])/y;
 /** The raw-split rule alone: no quote, heredoc or comment tracking, so text that only mentions the action after a separator still matches. `isUiTestCommand` falls back to it for text it cannot tokenize. */
 export const isUiTestCommandUntokenized = (command) => anySegmentMatches(command, UI_TEST);
 /**
@@ -141,6 +141,12 @@ export const isUiTestCommand = (command) => uiTestIn(command, 0);
  * does not count. Text it cannot tokenize falls back to the conservative raw check. Claude Code's own mid-run backgrounding (Ctrl+B) is not seen.
  */
 export const uiRunBackgrounded = (command) => backgroundedIn(command, 0);
+/** `uiRunBackgrounded` for a command whose words are already split (the CLI's `-- argv`): a UI test run by a script it passes to a shell that backgrounds it. */
+export function uiArgvBackgrounded(argv) {
+    let inScriptBackgrounded = false;
+    const runs = runsUiTest(argv, (script) => ((inScriptBackgrounded = backgroundedIn(script, 1)), uiTestIn(script, 1)));
+    return runs && inScriptBackgrounded;
+}
 function backgroundedIn(command, depth) {
     const commands = depth > MAX_SCRIPT_DEPTH ? undefined : shellCommands(command);
     if (commands === undefined)
@@ -171,7 +177,11 @@ const UI_WRAPPERS = new Map([
     ["caffeinate", /^-[tw]$/],
     ["arch", /^-(?:arch|d|e)$/],
     ["sudo", /^-[CDghpRTUu]$/],
+    ["script", /^-[tT]$/],
+    ["noglob", /^$/],
 ]);
+/** Wrappers that take positional operands before the command: `timeout` and `gtimeout` a duration, `script` the typescript file. */
+const WRAPPER_OPERANDS = new Map([["timeout", 1], ["gtimeout", 1], ["script", 1]]);
 const XCRUN_VALUED = /^-{1,2}(?:sdk|toolchain)$/;
 /**
  * Whether one simple command, given as its words, runs a UI-test action: past its leading words (assignments, `nohup`, `exec`, `command`,
@@ -184,13 +194,24 @@ export function runsUiTest(words, inScript, stdin) {
         const w = words[i];
         if (/^[A-Za-z_]\w*=/.test(w) || PREFIX_WORDS.has(w) || w === "{" || w === "}")
             continue;
+        // `function NAME {`: the body that follows is the command.
+        if (w === "function") {
+            const open = words.indexOf("{", i);
+            if (open < 0)
+                return false;
+            i = open;
+            continue;
+        }
+        // `coproc [NAME] command`: the command, with or without a name, runs as a coprocess.
+        if (w === "coproc")
+            return runsUiTest(words.slice(i + 1), inScript, stdin) || runsUiTest(words.slice(i + 2), inScript, stdin);
         const name = path.basename(w);
         const wrapper = UI_WRAPPERS.get(name);
         if (wrapper) {
             let j = i + 1;
             while (words[j]?.startsWith("-"))
                 j += wrapper.test(words[j]) ? 2 : 1;
-            i = name === "timeout" || name === "gtimeout" ? j : j - 1; // `timeout` also takes a duration
+            i = j - 1 + (WRAPPER_OPERANDS.get(name) ?? 0);
             continue;
         }
         if (/^(?:ba|z)?sh$/.test(name)) {
@@ -337,7 +358,14 @@ export function isHeavyHookCall(stdin, env, heavyQueuePath = defaultHeavyQueuePa
 /** A `PreToolUse` `Bash` call whose command is a UI-test run that does not lease for itself; the gate (`CO_LEASE_HOOK`) is the caller's. */
 const isUiTestInput = (input, heavyQueuePath) => {
     const command = input.tool_input?.command;
-    return input.hook_event_name === "PreToolUse" && input.tool_name === "Bash" && typeof command === "string" && !leasesItself(command, () => isHeavyQueueShim(heavyQueuePath)) && isUiTestCommand(command);
+    if (input.hook_event_name !== "PreToolUse" || input.tool_name !== "Bash" || typeof command !== "string")
+        return false;
+    // The tokenizer decides when it can: a UI run that is itself an argument of the lease CLI or `heavy-queue run` is not a UI run of its own (its command
+    // word is not the build tool) and leases for itself, while a UI run beside a mention of the CLI in another command or a comment is leased. Text it cannot
+    // tokenize keeps the whole-text exemption.
+    if (shellCommands(command) !== undefined)
+        return isUiTestCommand(command);
+    return !leasesItself(command, () => isHeavyQueueShim(heavyQueuePath)) && isUiTestCommand(command);
 };
 const isHeavyInput = (input, env, heavyQueuePath) => {
     const command = input.tool_input?.command;
@@ -355,7 +383,7 @@ const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 const MAX_CALL_TIMEOUT_MS = DETACHED_TTL_MAX_MS - GRACE_MS;
 /** Shorter than the lease's holder id bound (160): the `hook-` prefix keeps `hook-<id>` inside it. */
 const TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
-const DENY_BACKGROUNDED_UI = "lease: no slot after 0s: run a UI test in the foreground (no & that backgrounds it) so the lease can hold its slots for as long as it runs; rerunning the same command will not help";
+const DENY_BACKGROUNDED_UI = `lease: no slot after 0s: ${BACKGROUNDED_UI_REASON}`;
 /**
  * The raw check, for text the tokenizer cannot parse: whether a command line may background work: an unquoted single `&` that is not part of `&&`, `>&`, `<&`, `&>` or `|&`, after quoted text and
  * backslash-escaped characters are blanked. `PostToolUse` fires when the backgrounded shell returns, so its slots would be released while the test
@@ -364,7 +392,8 @@ const DENY_BACKGROUNDED_UI = "lease: no slot after 0s: run a UI test in the fore
  */
 function rawUiRunBackgrounded(command) {
     const bare = command.replace(/\\./gs, "  ").replace(/'[^']*'/g, "''").replace(/"(?:\\.|[^"\\])*"/gs, '""');
-    return /(?<![&>|<])&(?![&>])/.test(bare);
+    // A coprocess and a process substitution run concurrently too, whether or not the text shows where they end.
+    return /(?<![&>|<])&(?![&>])/.test(bare) || /\bcoproc\b|[<>]\(/.test(bare);
 }
 const DENY_BACKGROUND = "lease: run heavy commands in the foreground so the lease can track them";
 const positive = (n) => typeof n === "number" && Number.isFinite(n) && n > 0;

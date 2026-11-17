@@ -21,6 +21,8 @@ export declare function formatAdmitted(a: LeaseHandle["admission"]): string;
 export declare function formatNoSlot(refusal: LeaseRefusal, status: LeaseStatus): string;
 /** The disk-full line; the hook denies with it and the CLI prints it. Unlike `formatNoSlot` it says not to rerun. */
 export declare function formatDiskFull(refusal: LeaseRefusal): string;
+/** Why a UI-test run that would be backgrounded is refused, shared by the hook's denial, the CLI and the post-check. */
+export declare const BACKGROUNDED_UI_REASON = "run a UI test in the foreground (no & that backgrounds it) so the lease can hold its slots for as long as it runs; rerunning the same command will not help";
 /**
  * The one text of any refusal: the disk-full line for `disk-full`, the UI-test class's own reason for `io-error`, `slot-lost`, `nested-ui-test` and
  * `ui-test-running`, else the no-slot line. Every one but the disk's starts with `lease: no slot after <n>s`, so the rule that stops a session after its

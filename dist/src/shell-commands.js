@@ -12,10 +12,33 @@ const MAX_DEPTH = 16;
 const isSpace = (c) => c === " " || c === "\t" || c === "\r";
 /** Characters that end a heredoc delimiter word. */
 const DELIMITER_END = /[\s;|&()<>]/;
+const FUNCTIONS = new WeakMap();
+/** Words that open a compound command when they lead a command (after `then`, `do` or `else`), and the words that close one. */
+const OPENERS = new Set(["{", "if", "for", "while", "until", "case", "select"]);
+const CLOSERS = new Set(["}", "fi", "done", "esac"]);
+const CLAUSE_WORDS = new Set(["then", "do", "else"]);
 /** The simple commands of `text`, in order of completion (a command inside a substitution is listed before the command that holds it), or `undefined` when it cannot be parsed. */
 export function shellCommands(text) {
     const out = [];
-    return parse(text, 0, false, 0, out) === undefined ? undefined : out;
+    if (parse(text, 0, false, 0, out) === undefined)
+        return undefined;
+    // A function whose call is backgrounded runs its body in the background: the body's commands are marked with the call, transitively.
+    const defs = FUNCTIONS.get(out) ?? [];
+    for (let changed = defs.length > 0; changed;) {
+        changed = false;
+        for (const call of out) {
+            const def = call.background ? defs.find((d) => d.name === call.words[0]) : undefined;
+            if (!def)
+                continue;
+            for (let k = def.start; k < def.end; k++) {
+                if (!out[k].background) {
+                    out[k].background = true;
+                    changed = true;
+                }
+            }
+        }
+    }
+    return out;
 }
 /** `shellCommands`, as the words of each command only. */
 export function simpleCommands(text) {
@@ -38,8 +61,10 @@ function parse(text, from, closer, depth, out) {
     /** Where the current statement (since the last `;`, newline or `&`) starts in `out`, and where each open `(` group did. */
     let segStart = out.length;
     const groups = [];
-    /** Where each `{` group (a command whose first word is `{`) started in `out`. */
-    const braces = [];
+    /** The open compound commands (`if`, `for`, `{` ...): where each started in `out`, the statement start it belongs to, and the function it is the body of. */
+    const compounds = [];
+    /** A name followed by `()`: the next `{` command is its body. */
+    let pendingFn;
     let parens = 0;
     const heredocs = [];
     /** The heredocs opened by the command being read; its end gives them an owner, which a later body read fills. */
@@ -62,13 +87,30 @@ function parse(text, from, closer, depth, out) {
         endWord();
         if (words.length > 0) {
             const command = { words };
+            const seg = segStart;
             out.push(command);
             for (const h of opened)
                 h.owner = command;
-            if (words[0] === "{")
-                braces.push(out.length - 1);
-            else if (words[0] === "}" && braces.length > 0)
-                segStart = braces.pop(); // what follows `}` (an `&`) reaches the whole group
+            if (words[0] === "coproc")
+                command.background = true;
+            // A command led by `then`, `do` or `else` can open a compound (`then for ...`); a closer takes the statement back to its opener, so an `&`
+            // after `fi`, `done`, `esac` or `}` reaches everything inside, and a function's body is recorded for its calls.
+            const lead = words.findIndex((w) => !CLAUSE_WORDS.has(w));
+            const head = lead < 0 ? undefined : words[lead];
+            const opens = head !== undefined && (OPENERS.has(head) || ((head === "function" || head === "coproc") && words.includes("{")));
+            if (opens) {
+                compounds.push({ idx: out.length - 1, seg, ...(pendingFn !== undefined && head === "{" && { fn: pendingFn }), ...(head === "function" && words[lead + 1] !== undefined && { fn: words[lead + 1] }) });
+            }
+            else if (lead === 0 && head !== undefined && CLOSERS.has(head) && compounds.length > 0) {
+                const open = compounds.pop();
+                segStart = open.seg;
+                if (open.fn !== undefined) {
+                    const defs = FUNCTIONS.get(out) ?? [];
+                    defs.push({ name: open.fn, start: open.idx, end: out.length });
+                    FUNCTIONS.set(out, defs);
+                }
+            }
+            pendingFn = undefined;
         }
         opened = [];
         words = [];
@@ -318,8 +360,13 @@ function parse(text, from, closer, depth, out) {
             i += text[i + 1] === "&" ? 2 : 1; // `|&` is a pipe
         }
         else if (c === "(") {
+            // `name()` starts a function definition: the next `{` command is its body.
+            const name = inWord && words.length === 0 && /^[\w.-]+$/.test(word) && /^\s*\)/.test(text.slice(i + 1)) ? word : undefined;
             endCommand();
-            groups.push(out.length);
+            if (name !== undefined)
+                pendingFn = name;
+            // `>(...)` and `<(...)` run concurrently with the command that holds them: what they contain is backgrounded.
+            groups.push({ seg: segStart, start: out.length, proc: text[i - 1] === "<" || text[i - 1] === ">" });
             parens++;
             i++;
         }
@@ -327,7 +374,13 @@ function parse(text, from, closer, depth, out) {
             endCommand();
             if (parens > 0) {
                 parens--;
-                segStart = groups.pop() ?? segStart; // what follows `)` (an `&`) reaches the whole group
+                const group = groups.pop();
+                if (group) {
+                    segStart = group.seg; // what follows `)` (an `&`) reaches the whole group
+                    if (group.proc)
+                        for (let k = group.start; k < out.length; k++)
+                            out[k].background = true;
+                }
             }
             else if (closer)
                 return heredocs.length === 0 ? i + 1 : undefined;

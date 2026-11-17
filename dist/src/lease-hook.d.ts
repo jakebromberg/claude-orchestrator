@@ -40,6 +40,8 @@ export declare const isUiTestCommand: (command: string) => boolean;
  * does not count. Text it cannot tokenize falls back to the conservative raw check. Claude Code's own mid-run backgrounding (Ctrl+B) is not seen.
  */
 export declare const uiRunBackgrounded: (command: string) => boolean;
+/** `uiRunBackgrounded` for a command whose words are already split (the CLI's `-- argv`): a UI test run by a script it passes to a shell that backgrounds it. */
+export declare function uiArgvBackgrounded(argv: readonly string[]): boolean;
 /**
  * Whether one simple command, given as its words, runs a UI-test action: past its leading words (assignments, `nohup`, `exec`, `command`,
  * `time`, `env`, `nice`, `timeout`, `xcrun` and its sdk options), the command word's basename is `xcodebuild` and an argument that is not an
