@@ -253,6 +253,7 @@ describe("shellCommands: compound commands, functions, coproc and process substi
     ["a redirect before the pipe", "a x 2>&1 |\n  b > out.log &", ["a x", "b"]],
     ["blank lines and a comment between", "a x |\n\n  # note\n  tee log &", ["a x", "tee log"]],
     ["several continued lines", "a x |\n  b |\n  c &", ["a x", "b", "c"]],
+    ["a backslash-newline between the operator and the newline", "a x | \\\n\n  tee log &", ["a x", "tee log"]],
   ])("a trailing & continues over a newline after %s", (_name, text, expected) => {
     expect(marked(text)).toEqual(expected);
   });

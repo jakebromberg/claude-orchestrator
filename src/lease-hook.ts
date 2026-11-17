@@ -161,7 +161,16 @@ export function uiArgvBackgrounded(argv: readonly string[]): boolean {
   return runs && inScriptBackgrounded;
 }
 
+/** Whether the text defines a shell function: `name()`, `name ()` or `function name`, with a brace or subshell body (quoted text blanked first). */
+const definesFunction = (command: string): boolean => {
+  const bare = command.replace(/\\./gs, "  ").replace(/'[^']*'/g, "''").replace(/"(?:\\.|[^"\\])*"/gs, '""');
+  return /(?:^|[\s;&|({])(?:function\s+[\w.:@+-]+|[\w.:@+-]+\s*\(\s*\))/.test(bare);
+};
+
 function backgroundedIn(command: string, depth: number): boolean {
+  // A backgrounded call of a function may run any body (`f &`, `time f &`, `{ f; } &`, through another function), which the tokenizer does not follow
+  // for every form: text that defines a function and has a lone `&` or a `coproc` is decided by the conservative raw check.
+  if (depth <= MAX_SCRIPT_DEPTH && definesFunction(command) && rawUiRunBackgrounded(command) && uiTestIn(command, depth)) return true;
   const commands = depth > MAX_SCRIPT_DEPTH ? undefined : shellCommands(command);
   if (commands === undefined) return isUiTestCommandUntokenized(command) && rawUiRunBackgrounded(command);
   return commands.some((c) => {

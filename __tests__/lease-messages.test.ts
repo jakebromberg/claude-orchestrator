@@ -81,6 +81,8 @@ describe("UI-test refusals", () => {
     expect(refusalExitCode(refusal)).toBe(75);
     expect(refusalStopReason(refusal)).toBe("config-error");
     expect(formatPostCheckStop(refusal)).toContain("run a UI test in the foreground");
+    expect(formatPostCheckStop(refusal)).toContain("will not be retried");
+    expect(formatPostCheckStop(refusal)).not.toContain("lease-wait");
   });
 
   it.each(["io-error", "slot-lost", "nested-ui-test", "ui-test-running"] as const)("%s, with or without pids, starts with `lease: no slot after <n>s`", (refused) => {

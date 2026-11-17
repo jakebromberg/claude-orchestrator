@@ -154,7 +154,7 @@ export interface PostCheckResult {
   /** Raw command output for machine consumption (injected into retry prompts). */
   output?: string;
   /** The check did not run because memory pressure was critical or the disk was full (never retried), or because the UI-test slot could not be taken or held (`lease-wait`, a lease problem the owner reruns). */
-  stopped?: "memory-critical" | "disk-full" | "lease-wait";
+  stopped?: "memory-critical" | "disk-full" | "lease-wait" | "config-error";
 }
 
 export interface RetryOnCheckFailureConfig {
@@ -293,7 +293,7 @@ export interface Logger {
 }
 
 /** Why an issue ended without a model verdict; new values may be added. */
-export type FailureReason = "memory-critical" | "lease-wait" | "disk-full";
+export type FailureReason = "memory-critical" | "lease-wait" | "disk-full" | "config-error";
 
 /** Where in an issue's pipeline a stop took effect. */
 export type StopStage = "launch" | "post-check" | "retry" | "session";

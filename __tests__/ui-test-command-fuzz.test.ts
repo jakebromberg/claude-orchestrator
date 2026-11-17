@@ -107,6 +107,7 @@ const BACKGROUND_PLACEMENTS: ((t: string) => string)[] = [
   (t) => `${t} &&\n  echo done &`,
   (t) => `${t} ||\n  echo failed &`,
   (t) => `f () { ${t}; }; f &`,
+  (t) => `f() { ${t}; }; g &`, // another function's call: decided conservatively
   (t) => `function f() { ${t}; }; time f &`,
   (t) => `f() { ${t}; }; { f; } &`,
   (t) => `coproc ${t}`,
@@ -121,7 +122,6 @@ const FOREGROUND_PLACEMENTS: ((t: string) => string)[] = [
   (t) => `while true; do ${t}; done`,
   (t) => `{ ${t}; }`,
   (t) => `f() { ${t}; }; f`,
-  (t) => `f() { ${t}; }; g &`,
   (t) => `if true; then ${t}; fi; echo hi &`,
   (t) => `echo hi & ${t}`,
   (t) => `${t}; echo hi &`,

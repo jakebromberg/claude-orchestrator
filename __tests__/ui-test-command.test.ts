@@ -294,12 +294,15 @@ describe("uiRunBackgrounded", () => {
     ["|& then a newline", `${TOOL} test |&\n  tee log &`],
     // Issue #324 review: text that defines a function and has a lone & is decided by the conservative raw check, whatever the body.
     ["a space before the parentheses", `f () { ${TOOL} test; }; f &`],
+    ["the function keyword without parentheses", `function f { ${TOOL} test; }; f &`],
+    ["the function keyword without parentheses, called through time", `function f { ${TOOL} test; }; time f &`],
     ["the function keyword with parentheses", `function f() { ${TOOL} test; }; f &`],
     ["a subshell body", `f() ( ${TOOL} test ); f &`],
     ["a zsh body with no semicolon", `f() { ${TOOL} test }; f &`],
     ["time in front of the call", `f() { ${TOOL} test; }; time f &`],
     ["a group around the call", `f() { ${TOOL} test; }; { f; } &`],
     ["a call through another function", `f() { ${TOOL} test; }; g() { f; }; g &`],
+    ["a different function's call in the background (conservative)", `f() { ${TOOL} test; }; g &`],
     ["a function and a & elsewhere on the line", `f() { ${TOOL} test; }; f; echo hi &`],
     ["text that cannot be tokenized and holds a lone &", `echo 'unterminated; ${TOOL} test &`],
     // Compound commands: the & after the closer backgrounds the whole statement.
@@ -342,7 +345,6 @@ describe("uiRunBackgrounded", () => {
     ["a compound in the foreground", `if true; then ${TOOL} test; fi`],
     ["a for loop in the foreground", `for s in A B; do ${TOOL} -scheme $s test; done`],
     ["a function called in the foreground", `f() { ${TOOL} test; }; f`],
-    ["a function defined but only another one called in the background", `f() { ${TOOL} test; }; g &`],
     ["a continued pipeline and then a backgrounded other command", `${TOOL} test |\n  tee log\necho hi &`],
     ["a continued and-or list in the foreground", `${TOOL} test &&\n  echo done`],
     ["a function defined and called in the foreground", `f () { ${TOOL} test; }; f`],
