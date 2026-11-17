@@ -20,8 +20,8 @@ describe("hook mode and the UI-test class", () => {
   const call = (event: string, command: string, id = "toolu_1", timeout?: number): string =>
     JSON.stringify({ hook_event_name: event, tool_name: "Bash", tool_use_id: id, cwd: "/work", tool_input: { command, ...(timeout && { timeout }) } });
 
-  const run = async (stdin: string, lease: Partial<LeaseOptions> = {}): Promise<string> => {
-    const env = isolatedLeaseEnv(dir, { CO_LEASE_HOOK: "on", CO_LEASE_SESSION_PID: String(SESSION), BASH_DEFAULT_TIMEOUT_MS: undefined });
+  const run = async (stdin: string, lease: Partial<LeaseOptions> = {}, envOver: NodeJS.ProcessEnv = {}): Promise<string> => {
+    const env = isolatedLeaseEnv(dir, { CO_LEASE_HOOK: "on", CO_LEASE_SESSION_PID: String(SESSION), BASH_DEFAULT_TIMEOUT_MS: undefined, ...envOver });
     let out = "";
     const { dir: _d, policy: _p, warn: _w, ...injected } = scripted.opts(lease);
     await runHook([], { env, readStdin: async () => stdin, out: (t) => void (out += t), lease: injected, heavyQueuePath: join(tmp, "no-heavy-queue") });
@@ -64,6 +64,8 @@ describe("hook mode and the UI-test class", () => {
 
   it("still leases nothing for a command that mentions the CLI, which leases for itself", async () => {
     expect(await run(call("PreToolUse", "claude-orchestrator-lease -- xcrun --sdk iphonesimulator xcodebuild test"))).toBe("");
+    // The whole-text rule: a command that only mentions the CLI is exempt even when a later segment is a UI run (the documented trade).
+    expect(await run(call("PreToolUse", "echo claude-orchestrator-lease && xcrun --sdk iphonesimulator xcodebuild test", "toolu_2"))).toBe("");
     expect([names("ui-tests"), names("holders")]).toEqual([[], []]);
   });
 
@@ -86,12 +88,14 @@ describe("hook mode and the UI-test class", () => {
 
   it("denies a second run after 450 s instead of running it, and leaves the first run's slots alone", async () => {
     // The first call outlives the second one's 450 s wait.
-    await run(call("PreToolUse", UI, "toolu_1", 600_000));
+    const four = { CO_LEASE_SLOTS: "4" };
+    await run(call("PreToolUse", UI, "toolu_1", 600_000), {}, four);
     scripted.alive.add(SESSION);
-    const out = await run(call("PreToolUse", UI, "toolu_2"));
+    const out = await run(call("PreToolUse", UI, "toolu_2"), {}, four);
     expect(JSON.parse(out).hookSpecificOutput).toMatchObject({ permissionDecision: "deny" });
     // The UI-test line's own status (capacity 1), not the heavy class's (capacity 4).
     expect(JSON.parse(out).hookSpecificOutput.permissionDecisionReason).toMatch(/capacity 1[,)]/);
+    expect(JSON.parse(out).hookSpecificOutput.permissionDecisionReason).not.toContain("capacity 4");
     expect(names("ui-tests")).toEqual(["hook-toolu_1.json"]);
     expect(names("holders")).toEqual(["hook-toolu_1.json"]);
     expect(scripted.clock.sleeps.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(450_000 - 4_000);

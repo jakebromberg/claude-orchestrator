@@ -8,17 +8,19 @@
  *   `launchd_sim` gone, so nothing else would ever stop them.
  * - A test clone, a device of the XCTestDevices set that only `xcodebuild` creates, that is `Booted` and idle past the watchdog's threshold:
  *   `simctl --set <that set> shutdown`, bounded. Its processes exit with it, and any that do not are the first case from the next cycle.
+ *   Not while Xcode.app runs or anything but the clone's system runtime is in its tree or names it (a test runner, an app): Xcode.app drives
+ *   CoreSimulator without spawning `xcodebuild` or `simctl`, so a clone its parallel test run uses looks idle.
  *   A device of the main set (`~/Library/Developer/CoreSimulator/Devices`) is never shut down for being idle: the owner uses those by hand
  *   in Simulator.app, where no `xcodebuild` or `simctl` running says nothing about use.
  *
- * Nothing is touched while any `xcodebuild` test action runs on the machine or a tool of the build chain names the device, and nothing at
- * all when the device list cannot be read. Every action is one `simulator-reap` line in `events.jsonl`.
+ * Nothing is touched while any `xcodebuild` test action runs on the machine or a tool of the build chain names the device, and nothing for a
+ * set whose device list cannot be read. Every action is one `simulator-reap` line in `events.jsonl`.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isSimulatorCommand, runsTool, XCODE_TOOLS, type ProcRow } from "./ps.js";
+import { ancestry, isSimulatorCommand, runsTool, XCODE_TOOLS, type ProcRow } from "./ps.js";
 
 /** The bound on every `simctl` and `ps` call here: `simctl` can hang. */
 export const SIMCTL_TIMEOUT_MS = 30_000;
@@ -64,6 +66,23 @@ const ENV_UDID = new RegExp(`^\\s*(\\d+)\\s.*?\\bSIMULATOR_UDID=(${UDID})\\b`);
 
 const isTestAction = (command: string): boolean => runsTool(command, ["xcodebuild"]) && /\s(?:test|test-without-building)(?=\s|$)/.test(command);
 
+/** The Xcode.app process itself: it drives CoreSimulator (parallel test clones included) without spawning `xcodebuild` or `simctl`. */
+const XCODE_APP = /\/Contents\/MacOS\/Xcode(?:\s|$)/;
+/** A daemon of the simulator's own system runtime; the test agents it ships live under `RuntimeRoot/Developer` and are not system. */
+const isSystemRuntime = (command: string): boolean => command.includes("/RuntimeRoot/") && !command.includes("/RuntimeRoot/Developer/");
+
+/**
+ * Whether a test clone may be in use although no `xcodebuild` or `simctl` runs: Xcode.app is running (its window may be driving the clone), or any
+ * process besides the clone's system runtime is in the clone's tree (a descendant of its `launchd_sim`: a test runner, an app) or names its UDID in
+ * its command line (an app under `XCTestDevices/<udid>/data/Containers`, a tool given the device).
+ */
+function cloneMayBeInUse(procs: ProcRow[], udid: string): boolean {
+  if (procs.some((p) => XCODE_APP.test(p.command))) return true;
+  const key = udid.toUpperCase();
+  const root = procs.find((p) => p.command.includes("launchd_sim") && p.command.toUpperCase().includes(`/XCTESTDEVICES/${key}/`));
+  return procs.some((p) => p !== root && !isSystemRuntime(p.command) && (p.command.toUpperCase().includes(key) || (root !== undefined && ancestry(procs, p.pid, 64).chain.some((r) => r.pid === root.pid))));
+}
+
 /** Device UDID → state from `simctl list devices -j` for one set. Throws on text that is not that shape. */
 function deviceStates(text: string): Map<string, string> {
   const { devices } = JSON.parse(text) as { devices: Record<string, { udid: string; state: string }[]> };
@@ -101,6 +120,8 @@ function runtimeDevices(procs: ProcRow[], deps: ReaperDeps): Map<string, { udid:
  */
 export function reapSimulators({ procs, idleUdids, attempts }: ReapInput, deps: ReaperDeps): Record<string, number> {
   if (procs.some((p) => isTestAction(p.command))) return attempts;
+  // Nothing of this user's is running in a simulator and no device is idle: there is nothing to decide, so no `simctl` is spawned.
+  if (idleUdids.length === 0 && !procs.some((p) => p.uid === deps.uid && isSimulatorCommand(p.command))) return {};
   const states: Partial<Record<DeviceSet, Map<string, string>>> = {};
   for (const set of ["main", "xctest"] as const) {
     try {
@@ -140,7 +161,7 @@ export function reapSimulators({ procs, idleUdids, attempts }: ReapInput, deps: 
     for (const { pid, message } of failed) deps.log({ type: "simulator-reap", udid, reason: "shutdown-leftovers", action, pids: [pid], ok: false, message });
   }
   for (const udid of idleUdids) {
-    if (states.xctest?.get(udid.toUpperCase()) !== "Booted" || inUse(udid)) continue;
+    if (states.xctest?.get(udid.toUpperCase()) !== "Booted" || inUse(udid) || cloneMayBeInUse(procs, udid)) continue;
     try {
       deps.shutdown(udid, "xctest");
       deps.log({ type: "simulator-reap", udid, reason: "booted-idle", action: "shutdown", ok: true });

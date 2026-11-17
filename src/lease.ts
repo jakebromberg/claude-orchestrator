@@ -91,7 +91,7 @@ export type LeaseEvent = (
   | { type: "release"; id: string; heldMs: number; exitCode?: number }
   | { type: "reap"; id: string; reason: ReapReason }
   /** `level` is the confirmed level of a `stopped` refusal. */
-  | { type: "timeout"; refused: "max-wait" | "stopped" | "disk-full"; waitedMs: number; level?: PressureLevel }
+  | { type: "timeout"; refused: LeaseRefusal["refused"]; waitedMs: number; level?: PressureLevel }
   /** An I/O error let a command run unleased; `code` and `message` describe it. Events from older builds may carry `reason: "mutex-busy"`, which nothing emits any more. */
   | { type: "fail-open"; reason: "io-error"; waitedMs: number; code?: string; message?: string }
   /** A SIGSTOP or SIGCONT the lease sent to a holder's group; `reason` is the trigger, or `dead-owner` for the continue of a group whose front end is gone. */
@@ -260,15 +260,21 @@ export interface LeaseHandle {
    * not a positive integer, and once the holder has been reaped: a reaped holder's file is not recreated.
    */
   setChildPid(pid: number, pgid?: number): void;
-  /** Detached holders only: rewrites `expiresAt` from the request's getter, so a holder admitted before a long wait for another slot still lasts the call's whole time. */
-  renew?(): void;
+  /** Detached holders only: rewrites `expiresAt` from the request's getter, so a holder admitted before a long wait for another slot still lasts the call's whole time. Returns false when the holder's file is gone (reaped or removed): the slot is lost. */
+  renew?(): boolean;
   /** Sets or clears the holder's `suspended` mark, and records `resumedAt` when given (a resume); throws when the mark cannot be written or the holder is gone. Present on a holder this process owns. */
   setSuspended?(on: boolean, resumedAt?: number): void;
   release(outcome?: { exitCode?: number }): void;
 }
 
 export interface LeaseRefusal {
-  refused: "max-wait" | "stopped" | "disk-full";
+  /**
+   * `io-error`, `slot-lost` and `nested-ui-test` come from the UI-test class only: its I/O-error cap (`code` is the error's), a UI-test holder found
+   * gone while a heavy slot was awaited, and a nested acquire whose inherited holder is live in the heavy class but not the UI-test one.
+   */
+  refused: "max-wait" | "stopped" | "disk-full" | "io-error" | "slot-lost" | "nested-ui-test";
+  /** Set when the refusal came from the UI-test phase of a UI-test run, so the caller reports that class's status. */
+  class?: "ui-tests";
   waitedMs: number;
   level: PressureLevel;
   live: number;
@@ -817,16 +823,17 @@ function createHolder(opts: LeaseOptions, cls: LeaseClass, meta: HolderMeta, com
       }
     },
     renew() {
-      if (released || !detached) return;
+      if (released) return false;
+      if (!detached) return true;
       try {
         // Only a file still there is replaced, as in `setChildPid`.
-        if (unlessGone(() => statSync(file))) {
-          rec.expiresAt = detached.expiresAt;
-          write();
-        }
+        if (!unlessGone(() => statSync(file))) return false;
+        rec.expiresAt = detached.expiresAt;
+        write();
       } catch {
         // The previous record still names this holder, with the earlier expiry.
       }
+      return true;
     },
     setSuspended(on, resumedAt) {
       if (released || !unlessGone(() => statSync(file))) throw new Error(`holder ${id} is gone`);
@@ -1077,34 +1084,60 @@ export async function acquireLease(opts: LeaseOptions, meta: HolderMeta, wait: L
   return meta.uiTest ? acquireUiTest(opts, meta, wait) : acquire(opts, HEAVY, meta, wait, meta.detached?.id);
 }
 
+/** Thrown out of the heavy wait's `onWait` when the UI-test holder is found gone, and caught by `acquireUiTest`. */
+const SLOT_LOST = new Error("the UI-test slot was lost");
+
 /**
  * A UI-test run's two slots, in this order so it never holds up the heavy line while it waits for the other: the UI-test slot first (its own line,
- * `ui-tests-waiting/`), then the heavy slot at its normal weight. The UI-test holder carries the same id for a detached request, which
- * `releaseHolder` removes from both classes. Nothing waits on a UI-test slot while holding the heavy one, so the two lines cannot deadlock
- * unless a nested acquire inherits a heavy slot and then waits for the UI-test one (`inheritedHolderId` borrows a slot only in the class it is live in).
- * `maxWaitMs` is spent across both waits, a refusal of the second gives the first back, and the returned handle releases both.
+ * `ui-tests-waiting/`), then the heavy slot at its normal weight. The two holders share one id (the detached id, or one made up front that
+ * `childEnv()` exports), which `releaseHolder` removes from both classes and a nested acquire inherits to borrow both.
+ * Nothing waits on a UI-test slot while holding the heavy one, so the two lines cannot deadlock: a nested acquire whose inherited holder is
+ * live in the heavy class but not the UI-test one is refused at once (`nested-ui-test`) instead of waiting for a slot its parent's run may be
+ * waiting on. A hook's UI-test holder expires with the call's time, which a heavy wait can outlast, so it is renewed on every heavy poll and at
+ * the heavy admission; a holder found gone (reaped, removed) refuses the run (`slot-lost`) instead of letting it proceed beside another one.
+ * `maxWaitMs` is spent across both waits, a refusal or a throw of the second gives the first back, and the returned handle releases both.
  */
 async function acquireUiTest(opts: LeaseOptions, meta: HolderMeta, wait: LeaseWait): Promise<LeaseHandle | LeaseRefusal> {
   const now = opts.now ?? Date.now;
   const start = now();
-  // Rebuilt field by field, so a weight, priority, gate or suspension never reaches the UI-test class.
+  const refusal = (refused: "slot-lost" | "nested-ui-test"): LeaseRefusal => {
+    const waitedMs = now() - start;
+    emit(opts, UI_TESTS, { type: "timeout", refused, waitedMs });
+    return { refused, waitedMs, level: snapshot(opts, UI_TESTS).level, live: 0, class: "ui-tests" };
+  };
+  const inherited = opts.inheritedHolderId;
+  if (inherited && liveOf(opts, HEAVY).some((h) => h.id === inherited) && !liveOf(opts, UI_TESTS).some((h) => h.id === inherited)) return refusal("nested-ui-test");
   // One id for both holders of a run that has no detached id, because `childEnv()` exports one: a nested acquire that inherits it then borrows both.
   const id = meta.detached?.id ?? `${process.pid}-${randomBytes(4).toString("hex")}`;
+  // Rebuilt field by field, so a weight, priority, gate or suspension never reaches the UI-test class.
   const slot = await acquire(opts, UI_TESTS, { command: meta.command, cwd: meta.cwd, ...(meta.label !== undefined && { label: meta.label }), ...(meta.detached && { detached: meta.detached }) }, wait, id, true);
   if (!("leased" in slot)) return slot;
   const spent = now() - start;
+  const heavyWait: LeaseWait = {
+    ...wait,
+    ...(wait.maxWaitMs !== undefined && { maxWaitMs: Math.max(0, wait.maxWaitMs - spent) }),
+    onWait(status) {
+      if (slot.renew?.() === false) throw SLOT_LOST;
+      wait.onWait?.(status);
+    },
+  };
   let heavy: LeaseHandle | LeaseRefusal;
   try {
-    heavy = await acquire(opts, HEAVY, meta, { ...wait, ...(wait.maxWaitMs !== undefined && { maxWaitMs: Math.max(0, wait.maxWaitMs - spent) }) }, id, true);
+    heavy = await acquire(opts, HEAVY, meta, heavyWait, id, true);
   } catch (err) {
     slot.release();
+    if (err === SLOT_LOST) return refusal("slot-lost");
     throw err;
   }
   if (!("leased" in heavy)) {
     slot.release();
     return { ...heavy, waitedMs: heavy.waitedMs + spent };
   }
-  slot.renew?.();
+  if (slot.renew?.() === false) {
+    heavy.release();
+    slot.release();
+    return refusal("slot-lost");
+  }
   return {
     ...heavy,
     admission: { ...heavy.admission, waitedMs: heavy.admission.waitedMs + spent },
@@ -1161,18 +1194,18 @@ async function pollForLease(opts: LeaseOptions, cls: LeaseClass, meta: HolderMet
     const code = r.kind === "error" ? diskFullCode(r.error) : undefined;
     if (code !== undefined) {
       emit(opts, cls, { type: "timeout", refused: "disk-full", waitedMs });
-      return { refused: "disk-full", waitedMs, level: r.level, live: 0, code };
+      return { refused: "disk-full", waitedMs, level: r.level, live: 0, code, ...(cls === UI_TESTS && { class: "ui-tests" as const }) };
     }
     // A busy mutex is only waited out: a dead holder's lock is reaped after `MUTEX_STALE_MS` and a live one releases in milliseconds, so
     // there is no state in which waiting never ends, and a wall-clock streak measures a stopped process, not a busy mutex.
     if (r.kind === "error" && r.level !== "critical" && cls.failsOpen) return failOpen(opts, cls, r.level, r.capacity, waitedMs, "io-error", r.error);
     const status = r.kind === "error" ? { level: r.level, capacity: r.capacity, step: r.step, signals: r.signals, live: [] } : statusOf(opts, cls, r);
-    const refuse = (refused: LeaseRefusal["refused"], level: PressureLevel, live: number): LeaseRefusal => {
+    const refuse = (refused: LeaseRefusal["refused"], level: PressureLevel, live: number, code?: string): LeaseRefusal => {
       emit(opts, cls, { type: "timeout", refused, waitedMs, ...(refused === "stopped" && { level }) });
-      return { refused, waitedMs, level, live };
+      return { refused, waitedMs, level, live, ...(code !== undefined && { code }), ...(cls === UI_TESTS && { class: "ui-tests" as const }) };
     };
     // A class that never fails open waits out an I/O error, but not for ever when the caller set no `maxWaitMs`: it refuses once `MAX_ERROR_POLLS` polls in a row failed.
-    if (!cls.failsOpen && errorPolls >= MAX_ERROR_POLLS) return refuse("max-wait", r.level, 0);
+    if (!cls.failsOpen && errorPolls >= MAX_ERROR_POLLS) return refuse("io-error", r.level, 0, (r as { error?: { code?: string } }).error?.code);
     if (wait.stopWhen?.(status)) {
       const confirmed = snapshot(opts, cls, true);
       if (wait.stopWhen({ ...status, ...confirmed })) return refuse("stopped", confirmed.level, status.live.length);
@@ -1212,8 +1245,9 @@ export function releaseHolder(opts: LeaseOptions, id: string): boolean {
   return released.some(Boolean);
 }
 
-/** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. */
-export function leaseStatus(opts: LeaseOptions): LeaseStatus {
+/** Read-only: creates nothing, reaps nothing. Reports no live holders when the directory cannot be read. With `"ui-tests"`, the UI-test class's capacity and live holders instead (what a refusal of its phase reports). */
+export function leaseStatus(opts: LeaseOptions, holderClass?: "ui-tests"): LeaseStatus {
+  if (holderClass === "ui-tests") return statusOf(opts, UI_TESTS, snapshot(opts, UI_TESTS));
   const snap = snapshot(opts, HEAVY);
   return { ...statusOf(opts, HEAVY, snap), ...waitingOf(opts), sessions: { capacity: SESSIONS.capacity(snap.step, SESSIONS.ceiling(opts)), live: liveOf(opts, SESSIONS) } };
 }

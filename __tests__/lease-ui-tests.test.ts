@@ -231,7 +231,8 @@ describe("UI-test holder class (issue #324)", () => {
     const detachedFor = (id: string): NonNullable<HolderMeta["detached"]> => ({ id, sessionPid: process.pid, get expiresAt() { return lease.clock.ms + 120_000; } });
 
     it("stays live past its original expiry, so a competing UI-test waiter never takes the slot", async () => {
-      const blocker = tryAcquireLease(opts({ policy }), plain)!;
+      // A detached blocker, so the minutes of scripted time do not reap it for want of a heartbeat.
+      const blocker = tryAcquireLease(opts({ policy }), { ...plain, detached: { id: "hook-blocker", sessionPid: process.pid, expiresAt: lease.clock.ms + 700_000 } })!;
       const start = lease.clock.ms;
       const competitors: Promise<LeaseHandle | LeaseRefusal>[] = [];
       lease.clock.onSleep = () => {

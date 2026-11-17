@@ -537,13 +537,17 @@ describe("runLeased", () => {
 
     it("prints the UI-test class's status for a refusal in the UI-test phase, and the heavy status otherwise", async () => {
       const asked: unknown[] = [];
-      const statusFor = (opts: LeaseOptions, holderClass?: string) => (asked.push(holderClass), { level: "warning" as const, capacity: holderClass ? 1 : 4, step: 1, signals: null, live: [] });
+      const statusFor = (_opts: LeaseOptions, holderClass?: string) => (asked.push(holderClass), { level: "warning" as const, capacity: holderClass ? 1 : 4, step: 1, signals: null, live: [] });
       outcome = { refused: "max-wait", waitedMs: 5_000, level: "normal", live: 1, class: "ui-tests" };
       expect(await run({ argv: ["xcodebuild", "test"] }, { leaseStatus: statusFor as never })).toBe(75);
+      expect(asked).toContain("ui-tests");
       expect(err.join("\n")).toContain("capacity 1");
+      asked.length = 0;
+      err = [];
       outcome = { refused: "max-wait", waitedMs: 5_000, level: "normal", live: 1 };
       expect(await run({ argv: ["npm", "test"] }, { leaseStatus: statusFor as never })).toBe(75);
-      expect(asked).toEqual(["ui-tests", undefined]);
+      expect(asked).not.toContain("ui-tests");
+      expect(err.join("\n")).toContain("capacity 4");
     });
 
     it.each<[string, Partial<RunArgs>, boolean]>([

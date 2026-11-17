@@ -81,6 +81,9 @@ function isHeavyQueueShim(file: string): boolean {
     return false;
   }
 }
+/** Text that names this CLI, or `heavy-queue run` while the shim is installed: the command takes its own slot, so the hook takes none. */
+const leasesItself = (command: string, heavyQueueShim: () => boolean): boolean => CLI.test(command) || (HEAVY_QUEUE_RUN.test(command) && heavyQueueShim());
+
 /**
  * Every separator, captured so each segment knows the one before it; `&&` and `||` leave an empty segment between,
  * and the `&` of a redirect (`2>&1`) only adds a light one.
@@ -113,7 +116,7 @@ const isRegex = (source: string): boolean => {
  * ignored; every pattern is anchored at the command word and followed by an end boundary (not `\w`, `.`, `/` or `-`).
  */
 export function isHeavyCommand(command: string, extraPatterns: readonly string[] = [], heavyQueueShim: () => boolean = () => false): boolean {
-  if (CLI.test(command) || (HEAVY_QUEUE_RUN.test(command) && heavyQueueShim())) return false;
+  if (leasesItself(command, heavyQueueShim)) return false;
   const patterns = [...DEFAULT_PATTERNS.map(([, p]) => p), ...extraPatterns.filter(isRegex)];
   const heavy = new RegExp(`(?:${patterns.map((p) => `(?:${p})`).join("|")})(?![\\w./-])`, "y");
   return anySegmentMatches(command, heavy);
@@ -126,7 +129,7 @@ function anySegmentMatches(command: string, pattern: RegExp): boolean {
 }
 
 /** A UI-test action of the build tool: its name (through `xcrun` or a path), any words, then the `test` or `test-without-building` action as a word of its own. */
-const UI_TEST = /(?:(?:xcrun )?xcodebuild(?: \S+)* (?:test|test-without-building))(?![\w./-])/y;
+const UI_TEST = /(?:(?:xcrun (?:-{1,2}(?:sdk|toolchain)(?:=\S+| \S+) )*)?xcodebuild(?: \S+)* (?:test|test-without-building))(?![\w./-])/y;
 
 /**
  * Whether `command` runs a UI-test action: the build tool, with the test action, as a command (the same segment rule as `isHeavyCommand`, so
@@ -162,7 +165,7 @@ export function runsUiTest(words: readonly string[], inScript: (script: string) 
     if (/^(?:ba|z)?sh$/.test(name)) {
       let j = i + 1;
       while (words[j]?.startsWith("-") && !/^-[a-z]*c$/.test(words[j]!)) j += /^-[a-z]*o$/.test(words[j]!) ? 2 : 1;
-      return /^-[a-z]*c$/.test(words[j] ?? "") && inScript(words[j + 1] ?? "");
+      return /^-[a-z]*c$/.test(words[j] ?? "") && inScript(words[words[j + 1] === "--" ? j + 2 : j + 1] ?? "");
     }
     if (name === "xcrun") {
       while (words[i + 1]?.startsWith("-")) i += XCRUN_VALUED.test(words[i + 1]!) ? 2 : 1;
@@ -222,7 +225,7 @@ function isHeavySegment(segment: string, heavy: RegExp, after = ""): boolean {
       let j = i + 1;
       while (word(j).startsWith("-") && !/^-[a-z]*c$/.test(word(j))) j += /^-[a-z]*o$/.test(word(j)) ? 2 : 1;
       if (/^-[a-z]*c$/.test(word(j))) {
-        i = j;
+        i = word(j + 1) === "--" ? j + 1 : j;
         continue;
       }
     }
@@ -270,11 +273,18 @@ function extraPatterns(env: NodeJS.ProcessEnv): string[] {
 export function isHeavyHookCall(stdin: string, env: NodeJS.ProcessEnv, heavyQueuePath: string = defaultHeavyQueuePath()): boolean {
   if (env.CO_LEASE_HOOK !== "on") return false;
   try {
-    return isHeavyInput(JSON.parse(stdin) as HookInput, env, heavyQueuePath);
+    const input = JSON.parse(stdin) as HookInput;
+    return isHeavyInput(input, env, heavyQueuePath) || isUiTestInput(input, heavyQueuePath);
   } catch {
     return false;
   }
 }
+
+/** A `PreToolUse` `Bash` call whose command is a UI-test run that does not lease for itself; the gate (`CO_LEASE_HOOK`) is the caller's. */
+const isUiTestInput = (input: HookInput, heavyQueuePath: string): boolean => {
+  const command = input.tool_input?.command;
+  return input.hook_event_name === "PreToolUse" && input.tool_name === "Bash" && typeof command === "string" && !leasesItself(command, () => isHeavyQueueShim(heavyQueuePath)) && isUiTestCommand(command);
+};
 
 const isHeavyInput = (input: HookInput, env: NodeJS.ProcessEnv, heavyQueuePath: string): boolean => {
   const command = input.tool_input?.command;
@@ -334,7 +344,10 @@ async function handleEvent(stdin: string, io: HookIo): Promise<void> {
     releaseHolder(opts, id);
     return;
   }
-  if (!isHeavyInput(input, env, io.heavyQueuePath ?? defaultHeavyQueuePath())) return;
+  const heavyQueuePath = io.heavyQueuePath ?? defaultHeavyQueuePath();
+  // A UI-test run is leased whether or not the heavy matcher sees it (`xcrun --sdk iphonesimulator xcodebuild test` is not heavy by it).
+  const uiTest = isUiTestInput(input, heavyQueuePath);
+  if (!uiTest && !isHeavyInput(input, env, heavyQueuePath)) return;
   const sessionPid = Number(env.CO_LEASE_SESSION_PID);
   if (!isPid(sessionPid)) return;
   // A hook with no session PID or no usable options stays inert, background calls included. A lease directory that
@@ -347,8 +360,8 @@ async function handleEvent(stdin: string, io: HookIo): Promise<void> {
   const detached = { id, sessionPid, get expiresAt() { return now() + timeoutMs + GRACE_MS; } };
   const command = String(input.tool_input!.command);
   const weight = weightFor(command, cwd, env, () => {});
-  const got = await acquireLease(opts, { command, cwd, detached, ...(weight !== undefined && { weight }), ...(isUiTestCommand(command) && { uiTest: true as const }) }, { maxWaitMs: WAIT_MS });
-  if (!("leased" in got)) io.out(decision({ permissionDecision: "deny", permissionDecisionReason: formatRefusal(got, leaseStatus(opts)) }));
+  const got = await acquireLease(opts, { command, cwd, detached, ...(weight !== undefined && { weight }), ...(uiTest && { uiTest: true as const }) }, { maxWaitMs: WAIT_MS });
+  if (!("leased" in got)) io.out(decision({ permissionDecision: "deny", permissionDecisionReason: formatRefusal(got, leaseStatus(opts, got.class)) }));
   else if (got.leased) io.out(decision({ additionalContext: formatAdmitted(got.admission) }));
 }
 
