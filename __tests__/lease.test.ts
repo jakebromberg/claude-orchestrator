@@ -585,15 +585,15 @@ describe("lease", () => {
       expect(tryAcquireLease(opts(), meta)).toBeNull();
     });
 
-    it("fails open after 30 s of a busy mutex, with one warning", async () => {
+    it("waits out a busy mutex past 30 s instead of failing open (issue #324)", async () => {
       busyMutex();
       // Keep the mutex fresh on the injected clock so it never reads as stale.
       fake.onSleep = () => utimesSync(join(dir, ".mutex"), fake.ms / 1000, fake.ms / 1000);
-      const r = await acquireLease(opts(), meta);
-      expect(r).toMatchObject({ leased: false, id: null });
-      expect(fake.sleeps.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(30_000);
-      expect(warnings).toHaveLength(1);
-      expect(events).toContainEqual(expect.objectContaining({ type: "fail-open", reason: "mutex-busy", class: "heavy" }));
+      const r = await acquireLease(opts(), meta, { maxWaitMs: 60_000 });
+      expect(r).toMatchObject({ refused: "max-wait" });
+      expect(fake.sleeps.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(60_000);
+      expect(warnings).toEqual([]);
+      expect(events.some((e) => e.type === "fail-open")).toBe(false);
     });
 
     it("never fails open at critical: a busy mutex stays no free slot until maxWaitMs", async () => {
@@ -1452,14 +1452,10 @@ describe("lease", () => {
       ]);
     });
 
-    it("records the error code and message of an I/O fail-open, none for a busy mutex", async () => {
+    it("records the error code and message of an I/O fail-open", async () => {
       tryAcquireLease(opts({ dir: unwritableLeaseDir(tmp) }), meta);
-      busyMutex();
-      fake.onSleep = () => utimesSync(join(dir, ".mutex"), fake.ms / 1000, fake.ms / 1000);
-      await acquireLease(opts(), meta);
       expect(events.filter((e) => e.type === "fail-open")).toStrictEqual([
         { type: "fail-open", reason: "io-error", waitedMs: 0, code: "ENOTDIR", message: expect.any(String), class: "heavy" },
-        { type: "fail-open", reason: "mutex-busy", waitedMs: expect.any(Number), class: "heavy" },
       ]);
     });
   });

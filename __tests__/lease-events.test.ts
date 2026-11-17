@@ -75,7 +75,6 @@ describe("leaseEventSink", () => {
     ["orphan-bound reap", { type: "reap", id: "2-cd", reason: "orphan-bound" }],
     ["corrupt reap", { type: "reap", id: "2-cd", reason: "corrupt" }],
     ["io-error fail-open", { type: "fail-open", reason: "io-error", waitedMs: 0, code: "EACCES", message: "denied" }],
-    ["mutex-busy fail-open", { type: "fail-open", reason: "mutex-busy", waitedMs: 30_000 }],
     ["dead-session reap", { type: "reap", id: "hook-t1", reason: "dead-session" }],
     ["expired reap", { type: "reap", id: "hook-t1", reason: "expired" }],
     ["unknown future reap reason", { type: "reap", id: "3-ef", reason: "future-reason" as never }],
