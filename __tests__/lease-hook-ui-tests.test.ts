@@ -69,6 +69,45 @@ describe("hook mode and the UI-test class", () => {
     expect([names("ui-tests"), names("holders")]).toEqual([[], []]);
   });
 
+  // PostToolUse fires when the backgrounded shell returns, so its slots would be released at once while the test still runs, and a second UI
+  // run would be admitted beside it. This PR has no tokenizer, so the check is conservative: any unquoted single `&` that is not part of `&&`,
+  // `>&`, `<&`, `&>` or `|&` anywhere in a UI-test call denies it.
+  it.each([
+    ["a trailing &", `${UI} &`],
+    ["a trailing & after a redirect", `${UI} > out.log 2>&1 &`],
+    ["a trailing & and whitespace", `${UI}  &  `],
+    ["a & that is followed by another command", `${UI} > x.log 2>&1 & echo $!`],
+    ["a & that is followed by sleep", `${UI} & sleep 5`],
+    ["a subshell that backgrounds it", `(${UI} &)`],
+    ["a group that backgrounds it", `{ ${UI} & }`],
+    ["a & on an earlier line", `echo hi &\n${UI}`],
+    ["a lone & after a quoted &", `echo 'a & b' && ${UI} &`],
+  ])("denies a UI-test call that backgrounds with %s, asks for the foreground, and takes no slot", async (_name, command) => {
+    const out = JSON.parse(await run(call("PreToolUse", command)));
+    expect(out.hookSpecificOutput).toMatchObject({ permissionDecision: "deny" });
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain("foreground");
+    expect([names("ui-tests"), names("holders")]).toEqual([[], []]);
+  });
+
+  it.each([
+    ["a && between commands", `cd /w && ${UI}`],
+    ["a redirect that holds a &", `${UI} 2>&1 | tail`],
+    ["&> as a redirect", `${UI} &>build.log`],
+    ["|& as a pipe", `${UI} |& tail`],
+    ["a >& redirect", `${UI} >&build.log`],
+    ["a & inside single quotes", `${UI} -destination 'name=A & B'`],
+    ["a & inside double quotes", `${UI} -scheme "A & B"`],
+    ["an escaped &", `${UI} -scheme A\\&B`],
+    ["a trailing && that continues the line", `${UI} &&`],
+  ])("does not deny %s", async (_name, command) => {
+    const out = await run(call("PreToolUse", command));
+    expect(out).not.toContain("foreground");
+  });
+
+  it("does not deny a heavy command that is not a UI run, whatever it does with &", async () => {
+    expect(await run(call("PreToolUse", "npm test &"))).not.toContain("foreground");
+  });
+
   it("takes only a heavy slot for an ordinary heavy command", async () => {
     await run(call("PreToolUse", "npm test"));
     expect(names("ui-tests")).toEqual([]);

@@ -20,7 +20,7 @@ describe("UI-test holder class (issue #324)", () => {
   const opts = (over: Partial<LeaseOptions> = {}): LeaseOptions => lease.opts(over);
   const names = (sub: string): string[] => (existsSync(join(lease.dir, sub)) ? readdirSync(join(lease.dir, sub)).sort() : []);
   const holder = (sub: string, id: string): Record<string, unknown> => JSON.parse(readFileSync(join(lease.dir, sub, `${id}.json`), "utf8")) as Record<string, unknown>;
-  const take = async (m: HolderMeta, wait: { maxWaitMs?: number } = { maxWaitMs: 0 }, over: Partial<LeaseOptions> = {}): Promise<LeaseHandle | LeaseRefusal> => acquireLease(opts(over), m, wait);
+  const take = async (m: HolderMeta, wait: { maxWaitMs?: number; onHold?: (release: () => void) => void } = { maxWaitMs: 0 }, over: Partial<LeaseOptions> = {}): Promise<LeaseHandle | LeaseRefusal> => acquireLease(opts(over), m, wait);
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "lease-ui-"));
@@ -383,6 +383,26 @@ describe("UI-test holder class (issue #324)", () => {
       expect(lease.clock.sleeps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(11_000);
       expect(names("holders")).toEqual([]);
       expect(names("ui-tests")).toEqual([]);
+    });
+
+    // A signal during the retry window (both slots held, the check not yet done) must release both: the handler is handed a release of the pair.
+    it("hands a release of both holders to onHold before the final check, so a signal in the window leaves neither behind", async () => {
+      const holds: (() => void)[] = [];
+      let seenInWindow: { ui: string[]; heavy: string[] } | undefined;
+      lease.clock.onSleep = () => {
+        if (!seenInWindow) {
+          seenInWindow = { ui: names("ui-tests"), heavy: names("holders") };
+          holds.at(-1)!();
+          rmSync(mutexFile(), { force: true });
+        }
+      };
+      const r = await take(ui, { maxWaitMs: 450_000, onHold: (release) => holds.push(release) }, onHeavyAdmitted(hold));
+      expect(seenInWindow!.ui).toHaveLength(1);
+      expect(seenInWindow!.heavy).toHaveLength(1);
+      expect(holds).toHaveLength(2);
+      expect(names("ui-tests")).toEqual([]);
+      expect(names("holders")).toEqual([]);
+      void r;
     });
 
     it("admits a run whose holder is still there once a busy mutex frees", async () => {

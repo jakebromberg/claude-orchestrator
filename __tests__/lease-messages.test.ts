@@ -61,7 +61,7 @@ describe("UI-test refusals", () => {
   it.each([
     { refused: "io-error" as const, has: ["lease directory", "61s", "EACCES", "rerun"] },
     { refused: "slot-lost" as const, has: ["UI-test slot was lost", "rerun"] },
-    { refused: "nested-ui-test" as const, has: ["inside a heavy slot", "deadlock", "own call"] },
+    { refused: "nested-ui-test" as const, has: ["lease slot", "deadlock", "own Bash call"] },
   ])("$refused has its own line, exit code 75 and no no-slot prefix", ({ refused, has }) => {
     const text = formatRefusal(ui(refused), status);
     for (const part of has) expect(text).toContain(part);

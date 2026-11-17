@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { reapSimulators, realReaperDeps, SIMCTL_TIMEOUT_MS, type DeviceSet, type ReapResult, type ReaperDeps, type SimulatorReapEvent } from "../src/simulator-reaper.js";
-import { parsePsTable } from "../src/ps.js";
+import { parsePsTable, type ProcRow } from "../src/ps.js";
 import { psText, type PsTextRow } from "./helpers/ps-text.js";
 
 // Issue #324, defect 3. On 2026-11-16 about 16:16 PST a simulator's device went Shutdown while 110 of its runtime processes
@@ -61,6 +61,7 @@ describe("reapSimulators", () => {
       if (signalFails.has(pid)) throw Object.assign(new Error("EPERM"), { code: "EPERM" });
     },
     log: (e) => void events.push(e),
+    scan: () => (scans++, freshRows ? freshRows() : currentRows),
     uid: MINE,
     ...over,
   });
@@ -68,6 +69,10 @@ describe("reapSimulators", () => {
   // `seenIn` is every runtime row's pid grouped by the UDID its environment names; a first-cycle test sets it to `{}`.
   let seenIn: Record<string, number[]> | undefined;
   let lastResult: ReapResult;
+  // The table the cycle decided on, and what a rescan right before an action sees (the same unless a test changes it).
+  let currentRows: ProcRow[] = [];
+  let freshRows: (() => ProcRow[]) | undefined;
+  let scans = 0;
   const sightings = (rows: PsTextRow[]): Record<string, number[]> => {
     const out: Record<string, number[]> = {};
     for (const r of rows) {
@@ -78,7 +83,8 @@ describe("reapSimulators", () => {
     return out;
   };
   const reap = (rows: PsTextRow[], idleUdids: string[] = [], attempts: Record<string, number> = {}, over: Partial<ReaperDeps> = {}) => {
-    lastResult = reapSimulators({ procs: parsePsTable(psText(rows)), idleUdids, attempts, seen: seenIn ?? sightings(rows) }, deps(over));
+    currentRows = parsePsTable(psText(rows));
+    lastResult = reapSimulators({ procs: currentRows, idleUdids, attempts, seen: seenIn ?? sightings(rows) }, deps(over));
     return lastResult.attempts;
   };
 
@@ -88,6 +94,8 @@ describe("reapSimulators", () => {
     shutdowns = [];
     shutdownSets = [];
     listCalls = [];
+    freshRows = undefined;
+    scans = 0;
     seenIn = undefined;
     envLookups = [];
     envOf = {};
@@ -406,6 +414,107 @@ describe("reapSimulators", () => {
     });
   });
 
+  // Issue #324 review: the decision was made on a scan that is seconds old by the time `simctl` and the signals run (a list read can take 30 s),
+  // so the process table is read again right before each device's action, once per action, and every guard is applied to that fresh table.
+  describe("a stale scan", () => {
+    const leftovers = [runtimeRow(300), runtimeRow(301)];
+    const CLONE = `/Users/x/Library/Developer/XCTestDevices/${U1}`;
+    const clone: PsTextRow[] = [
+      { pid: 200, ppid: 1, pgid: 200, command: `${RT}/sbin/launchd_sim ${CLONE}/data/var/run/launchd_bootstrap.plist` },
+      { pid: 201, ppid: 200, pgid: 200, command: `${RT}/usr/libexec/backboardd` },
+    ];
+    const rowsOf = (rows: PsTextRow[]): ProcRow[] => parsePsTable(psText(rows));
+
+    describe("before a signal", () => {
+      beforeEach(() => {
+        envOf = { 300: U1, 301: U1 };
+      });
+
+      it("reads the table again once for the device's batch, not once per pid", () => {
+        reap(leftovers);
+        expect(scans).toBe(1);
+        expect(signals).toHaveLength(2);
+      });
+
+      it.each<[string, PsTextRow]>([
+        ["a test action that started meanwhile", { pid: 900, ppid: 50, pgid: 900, command: "xcodebuild test -scheme App" }],
+        ["a build tool that now names the device", { pid: 900, ppid: 50, pgid: 900, command: `xcodebuild build -destination id=${U1}` }],
+        ["a simctl that now names the device", { pid: 900, ppid: 50, pgid: 900, command: `xcrun simctl spawn ${U1} launchctl list` }],
+      ])("signals nothing when %s", (_name, row) => {
+        freshRows = () => rowsOf([...leftovers, row]);
+        reap(leftovers);
+        expect(signals).toEqual([]);
+        expect(events).toEqual([]);
+      });
+
+      it("signals only the pids still present, as a simulator process of this user, in the fresh table", () => {
+        freshRows = () => rowsOf([leftovers[0]!, runtimeRow(301, { command: "/usr/bin/other-tool" })]);
+        reap(leftovers);
+        expect(signals).toEqual([[300, "SIGTERM"]]);
+      });
+
+      it("signals a pid that now belongs to another user to nobody", () => {
+        freshRows = () => rowsOf([runtimeRow(300, { uid: 0 }), leftovers[1]!]);
+        reap(leftovers);
+        expect(signals).toEqual([[301, "SIGTERM"]]);
+      });
+
+      it("signals nothing, and keeps what it knew, when the fresh scan cannot be read", () => {
+        freshRows = () => {
+          throw new Error("ps timed out");
+        };
+        reap(leftovers, [], { [U1]: 1 });
+        expect(signals).toEqual([]);
+        expect(events).toEqual([]);
+        expect(lastResult.attempts).toEqual({ [U1]: 1 });
+      });
+    });
+
+    describe("before a shutdown", () => {
+      beforeEach(() => {
+        testList = () => devices({ [U1]: "Booted" });
+      });
+
+      it("reads the table again once for the clone's shutdown", () => {
+        reap(clone, [U1]);
+        expect(scans).toBe(1);
+        expect(shutdowns).toEqual([U1]);
+      });
+
+      it.each<[string, PsTextRow]>([
+        ["Xcode.app that started meanwhile", { pid: 900, ppid: 1, pgid: 900, command: "/Applications/Xcode.app/Contents/MacOS/Xcode" }],
+        ["a test action that started meanwhile", { pid: 900, ppid: 50, pgid: 900, command: "xcodebuild test -scheme App" }],
+        ["a tool that now names the clone", { pid: 900, ppid: 50, pgid: 900, command: `xcrun simctl io ${U1} screenshot x.png` }],
+        ["a test runner that started in the clone", { pid: 300, ppid: 201, pgid: 300, command: `${CLONE}/data/Containers/Bundle/Application/ABC/AppUITests-Runner.app/AppUITests-Runner` }],
+      ])("is not run when %s", (_name, row) => {
+        freshRows = () => rowsOf([...clone, row]);
+        reap(clone, [U1]);
+        expect(shutdowns).toEqual([]);
+        expect(events).toEqual([]);
+      });
+
+      it("is not run when the clone's launchd is gone from the fresh table", () => {
+        freshRows = () => rowsOf([]);
+        reap(clone, [U1]);
+        expect(shutdowns).toEqual([]);
+      });
+
+      it("is not run when the fresh scan cannot be read", () => {
+        freshRows = () => {
+          throw new Error("ps timed out");
+        };
+        reap(clone, [U1]);
+        expect(shutdowns).toEqual([]);
+        expect(events).toEqual([]);
+      });
+    });
+
+    it("reads no table at all when nothing is acted on", () => {
+      reap([{ pid: 50, ppid: 1, pgid: 50, command: "zsh" }]);
+      expect(scans).toBe(0);
+    });
+  });
+
   describe("the device lists", () => {
     it("are not read when there are no simulator rows and no idle devices", () => {
       reap([{ pid: 50, ppid: 1, pgid: 50, command: "zsh" }]);
@@ -521,6 +630,12 @@ describe("realReaperDeps", () => {
     expect(() => build({ exec: exits(1, "") }).processEnv([300])).toThrow("exit 1");
     expect(() => build({ exec: exits(2, "300 cmd") }).processEnv([300])).toThrow("exit 2");
     expect(() => build({ exec: exits(1, undefined) }).processEnv([300])).toThrow("exit 1");
+  });
+
+  it("reads the process table through ps with the one table's arguments, bounded", () => {
+    const rows = build({ exec: fake("  200     1   200   501 S      02:00:00   4096 /sbin/launchd_sim x\n") }).scan();
+    expect(rows).toMatchObject([{ pid: 200, ppid: 1, uid: 501, command: "/sbin/launchd_sim x" }]);
+    expect(calls).toEqual([{ file: "ps", args: ["-axo", "pid=,ppid=,pgid=,uid=,stat=,etime=,rss=,command="], timeoutMs: SIMCTL_TIMEOUT_MS }]);
   });
 
   it("does not run ps for no pids", () => {
