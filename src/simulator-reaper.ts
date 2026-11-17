@@ -86,6 +86,9 @@ const isSystemRuntime = (command: string): boolean => command.includes("/Runtime
  * process besides the clone's system runtime is in the clone's tree (a descendant of its `launchd_sim`: a test runner, an app) or names its UDID in
  * its command line (an app under `XCTestDevices/<udid>/data/Containers`, a tool given the device).
  */
+/** Whether a `launchd_sim` of the device is alive in `procs`, in either device set: a device that reads `Shutdown` with one running is booting or shutting down, not left behind. */
+const launchdAlive = (procs: ProcRow[], udid: string): boolean => procs.some((p) => p.command.includes("launchd_sim") && p.command.toUpperCase().includes(`/${udid.toUpperCase()}/`));
+
 const cloneRoot = (procs: ProcRow[], udid: string): ProcRow | undefined =>
   procs.find((p) => p.command.includes("launchd_sim") && p.command.toUpperCase().includes(`/XCTESTDEVICES/${udid.toUpperCase()}/`));
 
@@ -126,6 +129,20 @@ function runtimeDevices(procs: ProcRow[], deps: ReaperDeps): Map<string, { udid:
   return byDevice;
 }
 
+/** The pids of `pids` whose environment, read now, still names `udid` in `set`; none when it cannot be read. */
+function stillNamingDevice(pids: number[], udid: string, set: DeviceSet, deps: ReaperDeps): number[] {
+  try {
+    const named = new Set<number>();
+    for (const line of deps.processEnv(pids).split("\n")) {
+      const m = ENV_UDID.exec(line);
+      if (m && m[2]!.toUpperCase() === udid && deviceSetOf(line, udid) === set) named.add(Number(m[1]));
+    }
+    return pids.filter((pid) => named.has(pid));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Runs one cycle and returns the attempts to carry to the next: only devices that still have leftovers. Never throws. A device is acted on
  * only when the list of its own set explicitly reports it `Shutdown` (or, for the idle shutdown, an XCTestDevices clone `Booted`): `simctl
@@ -164,7 +181,7 @@ export function reapSimulators({ procs, idleUdids, attempts, seen }: ReapInput, 
   const nextSeen: Record<string, number[]> = {};
   for (const { udid, set, pids } of leftovers.values()) {
     const state = states[set]?.get(udid);
-    if (state !== "Shutdown" || inUse(udid)) {
+    if (state !== "Shutdown" || inUse(udid) || launchdAlive(procs, udid)) {
       // Unknown this cycle (its list unreadable, or a tool is using it): what was known stays; a device that reads otherwise starts over.
       if (states[set] === undefined || inUse(udid)) {
         if (attempts[udid] !== undefined) next[udid] = attempts[udid]!;
@@ -182,7 +199,9 @@ export function reapSimulators({ procs, idleUdids, attempts, seen }: ReapInput, 
     // The decision was made on an older scan: read the table again for this device's batch and apply the guards to it, signalling only the pids
     // still there as a simulator process of this user. Nothing is done, and what was known stays, when it cannot be read or a guard now holds.
     const fresh = freshTable();
-    const present = fresh && !inUseIn(fresh, udid) ? confirmedPids.filter((pid) => fresh.some((p) => p.pid === pid && p.uid === deps.uid && isSimulatorCommand(p.command))) : [];
+    const stillThere = fresh && !inUseIn(fresh, udid) && !launchdAlive(fresh, udid) ? confirmedPids.filter((pid) => fresh.some((p) => p.pid === pid && p.uid === deps.uid && isSimulatorCommand(p.command))) : [];
+    // A pid can be reused between the scans: its environment is read again, and only a pid that still names this device is signalled.
+    const present = stillThere.length > 0 ? stillNamingDevice(stillThere, udid, set, deps) : [];
     if (present.length === 0) {
       if (attempts[udid] !== undefined) next[udid] = attempts[udid]!;
       nextSeen[udid] = pids;

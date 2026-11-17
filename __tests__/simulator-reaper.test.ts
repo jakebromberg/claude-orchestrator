@@ -546,6 +546,23 @@ describe("reapSimulators", () => {
       expect(signals).toEqual([]);
     });
 
+    it("is left alone when the launchd_sim was in the scan the decision was made on, even if the rescan no longer shows it", () => {
+      freshRows = () => parsePsTable(psText(leftovers));
+      reap([...leftovers, launchd(U1, "CoreSimulator/Devices")]);
+      expect(signals).toEqual([]);
+    });
+
+    it("signals no pid whose environment names another device than its home path does", () => {
+      let calls = 0;
+      const processEnv = (pids: number[]): string => {
+        calls++;
+        const udid = (pid: number): string => (calls > 1 && pid === 301 ? U2 : U1);
+        return pids.map((pid) => `${pid} ${runtimeRow(pid).command} SIMULATOR_UDID=${udid(pid)} HOME=${HOMES.main(U1)}`).join("\n");
+      };
+      reap(leftovers, [], {}, { processEnv });
+      expect(signals).toEqual([[300, "SIGTERM"]]);
+    });
+
     it("is not held back by another device's launchd_sim", () => {
       reap([...leftovers, launchd(U2, "CoreSimulator/Devices")]);
       expect(signals).toHaveLength(2);

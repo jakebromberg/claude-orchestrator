@@ -35,7 +35,8 @@ export function formatAdmitted(a: LeaseHandle["admission"]): string {
 /** The no-slot line; the hook denies with it as the reason. */
 export function formatNoSlot(refusal: LeaseRefusal, status: LeaseStatus): string {
   const holders = status.live.map((h) => `${h.pid} ${h.command}`).join(", ") || "none";
-  return `lease: no slot after ${seconds(refusal.waitedMs)}s (pressure=${refusal.level}, capacity ${status.capacity}${weightsText(status.weights)}, ${status.live.length} live: ${holders}); rerun the command — this is not a test failure`;
+  const unmanaged = refusal.pids?.length ? `; a UI-test run that holds no slot is in progress (pid ${refusal.pids.join(", ")})` : "";
+  return `lease: no slot after ${seconds(refusal.waitedMs)}s (pressure=${refusal.level}, capacity ${status.capacity}${weightsText(status.weights)}, ${status.live.length} live: ${holders})${unmanaged}; rerun the command — this is not a test failure`;
 }
 
 /** The disk-full line; the hook denies with it and the CLI prints it. Unlike `formatNoSlot` it says not to rerun. */
@@ -49,6 +50,10 @@ const uiTestReason = (refusal: LeaseRefusal): string | undefined =>
     ? `the lease directory could not be used for ${seconds(refusal.waitedMs)}s (${refusal.code ?? "I/O error"}), so the UI-test slot was not taken; check the lease directory and rerun the command`
     : refusal.refused === "slot-lost"
       ? "the UI-test slot was lost while waiting for a heavy slot (it expired or was removed); rerun the command"
+      : refusal.refused === "ui-test-running"
+        ? refusal.pids?.length
+          ? `the UI-test slot was not taken: a UI-test run is in progress (pid ${refusal.pids.join(", ")}) that holds no slot; wait for it to end and rerun the command`
+          : `the UI-test slot was not taken: could not tell whether a UI-test run is in progress (the process table was unreadable for ${seconds(refusal.waitedMs)}s); rerun the command`
       : refusal.refused === "nested-ui-test"
         ? "this UI test runs inside another call's lease slot (a hook call's, or a parent's heavy slot with no UI-test slot behind it), and waiting for the UI-test slot while that is held could deadlock; run the UI test as its own Bash call so it takes both slots"
         : undefined;

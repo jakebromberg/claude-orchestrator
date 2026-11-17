@@ -238,7 +238,7 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
     onHold: (release) => {
       releaseHeld = release;
     },
-    onWait: throttledProgress((s) => d.err(`lease: waiting ${seconds(s.waitedMs)}s for a slot (pressure=${s.level}, ${s.live.length}/${s.capacity} live)`), { skipFirst: true }),
+    onWait: throttledProgress((s) => d.err(`lease: waiting ${seconds(s.waitedMs)}s for a slot (pressure=${s.level}, ${s.live.length}/${s.capacity} live${s.unmanagedUiTests?.length ? `; a UI-test run that holds no slot is in progress, pid ${s.unmanagedUiTests.join(", ")}` : ""})`), { skipFirst: true }),
   });
   releaseHeld = undefined;
   if (!("leased" in got)) {

@@ -100,6 +100,8 @@ export function scriptedLease(
         dir,
         // Present, so a spread over `defaultLeaseOptions()` drops its real headroom sampler instead of reading the real sysctl.
         headroom: undefined,
+        // Present for the same reason: a spread over `defaultLeaseOptions()` must not keep its real process-table scan of running UI tests.
+        scanUiTests: undefined,
         level: scriptedPressureSampler(init.level ?? "normal", init.fresh ? { fresh: init.fresh } : {}),
         policy: init.policy ?? { heavyCeiling: 1, heavyWarning: 1 },
         isAlive: (pid) => alive.has(pid),
