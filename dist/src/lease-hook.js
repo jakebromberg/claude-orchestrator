@@ -22,6 +22,7 @@ import { XCODEBUILD_VALUED } from "./ps.js";
 import { acquireLease, defaultLeaseOptions, DETACHED_TTL_MAX_MS, isPid, leaseStatus, releaseHolder } from "./lease.js";
 import { formatAdmitted, formatRefusal } from "./lease-messages.js";
 import { weightFor } from "./lease-weights.js";
+import { simpleCommands } from "./shell-commands.js";
 import { shellQuote } from "./shell-quote.js";
 /**
  * npm/npx options before the subcommand: `--prefix`/`-C`, `--workspace`/`-w` and `--package`/`-p` take a value, and any
@@ -122,14 +123,22 @@ function anySegmentMatches(command, pattern) {
 }
 /** A UI-test action of the build tool: its name (through `xcrun` or a path), any words, then the `test` or `test-without-building` action as a word of its own. */
 const UI_TEST = /(?:(?:xcrun (?:-{1,2}(?:sdk|toolchain)(?:=\S+| \S+) )*)?xcodebuild(?: \S+)* (?:test|test-without-building))(?![\w./-])/y;
+/** The raw-split rule alone: no quote, heredoc or comment tracking, so text that only mentions the action after a separator still matches. `isUiTestCommand` falls back to it for text it cannot tokenize. */
+export const isUiTestCommandUntokenized = (command) => anySegmentMatches(command, UI_TEST);
 /**
- * Whether `command` runs a UI-test action: the build tool, with the test action, as a command (the same segment rule as `isHeavyCommand`, so
- * text that only mentions it, a `grep` pattern, an `echo` or a commit message, is not one). It decides the UI-test class only: a miss
- * leaves the command in the heavy class, where it is still leased, and it never makes a command light. Quotes, heredocs and comments are not tracked.
+ * Whether `command` runs a UI-test action: the build tool, with the `test` or `test-without-building` word, as a command. The text is
+ * tokenized (`simpleCommands`: quotes, escapes, comments, heredocs, `$(...)` and backticks, so a heredoc body, a quoted argument or a
+ * comment that mentions it is text, and a substitution that runs it is not), and each simple command is read past its leading words
+ * (assignments, `nohup`, `time`, `env`, `nice`, `timeout`, `xcrun`, and `sh -c` scripts, recursively). Text it cannot tokenize falls
+ * back to `isUiTestCommandUntokenized`, an approximation that over-matches text after a separator and may miss forms the tokenizer reads. It decides the UI-test
+ * class only: a miss leaves the command in the heavy class, where it is still leased, and it never makes a command light.
  */
-export function isUiTestCommand(command) {
-    return anySegmentMatches(command, UI_TEST);
+export const isUiTestCommand = (command) => uiTestIn(command, 0);
+function uiTestIn(command, depth) {
+    const commands = depth > MAX_SCRIPT_DEPTH ? undefined : simpleCommands(command);
+    return commands === undefined ? isUiTestCommandUntokenized(command) : commands.some((words) => runsUiTest(words, (script) => uiTestIn(script, depth + 1)));
 }
+const MAX_SCRIPT_DEPTH = 8;
 /** `xcodebuild` options that take a separate value, so a value that reads `test` (a scheme or project of that name) is not the action. */
 const XCRUN_VALUED = /^-{1,2}(?:sdk|toolchain)$/;
 /**

@@ -22,12 +22,17 @@ import { type LeaseOptions } from "./lease.js";
  * ignored; every pattern is anchored at the command word and followed by an end boundary (not `\w`, `.`, `/` or `-`).
  */
 export declare function isHeavyCommand(command: string, extraPatterns?: readonly string[], heavyQueueShim?: () => boolean): boolean;
+/** The raw-split rule alone: no quote, heredoc or comment tracking, so text that only mentions the action after a separator still matches. `isUiTestCommand` falls back to it for text it cannot tokenize. */
+export declare const isUiTestCommandUntokenized: (command: string) => boolean;
 /**
- * Whether `command` runs a UI-test action: the build tool, with the test action, as a command (the same segment rule as `isHeavyCommand`, so
- * text that only mentions it, a `grep` pattern, an `echo` or a commit message, is not one). It decides the UI-test class only: a miss
- * leaves the command in the heavy class, where it is still leased, and it never makes a command light. Quotes, heredocs and comments are not tracked.
+ * Whether `command` runs a UI-test action: the build tool, with the `test` or `test-without-building` word, as a command. The text is
+ * tokenized (`simpleCommands`: quotes, escapes, comments, heredocs, `$(...)` and backticks, so a heredoc body, a quoted argument or a
+ * comment that mentions it is text, and a substitution that runs it is not), and each simple command is read past its leading words
+ * (assignments, `nohup`, `time`, `env`, `nice`, `timeout`, `xcrun`, and `sh -c` scripts, recursively). Text it cannot tokenize falls
+ * back to `isUiTestCommandUntokenized`, an approximation that over-matches text after a separator and may miss forms the tokenizer reads. It decides the UI-test
+ * class only: a miss leaves the command in the heavy class, where it is still leased, and it never makes a command light.
  */
-export declare function isUiTestCommand(command: string): boolean;
+export declare const isUiTestCommand: (command: string) => boolean;
 /**
  * Whether one simple command, given as its words, runs a UI-test action: past its leading words (assignments, `nohup`, `exec`, `command`,
  * `time`, `env`, `nice`, `timeout`, `xcrun` and its sdk options), the command word's basename is `xcodebuild` and an argument that is not an
