@@ -146,6 +146,24 @@ export const isUiTestCommandUntokenized = (command: string): boolean => anySegme
  */
 export const isUiTestCommand = (command: string): boolean => uiTestIn(command, 0);
 
+/**
+ * Whether `command` runs a UI-test action that is backgrounded: the shell then returns at once, so `PostToolUse` would release the run's slots
+ * while it still runs. Decided from the tokenizer: the simple command that runs it, or a pipeline, and-or list, group or subshell holding it, is
+ * followed by an `&` separator (a script it runs through `sh -c` or a heredoc is read the same way); an `&` that backgrounds some other command
+ * does not count. Text it cannot tokenize falls back to the conservative raw check. Claude Code's own mid-run backgrounding (Ctrl+B) is not seen.
+ */
+export const uiRunBackgrounded = (command: string): boolean => backgroundedIn(command, 0);
+
+function backgroundedIn(command: string, depth: number): boolean {
+  const commands = depth > MAX_SCRIPT_DEPTH ? undefined : shellCommands(command);
+  if (commands === undefined) return isUiTestCommandUntokenized(command) && rawUiRunBackgrounded(command);
+  return commands.some((c) => {
+    let inScriptBackgrounded = false;
+    const runs = runsUiTest(c.words, (script) => ((inScriptBackgrounded = backgroundedIn(script, depth + 1)), uiTestIn(script, depth + 1)), c.stdin);
+    return runs && (c.background === true || inScriptBackgrounded);
+  });
+}
+
 function uiTestIn(command: string, depth: number): boolean {
   const commands = depth > MAX_SCRIPT_DEPTH ? undefined : shellCommands(command);
   return commands === undefined ? isUiTestCommandUntokenized(command) : commands.some((c) => runsUiTest(c.words, (script) => uiTestIn(script, depth + 1), c.stdin));
@@ -162,6 +180,8 @@ const UI_WRAPPERS = new Map<string, RegExp>([
   ["env", /^-[uCSP]$/],
   ["nice", /^-n$/],
   ["timeout", /^-[ks]$/],
+  ["gtimeout", /^-[ks]$/],
+  ["stdbuf", /^-[ioe]$/],
   ["taskpolicy", /^-[dgcmjPStlp]$/],
   ["caffeinate", /^-[tw]$/],
   ["arch", /^-(?:arch|d|e)$/],
@@ -184,7 +204,7 @@ export function runsUiTest(words: readonly string[], inScript: (script: string) 
     if (wrapper) {
       let j = i + 1;
       while (words[j]?.startsWith("-")) j += wrapper.test(words[j]!) ? 2 : 1;
-      i = name === "timeout" ? j : j - 1; // `timeout` also takes a duration
+      i = name === "timeout" || name === "gtimeout" ? j : j - 1; // `timeout` also takes a duration
       continue;
     }
     if (/^(?:ba|z)?sh$/.test(name)) {
@@ -350,12 +370,12 @@ const MAX_CALL_TIMEOUT_MS = DETACHED_TTL_MAX_MS - GRACE_MS;
 const TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DENY_BACKGROUNDED_UI = "lease: no slot after 0s: run a UI test in the foreground (no & that backgrounds it) so the lease can hold its slots for as long as it runs; rerunning the same command will not help";
 /**
- * Whether a UI-test command line may background work: an unquoted single `&` that is not part of `&&`, `>&`, `<&`, `&>` or `|&`, after quoted text and
+ * The raw check, for text the tokenizer cannot parse: whether a command line may background work: an unquoted single `&` that is not part of `&&`, `>&`, `<&`, `&>` or `|&`, after quoted text and
  * backslash-escaped characters are blanked. `PostToolUse` fires when the backgrounded shell returns, so its slots would be released while the test
  * still runs; the line is denied instead. Conservative (it does not know which command the `&` follows): it can deny a line whose `&` backgrounds
  * something else. Claude Code's own mid-run backgrounding (Ctrl+B) is not seen at all and can still release the slots early.
  */
-export function uiRunBackgrounded(command: string): boolean {
+function rawUiRunBackgrounded(command: string): boolean {
   const bare = command.replace(/\\./gs, "  ").replace(/'[^']*'/g, "''").replace(/"(?:\\.|[^"\\])*"/gs, '""');
   return /(?<![&>|<])&(?![&>])/.test(bare);
 }
