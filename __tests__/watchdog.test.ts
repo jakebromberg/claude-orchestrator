@@ -195,6 +195,69 @@ describe("watchdog", () => {
     });
   });
 
+  // Issue #324 review: a test action that hangs holds the machine in fact, with no UI-class holder to show for it: UI-test runs wait behind it (the lease's
+  // process scan) and simulator reaping stands down (its test-action guard). The watchdog says so and never touches the process.
+  describe("a hung test action", () => {
+    const TEST = "xcodebuild test -scheme App -destination 'platform=iOS Simulator,name=iPhone'";
+    const hung = () => JSON.parse(readFileSync(join(dir, "watchdog.json"), "utf-8")).findings.map((f: { message: string }) => f.message).filter((m: string) => m.includes("hung"));
+    const at = (etime: string, command = TEST, pid = 900): Row[] => [[pid, 50, pid, "S", command, etime]];
+
+    it.each([
+      ["29 minutes", "29:00", false],
+      ["30 minutes", "30:00", true],
+      ["two hours", "02:00:00", true],
+      ["more than a day", "1-02:00:00", true],
+    ])("is reported at %s: %s", (_name, etime, reported) => {
+      rows = [...SESSION, ...at(etime)];
+      checkAt(0);
+      expect(hung()).toHaveLength(reported ? 1 : 0);
+    });
+
+    it("names its pid and age and says UI-test runs and simulator reaping are paused behind it, and that it is not killed", () => {
+      rows = [...SESSION, ...at("02:05:00")];
+      checkAt(0);
+      const [message] = hung();
+      expect(message).toContain("pid 900");
+      expect(message).toContain("2h");
+      expect(message).toMatch(/UI-test runs/);
+      expect(message).toMatch(/simulator reaping/);
+      expect(message).toMatch(/not killed|left running/);
+    });
+
+    it("is silent while a UI-test holder exists, whatever else is true", () => {
+      writeRecord("ui-tests", "1234-ab.json", { id: "1234-ab", pid: 1234, command: "xcodebuild test", cwd: "/", startedAt: now, level: "normal" });
+      rows = [...SESSION, ...at("02:05:00")];
+      checkAt(0);
+      expect(hung()).toEqual([]);
+    });
+
+    it("reports a test action under xcrun and by Xcode path, and not a shell, a grep or a build action that only mentions it", () => {
+      rows = [
+        ...SESSION,
+        ...at("01:00:00", "xcrun xcodebuild test -scheme A", 901),
+        ...at("01:00:00", "/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test", 902),
+        ...at("01:00:00", `/bin/zsh -c eval 'cd /w && ${TEST}'`, 903),
+        ...at("01:00:00", "grep -rn 'xcodebuild test' docs", 904),
+        ...at("01:00:00", "xcodebuild build -scheme A", 905),
+      ];
+      checkAt(0);
+      expect(hung().map((m: string) => /pid (\d+)/.exec(m)![1])).toEqual(["901", "902"]);
+    });
+
+    it("is reported once while it lasts, and shows in the brief", () => {
+      rows = [...SESSION, ...at("02:00:00")];
+      checkAt(0);
+      checkAt(2);
+      expect(readFileSync(join(dir, "watchdog.log"), "utf-8").split("\n").filter((l) => l.includes("hung"))).toHaveLength(1);
+      expect(brief()).toContain("hung");
+    });
+
+    it("sends no signal: the process is not a dependency of the watchdog", () => {
+      rows = [...SESSION, ...at("02:00:00")];
+      expect(checkAt(0)).toBe(0);
+    });
+  });
+
   describe("unrecorded stopped groups", () => {
     it("is quiet at 4 minutes after first seen and reports at 6", () => {
       expect(checkAt(0)).toBe(0);

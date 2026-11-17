@@ -544,7 +544,7 @@ describe("runLeased", () => {
         expect(code).toBe(75);
         expect(ancestors).toHaveBeenCalled();
         expect(err.join("\n")).toContain("own Bash call");
-        expect(err.join("\n")).not.toContain("lease: no slot after");
+        expect(err.join("\n")).toMatch(/^lease: no slot after 0s: /);
         expect(spawned).toEqual([]);
         expect(lease.events).toEqual([]);
         expect(existsSync(join(dir, "ui-tests")) ? readdirSync(join(dir, "ui-tests")) : []).toEqual([]);

@@ -86,6 +86,7 @@ describe("hook mode and the UI-test class", () => {
     const out = JSON.parse(await run(call("PreToolUse", command)));
     expect(out.hookSpecificOutput).toMatchObject({ permissionDecision: "deny" });
     expect(out.hookSpecificOutput.permissionDecisionReason).toContain("foreground");
+    expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/^lease: no slot after 0s: /);
     expect([names("ui-tests"), names("holders")]).toEqual([[], []]);
   });
 

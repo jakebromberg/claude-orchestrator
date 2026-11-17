@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { ancestry, groupAlive, signalGroup, isPid, pidAlive, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, isSimulatorCommand, runsTool, simulatorUdid, xcTestDeviceUdid, XCODE_TOOLS, isXcodebuildTestProcess, runningUiTestPids, type ProcRow } from "../src/ps.js";
+import { ancestry, groupAlive, signalGroup, isPid, pidAlive, parseElapsed, parsePsTable, ps, psField, psAncestors, PS_TABLE_ARGS, isSimulatorCommand, runsTool, simulatorUdid, xcTestDeviceUdid, XCODE_TOOLS, isTestRunnerProcess, isXcodebuildTestProcess, runningUiTestPids, XCODEBUILD_VALUED, type ProcRow } from "../src/ps.js";
 import { psText } from "./helpers/ps-text.js";
 
 vi.mock("node:child_process", async (orig) => ({ ...(await orig<typeof import("node:child_process")>()), execFileSync: vi.fn() }));
@@ -233,6 +233,9 @@ describe("isXcodebuildTestProcess", () => {
     ["through xcrun", `xcrun ${TOOL} test -scheme App`],
     ["through xcrun with options", `xcrun --sdk iphonesimulator ${TOOL} test`],
     ["a preceding action", `${TOOL} clean test`],
+    ["a scheme named test and then the action", `${TOOL} -scheme test test`],
+    ["a flag, not a valued option, before the action", `${TOOL} -retry-tests-on-failure test`],
+    ["a path with spaces in an .app bundle", `/Applications/Xcode Beta 2.app/Contents/Developer/usr/bin/${TOOL} -scheme A test`],
   ])("is true for %s", (_name, command) => {
     expect(isXcodebuildTestProcess(command)).toBe(true);
   });
@@ -248,6 +251,13 @@ describe("isXcodebuildTestProcess", () => {
     ["a longer action", `${TOOL} testing`],
     ["no action", TOOL],
     ["an empty command", ""],
+    // Issue #324 review: an option's value is not the action, and the path prefix does not run across the spaces of another command.
+    ["a scheme named test and a build action", `${TOOL} -scheme test build`],
+    ["a project named test", `${TOOL} -project test -scheme App build`],
+    ["a destination named test", `${TOOL} -destination test build`],
+    ["a shell whose script ends in the build tool and test", `/bin/zsh -c cd /w && /Applications/Xcode.app/Contents/Developer/usr/bin/${TOOL} test`],
+    ["a shell with a later path to the build tool", `/bin/sh -c /x/y/${TOOL} test`],
+    ["a wrapper that is not the build tool itself", `/usr/bin/time -l /x/${TOOL} test`],
   ])("is false for %s", (_name, command) => {
     expect(isXcodebuildTestProcess(command)).toBe(false);
   });
@@ -272,5 +282,50 @@ describe("runningUiTestPids", () => {
 
   it("lists nothing for an empty table", () => {
     expect(runningUiTestPids([], 501, 99)).toEqual([]);
+  });
+});
+
+
+// Issue #324 review: Xcode.app (Cmd-U) spawns no build-tool process, so a run it drives shows as its test runner: a UI-test runner app (an executable under a
+// `*-Runner.app/` bundle) or an `xctest` process.
+describe("isTestRunnerProcess", () => {
+  const APP = "/Users/x/Library/Developer/CoreSimulator/Devices/5E2F590B-1111-4222-8333-444455556666/data/Containers/Bundle/Application/ABC123";
+  it.each<[string, string]>([
+    ["a UI-test runner in a simulator container", `${APP}/AppUITests-Runner.app/AppUITests-Runner`],
+    ["a runner built in DerivedData", "/Users/x/Library/Developer/Xcode/DerivedData/App-abcdef/Build/Products/Debug-iphonesimulator/AppUITests-Runner.app/AppUITests-Runner"],
+    ["a runner under a path with spaces in an .app", "/Applications/My Tools.app/Contents/Build/AppUITests-Runner.app/AppUITests-Runner"],
+    ["a macOS runner with arguments", "/x/Build/Products/Debug/AppUITests-Runner.app/Contents/MacOS/AppUITests-Runner -NSDocumentRevisionsDebugMode YES"],
+    ["xctest by Xcode path", "/Applications/Xcode.app/Contents/Developer/usr/bin/xctest /x/AppTests.xctest"],
+    ["xctest in a simulator runtime", "/Library/Developer/CoreSimulator/Volumes/iOS_23A/Library/Developer/CoreSimulator/Runtimes/iOS 27.2.simruntime/Contents/Resources/RuntimeRoot/Developer/Library/Xcode/Agents/xctest -XCTestBundlePath x"],
+    ["xctest by name", "xctest -XCTest All /x/AppTests.xctest"],
+  ])("is true for %s", (_name, command) => {
+    expect(isTestRunnerProcess(command)).toBe(true);
+  });
+
+  it.each<[string, string]>([
+    ["an app that is not a runner", `${APP}/App.app/App`],
+    ["a name that only ends in Runner", `${APP}/GameRunner.app/GameRunner`],
+    ["a path component that merely mentions it", "/usr/bin/grep -r -Runner.app/ /x"],
+    ["a shell script that holds the words", "/bin/zsh -c open AppUITests-Runner.app/AppUITests-Runner"],
+    ["a tool whose name contains xctest", "/usr/bin/xctestrun-tool run"],
+    ["a similar name", "myxctest run"],
+    ["an empty command", ""],
+  ])("is false for %s", (_name, command) => {
+    expect(isTestRunnerProcess(command)).toBe(false);
+  });
+});
+
+describe("runningUiTestPids and a test runner", () => {
+  const row = (pid: number, ppid: number, command: string, uid = 501) => ({ pid, ppid, pgid: pid, uid, stat: "S", elapsedMs: 0, rssBytes: 0, command });
+  it("counts a runner or xctest process of this user as a test in progress, and not another user's, and not the asking process's ancestry", () => {
+    const rows = [row(10, 1, "/x/AppUITests-Runner.app/AppUITests-Runner"), row(11, 1, "xctest /x/T.xctest"), row(12, 1, "/x/AppUITests-Runner.app/AppUITests-Runner", 0), row(20, 1, "/x/AppUITests-Runner.app/AppUITests-Runner"), row(99, 20, "wrapper")];
+    expect(runningUiTestPids(rows, 501, 99)).toEqual([10, 11]);
+  });
+});
+
+describe("XCODEBUILD_VALUED", () => {
+  it("is the one table of the build tool's options that take a value, shared by the hook's classifier and the process classifier", () => {
+    for (const option of ["scheme", "project", "destination", "xctestrun", "only-testing"]) expect(XCODEBUILD_VALUED.test(`-${option}`)).toBe(true);
+    for (const flag of ["retry-tests-on-failure", "quiet", "enumerate-tests"]) expect(XCODEBUILD_VALUED.test(`-${flag}`)).toBe(false);
   });
 });

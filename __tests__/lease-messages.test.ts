@@ -65,11 +65,19 @@ describe("UI-test refusals", () => {
   ])("$refused has its own line, exit code 75 and no no-slot prefix", ({ refused, has }) => {
     const text = formatRefusal(ui(refused), status);
     for (const part of has) expect(text).toContain(part);
-    expect(text).not.toContain("lease: no slot after");
+    // The standard prefix, so the "stop after the second no-slot denial" rule and a give-up rule that matches it count this refusal too.
+    expect(text.startsWith("lease: no slot after 61s")).toBe(true);
     expect(refusalExitCode(ui(refused))).toBe(75);
     expect(formatPostCheckStop(ui(refused))).toContain("UI-test");
     expect(formatPostCheckStop(ui(refused))).not.toContain("memory pressure");
     expect(formatPostCheckStop(ui(refused))).not.toContain("will not be retried");
+  });
+
+  it.each(["io-error", "slot-lost", "nested-ui-test", "ui-test-running"] as const)("%s, with or without pids, starts with `lease: no slot after <n>s`", (refused) => {
+    for (const pids of [undefined, [4242]]) {
+      const text = formatRefusal({ refused, waitedMs: 12_300, level: "normal", live: 0, class: "ui-tests", ...(pids && { pids }) }, status);
+      expect(text).toMatch(/^lease: no slot after 12s[:( ]/);
+    }
   });
 
   it("says an unmanaged UI-test run is in progress, with its pids, in the no-slot line and the refusal of a run that could not be ruled out", () => {
