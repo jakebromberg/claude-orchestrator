@@ -23,7 +23,7 @@ import { XCODEBUILD_VALUED } from "./ps.js";
 import { acquireLease, defaultLeaseOptions, DETACHED_TTL_MAX_MS, isPid, leaseStatus, releaseHolder, type LeaseOptions } from "./lease.js";
 import { formatAdmitted, formatRefusal } from "./lease-messages.js";
 import { weightFor } from "./lease-weights.js";
-import { simpleCommands } from "./shell-commands.js";
+import { shellCommands } from "./shell-commands.js";
 import { shellQuote } from "./shell-quote.js";
 
 /**
@@ -147,13 +147,25 @@ export const isUiTestCommandUntokenized = (command: string): boolean => anySegme
 export const isUiTestCommand = (command: string): boolean => uiTestIn(command, 0);
 
 function uiTestIn(command: string, depth: number): boolean {
-  const commands = depth > MAX_SCRIPT_DEPTH ? undefined : simpleCommands(command);
-  return commands === undefined ? isUiTestCommandUntokenized(command) : commands.some((words) => runsUiTest(words, (script) => uiTestIn(script, depth + 1)));
+  const commands = depth > MAX_SCRIPT_DEPTH ? undefined : shellCommands(command);
+  return commands === undefined ? isUiTestCommandUntokenized(command) : commands.some((c) => runsUiTest(c.words, (script) => uiTestIn(script, depth + 1), c.stdin));
 }
 
 const MAX_SCRIPT_DEPTH = 8;
 
-/** `xcodebuild` options that take a separate value, so a value that reads `test` (a scheme or project of that name) is not the action. */
+/**
+ * Wrappers the UI classifier looks through, by basename (`/usr/bin/time`, `/usr/sbin/taskpolicy`), each with its options that take a value
+ * (`man taskpolicy`, `caffeinate`, `arch`, `time`, `env`, `nice`, `timeout`); every other option is a flag. The heavy matcher has its own, smaller table (#327).
+ */
+const UI_WRAPPERS = new Map<string, RegExp>([
+  ["time", /^-o$/],
+  ["env", /^-[uCSP]$/],
+  ["nice", /^-n$/],
+  ["timeout", /^-[ks]$/],
+  ["taskpolicy", /^-[dgcmjPStlp]$/],
+  ["caffeinate", /^-[tw]$/],
+  ["arch", /^-(?:arch|d|e)$/],
+]);
 const XCRUN_VALUED = /^-{1,2}(?:sdk|toolchain)$/;
 
 /**
@@ -162,22 +174,28 @@ const XCRUN_VALUED = /^-{1,2}(?:sdk|toolchain)$/;
  * option's value is `test` or `test-without-building`. A `sh -c` script goes to `inScript`. A caller that already has the words (the
  * CLI's argv) uses it directly, so quoting is never lost to a join.
  */
-export function runsUiTest(words: readonly string[], inScript: (script: string) => boolean): boolean {
+export function runsUiTest(words: readonly string[], inScript: (script: string) => boolean, stdin?: string): boolean {
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!;
     if (/^[A-Za-z_]\w*=/.test(w) || PREFIX_WORDS.has(w) || w === "{" || w === "}") continue;
-    const wrapper = WRAPPERS.get(w);
+    const name = path.basename(w);
+    const wrapper = UI_WRAPPERS.get(name);
     if (wrapper) {
       let j = i + 1;
       while (words[j]?.startsWith("-")) j += wrapper.test(words[j]!) ? 2 : 1;
-      i = w === "timeout" ? j : j - 1; // `timeout` also takes a duration
+      i = name === "timeout" ? j : j - 1; // `timeout` also takes a duration
       continue;
     }
-    const name = path.basename(w);
     if (/^(?:ba|z)?sh$/.test(name)) {
       let j = i + 1;
-      while (words[j]?.startsWith("-") && !/^-[a-z]*c$/.test(words[j]!)) j += /^-[a-z]*o$/.test(words[j]!) ? 2 : 1;
-      return /^-[a-z]*c$/.test(words[j] ?? "") && inScript(words[words[j + 1] === "--" ? j + 2 : j + 1] ?? "");
+      let readsStdin = false;
+      while (words[j]?.startsWith("-") && !/^-[a-z]*c$/.test(words[j]!)) {
+        if (/^-[a-z]*s[a-z]*$/.test(words[j]!)) readsStdin = true;
+        j += /^-[a-z]*o$/.test(words[j]!) ? 2 : 1;
+      }
+      if (/^-[a-z]*c$/.test(words[j] ?? "")) return inScript(words[words[j + 1] === "--" ? j + 2 : j + 1] ?? "");
+      // No script operand (or `-s`): the shell reads its script from stdin, so a heredoc fed to it is run.
+      return (readsStdin || words[j] === undefined) && stdin !== undefined && inScript(stdin);
     }
     if (name === "xcrun") {
       while (words[i + 1]?.startsWith("-")) i += XCRUN_VALUED.test(words[i + 1]!) ? 2 : 1;

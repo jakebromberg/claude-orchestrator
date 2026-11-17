@@ -17,29 +17,44 @@ interface Heredoc {
   stripTabs: boolean;
   /** An unquoted delimiter: the body expands `$(...)` and backticks, so they run. */
   expands: boolean;
+  /** The command that holds the operator, set when that command ends; its `stdin` is the body. */
+  owner?: ShellCommand;
 }
 
 const isSpace = (c: string): boolean => c === " " || c === "\t" || c === "\r";
 /** Characters that end a heredoc delimiter word. */
 const DELIMITER_END = /[\s;|&()<>]/;
 
+/** One simple command: its words, and the body of the last heredoc fed to it, which is its stdin. */
+export interface ShellCommand {
+  words: string[];
+  stdin?: string;
+}
+
 /** The simple commands of `text`, in order of completion (a command inside a substitution is listed before the command that holds it), or `undefined` when it cannot be parsed. */
-export function simpleCommands(text: string): string[][] | undefined {
-  const out: string[][] = [];
+export function shellCommands(text: string): ShellCommand[] | undefined {
+  const out: ShellCommand[] = [];
   return parse(text, 0, false, 0, out) === undefined ? undefined : out;
+}
+
+/** `shellCommands`, as the words of each command only. */
+export function simpleCommands(text: string): string[][] | undefined {
+  return shellCommands(text)?.map((c) => c.words);
 }
 
 /**
  * Parses `text` from `from`: to its end, or, with `closer`, to the `)` that closes a `$(` (returned index is just past it). Pushes each simple
  * command to `out`. Returns the end index, or `undefined` on text it cannot parse.
  */
-function parse(text: string, from: number, closer: boolean, depth: number, out: string[][]): number | undefined {
+function parse(text: string, from: number, closer: boolean, depth: number, out: ShellCommand[]): number | undefined {
   if (depth > MAX_DEPTH) return undefined;
   let words: string[] = [];
   let word = "";
   let inWord = false;
   let parens = 0;
   const heredocs: Heredoc[] = [];
+  /** The heredocs opened by the command being read; its end gives them an owner, which a later body read fills. */
+  let opened: Heredoc[] = [];
   const endWord = (): void => {
     if (inWord) words.push(word);
     word = "";
@@ -47,7 +62,12 @@ function parse(text: string, from: number, closer: boolean, depth: number, out: 
   };
   const endCommand = (): void => {
     endWord();
-    if (words.length > 0) out.push(words);
+    if (words.length > 0) {
+      const command: ShellCommand = { words };
+      out.push(command);
+      for (const h of opened) h.owner = command;
+    }
+    opened = [];
     words = [];
   };
   /** A substitution inside a word contributes an empty piece: the word exists, its value is unknown. */
@@ -95,6 +115,8 @@ function parse(text: string, from: number, closer: boolean, depth: number, out: 
         body.push(line);
         if (atEnd) return undefined;
       }
+      const bodyText = (h.stripTabs ? body.map((l) => l.replace(/^\t+/, "")) : body).join("\n");
+      if (h.owner) h.owner.stdin = bodyText;
       if (h.expands && !expandBody(body.join("\n"))) return undefined;
     }
     return Math.min(i, text.length);
@@ -124,7 +146,9 @@ function parse(text: string, from: number, closer: boolean, depth: number, out: 
       }
     }
     if (!any) return undefined;
-    heredocs.push({ delimiter, stripTabs, expands });
+    const heredoc: Heredoc = { delimiter, stripTabs, expands };
+    heredocs.push(heredoc);
+    opened.push(heredoc);
     return i;
   };
 
