@@ -346,6 +346,8 @@ describe("hasXcodeAppAncestor", () => {
     ["another app's main executable", "/Applications/Safari.app/Contents/MacOS/Safari"],
     ["Xcode's helper, not its main executable", "/Applications/Xcode.app/Contents/SharedFrameworks/XcodeHelper"],
     ["a name that only contains Xcode", "/Applications/NotXcode.app/Contents/MacOS/NotXcode"],
+    ["another app whose executable is named Xcode", "/Applications/Other.app/Contents/MacOS/Xcode"],
+    ["an executable whose name only starts with Xcode", "/Applications/Xcode.app/Contents/MacOS/XcodeHelper"],
   ])("does not find %s", (_name, command) => {
     expect(hasXcodeAppAncestor([row(1000, 1, command), row(1002, 1000, "xctest")], 1002)).toBe(false);
   });
