@@ -98,14 +98,18 @@ function ancestorHookSlot(opts, d) {
         return undefined;
     }
 }
+/** Reads the lease into the shape `status` prints; throws what `leaseOptions` or `leaseStatus` throws. */
+export function statusView(d, opts) {
+    const { level, capacity, live, weights, sessions, waiting } = d.leaseStatus(opts);
+    const unowned = d.unowned?.(opts, (sessions?.live ?? []).map((h) => h.pid), live.flatMap((h) => h.childPid ?? (h.expiresAt !== undefined ? h.pid : [])));
+    const holders = live.map((h) => ({ pid: h.pid, command: h.command, ageSec: h.ageSec, ...(h.override && { override: true }), ...(h.suspended && { suspended: true }), ...(h.priority && { priority: h.priority }) }));
+    return { level, capacity, live: holders, ...(waiting?.length && { waiting }), ...(weights && { weights }), ...(unowned && { unowned }) };
+}
 export function runStatus(d) {
     const opts = optionsOrReport(d);
     if (!opts)
         return EX_CONFIG;
-    const { level, capacity, live, weights, sessions, waiting } = d.leaseStatus(opts);
-    const unowned = d.unowned?.(opts, (sessions?.live ?? []).map((h) => h.pid), live.flatMap((h) => h.childPid ?? (h.expiresAt !== undefined ? h.pid : [])));
-    const holders = live.map((h) => ({ pid: h.pid, command: h.command, ageSec: h.ageSec, ...(h.override && { override: true }), ...(h.suspended && { suspended: true }), ...(h.priority && { priority: h.priority }) }));
-    d.out(`${JSON.stringify({ level, capacity, live: holders, ...(waiting?.length && { waiting }), ...(weights && { weights }), ...(unowned && { unowned }) }, null, 2)}\n`);
+    d.out(`${JSON.stringify(statusView(d, opts), null, 2)}\n`);
     return 0;
 }
 /** Waits for a slot, runs the command with it held, and returns the exit code to pass through. */

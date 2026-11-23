@@ -69,6 +69,24 @@ export interface LeaseCliDeps {
     };
 }
 export declare function parseLeaseArgs(argv: string[]): LeaseArgs;
+/** What `status` prints: the heavy class's level, capacity, live holders, waiting tickets, weights and the memory the lease does not own. */
+export interface StatusView {
+    level: LeaseStatus["level"];
+    capacity: number;
+    live: {
+        pid: number;
+        command: string;
+        ageSec: number;
+        override?: true;
+        suspended?: true;
+        priority?: "high";
+    }[];
+    waiting?: NonNullable<LeaseStatus["waiting"]>;
+    weights?: NonNullable<LeaseStatus["weights"]>;
+    unowned?: UnownedMemory;
+}
+/** Reads the lease into the shape `status` prints; throws what `leaseOptions` or `leaseStatus` throws. */
+export declare function statusView(d: Pick<LeaseCliDeps, "leaseStatus" | "unowned">, opts: LeaseOptions): StatusView;
 export declare function runStatus(d: LeaseCliDeps): number;
 /** Waits for a slot, runs the command with it held, and returns the exit code to pass through. */
 export declare function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>;

@@ -5,26 +5,35 @@
  *   heavy-queue run --label "<session>: <what>" [--priority normal|high] [--no-suspend] -- <cmd> [args...]
  *   heavy-queue run --label "<session>: <what>" [--priority normal|high] [--no-suspend] --shell '<command line>'
  *   heavy-queue status
+ *   heavy-queue watch [--interval <sec>]
  *
  * Installed as `claude-orchestrator-heavy-queue`, and behind a two-line `sh` shim at heavy-queue's old path (README, "Heavy-command lease").
  * A run waits with no cap (no `--max-wait`, `CO_LEASE_MAX_WAIT` ignored, never exit 75), in its own gated, background, suspendable
  * holder with no ancestor borrow, and returns the command's exit code (`--priority high`: first in line, no `taskpolicy -b`, never suspendable, every limit kept); a usage error exits 2, disk full 74, a bad lease directory 78.
- * `status` is the lease's own (`runStatus`). The run function lives in `lease-run.ts`; this file never imports `cli-lease.ts`, which runs a startup check at load.
+ * `status` is the lease's own (`runStatus`); `watch` redraws the same view as tables every interval (2 s by default) until Ctrl-C (`heavy-queue-watch.ts`). The run function lives in `lease-run.ts`; this file never imports `cli-lease.ts`, which runs a startup check at load.
  */
 
-import { cliLeaseDeps, runLeased, runStatus, type LeaseArgs, type LeaseCliDeps } from "./lease-run.js";
+import { cliLeaseDeps, runLeased, runStatus, statusView, type LeaseArgs, type LeaseCliDeps } from "./lease-run.js";
+import { runWatch, type WatchArgs, type WatchDeps } from "./heavy-queue-watch.js";
 import { isEntryPoint } from "./entry-point.js";
 
 const EX_USAGE = 2;
 const USAGE = `usage: heavy-queue run --label "<session>: <what>" [--priority normal|high] [--no-suspend] (-- <cmd> [args...] | --shell '<command line>')
-       heavy-queue status`;
+       heavy-queue status
+       heavy-queue watch [--interval <sec>]`;
+const DEFAULT_WATCH_INTERVAL_SEC = 2;
 
 /**
- * Parses heavy-queue's arguments (`run [--label L] [--priority normal|high] [--no-suspend] (--shell C | -- argv...)`, `status`); `undefined` is a usage error.
+ * Parses heavy-queue's arguments (`run [--label L] [--priority normal|high] [--no-suspend] (--shell C | -- argv...)`, `status`, `watch [--interval S]`); `undefined` is a usage error.
  * The options come in any order before the command, each at most once. `--priority normal` parses to the same result as no `--priority`.
  */
-export function parseHeavyQueueArgs(argv: string[]): LeaseArgs | undefined {
+export function parseHeavyQueueArgs(argv: string[]): LeaseArgs | WatchArgs | undefined {
   if (argv[0] === "status") return { kind: "status" };
+  if (argv[0] === "watch") {
+    if (argv.length === 1) return { kind: "watch", intervalSec: DEFAULT_WATCH_INTERVAL_SEC };
+    const sec = Number(argv[2]);
+    return argv.length === 3 && argv[1] === "--interval" && argv[2]!.trim() !== "" && Number.isFinite(sec) && sec > 0 ? { kind: "watch", intervalSec: sec } : undefined;
+  }
   if (argv[0] !== "run") return undefined;
   let rest = argv.slice(1);
   let label: string | undefined;
@@ -42,12 +51,29 @@ export function parseHeavyQueueArgs(argv: string[]): LeaseArgs | undefined {
   return command && { kind: "run", label: label ?? "unlabelled", ...command, ...(noSuspend && { noSuspend }), ...(high && { priority: "high" as const }), gated: true, background: true, suspendable: true, uncapped: true };
 }
 
-export async function runHeavyQueue(argv: string[], d: LeaseCliDeps): Promise<number> {
+/** `watch`'s process side: the lease read through `d`, the terminal and signals through `process`. */
+export function processWatchDeps(d: LeaseCliDeps): WatchDeps {
+  return {
+    status: () => statusView(d, d.leaseOptions()),
+    now: () => new Date(),
+    every: (fn, ms) => {
+      const t = setInterval(fn, ms);
+      return () => clearInterval(t);
+    },
+    write: (t) => void process.stdout.write(t),
+    isTTY: process.stdout.isTTY === true,
+    columns: () => process.stdout.columns || 120,
+    signals: process,
+  };
+}
+
+export async function runHeavyQueue(argv: string[], d: LeaseCliDeps, watchDeps: (d: LeaseCliDeps) => WatchDeps = processWatchDeps): Promise<number> {
   const args = parseHeavyQueueArgs(argv);
   if (!args) {
     d.err(USAGE);
     return EX_USAGE;
   }
+  if (args.kind === "watch") return runWatch(args, watchDeps(d));
   return args.kind === "status" ? runStatus(d) : runLeased(args, d);
 }
 
