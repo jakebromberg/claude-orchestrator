@@ -39,8 +39,8 @@ export interface LeaseChild {
     once(event: "error", cb: (err: NodeJS.ErrnoException) => void): unknown;
 }
 export interface LeaseCliDeps {
-    /** Throws on a configuration error (a relative `CO_LEASE_DIR`). */
-    leaseOptions(): LeaseOptions;
+    /** Throws on a configuration error (a relative `CO_LEASE_DIR`). `warn` takes the options' warnings in place of `err`. */
+    leaseOptions(warn?: (line: string) => void): LeaseOptions;
     acquire: typeof acquireLease;
     leaseStatus(opts: LeaseOptions): LeaseStatus;
     /** The memory the lease does not own, given the live session holders' pids and the heavy holders' owned roots (child pid, or a hook holder's session pid); absent or `undefined`, `status` omits it. */

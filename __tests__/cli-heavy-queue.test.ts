@@ -108,6 +108,29 @@ describe("runHeavyQueue", () => {
       expect(await done).toBe(code);
     });
 
+    it("builds watch's lease options once and draws their warnings in the frame, never on stderr", async () => {
+      let built = 0;
+      const d = deps({ leaseOptions: (warn) => (built++, warn?.("lease: ignoring invalid CO_LEASE_SLOTS"), warn?.("lease: ignoring invalid CO_LEASE_SLOTS"), lease.opts()) });
+      let seenNotes: readonly string[] = [];
+      let reads = 0;
+      const code = await runHeavyQueue(["watch"], d, (_d, _opts, notes) => ({
+        status: () => (reads++, { level: "normal", capacity: 1, live: [] }),
+        now: () => new Date(0),
+        every: (fn) => (fn(), fn(), () => {}),
+        write: () => {},
+        isTTY: false,
+        columns: () => 80,
+        rows: () => 24,
+        notes: () => (seenNotes = notes(), seenNotes),
+        onStop: (fn) => (queueMicrotask(fn), () => {}),
+      }));
+      expect(code).toBe(0);
+      expect(reads).toBe(3);
+      expect(built).toBe(1);
+      expect(seenNotes).toEqual(["lease: ignoring invalid CO_LEASE_SLOTS"]);
+      expect(err).toEqual([]);
+    });
+
     it("exits 74 on disk full and 78 on a misconfigured lease, and never 75", async () => {
       const refuse = (r: LeaseRefusal) => deps({ acquire: (async () => r) as unknown as typeof acquireLease });
       const full: LeaseRefusal = { refused: "disk-full", waitedMs: 0, level: "normal", live: 0, code: "ENOSPC" };
@@ -115,6 +138,7 @@ describe("runHeavyQueue", () => {
       const bad = deps({ leaseOptions: () => { throw new Error("CO_LEASE_DIR must be absolute"); } });
       expect(await runHeavyQueue(["run", "--", "make"], bad)).toBe(78);
       expect(await runHeavyQueue(["status"], bad)).toBe(78);
+      expect(await runHeavyQueue(["watch"], bad)).toBe(78);
     });
   });
 
