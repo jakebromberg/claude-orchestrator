@@ -292,7 +292,7 @@ export async function runLeased(args, d) {
 export function cliLeaseDeps(err, base = {}) {
     const { env = process.env, level } = base;
     return {
-        leaseOptions: () => defaultLeaseOptions(env, { warn: err, level }),
+        leaseOptions: (warn = err) => defaultLeaseOptions(env, { warn, level }),
         acquire: acquireLease,
         leaseStatus,
         unowned: (opts, sessionPids, leasedRoots) => sampleUnowned({ dir: opts.dir, now: opts.now }, sessionPids, leasedRoots),

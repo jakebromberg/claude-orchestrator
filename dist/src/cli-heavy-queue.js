@@ -13,12 +13,13 @@
  * `status` is the lease's own (`runStatus`); `watch` redraws the same view as tables every interval (2 s by default) until Ctrl-C (`heavy-queue-watch.ts`). The run function lives in `lease-run.ts`; this file never imports `cli-lease.ts`, which runs a startup check at load.
  */
 import { cliLeaseDeps, runLeased, runStatus, statusView } from "./lease-run.js";
-import { runWatch } from "./heavy-queue-watch.js";
+import { MAX_WATCH_INTERVAL_SEC, MIN_WATCH_INTERVAL_SEC, runWatch } from "./heavy-queue-watch.js";
 import { isEntryPoint } from "./entry-point.js";
 const EX_USAGE = 2;
 const USAGE = `usage: heavy-queue run --label "<session>: <what>" [--priority normal|high] [--no-suspend] (-- <cmd> [args...] | --shell '<command line>')
        heavy-queue status
        heavy-queue watch [--interval <sec>]`;
+const EX_CONFIG = 78;
 const DEFAULT_WATCH_INTERVAL_SEC = 2;
 /**
  * Parses heavy-queue's arguments (`run [--label L] [--priority normal|high] [--no-suspend] (--shell C | -- argv...)`, `status`, `watch [--interval S]`); `undefined` is a usage error.
@@ -31,7 +32,7 @@ export function parseHeavyQueueArgs(argv) {
         if (argv.length === 1)
             return { kind: "watch", intervalSec: DEFAULT_WATCH_INTERVAL_SEC };
         const sec = Number(argv[2]);
-        return argv.length === 3 && argv[1] === "--interval" && argv[2].trim() !== "" && Number.isFinite(sec) && sec > 0 ? { kind: "watch", intervalSec: sec } : undefined;
+        return argv.length === 3 && argv[1] === "--interval" && argv[2].trim() !== "" && sec >= MIN_WATCH_INTERVAL_SEC && sec <= MAX_WATCH_INTERVAL_SEC ? { kind: "watch", intervalSec: sec } : undefined;
     }
     if (argv[0] !== "run")
         return undefined;
@@ -55,10 +56,10 @@ export function parseHeavyQueueArgs(argv) {
     const command = rest[0] === "--shell" && rest.length === 2 ? { shell: rest[1] } : rest[0] === "--" && rest.length >= 2 ? { argv: rest.slice(1) } : undefined;
     return command && { kind: "run", label: label ?? "unlabelled", ...command, ...(noSuspend && { noSuspend }), ...(high && { priority: "high" }), gated: true, background: true, suspendable: true, uncapped: true };
 }
-/** `watch`'s process side: the lease read through `d`, the terminal and signals through `process`. */
-export function processWatchDeps(d) {
+/** `watch`'s process side: the lease read through `d` with options built once, the terminal and signals through `process`. */
+export function processWatchDeps(d, opts, notes) {
     return {
-        status: () => statusView(d, d.leaseOptions()),
+        status: () => statusView(d, opts),
         now: () => new Date(),
         every: (fn, ms) => {
             const t = setInterval(fn, ms);
@@ -66,9 +67,35 @@ export function processWatchDeps(d) {
         },
         write: (t) => void process.stdout.write(t),
         isTTY: process.stdout.isTTY === true,
-        columns: () => process.stdout.columns || 120,
-        signals: process,
+        columns: () => process.stdout.columns || 80,
+        rows: () => process.stdout.rows || 24,
+        notes,
+        // A closed pipe (`watch | head`) reports EPIPE as an 'error' event, which would otherwise crash the process.
+        onStop: (fn) => {
+            process.once("SIGINT", fn);
+            process.once("SIGTERM", fn);
+            process.stdout.once("error", fn);
+            return () => {
+                process.off("SIGINT", fn);
+                process.off("SIGTERM", fn);
+                process.stdout.off("error", fn);
+            };
+        },
     };
+}
+/** Builds the lease options once, sending their warnings into a list the watch draws, so stderr never writes over the screen; 78 on a misconfigured lease, as `status` does. */
+async function watch(args, d, watchDeps) {
+    const notes = [];
+    const note = (line) => void (notes.includes(line) || notes.push(line));
+    let opts;
+    try {
+        opts = d.leaseOptions(note);
+    }
+    catch (err) {
+        d.err(`lease: ${err.message}`);
+        return EX_CONFIG;
+    }
+    return runWatch(args, watchDeps(d, opts, () => notes));
 }
 export async function runHeavyQueue(argv, d, watchDeps = processWatchDeps) {
     const args = parseHeavyQueueArgs(argv);
@@ -77,7 +104,7 @@ export async function runHeavyQueue(argv, d, watchDeps = processWatchDeps) {
         return EX_USAGE;
     }
     if (args.kind === "watch")
-        return runWatch(args, watchDeps(d));
+        return watch(args, d, watchDeps);
     return args.kind === "status" ? runStatus(d) : runLeased(args, d);
 }
 if (isEntryPoint(import.meta.url, import.meta.main)) {

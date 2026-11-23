@@ -58,8 +58,8 @@ export interface LeaseChild {
 }
 
 export interface LeaseCliDeps {
-  /** Throws on a configuration error (a relative `CO_LEASE_DIR`). */
-  leaseOptions(): LeaseOptions;
+  /** Throws on a configuration error (a relative `CO_LEASE_DIR`). `warn` takes the options' warnings in place of `err`. */
+  leaseOptions(warn?: (line: string) => void): LeaseOptions;
   acquire: typeof acquireLease;
   leaseStatus(opts: LeaseOptions): LeaseStatus;
   /** The memory the lease does not own, given the live session holders' pids and the heavy holders' owned roots (child pid, or a hook holder's session pid); absent or `undefined`, `status` omits it. */
@@ -336,7 +336,7 @@ export async function runLeased(args: RunArgs, d: LeaseCliDeps): Promise<number>
 export function cliLeaseDeps(err: (line: string) => void, base: { env?: NodeJS.ProcessEnv; level?: PressureSampler } = {}): LeaseCliDeps {
   const { env = process.env, level } = base;
   return {
-    leaseOptions: () => defaultLeaseOptions(env, { warn: err, level }),
+    leaseOptions: (warn = err) => defaultLeaseOptions(env, { warn, level }),
     acquire: acquireLease,
     leaseStatus,
     unowned: (opts, sessionPids, leasedRoots) => sampleUnowned({ dir: opts.dir, now: opts.now }, sessionPids, leasedRoots),

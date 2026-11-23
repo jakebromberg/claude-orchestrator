@@ -14,13 +14,15 @@
  */
 
 import { cliLeaseDeps, runLeased, runStatus, statusView, type LeaseArgs, type LeaseCliDeps } from "./lease-run.js";
-import { runWatch, type WatchArgs, type WatchDeps } from "./heavy-queue-watch.js";
+import { MAX_WATCH_INTERVAL_SEC, MIN_WATCH_INTERVAL_SEC, runWatch, type WatchArgs, type WatchDeps } from "./heavy-queue-watch.js";
+import type { LeaseOptions } from "./lease.js";
 import { isEntryPoint } from "./entry-point.js";
 
 const EX_USAGE = 2;
 const USAGE = `usage: heavy-queue run --label "<session>: <what>" [--priority normal|high] [--no-suspend] (-- <cmd> [args...] | --shell '<command line>')
        heavy-queue status
        heavy-queue watch [--interval <sec>]`;
+const EX_CONFIG = 78;
 const DEFAULT_WATCH_INTERVAL_SEC = 2;
 
 /**
@@ -32,7 +34,7 @@ export function parseHeavyQueueArgs(argv: string[]): LeaseArgs | WatchArgs | und
   if (argv[0] === "watch") {
     if (argv.length === 1) return { kind: "watch", intervalSec: DEFAULT_WATCH_INTERVAL_SEC };
     const sec = Number(argv[2]);
-    return argv.length === 3 && argv[1] === "--interval" && argv[2]!.trim() !== "" && Number.isFinite(sec) && sec > 0 ? { kind: "watch", intervalSec: sec } : undefined;
+    return argv.length === 3 && argv[1] === "--interval" && argv[2]!.trim() !== "" && sec >= MIN_WATCH_INTERVAL_SEC && sec <= MAX_WATCH_INTERVAL_SEC ? { kind: "watch", intervalSec: sec } : undefined;
   }
   if (argv[0] !== "run") return undefined;
   let rest = argv.slice(1);
@@ -51,10 +53,10 @@ export function parseHeavyQueueArgs(argv: string[]): LeaseArgs | WatchArgs | und
   return command && { kind: "run", label: label ?? "unlabelled", ...command, ...(noSuspend && { noSuspend }), ...(high && { priority: "high" as const }), gated: true, background: true, suspendable: true, uncapped: true };
 }
 
-/** `watch`'s process side: the lease read through `d`, the terminal and signals through `process`. */
-export function processWatchDeps(d: LeaseCliDeps): WatchDeps {
+/** `watch`'s process side: the lease read through `d` with options built once, the terminal and signals through `process`. */
+export function processWatchDeps(d: LeaseCliDeps, opts: LeaseOptions, notes: () => readonly string[]): WatchDeps {
   return {
-    status: () => statusView(d, d.leaseOptions()),
+    status: () => statusView(d, opts),
     now: () => new Date(),
     every: (fn, ms) => {
       const t = setInterval(fn, ms);
@@ -62,18 +64,46 @@ export function processWatchDeps(d: LeaseCliDeps): WatchDeps {
     },
     write: (t) => void process.stdout.write(t),
     isTTY: process.stdout.isTTY === true,
-    columns: () => process.stdout.columns || 120,
-    signals: process,
+    columns: () => process.stdout.columns || 80,
+    rows: () => process.stdout.rows || 24,
+    notes,
+    // A closed pipe (`watch | head`) reports EPIPE as an 'error' event, which would otherwise crash the process.
+    onStop: (fn) => {
+      process.once("SIGINT", fn);
+      process.once("SIGTERM", fn);
+      process.stdout.once("error", fn);
+      return () => {
+        process.off("SIGINT", fn);
+        process.off("SIGTERM", fn);
+        process.stdout.off("error", fn);
+      };
+    },
   };
 }
 
-export async function runHeavyQueue(argv: string[], d: LeaseCliDeps, watchDeps: (d: LeaseCliDeps) => WatchDeps = processWatchDeps): Promise<number> {
+/** Builds the lease options once, sending their warnings into a list the watch draws, so stderr never writes over the screen; 78 on a misconfigured lease, as `status` does. */
+async function watch(args: WatchArgs, d: LeaseCliDeps, watchDeps: WatchDepsFactory): Promise<number> {
+  const notes: string[] = [];
+  const note = (line: string): void => void (notes.includes(line) || notes.push(line));
+  let opts: LeaseOptions;
+  try {
+    opts = d.leaseOptions(note);
+  } catch (err) {
+    d.err(`lease: ${(err as Error).message}`);
+    return EX_CONFIG;
+  }
+  return runWatch(args, watchDeps(d, opts, () => notes));
+}
+
+type WatchDepsFactory = (d: LeaseCliDeps, opts: LeaseOptions, notes: () => readonly string[]) => WatchDeps;
+
+export async function runHeavyQueue(argv: string[], d: LeaseCliDeps, watchDeps: WatchDepsFactory = processWatchDeps): Promise<number> {
   const args = parseHeavyQueueArgs(argv);
   if (!args) {
     d.err(USAGE);
     return EX_USAGE;
   }
-  if (args.kind === "watch") return runWatch(args, watchDeps(d));
+  if (args.kind === "watch") return watch(args, d, watchDeps);
   return args.kind === "status" ? runStatus(d) : runLeased(args, d);
 }
 

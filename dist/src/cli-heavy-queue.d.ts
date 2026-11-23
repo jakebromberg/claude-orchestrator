@@ -14,11 +14,14 @@
  */
 import { type LeaseArgs, type LeaseCliDeps } from "./lease-run.js";
 import { type WatchArgs, type WatchDeps } from "./heavy-queue-watch.js";
+import type { LeaseOptions } from "./lease.js";
 /**
  * Parses heavy-queue's arguments (`run [--label L] [--priority normal|high] [--no-suspend] (--shell C | -- argv...)`, `status`, `watch [--interval S]`); `undefined` is a usage error.
  * The options come in any order before the command, each at most once. `--priority normal` parses to the same result as no `--priority`.
  */
 export declare function parseHeavyQueueArgs(argv: string[]): LeaseArgs | WatchArgs | undefined;
-/** `watch`'s process side: the lease read through `d`, the terminal and signals through `process`. */
-export declare function processWatchDeps(d: LeaseCliDeps): WatchDeps;
-export declare function runHeavyQueue(argv: string[], d: LeaseCliDeps, watchDeps?: (d: LeaseCliDeps) => WatchDeps): Promise<number>;
+/** `watch`'s process side: the lease read through `d` with options built once, the terminal and signals through `process`. */
+export declare function processWatchDeps(d: LeaseCliDeps, opts: LeaseOptions, notes: () => readonly string[]): WatchDeps;
+type WatchDepsFactory = (d: LeaseCliDeps, opts: LeaseOptions, notes: () => readonly string[]) => WatchDeps;
+export declare function runHeavyQueue(argv: string[], d: LeaseCliDeps, watchDeps?: WatchDepsFactory): Promise<number>;
+export {};
