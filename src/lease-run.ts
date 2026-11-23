@@ -146,13 +146,28 @@ function ancestorHookSlot(opts: LeaseOptions, d: LeaseCliDeps): string | undefin
   }
 }
 
+/** What `status` prints: the heavy class's level, capacity, live holders, waiting tickets, weights and the memory the lease does not own. */
+export interface StatusView {
+  level: LeaseStatus["level"];
+  capacity: number;
+  live: { pid: number; command: string; ageSec: number; override?: true; suspended?: true; priority?: "high" }[];
+  waiting?: NonNullable<LeaseStatus["waiting"]>;
+  weights?: NonNullable<LeaseStatus["weights"]>;
+  unowned?: UnownedMemory;
+}
+
+/** Reads the lease into the shape `status` prints; throws what `leaseOptions` or `leaseStatus` throws. */
+export function statusView(d: Pick<LeaseCliDeps, "leaseStatus" | "unowned">, opts: LeaseOptions): StatusView {
+  const { level, capacity, live, weights, sessions, waiting } = d.leaseStatus(opts);
+  const unowned = d.unowned?.(opts, (sessions?.live ?? []).map((h) => h.pid), live.flatMap((h) => h.childPid ?? (h.expiresAt !== undefined ? h.pid : [])));
+  const holders = live.map((h) => ({ pid: h.pid, command: h.command, ageSec: h.ageSec, ...(h.override && { override: true as const }), ...(h.suspended && { suspended: true as const }), ...(h.priority && { priority: h.priority }) }));
+  return { level, capacity, live: holders, ...(waiting?.length && { waiting }), ...(weights && { weights }), ...(unowned && { unowned }) };
+}
+
 export function runStatus(d: LeaseCliDeps): number {
   const opts = optionsOrReport(d);
   if (!opts) return EX_CONFIG;
-  const { level, capacity, live, weights, sessions, waiting } = d.leaseStatus(opts);
-  const unowned = d.unowned?.(opts, (sessions?.live ?? []).map((h) => h.pid), live.flatMap((h) => h.childPid ?? (h.expiresAt !== undefined ? h.pid : [])));
-  const holders = live.map((h) => ({ pid: h.pid, command: h.command, ageSec: h.ageSec, ...(h.override && { override: true }), ...(h.suspended && { suspended: true }), ...(h.priority && { priority: h.priority }) }));
-  d.out(`${JSON.stringify({ level, capacity, live: holders, ...(waiting?.length && { waiting }), ...(weights && { weights }), ...(unowned && { unowned }) }, null, 2)}\n`);
+  d.out(`${JSON.stringify(statusView(d, opts), null, 2)}\n`);
   return 0;
 }
 
